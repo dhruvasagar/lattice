@@ -20,6 +20,10 @@
   stayed. Edits now reach the server before anything asked after them,
   which also keeps hover, completion and code actions in step with what you
   typed.
+- **`<C-l>` refreshes semantic colours.** `<C-l>` and `:redraw` now ask the
+  language server for the visible buffers' semantic tokens again, in full.
+  Before, they redrew syntax and decorations but kept the server's colours,
+  so if those were wrong they stayed wrong until the next edit.
 
 ## 0.9.14 — 2026-11-06
 

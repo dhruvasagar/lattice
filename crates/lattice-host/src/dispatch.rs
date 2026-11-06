@@ -25744,13 +25744,34 @@ impl Editor {
             .filter(|p| matches!(p.buffer, BufferKind::Document))
             .map(|p| p.buffer_id)
             .collect();
-        for buffer_id in visible_doc_buffers {
+        for &buffer_id in &visible_doc_buffers {
             self.cells_matrix_for(buffer_id)
                 .store(std::sync::Arc::new(lattice_cells::CellMatrix::empty()));
             self.display_matrix_for(buffer_id)
                 .store(std::sync::Arc::new(
                     crate::display_matrix::DisplayMatrix::empty(),
                 ));
+        }
+        // And semantic tokens. They are cached against the text version,
+        // which a redraw does not move, so without this wrong semantic
+        // colours survived the key pressed to clear them. Refetch in full:
+        // dropping the `result_id` means no delta, which would be spliced
+        // onto the very tokens being replaced. The old tokens keep
+        // rendering until the new ones land (as for a server `refresh`,
+        // `drain_semantic_tokens_refresh`), so a correct buffer does not
+        // flash.
+        {
+            use crate::per_buffer_cache::PerBufferCacheExt;
+            for &buffer_id in &visible_doc_buffers {
+                if let Some(cache) = self.lsp_semantic_tokens_cache.get_for(buffer_id)
+                    && cache.result_id.is_some()
+                {
+                    let mut full = (*cache).clone();
+                    full.result_id = None;
+                    self.lsp_semantic_tokens_cache.insert_for(buffer_id, full);
+                }
+                self.semantic_tokens_refresh_pending.insert(buffer_id);
+            }
         }
         self.recompute_folds();
         self.pending_redraw = true;

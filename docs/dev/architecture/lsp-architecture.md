@@ -1044,6 +1044,15 @@ dependent and gates on `self.cursor`. Nothing reads `cache.document_version` for
 *display* (decorations render straight from the cache), so storing `text_version`
 there has no render-staleness effect.
 
+A consequence of the gate: a cached answer that is *wrong* for its
+`text_version` is never replaced until the text changes. `<C-l>` is the
+escape hatch — it marks every visible Document buffer refresh-pending and
+drops its `result_id`, so the next request is a full `semanticTokens/full`
+rather than a delta spliced onto the tokens being replaced. The old tokens
+keep rendering until the answer lands, as for a server `refresh`. (The cause
+that made this reachable — a request overtaking its own `didChange` — is
+closed in the actor; see *Nothing overtakes a queued edit* in §11.)
+
 > **Rule:** a text-derived LSP request (semantic tokens, inlay hints, folding,
 > lenses, diagnostics, links, colours) gates on `text_version`. Only genuinely
 > caret-dependent requests (documentHighlight, hover, signatureHelp, nav) key on

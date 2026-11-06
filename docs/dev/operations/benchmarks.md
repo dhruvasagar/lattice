@@ -3349,6 +3349,7 @@ itself never appears next to editor work in a flame graph.
 | `lsp::logging::log_trace_off`         | **10ns**   | ~5ns / <50ns   | Trace toggle off short-circuit -- a HashSet lookup + return. Hot path when trace stays disabled.   |
 | `lsp::logging::log_trace_on`          | **116ns**  | ~80ns / <500ns | Trace toggle on -- includes the ring push. Negligible at editor pace; perceptible at indexer bursts. |
 | `lsp_edit_publish_three_subs`         | **2.4µs**  | ~2µs / <5µs    | UI-thread cost per applied edit: `EventBus::publish` of one `Event::DocumentChanged` with one `AppliedEdit`, three `DocumentChanged` subscribers attached. The *only* LSP work the keystroke thread does after the per-actor fan-in refactor (docs/../architecture/lsp-architecture.md §11). +25% vs prior baseline (1.9µs) -- the new `MessagePushed` + `LspCodeLensRefresh` typed-event subscribers landed in Phase 4.4/4.5 add small downcast costs per publish; still ≪ 5µs gate. |
+| `lsp_edit_publish_typed_fan_in_three_subs` | **922ns** | ~1µs / <5µs | UI-thread cost of the LSP fan-in itself, now that it forwards inside the publish (`fan_in::subscribe` on `EventBus::subscribe_typed_fn`): one `LspDocumentChanged` with one edit, three subscribers each building the URI + `Edit` and doing one unbounded send — what `ServerHandle::record_edit` is. This moved onto the keystroke thread (2026-11-07) so an edit is in the actor's mailbox before any request the editor makes after it; before, a fan-in task did it and could run after that request. |
 | `lsp_edit_propagation_publish_to_recv`| **241ns**  | ~200ns / <600ns| Bus → mpsc receive hop: time from `EventBus::publish` to the per-actor fan-in's `mpsc::recv().await` returning. Excludes the actor's own `record_edit`. |
 | `lsp_didchange_flush_16_edits`        | **8.4µs**  | ~6µs / <25µs   | Actor-side debounce-arm cost: 16 `DocSync::record_edit` calls + `take_flush_payload` + serialise to `textDocument/didChange` JSON. Runs off the UI thread (post-debounce). |
 | `lsp_diagnostics_line_severity_wait_free` | **25ns** | ~20ns / <75ns  | Render-thread `DiagnosticsLayer::line_severity(uri, line)` after the audit's C3 fix. Pre-fix path locked an inner `Mutex` + cloned the full diagnostics list per call (microseconds, ~3000 calls/sec on the render thread = milliseconds wasted). New path: one `ArcSwap::load` + a borrowed-slice filter — wait-free, allocation-free. |
@@ -3371,6 +3372,12 @@ moments that matter:
   attached actors. The §8.2 keystroke-to-glyph ceiling is one frame, 8.3 ms;
   budgeting <50 µs for "tell the LSP layer" leaves >99% of
   the frame for the rest of the path. **1.9 µs ≪ 50 µs.**
+- **Fan-in on the publisher** (`lsp_edit_publish_typed_fan_in_three_subs`):
+  the forward the fan-in task used to do, now done in the
+  publish so edits are ordered ahead of later requests by
+  construction. **922 ns for three servers ≪ 50 µs.** With it
+  the propagation hop below no longer sits on the edit path —
+  the edit is in the actor's mailbox when the publish returns.
 - **Propagation** (`lsp_edit_propagation_publish_to_recv`):
   bus → fan-in receive hop. Sub-microsecond means the actor
   sees the event in the same tick the publish completes;

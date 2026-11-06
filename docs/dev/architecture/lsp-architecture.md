@@ -730,9 +730,10 @@ also get a per-actor fan-in subscription (§11).
 
 **Buffer edit.** The dispatcher commits → the App publishes
 `Event::DocumentChanged` on the bus carrying every applied
-edit (range + inserted text). Each actor's fan-in task picks
-up the event and forwards one `ActorCmd::RecordEdit` per
-edit straight into the actor's mailbox. The actor coalesces
+edit (range + inserted text). Each actor's fan-in
+subscriber runs inside that publish and forwards one
+`ActorCmd::RecordEdit` per edit straight into the actor's
+mailbox. The actor coalesces
 on a 50 ms debounce and emits a single `didChange`. The UI
 thread takes no LSP-related lock.
 
@@ -764,14 +765,14 @@ apply_edit_blocking(edit)              |
 publish_document_changed(applied[])    |
    │  EventBus::publish — single mutex |
    │  on the bus's per-kind bucket     |
+   │                                   |
+   │  per-actor fan-in (lattice_lsp::  |
+   │  fan_in), run INSIDE the publish: |
+   │    for each applied edit:         |
+   │      ServerHandle::record_edit    |
+   │      (mpsc send on actor cmd_tx)  |
    ▼                                   |
-event_bus  ────────────────────────────┼─►  per-actor fan-in task (lattice_lsp::fan_in)
-                                       |        │  on Event::DocumentChanged:
-                                       |        │     for each applied edit:
-                                       |        │       ServerHandle::record_edit(uri, edit)
-                                       |        │         (mpsc send on actor cmd_tx)
-                                       |        ▼
-                                       |    actor task (single writer)
+actor cmd_tx  ─────────────────────────┼─►  actor task (single writer)
                                        |        │  ActorCmd::RecordEdit:
                                        |        │    DocSync::record_edit (own the mirror)
                                        |        │    flush_pending = true
@@ -796,8 +797,9 @@ The new path:
 
 - **No shared lock on the hot path.** Publishing on the bus
   takes a brief mutex on the bus's per-kind bucket
-  (microseconds). The fan-in receives on its own channel.
-  `ServerHandle::record_edit` is an unbounded mpsc send.
+  (microseconds). The fan-in runs in the publish call, with
+  the bus lock released; `ServerHandle::record_edit` is an
+  unbounded mpsc send.
   Nothing the UI thread does waits on the actor.
 - **Single writer per actor.** Only the actor task mutates
   its `DocSync`. There is no contention to drop edits to.
@@ -818,6 +820,18 @@ The new path:
   then landed on lines they no longer matched. Neovim flushes
   before every request for the same reason; Helix does not
   debounce. Pinned by `crates/lattice-lsp/tests/request_ordering.rs`.
+- **The edit is in the mailbox before the publish returns.**
+  The flush above only covers edits that have reached the
+  actor. The fan-in used to forward through a channel drained
+  by its own task, which nothing ordered against the editor's
+  next request — on the editor actor's `current_thread`
+  runtime that task could not have run before the request was
+  sent. It now subscribes with `EventBus::subscribe_typed_fn`,
+  whose closure runs inside `publish_typed`, so mailbox FIFO
+  orders every edit ahead of every later request by
+  construction. Pinned by
+  `an_edit_reaches_the_server_before_a_request_made_right_after_it`
+  in `crates/lattice-lsp/tests/fan_in.rs`.
 
 ### Subscription lifecycle
 
@@ -827,14 +841,13 @@ the actor uses. Three lifecycle moments:
 
 - **Actor spawn.** `LspSupervisor::open_buffer` and
   `attach_handle` spawn a fan-in via
-  `lattice_lsp::fan_in::spawn(handle, bus)` whenever a new
+  `lattice_lsp::fan_in::subscribe(handle, bus)` whenever a new
   actor lands in `actors`. The returned `SubscriptionId`
   goes into `fan_in_subs`.
 - **Actor crash / drop.** The fan-in detects
   `LspError::ActorGone` from a `record_edit` send and
-  exits, dropping its sender. The bus prunes the dead
-  subscription lazily on the next publish that hits its
-  bucket.
+  returns `false`, which prunes its subscription on that
+  publish.
 - **Editor shutdown.** `LspSupervisor::shutdown` drains
   `fan_in_subs` and calls `EventBus::unsubscribe` for each
   before dropping the actors. This stops the bus from

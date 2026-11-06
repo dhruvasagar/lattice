@@ -148,6 +148,10 @@ before jumping.
 `:problems` opens `*problems*`, a multibuffer that groups the entries as
 source excerpts under each file's header (the surface project-search
 uses). Fixing an error in an excerpt propagates to the source file.
+To narrow it, `:multibuffer-keep /pat/` and `:multibuffer-reject /pat/`
+filter the excerpts by line or file path, Vim's `:Cfilter` /
+`:Cfilter!`, and never edit a file — see
+[filtering](help:multibuffer-mode#filtering).
 `:problems-close` closes it, leaving the source buffers open. Both
 `:error-list` and `:problems` echo `no error list` when there is nothing
 to show.

@@ -18,12 +18,13 @@
 //! again mid-loop, so a loop keeps the terms it started with.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use lattice_agent::SessionKey;
 use tokio_util::sync::CancellationToken;
 
-use super::request::{Round, Rounds};
-use super::tools::{BoxFuture, Offer, ToolError};
+use super::request::{Round, RoundStatus, Rounds};
+use super::tools::{BoxFuture, CallContext, Offer, ToolError};
 use super::{LlmRequest, Message, history};
 use crate::conversation::{Block, Conversation, ConversationStore, Role, ToolStatus};
 
@@ -39,6 +40,10 @@ pub struct ChatRounds {
     first: LlmRequest,
     done: usize,
     limit: usize,
+    /// The session's diff tag and its `<C-t>` trust, read per call so a
+    /// toggle mid-loop applies to the next edit.
+    origin: u64,
+    trusted: Arc<AtomicBool>,
 }
 
 impl ChatRounds {
@@ -56,7 +61,17 @@ impl ChatRounds {
             first,
             done: 0,
             limit: limit.max(1),
+            origin: 0,
+            trusted: Arc::default(),
         }
+    }
+
+    /// The session the calls belong to (LL.17): its edits' diffs carry
+    /// `origin`, and apply without one while `trusted` is set.
+    pub fn for_session(mut self, origin: u64, trusted: Arc<AtomicBool>) -> Self {
+        self.origin = origin;
+        self.trusted = trusted;
+        self
     }
 
     fn set(&self, id: &str, status: ToolStatus, output: Option<String>) {
@@ -65,7 +80,7 @@ impl ChatRounds {
         });
     }
 
-    async fn round(&mut self, cancel: &CancellationToken) -> Round {
+    async fn round(&mut self, cancel: &CancellationToken, status: &RoundStatus) -> Round {
         let pending = pending_calls(&self.store.snapshot());
         if pending.is_empty() {
             // The model said it wanted tools and named none.
@@ -91,9 +106,15 @@ impl ChatRounds {
                 break;
             }
             self.set(&id, ToolStatus::Running, None);
+            let status = status.clone();
+            let ctx = CallContext {
+                origin: self.origin,
+                trusted: self.trusted.load(Ordering::Acquire),
+                on_review: Some(Arc::new(move |open| status.reviewing(open))),
+            };
             let result = match &call.malformed {
                 Some(why) => Err(ToolError::InvalidArguments(why.clone())),
-                None => self.offer.call(&call.name, call.input.clone()).await,
+                None => self.offer.call(&call.name, call.input.clone(), ctx).await,
             };
             match result {
                 Ok(out) => self.set(&id, ToolStatus::Ok, Some(out.text)),
@@ -117,8 +138,12 @@ impl ChatRounds {
 }
 
 impl Rounds for ChatRounds {
-    fn after_tools<'a>(&'a mut self, cancel: &'a CancellationToken) -> BoxFuture<'a, Round> {
-        Box::pin(self.round(cancel))
+    fn after_tools<'a>(
+        &'a mut self,
+        cancel: &'a CancellationToken,
+        status: &'a RoundStatus,
+    ) -> BoxFuture<'a, Round> {
+        Box::pin(self.round(cancel, status))
     }
 }
 

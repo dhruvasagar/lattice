@@ -389,6 +389,42 @@ Arguments a tool cannot use come back as an error result, never a failed request
 that are not a JSON object are kept as `{}` (a provider rejects a call whose input is not an
 object) with the reason, and the call is not run.
 
+**Lattice's edit tools** (LL.17: `edit_file`, an exact `old_string` → `new_string`
+replacement that must match once unless `replace_all`; `write_file`, a whole file, new or
+not) never write what the user has not seen. Each proposal is a buffer-text review
+(`lattice_agent::review_text`) against the file **as the user has it**: the buffer's text
+when open, else the disk's, else empty. What the user accepts, edits included, is applied
+to that same text: into the buffer as one minimal edit (`EditorAccess::apply_buffer_text`
+replaces only the differing span, so the lines around it stay pixel-stable and one `u`
+undoes it), unsaved; or to the disk, only if the file still holds what was reviewed. A
+target that changed meanwhile, on disk or in a buffer, is refused with "read it again":
+applying would overwrite a change the user made. The verdict is the tool's result — written,
+applied in the editor, rejected, closed undecided, or accepted after the user changed it,
+which tells the model to read the file before its next edit.
+
+Reviews queue at **one gate across the llm layer**, shared with the rewrite operator: a
+second diff opening over the first would take the focus mid-decision. While one is open the
+request is `AwaitingReview` (a round reports it through `RoundStatus`), then `AwaitingTool`.
+
+**Every review carries its session's tag**, `origin_session` on the diff, numbered from
+`ORIGIN_BASE` (2⁶²) so it can never meet an IDE connection's id, which counts from 1. A
+review whose call is dropped undecided (the request stopped, the chat closed, which stops
+its request) closes the session's diffs through `Effect::CloseAllSessionDiffs`, the
+diff-only variant: a verdict that would reach nobody must not stay on screen asking for one.
+
+**`<C-t>` in a chat trusts its edits**: they apply without a diff, and the headerline says
+`edits trusted` for as long as it lasts. Trust belongs to the chat on screen: never saved,
+never copied to another session, and dropped when the chat closes. The stale-target refusal
+still applies, so trust skips the question, never the check.
+
+Rejected for edits: writing the disk under an open buffer (the buffer would show text the
+file no longer holds, and `:w` would silently undo the model's change); a whole-buffer
+replace on accept (every line would repaint and the caret would jump, breaking the
+keystroke UX contract for content the user did not edit); a per-tool review queue (two
+diffs at once, one from a rewrite, would fight for the focus); trust as an option
+(`llm.trust`) a profile or project file could set — §4's table puts trust out of a
+project's reach, and a key in the chat it applies to is the narrowest grant.
+
 Rejected: a request id per exchange (the modeline, `:llm-requests` and `:llm-stop` would
 see a loop as unrelated requests, and a cancel between exchanges would find nothing to
 cancel); accumulating the loop's messages beside the store (two records of one conversation,

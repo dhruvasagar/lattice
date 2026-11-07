@@ -351,10 +351,14 @@ async fn drive(
             break RequestState::Done;
         };
         shared.transition(id, RequestState::AwaitingTool);
+        let status = RoundStatus {
+            shared: shared.clone(),
+            id,
+        };
         let round = tokio::select! {
             biased;
             _ = cancel.cancelled() => break RequestState::Cancelled,
-            round = rounds.after_tools(&cancel) => round,
+            round = rounds.after_tools(&cancel, &status) => round,
         };
         match round {
             Round::Next(next) => req = next,
@@ -373,7 +377,32 @@ pub trait Rounds: Send {
     /// The last exchange ended asking for tools: run them, and say what
     /// happens next. A cancel drops the future, so a round must leave its
     /// record valid at any await point.
-    fn after_tools<'a>(&'a mut self, cancel: &'a CancellationToken) -> BoxFuture<'a, Round>;
+    fn after_tools<'a>(
+        &'a mut self,
+        cancel: &'a CancellationToken,
+        status: &'a RoundStatus,
+    ) -> BoxFuture<'a, Round>;
+}
+
+/// Lets a round say what its request is waiting on (LL.17): a tool, or the
+/// user's review of an edit. Cloned into whatever runs the call.
+#[derive(Clone)]
+pub struct RoundStatus {
+    shared: Arc<Shared>,
+    id: RequestId,
+}
+
+impl RoundStatus {
+    /// `true` while a review is open: the request shows `AwaitingReview`,
+    /// then `AwaitingTool` again. A request that already ended stays ended.
+    pub fn reviewing(&self, open: bool) {
+        let state = if open {
+            RequestState::AwaitingReview
+        } else {
+            RequestState::AwaitingTool
+        };
+        self.shared.transition(self.id, state);
+    }
 }
 
 /// The outcome of a round.

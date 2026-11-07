@@ -360,6 +360,7 @@ impl lattice_ai::llm::tools::ToolSource for TestTools {
         &self,
         name: &str,
         input: serde_json::Value,
+        _ctx: lattice_ai::llm::tools::CallContext,
     ) -> lattice_ai::llm::tools::BoxFuture<
         '_,
         Result<lattice_ai::llm::tools::ToolOutput, lattice_ai::llm::tools::ToolError>,

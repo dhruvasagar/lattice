@@ -33,7 +33,7 @@ pub mod transport;
 
 pub use request::{
     RequestId, RequestInfo, RequestRegistry, RequestRegistryHandle, RequestState,
-    RequestStateChanged, RequestTarget, Round, Rounds, Sink,
+    RequestStateChanged, RequestTarget, Round, RoundStatus, Rounds, Sink,
 };
 pub use transport::SinkFlow;
 

@@ -141,8 +141,52 @@ impl EditorAccess {
     /// to the same file, so `src/../src/a.rs` finds `src/a.rs`.
     pub fn buffer_text(&self, path: &Path) -> Option<String> {
         let store = self.buffer_store.as_ref()?;
+        let doc = store.handle_for(core_id(self.buffer_for(path)?))?;
+        let text = doc.snapshot().buffer.as_string();
+        Some(text)
+    }
+
+    /// LL.17: replace the text of the buffer showing `path` with `new`, if it
+    /// still holds `expected`. `Ok(false)` when it does not (it changed since
+    /// it was read) and nothing was applied; an error when no buffer shows
+    /// the path.
+    ///
+    /// Only the part that differs is replaced, as one edit: the lines around
+    /// it keep their place on screen, the caret outside it stays where it
+    /// was, and one `u` undoes the change.
+    pub async fn apply_buffer_text(&self, path: &Path, expected: &str, new: &str) -> Result<bool> {
+        let missing = || AgentError::Io(format!("{}: not open in a buffer", path.display()));
+        let store = self.buffer_store.as_ref().ok_or_else(missing)?;
+        let doc = store
+            .handle_for(core_id(self.buffer_for(path).ok_or_else(missing)?))
+            .ok_or_else(missing)?;
+        let edit = {
+            let snap = doc.snapshot();
+            let now = snap.buffer.as_string();
+            if now != expected {
+                return Ok(false);
+            }
+            let (start, end, middle) = differing_span(&now, new);
+            let at = |byte| {
+                snap.buffer
+                    .byte_to_position(byte)
+                    .map_err(|e| AgentError::Io(format!("{}: {e:?}", path.display())))
+            };
+            lattice_protocol::edit::Edit::replace(
+                lattice_protocol::position::Range::new(at(start)?, at(end)?),
+                middle,
+            )
+        };
+        doc.apply_edit_batch(vec![edit])
+            .await
+            .map_err(|e| AgentError::Io(format!("{}: {e:?}", path.display())))?;
+        Ok(true)
+    }
+
+    /// The open buffer showing `path`, matched as [`buffer_text`](Self::buffer_text) does.
+    fn buffer_for(&self, path: &Path) -> Option<DocumentId> {
         let wanted = std::fs::canonicalize(path).ok();
-        let id = {
+        {
             let cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
             cache
                 .open_buffers
@@ -156,10 +200,7 @@ impl EditorAccess {
                     })
                 })
                 .map(|(id, _)| *id)
-        }?;
-        let doc = store.handle_for(core_id(id))?;
-        let text = doc.snapshot().buffer.as_string();
-        Some(text)
+        }
     }
 
     /// LL.16: every open buffer that shows a file, as `(resolved path, text)`,
@@ -265,6 +306,38 @@ impl EditorAccess {
 
 /// `DocumentId` → the `BufferStore`'s core `BufferId` (same underlying id,
 /// distinct newtypes — mirrors `HostDiagnosticsQuery`).
+/// The byte span of `old` that differs from `new`, and what replaces it: the
+/// common prefix and suffix are left alone. Cut on char boundaries. Public
+/// for the bench only.
+#[doc(hidden)]
+pub fn differing_span(old: &str, new: &str) -> (usize, usize, String) {
+    let prefix = old
+        .char_indices()
+        .zip(new.chars())
+        .find(|((_, a), b)| a != b)
+        .map_or(old.len().min(new.len()), |((i, _), _)| i);
+    // Keep `prefix` and the common suffix from overlapping in either string.
+    let room = old.len().min(new.len()) - prefix;
+    let suffix = old[prefix..]
+        .chars()
+        .rev()
+        .zip(new[prefix..].chars().rev())
+        .take_while(|(a, b)| a == b)
+        .map(|(a, _)| a.len_utf8())
+        .scan(0usize, |acc, n| {
+            *acc += n;
+            Some(*acc)
+        })
+        .take_while(|n| *n <= room)
+        .last()
+        .unwrap_or(0);
+    (
+        prefix,
+        old.len() - suffix,
+        new[prefix..new.len() - suffix].to_string(),
+    )
+}
+
 fn core_id(id: DocumentId) -> lattice_core::BufferId {
     lattice_core::BufferId(id.raw() as u32)
 }
@@ -434,5 +507,14 @@ mod tests {
             matches!(err, AgentError::Io(ref m) if m == "write failed: editor did not respond"),
             "expected Io(\"write failed: editor did not respond\"), got {err:?}"
         );
+    }
+
+    #[test]
+    fn only_the_differing_span_is_replaced() {
+        assert_eq!(differing_span("abcdef", "abXYef"), (2, 4, "XY".into()));
+        assert_eq!(differing_span("a\nb\n", "a\nB\nc\n"), (2, 3, "B\nc".into()));
+        assert_eq!(differing_span("same", "same"), (4, 4, String::new()));
+        assert_eq!(differing_span("aaa", "aa"), (2, 3, String::new()));
+        assert_eq!(differing_span("é→x", "é←x"), (2, 5, "←".into()));
     }
 }

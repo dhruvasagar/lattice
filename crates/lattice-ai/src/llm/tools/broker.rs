@@ -23,7 +23,7 @@ use std::sync::{Arc, RwLock};
 
 use serde_json::Value;
 
-use super::{SourceTool, ToolError, ToolOutput, ToolSource};
+use super::{CallContext, SourceTool, ToolError, ToolOutput, ToolSource};
 use crate::conversation::ToolKind;
 use crate::llm::ToolDescriptor;
 
@@ -98,14 +98,19 @@ impl Offer {
     }
 
     /// Run the tool the model named. A name this request was not offered is
-    /// refused by name, whatever any earlier result said; a tool that needs
-    /// approval is not run here, since review and asking arrive with the
-    /// slices that build them (LL.17, LL.18).
-    pub async fn call(&self, wire: &str, input: Value) -> Result<ToolOutput, ToolError> {
+    /// refused by name, whatever any earlier result said. A `Review` tool is
+    /// lattice's own and opens its review itself (LL.17); a tool that must
+    /// ask first is not run, since asking arrives with LL.18.
+    pub async fn call(
+        &self,
+        wire: &str,
+        input: Value,
+        ctx: CallContext,
+    ) -> Result<ToolOutput, ToolError> {
         let tool = self
             .find(wire)
             .ok_or_else(|| ToolError::UnknownTool(wire.to_string()))?;
-        if tool.permission != Permission::Run {
+        if tool.permission == Permission::Ask {
             return Err(ToolError::Refused(format!(
                 "{}.{} needs approval, which this version cannot ask for yet",
                 tool.server, tool.name
@@ -115,7 +120,7 @@ impl Offer {
             .sources
             .get(&tool.server)
             .ok_or_else(|| ToolError::UnknownTool(wire.to_string()))?;
-        source.call(&tool.name, input).await
+        source.call(&tool.name, input, ctx).await
     }
 }
 
@@ -246,7 +251,12 @@ mod tests {
             let tools = self.0.clone();
             Box::pin(async move { Ok(tools) })
         }
-        fn call(&self, name: &str, _: Value) -> BoxFuture<'_, Result<ToolOutput, ToolError>> {
+        fn call(
+            &self,
+            name: &str,
+            _: Value,
+            _: CallContext,
+        ) -> BoxFuture<'_, Result<ToolOutput, ToolError>> {
             let text = format!("ran {name}");
             Box::pin(async move { Ok(ToolOutput { text }) })
         }
@@ -331,14 +341,25 @@ mod tests {
     async fn only_offered_run_tools_are_called() {
         let b = broker();
         let o = b.offer(&pick(&["lattice.*"])).await;
-        let ran = o.call("lattice__read_file", Value::Null).await.unwrap();
+        let ctx = CallContext::default;
+        let ran = o
+            .call("lattice__read_file", Value::Null, ctx())
+            .await
+            .unwrap();
         assert_eq!(ran.text, "ran read_file");
         assert!(matches!(
-            o.call("github__search_issues", Value::Null).await,
+            o.call("github__search_issues", Value::Null, ctx()).await,
             Err(ToolError::UnknownTool(_))
         ));
+        // A review tool runs (it reviews itself); one that must ask does not.
+        assert!(
+            o.call("lattice__write_file", Value::Null, ctx())
+                .await
+                .is_ok()
+        );
+        let o = b.offer(&pick(&["github.*"])).await;
         assert!(matches!(
-            o.call("lattice__write_file", Value::Null).await,
+            o.call("github__create_issue", Value::Null, ctx()).await,
             Err(ToolError::Refused(_))
         ));
     }

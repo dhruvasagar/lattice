@@ -24,7 +24,7 @@ use lattice_agent::EditorAccess;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::{BoxFuture, SourceTool, ToolError, ToolOutput, ToolSource};
+use super::{BoxFuture, CallContext, SourceTool, ToolError, ToolOutput, ToolSource};
 use crate::conversation::ToolKind;
 use crate::llm::ToolDescriptor;
 
@@ -47,11 +47,26 @@ pub type RootFn = Arc<dyn Fn() -> PathBuf + Send + Sync>;
 /// The `llm.exclude` glob that matches a path, if any.
 pub type ExcludeFn = Arc<dyn Fn(&Path) -> Option<String> + Send + Sync>;
 
-/// Lattice's read tools over an [`EditorAccess`].
+/// Closes every review a session opened: sends `Effect::CloseSessionDiffs`.
+pub type CloseFn = Arc<dyn Fn(u64) + Send + Sync>;
+
+/// What the edit tools need to put a change in front of the user (LL.17).
+#[derive(Clone)]
+pub struct Review {
+    pub diffs: lattice_diff::ProgrammaticDiffBus,
+    /// One diff at a time across the llm layer: a second edit (or rewrite)
+    /// waits here until the first is decided.
+    pub gate: Arc<tokio::sync::Mutex<()>>,
+    pub close: CloseFn,
+}
+
+/// Lattice's tools over an [`EditorAccess`]: reads always, edits when a
+/// review is available.
 pub struct LatticeTools {
     access: EditorAccess,
     root: RootFn,
     exclude: ExcludeFn,
+    review: Option<Review>,
 }
 
 impl LatticeTools {
@@ -60,10 +75,64 @@ impl LatticeTools {
             access,
             root,
             exclude,
+            review: None,
         }
     }
 
-    fn catalogue() -> Vec<SourceTool> {
+    /// With the edit tools, whose changes go through `review`.
+    pub fn with_review(mut self, review: Review) -> Self {
+        self.review = Some(review);
+        self
+    }
+
+    fn catalogue(&self) -> Vec<SourceTool> {
+        let mut tools = Self::read_catalogue();
+        if self.review.is_some() {
+            tools.extend(Self::edit_catalogue());
+        }
+        tools
+    }
+
+    fn edit_catalogue() -> Vec<SourceTool> {
+        let tool = |name: &str, description: &str, input_schema| SourceTool {
+            descriptor: ToolDescriptor {
+                name: name.into(),
+                description: description.into(),
+                input_schema,
+            },
+            kind: ToolKind::Edit,
+        };
+        vec![
+            tool(
+                "edit_file",
+                "Replace text in a file in the project. old_string must match the file as                  the editor has it (unsaved edits included) exactly once, unless                  replace_all is set. The user reviews the change as a diff and may accept,                  change or reject it; the result says which.",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "File path, relative to the project root"},
+                        "old_string": {"type": "string", "description": "The exact text to replace"},
+                        "new_string": {"type": "string", "description": "The text to put in its place"},
+                        "replace_all": {"type": "boolean", "description": "Replace every occurrence"}
+                    },
+                    "required": ["path", "old_string", "new_string"]
+                }),
+            ),
+            tool(
+                "write_file",
+                "Create a file in the project, or replace all of one. The user reviews the                  change as a diff and may accept, change or reject it; the result says which.",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "File path, relative to the project root"},
+                        "content": {"type": "string", "description": "The whole new content"}
+                    },
+                    "required": ["path", "content"]
+                }),
+            ),
+        ]
+    }
+
+    fn read_catalogue() -> Vec<SourceTool> {
         let tool = |name: &str, description: &str, kind, input_schema| SourceTool {
             descriptor: ToolDescriptor {
                 name: name.into(),
@@ -225,16 +294,24 @@ impl LatticeTools {
 
 impl ToolSource for LatticeTools {
     fn list(&self) -> BoxFuture<'_, Result<Vec<SourceTool>, ToolError>> {
-        Box::pin(async { Ok(Self::catalogue()) })
+        let tools = self.catalogue();
+        Box::pin(async move { Ok(tools) })
     }
 
-    fn call(&self, name: &str, input: Value) -> BoxFuture<'_, Result<ToolOutput, ToolError>> {
+    fn call(
+        &self,
+        name: &str,
+        input: Value,
+        ctx: CallContext,
+    ) -> BoxFuture<'_, Result<ToolOutput, ToolError>> {
         let name = name.to_string();
         Box::pin(async move {
             match name.as_str() {
                 "read_file" => self.read_file(input).await,
                 "list_directory" => self.list_directory(input).await,
                 "search" => self.search(input).await,
+                "edit_file" if self.review.is_some() => self.edit_file(input, ctx).await,
+                "write_file" if self.review.is_some() => self.write_file(input, ctx).await,
                 other => Err(ToolError::UnknownTool(other.to_string())),
             }
         })
@@ -244,6 +321,285 @@ impl ToolSource for LatticeTools {
 struct Resolved {
     path: PathBuf,
     root: PathBuf,
+}
+
+/// A file as an edit finds it.
+struct Target {
+    text: String,
+    /// Shown in a buffer: the change is applied there, unsaved.
+    open: bool,
+    exists: bool,
+}
+
+/// Marks a review open: tells the request, and on drop (decided or not)
+/// tells it the review closed. Dropped undecided, the request was stopped or
+/// the chat closed, so the session's diffs are closed too: a diff whose
+/// verdict would reach nobody must not stay on screen.
+struct InReview {
+    ctx: CallContext,
+    close: CloseFn,
+    decided: bool,
+}
+
+impl InReview {
+    fn open(ctx: &CallContext, close: &CloseFn) -> Self {
+        if let Some(f) = &ctx.on_review {
+            f(true);
+        }
+        Self {
+            ctx: ctx.clone(),
+            close: close.clone(),
+            decided: false,
+        }
+    }
+
+    fn decided(mut self) {
+        self.decided = true;
+    }
+}
+
+impl Drop for InReview {
+    fn drop(&mut self) {
+        if let Some(f) = &self.ctx.on_review {
+            f(false);
+        }
+        if !self.decided && self.ctx.origin != 0 {
+            (self.close)(self.ctx.origin);
+        }
+    }
+}
+
+impl LatticeTools {
+    async fn edit_file(&self, input: Value, ctx: CallContext) -> Result<ToolOutput, ToolError> {
+        #[derive(Deserialize)]
+        struct Args {
+            path: String,
+            old_string: String,
+            new_string: String,
+            #[serde(default)]
+            replace_all: bool,
+        }
+        let args: Args = parse(input)?;
+        if args.old_string.is_empty() {
+            return Err(ToolError::InvalidArguments(
+                "old_string is empty; use write_file to create or replace a whole file".into(),
+            ));
+        }
+        let at = self.resolve(&args.path)?;
+        let target = self.target(&at.path, &args.path).await?;
+        if !target.exists {
+            return Err(ToolError::Failed(format!(
+                "`{}` does not exist; use write_file to create it",
+                args.path
+            )));
+        }
+        let count = target.text.matches(&args.old_string).count();
+        if count == 0 {
+            return Err(ToolError::Failed(format!(
+                "old_string was not found in `{}`; read it again, it may have changed",
+                args.path
+            )));
+        }
+        if count > 1 && !args.replace_all {
+            return Err(ToolError::Failed(format!(
+                "old_string occurs {count} times in `{}`; include more of the surrounding \
+                 text to pick one, or set replace_all",
+                args.path
+            )));
+        }
+        let proposed = if args.replace_all {
+            target.text.replace(&args.old_string, &args.new_string)
+        } else {
+            target.text.replacen(&args.old_string, &args.new_string, 1)
+        };
+        self.propose(&at, &args.path, target, proposed, ctx).await
+    }
+
+    async fn write_file(&self, input: Value, ctx: CallContext) -> Result<ToolOutput, ToolError> {
+        #[derive(Deserialize)]
+        struct Args {
+            path: String,
+            content: String,
+        }
+        let args: Args = parse(input)?;
+        let at = self.resolve(&args.path)?;
+        if at.path.is_dir() {
+            return Err(ToolError::Failed(format!("`{}` is a directory", args.path)));
+        }
+        let target = self.target(&at.path, &args.path).await?;
+        self.propose(&at, &args.path, target, args.content, ctx)
+            .await
+    }
+
+    /// The file as the user sees it: the buffer's text when open, else the
+    /// disk's, else nothing yet.
+    async fn target(&self, path: &Path, shown: &str) -> Result<Target, ToolError> {
+        if let Some(text) = self.access.buffer_text(path) {
+            return Ok(Target {
+                text,
+                open: true,
+                exists: true,
+            });
+        }
+        if !path.exists() {
+            return Ok(Target {
+                text: String::new(),
+                open: false,
+                exists: false,
+            });
+        }
+        let text = self
+            .access
+            .read_text_file(path)
+            .await
+            .map_err(|e| ToolError::Failed(read_error(shown, &e.to_string())))?;
+        Ok(Target {
+            text,
+            open: false,
+            exists: true,
+        })
+    }
+
+    /// Put `proposed` in front of the user (unless the session trusts edits),
+    /// then apply what they accepted to the text the review was of. The file
+    /// changing in between refuses: applying would overwrite what changed.
+    async fn propose(
+        &self,
+        at: &Resolved,
+        shown: &str,
+        target: Target,
+        proposed: String,
+        ctx: CallContext,
+    ) -> Result<ToolOutput, ToolError> {
+        if target.exists && proposed == target.text {
+            return Ok(ToolOutput {
+                text: format!("no change: `{shown}` already holds that"),
+            });
+        }
+        let stale = || {
+            ToolError::Failed(format!(
+                "`{shown}` changed while the edit waited for review; nothing was applied. \
+                 Read it again before proposing a change"
+            ))
+        };
+        let review = self.review.as_ref().ok_or_else(|| {
+            ToolError::Refused("edits need a diff review, which is not available here".into())
+        })?;
+        let accepted = if ctx.trusted {
+            proposed.clone()
+        } else {
+            // Queued behind another review: what it was proposed against may
+            // have changed by the time this one opens.
+            let _gate = review.gate.lock().await;
+            if self.target(&at.path, shown).await?.text != target.text {
+                return Err(stale());
+            }
+            let in_review = InReview::open(&ctx, &review.close);
+            let verdict = lattice_agent::review_text(
+                &review.diffs,
+                lattice_agent::TextReviewRequest {
+                    path: at.path.clone(),
+                    baseline: target.text.clone(),
+                    proposed: proposed.clone(),
+                    tab_name: format!("llm edit {shown}"),
+                    origin_session: ctx.origin,
+                },
+            )
+            .await;
+            in_review.decided();
+            match verdict {
+                Ok(Some(text)) => text,
+                Ok(None) => {
+                    return Err(ToolError::Refused(format!(
+                        "the user rejected this edit to `{shown}`; nothing changed"
+                    )));
+                }
+                Err(_) => {
+                    return Err(ToolError::Refused(format!(
+                        "the review of `{shown}` was closed without a decision; nothing changed"
+                    )));
+                }
+            }
+        };
+        if target.open {
+            match self
+                .access
+                .apply_buffer_text(&at.path, &target.text, &accepted)
+                .await
+            {
+                Ok(true) => {}
+                Ok(false) => return Err(stale()),
+                Err(_) => {
+                    return Err(ToolError::Failed(format!(
+                        "`{shown}` was closed during the review; nothing was applied"
+                    )));
+                }
+            }
+        } else {
+            // Opened in a buffer since: writing the disk under it would leave
+            // the buffer showing text the file no longer holds.
+            if self.access.buffer_text(&at.path).is_some() {
+                return Err(stale());
+            }
+            let (path, expected, exists, text) = (
+                at.path.clone(),
+                target.text.clone(),
+                target.exists,
+                accepted.clone(),
+            );
+            let wrote = tokio::task::spawn_blocking(move || {
+                write_if_unchanged(&path, exists, &expected, &text)
+            })
+            .await
+            .map_err(|e| ToolError::Failed(e.to_string()))?;
+            match wrote {
+                Ok(true) => {}
+                Ok(false) => return Err(stale()),
+                Err(e) => return Err(ToolError::Failed(format!("`{shown}`: {e}"))),
+            }
+        }
+        let mut text = if target.open {
+            format!("applied to `{shown}` in the editor (not saved; the user saves it)")
+        } else if target.exists {
+            format!("wrote `{shown}`")
+        } else {
+            format!("created `{shown}`")
+        };
+        if accepted != proposed {
+            text.push_str(
+                "; the user changed your proposal before accepting it, so read the file to \
+                 see what it holds now",
+            );
+        }
+        Ok(ToolOutput { text })
+    }
+}
+
+/// Write `text` to `path` if the file is still as it was read (`expected`,
+/// or absent when it did not exist). `Ok(false)` when it changed.
+fn write_if_unchanged(
+    path: &Path,
+    existed: bool,
+    expected: &str,
+    text: &str,
+) -> std::io::Result<bool> {
+    let now = match std::fs::read(path) {
+        Ok(bytes) => Some(bytes),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => return Err(e),
+    };
+    let unchanged = match now {
+        Some(bytes) => existed && bytes == expected.as_bytes(),
+        None => !existed,
+    };
+    if !unchanged {
+        return Ok(false);
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, text)?;
+    Ok(true)
 }
 
 /// Sets its flag when dropped, so blocking work can see its caller is gone.

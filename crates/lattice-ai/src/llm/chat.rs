@@ -146,9 +146,36 @@ pub struct ChatSession {
     /// What this session's requests carry as context (LL.15): copied from
     /// its source when it was made, its own from then on.
     context: Mutex<Vec<Attached>>,
+    /// The tag this session's diffs carry, so closing the chat or stopping
+    /// its request closes them (LL.17). Above [`ORIGIN_BASE`]: an IDE
+    /// connection's ids count from 1, and the two must never meet.
+    origin: u64,
+    /// `<C-t>`: this session's edits apply without a review. Never saved and
+    /// never copied: it ends when the chat closes.
+    trusted: Arc<AtomicBool>,
 }
 
+/// Where llm sessions' diff tags start (see [`ChatSession::origin`]).
+pub const ORIGIN_BASE: u64 = 1 << 62;
+
+static NEXT_ORIGIN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 impl ChatSession {
+    /// The tag this session's diffs carry.
+    pub fn origin(&self) -> u64 {
+        self.origin
+    }
+
+    /// Whether this session's edits apply without a review.
+    pub fn trusted(&self) -> bool {
+        self.trusted.load(Ordering::Acquire)
+    }
+
+    /// Flip `<C-t>` trust; returns the new value.
+    pub fn toggle_trust(&self) -> bool {
+        !self.trusted.fetch_xor(true, Ordering::AcqRel)
+    }
+
     /// Resolves when the turn now in flight (or the next one, if none is)
     /// ends: `Ok` with the reply's text, `Err` with the error, or
     /// `"interrupted"` when it was stopped.
@@ -1015,6 +1042,8 @@ impl LlmChats {
             source: from,
             destination: Mutex::new(None),
             context: Mutex::new(from.map(|b| self.context_of(b)).unwrap_or_default()),
+            origin: ORIGIN_BASE + NEXT_ORIGIN.fetch_add(1, Ordering::Relaxed),
+            trusted: Arc::new(AtomicBool::new(false)),
         });
         {
             let mut reg = self.reg();
@@ -1083,6 +1112,10 @@ impl LlmChats {
             session
         };
         session.closed.store(true, Ordering::Release);
+        // Trust was given to a chat on screen; closed, it lapses.
+        session.trusted.store(false, Ordering::Release);
+        // Stopping the request drops any edit waiting on a review, and that
+        // closes the session's diffs.
         self.interrupt(&session);
     }
 
@@ -1343,7 +1376,8 @@ impl LlmChats {
                     offer,
                     req.clone(),
                     chats.tool_rounds(),
-                );
+                )
+                .for_session(session.origin, session.trusted.clone());
                 chats.requests.start_loop(
                     target,
                     req,

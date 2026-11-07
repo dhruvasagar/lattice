@@ -593,9 +593,22 @@ Anthropic adapter joins a prompt to a preceding tool-result message so roles alt
 (2: unsaved text is what a read returns through the real install, a read outside the project is
 refused). Bench: `llm_tool_history`.
 
-### LL.17 — Edit tools through review 📝
+### LL.17 — Edit tools through review ✅
 
 **Files:** `src/llm/tools/lattice.rs`, `crates/lattice-agent/src/editor_access.rs`.
+
+**Landed:** `edit_file` / `write_file` on `LatticeTools::with_review` (offered only when the
+host has a diff bus), each a `review_text` against the file as the user has it, applied to
+that text: `EditorAccess::apply_buffer_text` (one minimal span, refused if the buffer moved)
+or a disk write refused if the file changed. `CallContext` on `ToolSource::call` carries the
+session's diff tag, its trust and a review callback; `RoundStatus` on `Rounds::after_tools`
+lets a round set `AwaitingReview`. Tags start at `ORIGIN_BASE` (2⁶²), clear of IDE
+connection ids; an undecided review dropped (stop, chat close) sends
+`Effect::CloseAllSessionDiffs`. One review gate shared with the rewrite operator.
+`TextReviewRequest` gained `origin_session`. `<C-t>` (`action:llm-chat-trust`, Normal and
+Insert) toggles per-chat trust, shown in the headerline, dropped on close. Tests:
+`lattice-ui-tui/src/app/llm_edits.rs` (8, end to end), `differing_span` unit test, the
+broker's review/ask split. Bench: `llm_edit_span`.
 
 **Tests:** edit opens a diff and the verdict reaches the model; reject returns a usable refusal; `<C-t>`
 trust applies without a diff, resets per session; review surfaces as `AwaitingReview`; stale target; several

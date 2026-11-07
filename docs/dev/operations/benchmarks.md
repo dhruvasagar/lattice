@@ -71,6 +71,24 @@ target rather than just a slower number.
 
 ---
 
+## LL.17 — finding the span an accepted edit replaces (2026-11-08)
+
+An accepted edit to an open file is applied as the one span that differs, so the lines around
+it stay where they are on screen and one `u` undoes it. `differing_span` finds that span with
+one pass from each end; `llm_edit_span` changes one line mid-file (bench profile):
+
+| Bench | Time |
+|---|---|
+| `llm_edit_span/lines/1000` | 13.2 µs |
+| `llm_edit_span/lines/10000` | 131 µs |
+| `llm_edit_span/lines/100000` | 1.41 ms |
+
+Linear, once per accepted edit, on the tool's task: the editor thread sees only the resulting
+single-span `apply_edit_batch`. Nothing in LL.17 runs on the keystroke path; a review is paced
+by the user.
+
+---
+
 ## LL.16 — building a tool loop's next request (2026-11-07)
 
 Each round of a tool loop builds its next request by projecting the chat's conversation through

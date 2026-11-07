@@ -82,7 +82,8 @@ pub struct LlmRewrites {
     runtime: Handle,
     next: Mutex<u64>,
     pending: Mutex<VecDeque<(u64, Held)>>,
-    review_gate: tokio::sync::Mutex<()>,
+    /// One diff at a time, shared with the edit tools (LL.17).
+    review_gate: Arc<tokio::sync::Mutex<()>>,
     /// Where the task's echoes reach the editor, with a wake.
     effects: Mutex<Option<InboundBus<RewriteEffects>>>,
     /// The host's diff bus. `None` in a harness without one: rewrites refuse.
@@ -97,7 +98,7 @@ impl LlmRewrites {
             runtime,
             next: Mutex::new(0),
             pending: Mutex::new(VecDeque::new()),
-            review_gate: tokio::sync::Mutex::new(()),
+            review_gate: Arc::new(tokio::sync::Mutex::new(())),
             effects: Mutex::new(None),
             diffs,
         }
@@ -136,7 +137,13 @@ impl LlmRewrites {
         self.pending.lock().unwrap_or_else(|e| e.into_inner()).len()
     }
 
-    fn send(&self, effects: Vec<Effect>) {
+    /// The gate every llm diff queues at: rewrites and edit tools alike.
+    pub fn review_gate(&self) -> Arc<tokio::sync::Mutex<()>> {
+        self.review_gate.clone()
+    }
+
+    /// Hand `effects` to the editor from a task, with a wake.
+    pub fn send(&self, effects: Vec<Effect>) {
         if let Some(bus) = self
             .effects
             .lock()
@@ -418,6 +425,7 @@ impl Task {
                     baseline: baseline.clone(),
                     proposed,
                     tab_name: tab_name.clone(),
+                    origin_session: 0,
                 },
             )
             .await;

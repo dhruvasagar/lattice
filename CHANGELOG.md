@@ -3,6 +3,14 @@
 ## Unreleased
 
 ### Added
+- **LLM chats can edit your files, through review.** With `lattice.edit`
+  in `llm.tools`, a model may call `edit_file` and `write_file`; each
+  change opens as a diff against the file as you have it, and the model is
+  told whether you accepted, changed or rejected it. Open files change in
+  their buffer, unsaved, as one undoable edit; a file that changed during
+  the review is never overwritten. Diffs open one at a time. `<C-t>` in a
+  chat trusts its edits (no diff) until pressed again or the chat closes;
+  closing a chat closes its open diffs.
 - **LLM chats can read your project.** With `llm.tools = "lattice.read"`,
   a model may call `read_file`, `list_directory` and `search` while it
   answers; each call shows as a tool block. Reads see unsaved edits, stay

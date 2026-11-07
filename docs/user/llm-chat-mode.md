@@ -30,6 +30,7 @@ behind a reply.
 | `<C-c>` | Insert | Interrupt the reply |
 | `gq` | Normal | Close the chat |
 | `gf` | Normal | On text an ask sent, go back to where it came from |
+| `<C-t>` | Normal, Insert | Trust this chat's edits (apply without a diff); again to stop |
 
 `<CR>` sends, which is why a newline needs its own key.
 
@@ -165,9 +166,30 @@ They run without asking, so they are kept to what you could see yourself:
   out) is refused, and the model is told why.
 - **Never a file `llm.exclude` names**, as for everything else sent.
 
+`lattice.edit` lets it change files too:
+
+| Tool | Does |
+|---|---|
+| `edit_file` | Replaces an exact piece of text in a file |
+| `write_file` | Creates a file, or replaces all of one |
+
+**Nothing is changed until you say so.** Each change opens as a diff
+against the file as you have it: `:diff-accept` applies it,
+`:diff-reject` refuses it, and you can edit the right side first. The
+model is told which you chose. A file you have open is changed in its
+buffer, unsaved, as one change `u` undoes; any other file is written.
+If the file changed while the diff was open, nothing is applied and the
+model is told to read it again. Diffs open one at a time, with rewrites
+in the same line, and `:llm-requests` shows `awaiting review` meanwhile.
+
+**`<C-t>`** in the chat trusts its edits: they apply without a diff,
+and the headerline says `edits trusted` until you press `<C-t>` again or
+close the chat. It is never saved and never carried to another chat.
+Closing a chat closes any diff it still has open.
+
 A selector is `server.name`: one tool (`lattice.read_file`), a kind
-(`lattice.read`), or all of a server's (`lattice.*`). Edit and command
-tools come later; until then only reads exist.
+(`lattice.read`, `lattice.edit`), or all of a server's (`lattice.*`).
+Command tools come later.
 
 One request may run tools for up to `llm.tool_rounds` rounds (25 unless
 you set it). A model still calling tools then is stopped with a message;

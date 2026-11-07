@@ -67,6 +67,9 @@ pub struct TextReviewRequest {
     pub proposed: String,
     /// Display label for the diff.
     pub tab_name: String,
+    /// LL.17: the session the review belongs to, so closing that session
+    /// rejects it (`Effect::CloseSessionDiffs`). `0` is none.
+    pub origin_session: u64,
 }
 
 /// Review a change to buffer text: `Ok(Some(text))` is the right side as the
@@ -86,7 +89,7 @@ pub async fn review_text(
         new_file_path: req.path,
         new_contents: req.proposed,
         tab_name: req.tab_name,
-        origin_session: 0,
+        origin_session: req.origin_session,
         response: tx,
     };
     if bus.send(request).is_err() {
@@ -194,6 +197,7 @@ mod tests {
                 baseline: "old\n".into(),
                 proposed: "new\n".into(),
                 tab_name: "rewrite".into(),
+                origin_session: 0,
             },
         )
         .await
@@ -213,6 +217,7 @@ mod tests {
             baseline: "old\n".into(),
             proposed: "new\n".into(),
             tab_name: "rewrite".into(),
+            origin_session: 0,
         };
         assert_eq!(review_text(&bus, req).await.expect("reject"), None);
     }

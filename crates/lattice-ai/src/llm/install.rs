@@ -55,9 +55,21 @@ pub fn install(boot: &mut impl SubsystemBoot) {
 
     // `chats` reads context from the host's buffers when a request is sent.
     chats.set_store(boot.buffer_store().clone());
+    // LL.11b: the rewrite. Its answer reaches review, and its result the
+    // editor, from a task; the inbound bus carries that back with a wake, so a
+    // finished rewrite shows without a keystroke.
+    let diffs = boot
+        .service::<lattice_diff::ProgrammaticDiffBus>()
+        .map(|h| (*h).clone());
+    let rewrites: super::rewrite::LlmRewritesHandle = Arc::new(super::rewrite::LlmRewrites::new(
+        boot.runtime_handle().clone(),
+        diffs.clone(),
+    ));
+    rewrites.set_effects(boot.inbound::<super::rewrite::RewriteEffects, _>(|e| e.0));
     // LL.16: lattice's read tools, over an editor view of its own (open
     // buffers by path, so a read sees unsaved text). Offered only to requests
-    // whose `llm.tools` selects them.
+    // whose `llm.tools` selects them. LL.17: with a diff bus, the edit tools
+    // too, reviewed one diff at a time with the rewrites.
     {
         let cache =
             lattice_agent::state_cache::spawn_read_cache(boot.event_bus(), boot.runtime_handle());
@@ -70,24 +82,41 @@ pub fn install(boot: &mut impl SubsystemBoot) {
         // Weak: the broker lives inside `chats`, so a strong handle here
         // would be a cycle.
         let (root_of, exclude_of) = (Arc::downgrade(&chats), Arc::downgrade(&chats));
-        chats.tools().add_source(
-            super::tools::broker::LATTICE,
-            Arc::new(super::tools::lattice::LatticeTools::new(
-                access,
-                Arc::new(move || {
-                    root_of
-                        .upgrade()
-                        .map(|c| c.tools_root())
-                        .unwrap_or_default()
-                }),
-                // Gone means the editor is closing; refuse rather than read.
-                Arc::new(move |p| {
-                    exclude_of
-                        .upgrade()
-                        .map_or(Some("(closing)".to_string()), |c| c.excluded(p))
-                }),
-            )),
+        let mut tools = super::tools::lattice::LatticeTools::new(
+            access,
+            Arc::new(move || {
+                root_of
+                    .upgrade()
+                    .map(|c| c.tools_root())
+                    .unwrap_or_default()
+            }),
+            // Gone means the editor is closing; refuse rather than read.
+            Arc::new(move |p| {
+                exclude_of
+                    .upgrade()
+                    .map_or(Some("(closing)".to_string()), |c| c.excluded(p))
+            }),
         );
+        if let Some(diffs) = diffs {
+            let effects = Arc::downgrade(&rewrites);
+            tools = tools.with_review(super::tools::lattice::Review {
+                diffs,
+                gate: rewrites.review_gate(),
+                // Diff-only: no file-close fallback when nothing matched.
+                close: Arc::new(move |origin| {
+                    if let Some(r) = effects.upgrade() {
+                        r.send(vec![
+                            lattice_grammar::effect::Effect::CloseAllSessionDiffs {
+                                origin_session: origin,
+                            },
+                        ]);
+                    }
+                }),
+            });
+        }
+        chats
+            .tools()
+            .add_source(super::tools::broker::LATTICE, Arc::new(tools));
     }
     let chat_mode = LlmChatMode::new(chats.clone());
     let anchors = chat_mode.anchors();
@@ -190,17 +219,6 @@ pub fn install(boot: &mut impl SubsystemBoot) {
         store.clone(),
     );
     super::operators::register_ex(boot.commands_mut(), chats.clone(), asks.clone(), store);
-    // LL.11b: the rewrite. Its answer reaches review, and its result the
-    // editor, from a task; the inbound bus carries that back with a wake, so a
-    // finished rewrite shows without a keystroke.
-    let diffs = boot
-        .service::<lattice_diff::ProgrammaticDiffBus>()
-        .map(|h| (*h).clone());
-    let rewrites: super::rewrite::LlmRewritesHandle = Arc::new(super::rewrite::LlmRewrites::new(
-        boot.runtime_handle().clone(),
-        diffs,
-    ));
-    rewrites.set_effects(boot.inbound::<super::rewrite::RewriteEffects, _>(|e| e.0));
     boot.register_service::<super::rewrite::LlmRewritesHandle>(rewrites.clone());
     let store = boot.buffer_store().clone();
     let rewrite_op =

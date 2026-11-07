@@ -131,5 +131,25 @@ fn bench_tool_history(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench, bench_tool_history);
+/// LL.17: an accepted edit is applied as the span that differs, found by one
+/// pass over the file from each end. One line changed mid-file.
+fn bench_edit_span(c: &mut Criterion) {
+    let mut group = c.benchmark_group("llm_edit_span");
+    for lines in [1_000usize, 10_000, 100_000] {
+        let old: String = (0..lines)
+            .map(|i| format!("line {i} of the file\n"))
+            .collect();
+        let new = old.replacen(
+            &format!("line {} of", lines / 2),
+            &format!("LINE {} of", lines / 2),
+            1,
+        );
+        group.bench_with_input(BenchmarkId::new("lines", lines), &lines, |b, _| {
+            b.iter(|| lattice_agent::editor_access::differing_span(&old, &new))
+        });
+    }
+    group.finish();
+}
+
+criterion_group!(benches, bench, bench_tool_history, bench_edit_span);
 criterion_main!(benches);

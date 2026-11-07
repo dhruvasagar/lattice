@@ -147,6 +147,7 @@ mod keystroke_glyph_ratchet;
 mod lifecycle;
 mod llm_ask;
 mod llm_context;
+mod llm_edits;
 mod llm_inline;
 mod llm_rewrite;
 mod llm_tools;

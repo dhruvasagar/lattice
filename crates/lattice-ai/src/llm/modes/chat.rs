@@ -42,6 +42,7 @@ const ACTION_GOTO_SOURCE: &str = "action:llm-chat-goto-source";
 
 /// The yes half of the confirm shown when `@profile` would widen tools.
 const ACTION_SEND_WIDENED: &str = "action:llm-chat-send-widened";
+const ACTION_TRUST: &str = "action:llm-chat-trust";
 
 /// Registered with the host so a key reaches [`ChatHeaderline`] even before the
 /// buffer has content.
@@ -166,6 +167,10 @@ impl Mode for LlmChatMode {
                 handler: send_widened_handler(self.chats.clone()),
             },
             ActionHandlerContribution {
+                action_name: ACTION_TRUST,
+                handler: trust_handler(self.chats.clone(), self.headerline_version.clone()),
+            },
+            ActionHandlerContribution {
                 action_name: "action:llm-chat-menu",
                 handler: Arc::new({
                     let chats = self.chats.clone();
@@ -269,6 +274,18 @@ fn keymap_entries() -> &'static [KeymapEntry] {
                 doc: "llm-chat: open the settings menu",
                 cmd: "action:llm-chat-menu"
             },
+            // Both modes: the prompt is typed in Insert, and a review is
+            // decided from there as often as from Normal.
+            keymap_entry! {
+                mode: Normal, chord: "<C-t>",
+                doc: "llm-chat: trust this chat's edits (apply without review), or stop",
+                cmd: "action:llm-chat-trust"
+            },
+            keymap_entry! {
+                mode: Insert, chord: "<C-t>",
+                doc: "llm-chat: trust this chat's edits (apply without review), or stop",
+                cmd: "action:llm-chat-trust"
+            },
             keymap_entry! {
                 mode: Insert, chord: "<M-m>",
                 doc: "llm-chat: open the settings menu",
@@ -365,6 +382,24 @@ fn goto_source_handler(chats: LlmChatsHandle) -> ActionHandler {
     })
 }
 
+/// `<C-t>`: flip this chat's trust. Trusted, its edit tools apply without a
+/// diff; the headerline says so for as long as it lasts.
+fn trust_handler(chats: LlmChatsHandle, headerline: Arc<AtomicU64>) -> ActionHandler {
+    Arc::new(move |ctx: &ActionContext<'_>| -> Option<Effect> {
+        let session = chats.for_buffer(lattice_core::BufferId(ctx.buffer_id.0 as u32))?;
+        let on = session.toggle_trust();
+        headerline.fetch_add(1, Ordering::Release);
+        Some(Effect::Echo {
+            level: lattice_grammar::effect::EchoLevel::Info,
+            text: if on {
+                "llm: this chat's edits now apply without review (<C-t> to stop)".into()
+            } else {
+                "llm: this chat's edits go to review again".into()
+            },
+        })
+    })
+}
+
 fn interrupt_handler(chats: LlmChatsHandle) -> ActionHandler {
     Arc::new(move |ctx: &ActionContext<'_>| -> Option<Effect> {
         if let Some(session) = chats.for_buffer(lattice_core::BufferId(ctx.buffer_id.0 as u32)) {
@@ -394,6 +429,10 @@ pub fn register_actions(registry: &mut lattice_grammar::CommandRegistry) {
             "llm-chat: go to where the text an ask sent came from.",
         ),
         ("action:llm-chat-menu", "llm-chat: open the settings menu."),
+        (
+            ACTION_TRUST,
+            "llm-chat: trust this chat's edits, applying them without review; again to stop.",
+        ),
         (
             ACTION_SEND_WIDENED,
             "llm-chat: send the confirmed prompt with the profile that widens tools.",
@@ -436,7 +475,7 @@ pub(crate) struct ChatHeaderline {
 }
 
 impl ChatHeaderline {
-    pub(crate) fn text(store: &ConversationStore, model: Option<&str>) -> String {
+    pub(crate) fn text(store: &ConversationStore, model: Option<&str>, trusted: bool) -> String {
         use std::fmt::Write;
         let snap = store.snapshot();
         let mut text = String::new();
@@ -447,6 +486,9 @@ impl ChatHeaderline {
         }
         if !snap.queued.is_empty() {
             let _ = write!(text, " \u{231B} {} queued", snap.queued.len());
+        }
+        if trusted {
+            text.push_str(" \u{2502} edits trusted");
         }
         if let Some(usage) = &snap.usage {
             let _ = write!(text, " \u{2502} {} tokens", humanize(usage.used));
@@ -464,7 +506,11 @@ impl Headerline for ChatHeaderline {
     }
 
     fn render(&self) -> Option<HeaderlineRow> {
-        let text = Self::text(&self.session.store, self.session.model().as_deref());
+        let text = Self::text(
+            &self.session.store,
+            self.session.model().as_deref(),
+            self.session.trusted(),
+        );
         let cells: Arc<[Cell]> = text
             .chars()
             .map(|c| Cell::new(c as u32, 0, 0, 0))

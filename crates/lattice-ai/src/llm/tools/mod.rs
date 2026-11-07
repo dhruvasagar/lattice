@@ -68,6 +68,30 @@ impl std::fmt::Display for ToolError {
 
 impl std::error::Error for ToolError {}
 
+/// Who a call is for (LL.17). Lattice's edit tools read it; a source with no
+/// use for it ignores it.
+#[derive(Clone, Default)]
+pub struct CallContext {
+    /// The session the call belongs to. A review it opens carries this, so
+    /// closing the session (or stopping its request) closes the review.
+    pub origin: u64,
+    /// The session trusts edits (`<C-t>` in the chat): they apply without a
+    /// review.
+    pub trusted: bool,
+    /// Told `true` when a review opens and `false` when it closes, so the
+    /// request shows `AwaitingReview` while the user decides.
+    pub on_review: Option<std::sync::Arc<dyn Fn(bool) + Send + Sync>>,
+}
+
+impl std::fmt::Debug for CallContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CallContext")
+            .field("origin", &self.origin)
+            .field("trusted", &self.trusted)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Lists tools and runs them. Implemented by lattice's tools and, later, by an
 /// MCP client connection.
 pub trait ToolSource: Send + Sync {
@@ -76,5 +100,10 @@ pub trait ToolSource: Send + Sync {
 
     /// Run `name` (a source-local name) with `input`. Dropping the future
     /// abandons the call; a source with work to stop must stop it on drop.
-    fn call(&self, name: &str, input: Value) -> BoxFuture<'_, Result<ToolOutput, ToolError>>;
+    fn call(
+        &self,
+        name: &str,
+        input: Value,
+        ctx: CallContext,
+    ) -> BoxFuture<'_, Result<ToolOutput, ToolError>>;
 }

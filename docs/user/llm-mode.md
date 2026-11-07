@@ -168,10 +168,16 @@ refused: `*compilation*`, `*messages*`, help pages. A block selection
 
 ## Repeating
 
-`.` does not repeat an ask or a rewrite. It repeats your last *change*, and an ask is
+`.` does not repeat an ask, and does repeat a rewrite. It repeats your last *change*, and an ask is
 not one, in the same way `y` is not; it would also re-send a prompt you
-typed once. A rewrite's change lands later, through its diff, so there is
-no change for `.` to repeat. A macro that asks or rewrites runs it and
+typed once.
+
+A rewrite is a change, so `.` repeats it: over the same motion, from where
+the caret is now, with the prompt already holding the instruction you
+typed last time. `<CR>` sends it, or edit it first; `<Esc>` sends nothing.
+Each `.` opens its own diff.
+
+A macro that asks or rewrites runs it and
 moves on: the request runs in the background and the macro does not wait
 for the answer; its rewrites' diffs queue.
 

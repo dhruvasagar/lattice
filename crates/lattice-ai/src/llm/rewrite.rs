@@ -31,9 +31,11 @@
 //! mutates, so the host refuses it), a composed view such as a multibuffer
 //! (its lines are not its own text), an `llm.exclude` file, an empty span.
 //!
-//! **`.` does not repeat a rewrite.** The operator's own effect is the prompt;
-//! the change lands later, through review, so there is no edit for `.` to
-//! replay. A macro does replay it, and its diffs queue.
+//! **`.` repeats a rewrite** (LL.11c): the operator declares `repeatable`, so
+//! the host records it though its effect is a prompt, and `.` opens that
+//! prompt over the same motion at the caret, pre-filled with the instruction
+//! typed last time; `<CR>` sends. Nothing is sent unseen. A macro replays it
+//! too, and the diffs queue.
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
@@ -521,8 +523,10 @@ pub fn register(
         OperatorSpec {
             // It changes the buffer, so read-only buffers refuse it.
             mutates: true,
-            // The change lands through review, later; `.` has nothing to replay.
-            repeatable: false,
+            // The change lands later, through review, so the effect `.` sees is
+            // the prompt; declaring this is what makes `.` repeat it, the
+            // prompt pre-filled with the last instruction (LL.11c).
+            repeatable: true,
             blockwise_per_row: false,
             post_motion_char: false,
             args_schema: vec![],

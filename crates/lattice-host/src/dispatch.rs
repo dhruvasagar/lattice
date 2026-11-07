@@ -9985,6 +9985,9 @@ impl Editor {
         let Some(on_submit_action) = self.pending_prompt_submit_action.take() else {
             return;
         };
+        if self.change_prompt_open.take().as_deref() == Some(on_submit_action.as_str()) {
+            self.last_change_prompt = Some((on_submit_action.clone(), text.clone()));
+        }
         let Some(cmd_reg) = self
             .services
             .get::<lattice_grammar::CommandRegistryHandle>()
@@ -10071,6 +10074,7 @@ impl Editor {
         }
         self.pending_prompt_submit_action = None;
         self.pending_prompt_buffer_name = None;
+        self.change_prompt_open = None;
         self.restore_editing_buffer();
         // MG.17b: `<Esc>` in an argument's prompt cancels the ARGUMENT,
         // not the menu — the menu comes back with the value unchanged.
@@ -13262,13 +13266,84 @@ impl Editor {
     /// host-resident, so this stays a single host call with no
     /// `next_actions` indirection (effects + signals + LSP
     /// follow-ups still thread through `out`).
+    /// Decide whether `inv`'s `effect` becomes [`Self::last_change`], and
+    /// hand back the effect to apply.
+    ///
+    /// A mutation always does. So does an operator declaring
+    /// `OperatorSpec::repeatable` whose effect did something (not a refusal's
+    /// echo, not nothing), because some changes land later than their
+    /// operator: a rewrite opens a prompt and changes the text only through
+    /// review (LL.11c). When that effect opens a prompt, the prompt's
+    /// submit is remembered, and under `.` the prompt opens pre-filled
+    /// with what was typed last time, as `.` after `cw` replays the
+    /// inserted text. The user still sees and confirms it.
+    fn record_change(
+        &mut self,
+        inv: &lattice_grammar::CommandInvocation,
+        effect: lattice_grammar::effect::Effect,
+    ) -> lattice_grammar::effect::Effect {
+        use lattice_grammar::effect::Effect;
+        if effect_mutates(&effect) {
+            self.last_change = Some(inv.clone());
+            if !self.repeating_change {
+                self.last_change_prompt = None;
+            }
+            return effect;
+        }
+        let repeatable = self.registry.load().operator_repeatable(inv.command) == Some(true);
+        if !repeatable
+            || matches!(
+                effect,
+                Effect::None | Effect::Declined | Effect::Echo { .. }
+            )
+        {
+            return effect;
+        }
+        self.last_change = Some(inv.clone());
+        match effect {
+            Effect::OpenPrompt {
+                prompt,
+                initial,
+                on_submit_action,
+                buffer_name,
+            } => {
+                let replay = self
+                    .last_change_prompt
+                    .as_ref()
+                    .filter(|(action, _)| self.repeating_change && *action == on_submit_action)
+                    .map(|(_, text)| text.clone());
+                if !self.repeating_change {
+                    self.last_change_prompt = None;
+                }
+                self.change_prompt_open = Some(on_submit_action.clone());
+                Effect::OpenPrompt {
+                    prompt,
+                    initial: match replay {
+                        Some(text) if initial.is_empty() => text,
+                        _ => initial,
+                    },
+                    on_submit_action,
+                    buffer_name,
+                }
+            }
+            other => {
+                if !self.repeating_change {
+                    self.last_change_prompt = None;
+                }
+                other
+            }
+        }
+    }
+
     pub fn do_repeat_last_change(&mut self, out: &mut DispatchOutcome) {
         let Some(inv) = self.last_change.clone() else {
             self.set_message(EchoLevel::Error, "no previous change to repeat".to_string());
             return;
         };
         let insert_replay = self.last_insert.clone();
+        self.repeating_change = true;
         self.dispatch_invocation(inv, out);
+        self.repeating_change = false;
         if matches!(self.modal, ModalState::Insert)
             && let Some(text) = insert_replay
         {
@@ -46881,11 +46956,10 @@ impl Editor {
                     self.curswant_claimed = true;
                 }
                 // Visual exits on any operator-class effect (mutation OR
-                // yank-only); dot-repeat only records buffer mutations.
+                // yank-only); dot-repeat records buffer mutations, and what
+                // a `repeatable` operator did (LL.11c).
                 should_exit_visual = effect_mutates_or_yanks(&effect);
-                if effect_mutates(&effect) {
-                    self.last_change = Some(inv_for_repeat);
-                }
+                let effect = self.record_change(&inv_for_repeat, effect);
                 apply_effect_host(self, effect, out);
                 if is_jump_motion {
                     self.auto_open_folds_at_cursor();

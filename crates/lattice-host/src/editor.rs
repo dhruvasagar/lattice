@@ -630,11 +630,23 @@ pub struct Editor {
     /// the selection extends or contracts as the user moves.
     pub visual_anchor: Option<Position>,
     /// Last operator-class invocation that mutated the
-    /// buffer. `.` re-dispatches it from the current cursor.
+    /// buffer, or that a `repeatable` operator ran and did something
+    /// with (LL.11c: a rewrite, whose change lands later through review).
+    /// `.` re-dispatches it from the current cursor.
     /// v1 records operator + motion / operator + range /
     /// Visual-mode operator; insert-mode text replay remains
     /// a §5.2.4 gap.
     pub last_change: Option<CommandInvocation>,
+    /// The text submitted to the prompt [`Self::last_change`] opened, keyed
+    /// by the prompt's submit action: `.` opens that prompt again pre-filled
+    /// with it, as `.` after `cw` replays the typed text (`last_insert`).
+    pub last_change_prompt: Option<(String, String)>,
+    /// The submit action of a prompt the last change opened and that is
+    /// still open, so its submit is recorded into
+    /// [`Self::last_change_prompt`]. Cleared on submit and on cancel.
+    pub change_prompt_open: Option<String>,
+    /// Set while `.` re-dispatches [`Self::last_change`].
+    pub repeating_change: bool,
     /// Last Visual-mode selection extents, captured on exit
     /// so `gv` can re-enter Visual with the same anchor /
     /// head / kind.

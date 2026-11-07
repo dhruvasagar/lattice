@@ -390,7 +390,8 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "operator:yank",
         "Copy the bytes covered by the target range into the named register without modifying the buffer (vim's `y`).",
         OperatorSpec {
-            repeatable: true,
+            // `.` never repeats a yank: it changes nothing (vim).
+            repeatable: false,
             mutates: false,
             apply: Arc::new(operator_yank),
             args_schema: vec![],

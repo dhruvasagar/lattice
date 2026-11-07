@@ -29,6 +29,8 @@
   The text follows your edits while the model works; if you changed it, the
   diff opens again against the text as it is now, and if you deleted it or closed the buffer the answer
   opens in its chat instead of being lost. Rewrites queue one diff at a time.
+  `.` repeats a rewrite at the caret, with the prompt already holding the last
+  instruction.
 - **Secrets are never sent to a language model.** `llm.exclude` lists globs
   of files whose text an ask refuses to send, by name; the default covers
   `.env`, `*.pem`, `*.key` and SSH keys.

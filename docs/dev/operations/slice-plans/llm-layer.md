@@ -374,7 +374,7 @@ turn with a link, focus stays, repeat asks reuse the pane, `<leader>aA` opens th
 multibuffer and terminal sources; blockwise ask collapses to one span; macro does not wait; `.` repeats
 or the gap is recorded here (design §11).
 
-### LL.11 — Rewrite through review 🚧
+### LL.11 — Rewrite through review ✅
 
 Carved into two slices, one commit each. Dhruva chose (A) on 2026-11-07: extend the
 programmatic diff rather than give rewrite its own review buffer, because the bus diffed disk
@@ -384,7 +384,7 @@ and saved on Accept, and LL.17's edit tools need the same buffer-text review.
 |---|---|---|
 | LL.11a | `lattice-diff`: `DiffBaseline::{Disk, Text}`, `OnAccept::{Save, ReturnText}` on `ProgrammaticDiffRequest`; host reads the baseline from text when given, names (not paths) a returned-text right side, and sends its live text back on Accept before the outcome (`ProgrammaticAccept`). `lattice-agent::review_text`. Tests: host text-review accept (edits returned, nothing written) and reject; agent round-trips. | ✅ |
 | LL.11b | `<leader>ar` rewrite operator (`src/llm/rewrite.rs`), instruction prompt, hidden session (`ChatSession::wait_turn_end`), review through `review_text`, accept applied over a `NeverGrows` tracked range as one edit, a changed span reviewed again against its current text (the deliberate confirm; a `Confirm` effect sent from the task would be dropped, since off-keystroke effects reach only host-applied variants), deleted span / closed source show the session, refusals (read-only by `mutates`, blockwise, composed view, `llm.exclude`, empty), fence unwrap, diffs queued one at a time, a macro replays a rewrite. Tests: `lattice-ui-tui/src/app/llm_rewrite.rs` end to end against a mock server (11). | ✅ |
-| LL.11c | `.` repeats a rewrite (design §11 names it the operator `.` should reach). The host records `.` only from a mutating effect (`effect_mutates`), and a rewrite's effect is its prompt, so this needs a host change design §10 does not list: honour `OperatorSpec::repeatable`. Dhruva chose this (A) on 2026-11-07 over "no `.`" and "`.` resends without a prompt" (which would send unseen, against §5): `.` re-runs the operator, its prompt pre-filled with the last instruction. | 📝 |
+| LL.11c | `.` repeats a rewrite (design §11 names it the operator `.` should reach). The host records `.` only from a mutating effect (`effect_mutates`), and a rewrite's effect is its prompt, so this needs a host change design §10 does not list: honour `OperatorSpec::repeatable`. Dhruva chose this (A) on 2026-11-07 over "no `.`" and "`.` resends without a prompt" (which would send unseen, against §5): `.` re-runs the operator, its prompt pre-filled with the last instruction. Built as `Editor::record_change`: a mutation, or a `repeatable` operator's effect that did something, becomes `last_change`; a prompt that effect opened has its submit remembered (`last_change_prompt`, the `last_insert` analogue) and `.` opens it pre-filled. Yank's `repeatable: true`, unread until now, is corrected to `false`. Tests: `.` repeats with the instruction, a fresh rewrite opens empty, `<Esc>` in the repeated prompt sends nothing, `.` after `yy` repeats the change before. | ✅ |
 
 **Noted for follow-up:** a programmatic diff takes the focus when it opens. A rewrite's answer
 arriving while the user types sends the remaining keys to the diff. The tests hold the answer to

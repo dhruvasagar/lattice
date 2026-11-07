@@ -453,8 +453,12 @@ pub struct OperatorSpec {
     /// document path. **Required, with no default**, so an operator cannot
     /// slip past the refusal by leaving it unset; unknown means `true`.
     pub mutates: bool,
-    /// Declared dot-repeatability. Currently informational: nothing reads it
-    /// yet (`.` repeat is decided host-side).
+    /// Whether `.` repeats the operator when its effect does not itself
+    /// change the buffer. A mutating effect is always repeatable, whatever
+    /// this says; this is for an operator whose change lands later, such as
+    /// a rewrite that opens a prompt and changes text through review. Read by
+    /// the host's `.` recording (`Editor::record_change`). `false` for an
+    /// operator that changes nothing, such as yank: `.` never repeats `y`.
     pub repeatable: bool,
     /// The evaluator. Runs once per span (once per row for a blockwise
     /// selection when [`Self::blockwise_per_row`]).
@@ -1808,6 +1812,15 @@ impl CommandRegistry {
         match self.by_id.get(&id).map(|e| &e.registration) {
             Some(CommandRegistration::Motion(spec)) => spec.jump,
             _ => false,
+        }
+    }
+
+    /// Whether `.` repeats the operator `id` ([`OperatorSpec::repeatable`]),
+    /// or `None` when `id` is not a registered operator.
+    pub fn operator_repeatable(&self, id: CommandId) -> Option<bool> {
+        match self.by_id.get(&id).map(|e| &e.registration) {
+            Some(CommandRegistration::Operator(spec)) => Some(spec.repeatable),
+            _ => None,
         }
     }
 

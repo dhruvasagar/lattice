@@ -332,6 +332,82 @@ mod tests {
         );
     }
 
+    /// The text in the open prompt.
+    fn prompt_text(a: &App) -> String {
+        a.editor.document.snapshot().buffer.as_string()
+    }
+
+    /// LL.11c: `.` repeats a rewrite over the same motion at the caret, its
+    /// prompt pre-filled with the last instruction; `<CR>` sends it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn dot_repeats_a_rewrite_with_the_last_instruction() {
+        let (mut a, _release) = app_answering("DONE", false);
+        let src = a.editor.document_buffer_id;
+        press_chars(&mut a, " arrshout");
+        key(&mut a, KeyCode::Enter);
+        assert!(settle_woken(&mut a, |a| diffs_open(a) == 1).await);
+        submit_ex(&mut a, "diff-accept");
+        assert!(settle_woken(&mut a, |a| text_of(a, src).starts_with("DONE\n")).await);
+
+        press_chars(&mut a, "j.");
+        assert_eq!(
+            rewrites(&a).pending_count(),
+            1,
+            "`.` held a rewrite: {}",
+            message(&a)
+        );
+        assert_eq!(prompt_text(&a).trim_end(), "shout", "pre-filled");
+        key(&mut a, KeyCode::Enter);
+        assert!(
+            settle_woken(&mut a, |a| diffs_open(a) == 1).await,
+            "{}",
+            message(&a)
+        );
+        submit_ex(&mut a, "diff-accept");
+        assert!(
+            settle_woken(&mut a, |a| text_of(a, src) == "DONE\nDONE\nepsilon zeta\n").await,
+            "{:?}",
+            text_of(&a, src)
+        );
+    }
+
+    /// The pre-fill is `.`'s: a rewrite started afresh opens an empty prompt.
+    #[test]
+    fn a_fresh_rewrite_opens_an_empty_prompt() {
+        let (mut a, _release) = app_answering("unused", true);
+        press_chars(&mut a, " arrshout");
+        key(&mut a, KeyCode::Enter);
+        press_chars(&mut a, "j arr");
+        assert_eq!(rewrites(&a).pending_count(), 1);
+        assert_eq!(prompt_text(&a).trim_end(), "", "empty");
+    }
+
+    /// `<Esc>` in the prompt `.` opened sends nothing, and the buffer is
+    /// unchanged.
+    #[test]
+    fn escape_from_a_repeated_prompt_sends_nothing() {
+        let (mut a, _release) = app_answering("unused", true);
+        press_chars(&mut a, " arrshout");
+        key(&mut a, KeyCode::Enter);
+        press_chars(&mut a, "j.");
+        assert_eq!(prompt_text(&a).trim_end(), "shout");
+        key(&mut a, KeyCode::Esc);
+        key(&mut a, KeyCode::Esc);
+        assert_eq!(rewrites(&a).pending_count(), 1, "held, never sent");
+        assert_eq!(source_text(&a), TEXT);
+    }
+
+    /// `repeatable` now means something, so yank stopped claiming it: `.`
+    /// after `yy` still repeats the change before it.
+    #[test]
+    fn dot_after_a_yank_repeats_the_change_before_it() {
+        let mut a = app_with(TEXT, 10);
+        press_chars(&mut a, "x");
+        press_chars(&mut a, "yy");
+        press_chars(&mut a, ".");
+        assert_eq!(source_text(&a), "pha beta\ngamma delta\nepsilon zeta\n");
+    }
+
     /// The span deleted before the answer is reviewed: nothing is applied and
     /// the answer is shown in its session buffer instead.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

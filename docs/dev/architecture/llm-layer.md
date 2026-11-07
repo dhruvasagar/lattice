@@ -436,7 +436,8 @@ carves off the HTTP dependency, as `acp` and `mcp` do theirs.
 The acid test holds: no new `Editor::` methods and no new host `Action` variants. The
 expected exceptions are all generic: the document actor's write operation (§9), a
 per-buffer `editable_tail`, owner-write adoption beyond editable tails, a language binding
-for a non-language major, `OperatorSpec::mutates`, operator binding on `SubsystemBoot`, the
+for a non-language major, `OperatorSpec::mutates`, `OperatorSpec::repeatable` made real (LL.11c:
+a non-mutating operator `.` repeats, its prompt replayed pre-filled), operator binding on `SubsystemBoot`, the
 `OptionOrigin` variants, and `Mode::write_action` (a form buffer such as `:llm-system` is
 submitted, not saved, so a mode must be able to claim a bare `:w` the way it claims `gr`
 through `refresh_action`, rather than the host knowing system prompts).
@@ -449,7 +450,9 @@ Each of these is settled by the slice that needs it, and none changes the UX abo
   ask.** `.` repeats the last change and an ask changes nothing, as `y` changes nothing
   (strict vim semantics, paramount #3); a repeat would also re-send a prompt typed once. The
   host already decides this from the effect (`effect_mutates`), so no flag is needed. Rewrite
-  (LL.11) is a change and is the operator `.` should reach. A macro replays the ask's
+  (LL.11) is a change and is the operator `.` should reach. **Settled by LL.11c:** its effect is
+  a prompt, so the host also records an operator declaring `OperatorSpec::repeatable`, and `.`
+  reopens the prompt pre-filled with the instruction typed last time (Dhruva, 2026-11-07). A macro replays the ask's
   invocations and does not wait for the request.
 - **Headings and folds.** A reply's own `#` headings produce section folds that overlap the
   block folds. Turn labels stay plain lines for this reason. Confirm `zM` and `za` compose.

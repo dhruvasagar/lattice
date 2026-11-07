@@ -61,8 +61,8 @@ chat as the destination:
 The text and the instruction become the next turn of that chat, with its
 history, and it is shown beside you as a new answer would be. The `d` row
 of `<leader>aA`'s menu sets the same thing. A name that is not an open chat
-is refused. The destinations `echo`, `register` and `review` are not
-built yet: an ask that names one opens a new chat and says so.
+is refused. The `review` destination is not built yet: an ask that names
+it opens a new chat and says so.
 
 ### Answers under the text
 
@@ -90,6 +90,33 @@ follows the answer only if your caret is at its end.
 A read-only buffer, or a view of several files, cannot take an answer: it
 opens in a new chat instead, and the echo area says why. The full answer is
 also kept in a hidden chat, so it can be followed up like any other.
+
+### Answers in the echo area or a register
+
+`destination=echo` shows the answer in the echo area when it is complete.
+The echo area is one line, so it shows the first line and says how many
+more there are.
+
+`destination=register` puts the whole answer in a register, ready for `p`.
+Name the register before the operator, as for a yank: `"a<leader>aaj`
+puts the answer in `a`. Without one it goes in the unnamed register; the
+command-line form always uses the unnamed register. An answer of several
+lines puts as lines, so `p` opens it under the caret.
+
+Neither changes the buffer, and a failure only shows in the echo area.
+
+### Seeing the full answer
+
+`:llm-last` opens the latest ask's chat beside you: the whole answer of an
+echo, register, `below` or rewrite request, with its history, ready to
+follow up. The last 32 unshown chats are kept.
+
+### Requests that may use tools
+
+A model calling tools needs somewhere to show the call and ask your
+approval, which only a chat has. A request whose settings allow tools
+(`llm.tools`), aimed at `below`, `echo` or a register, opens in a new chat
+instead, and the echo area says so.
 
 ### From the command line
 

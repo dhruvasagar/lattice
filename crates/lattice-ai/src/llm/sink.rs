@@ -28,13 +28,20 @@
 //! written stays (an undo has already taken its share), and the echo says why.
 //! A failure partway leaves the partial text and a visible `[interrupted]`
 //! marker; a failure before any text leaves nothing.
+//!
+//! **The quiet destinations (LL.14a).** `echo` and `register` wait for the
+//! whole reply, then hand it over in one effect: the echo area shows its first
+//! line (the echo area is one line, and a reply collapsed into one is
+//! unreadable), a register takes all of it. Either way the reply stays in the
+//! ask's hidden session, which `:llm-last` opens.
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use lattice_core::BufferId;
 use lattice_core::tracked::{AppendOutcome, Stickiness, TrackedRangeChange, TrackedRangeId};
-use lattice_grammar::effect::{EchoLevel, Effect};
+use lattice_grammar::Register;
+use lattice_grammar::effect::{EchoLevel, Effect, YankKind};
 use lattice_mode::BufferStoreHandle;
 use lattice_mode::inbound::InboundBus;
 use lattice_protocol::position::Position;
@@ -189,6 +196,124 @@ impl LlmInline {
         };
         self.runtime.spawn(writer.run(ended));
         echo(EchoLevel::Info, "llm: answering below".to_string())
+    }
+}
+
+/// Where a quiet answer goes once it is complete (LL.14a).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Quiet {
+    /// The echo area: the reply's first line, and how much more there is.
+    Echo,
+    /// A register: the whole reply, ready to put.
+    Register(Register),
+}
+
+impl LlmInline {
+    /// Send `block` + `instruction` from `buffer` in a hidden session and hand
+    /// the complete reply to `quiet`. Returns the echo saying it was sent.
+    #[allow(clippy::too_many_arguments)]
+    pub fn start_quiet(
+        self: &Arc<Self>,
+        chats: &Arc<LlmChats>,
+        buffer: BufferId,
+        hint: &str,
+        block: Block,
+        instruction: String,
+        overrides: RequestOverrides,
+        quiet: Quiet,
+    ) -> Effect {
+        let session = chats.create_for_source(buffer, hint);
+        let ended = session.wait_turn_end();
+        chats.submit_source(&session, block, instruction, overrides);
+        let inline = self.clone();
+        self.runtime.spawn(async move {
+            let result = ended
+                .await
+                .unwrap_or_else(|_| Err("the request was dropped".to_string()));
+            inline.send(quiet_effects(quiet, result));
+        });
+        let text = match quiet {
+            Quiet::Echo => "llm: asking; the answer will show here".to_string(),
+            Quiet::Register(r) => {
+                format!("llm: asking; the answer will go in {}", register_name(r))
+            }
+        };
+        echo(EchoLevel::Info, text)
+    }
+}
+
+/// How a register is named to the user: `"a`, or the unnamed register.
+fn register_name(r: Register) -> String {
+    match r {
+        Register::Named(c) | Register::ReadOnly(c) => format!("register \"{c}"),
+        Register::Numbered(n) => format!("register \"{n}"),
+        Register::System => "register \"+".to_string(),
+        Register::Unnamed => "the unnamed register".to_string(),
+        Register::BlackHole => "register \"_".to_string(),
+        Register::Expression => "register \"=".to_string(),
+    }
+}
+
+/// What a finished quiet answer does: the echo or the register write, or the
+/// echo explaining why there is nothing.
+fn quiet_effects(quiet: Quiet, result: Result<String, String>) -> Vec<Effect> {
+    let reply = match result {
+        Ok(reply) => reply,
+        Err(e) if e == "interrupted" => {
+            return vec![echo(
+                EchoLevel::Info,
+                "llm: the answer was stopped".to_string(),
+            )];
+        }
+        Err(e) => return vec![echo(EchoLevel::Error, format!("llm: {e}"))],
+    };
+    let reply = reply.trim_matches(['\n', '\r']);
+    if reply.trim().is_empty() {
+        return vec![echo(
+            EchoLevel::Info,
+            "llm: the model answered with nothing".to_string(),
+        )];
+    }
+    let lines = reply.lines().count();
+    match quiet {
+        Quiet::Echo => {
+            let first = reply.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
+            let text = if lines > 1 {
+                format!(
+                    "{} (+{} lines; :llm-last shows all)",
+                    first.trim(),
+                    lines - 1
+                )
+            } else {
+                first.trim().to_string()
+            };
+            vec![echo(EchoLevel::Info, text)]
+        }
+        Quiet::Register(register) => {
+            // Several lines put as lines (`p` opens them below the caret, as
+            // a code block wants); one line puts into the text.
+            let (content, kind) = if lines > 1 {
+                (format!("{reply}\n"), YankKind::Linewise)
+            } else {
+                (reply.to_string(), YankKind::Charwise)
+            };
+            let noun = if lines == 1 { "line" } else { "lines" };
+            vec![
+                Effect::Yank {
+                    register,
+                    content,
+                    kind,
+                    explicit_yank: false,
+                },
+                echo(
+                    EchoLevel::Info,
+                    format!(
+                        "llm: the answer ({lines} {noun}) is in {}",
+                        register_name(register)
+                    ),
+                ),
+            ]
+        }
     }
 }
 
@@ -371,6 +496,7 @@ mod tests {
             buffer: BufferId(1),
             range: Range::new(Position::new(start.0, start.1), Position::new(end.0, end.1)),
             text: String::new(),
+            register: Register::Unnamed,
         };
         insertion_point(buffer, &src)
     }
@@ -389,6 +515,47 @@ mod tests {
             "linewise: the line before"
         );
         assert_eq!(point(&b, (2, 0), (2, 5)), Some(22));
+    }
+
+    #[test]
+    fn a_quiet_answer_echoes_its_first_line_and_puts_all_of_it() {
+        let reply = Ok("\nFirst line.\nsecond\nthird\n".to_string());
+        let echoed = quiet_effects(Quiet::Echo, reply.clone());
+        assert!(matches!(&echoed[..], [Effect::Echo { text, .. }]
+            if text == "First line. (+2 lines; :llm-last shows all)"));
+        let put = quiet_effects(Quiet::Register(Register::Named('a')), reply);
+        assert!(
+            matches!(&put[0], Effect::Yank { register: Register::Named('a'), content, kind: YankKind::Linewise, explicit_yank: false }
+            if content == "First line.\nsecond\nthird\n")
+        );
+        let one = quiet_effects(Quiet::Register(Register::Unnamed), Ok("42".to_string()));
+        assert!(
+            matches!(&one[0], Effect::Yank { content, kind: YankKind::Charwise, .. } if content == "42")
+        );
+        assert!(
+            matches!(&one[1], Effect::Echo { text, .. } if text.contains("the unnamed register"))
+        );
+    }
+
+    #[test]
+    fn a_quiet_answer_that_fails_or_is_empty_only_echoes() {
+        for (result, want) in [
+            (Err("overloaded".to_string()), "llm: overloaded"),
+            (
+                Err("interrupted".to_string()),
+                "llm: the answer was stopped",
+            ),
+            (
+                Ok(" \n".to_string()),
+                "llm: the model answered with nothing",
+            ),
+        ] {
+            let e = quiet_effects(Quiet::Register(Register::Unnamed), result);
+            assert!(
+                matches!(&e[..], [Effect::Echo { text, .. }] if text == want),
+                "{want}"
+            );
+        }
     }
 
     #[test]

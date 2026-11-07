@@ -467,7 +467,22 @@ deleted anchor, `u` while streaming, read-only fallback, second request at one p
 gets an "interrupted" marker; nothing left behind on an immediate failure; the view follows only when
 the caret is at the end; only streamed lines change on screen.
 
-### LL.14 — Other destinations and running requests 📝
+### LL.14 — Other destinations and running requests 🚧
+
+Carved into three, each its own commit:
+
+**LL.14a — Echo, register, `:llm-last` ✅.** `src/llm/sink.rs` `Quiet::{Echo, Register}` and
+`LlmInline::start_quiet`: the ask's hidden session runs the request and the complete reply goes out
+as one effect through the inline bus, `Effect::Echo` with the first line and a count, or
+`Effect::Yank` into the register typed before the operator (`AskSource.register`; unnamed for
+`:llm-ask`), linewise when several lines. `LlmChats::last_ask` names the latest ask's session while
+it is kept; `:llm-last` displays it. A request whose resolved `tools` is non-empty, aimed at
+`below`/`echo`/`register`, opens a chat with a note. No host change; no renderer change (both
+effects exist). No bench: the work is one effect per answer, nothing per key or per frame. Tests:
+`lattice-ui-tui/src/app/llm_inline.rs` (+5), `sink.rs` units (+2).
+
+**LL.14b — `:llm-requests`, `:llm-stop` 📝.** **LL.14c — Modeline, hidden-done notice, `:q` warns 📝.**
+
 
 **Files:** `src/llm/sink.rs` (echo, register), `src/llm/modes/requests.rs`, `src/llm/commands.rs`
 (`:llm-requests`, `:llm-stop`, `:llm-last`), `src/llm/modeline.rs`.

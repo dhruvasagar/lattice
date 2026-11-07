@@ -362,6 +362,35 @@ pub fn register(registry: &mut CommandRegistry, chats: LlmChatsHandle) {
             surface_form: SurfaceForm::Keyword,
         },
     );
+    let last = chats.clone();
+    registry.register_ex_command(
+        "llm-last",
+        "Open the latest ask's chat beside you: the full answer of an echo, register, \
+         `below` or rewrite request, with its history, ready to follow up.",
+        ExCommandSpec {
+            latency_class: LatencyClass::Reflex,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Arc::new(parse_rest_as_text),
+            apply: Arc::new(move |_ctx| {
+                Ok(match last.last_ask() {
+                    Some(name) => Effect::DisplaySyntheticBuffer {
+                        name,
+                        mode_id: LlmChatMode::mode_id().as_str().to_string(),
+                        content: None,
+                        split: lattice_core::ui::pane::SplitOrientation::Vertical,
+                    },
+                    None => echo(
+                        EchoLevel::Info,
+                        "llm: no answer to show (none asked yet, or it is no longer kept)"
+                            .to_string(),
+                    ),
+                })
+            }),
+            args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
     let system = chats;
     registry.register_ex_command(
         "llm-system",

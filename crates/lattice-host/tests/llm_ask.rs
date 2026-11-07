@@ -453,7 +453,7 @@ async fn a_destination_not_built_yet_opens_a_new_buffer_and_says_so() {
     let (addr, _bodies) = serve();
     let mut editor = Editor::boot(CoreDocument::from_text(SOURCE));
     chats(&editor).set_config(config_for(addr));
-    ex(&mut editor, "1llm-ask destination=echo hi");
+    ex(&mut editor, "1llm-ask destination=review hi");
     assert_eq!(editor.pane_tree.leaves().len(), 2);
     assert!(
         message(&editor).contains("not built yet"),

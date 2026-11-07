@@ -3,6 +3,11 @@
 ## Unreleased
 
 ### Added
+- **LLM answers can go to the echo area or a register.**
+  `destination=echo` shows the answer's first line when it is complete;
+  `destination=register` puts all of it in the register named before
+  the operator (`"a<leader>aaj`). `:llm-last` opens the latest answer's
+  chat, for the full text and a follow-up.
 - **LLM answers can stream into the buffer, under the text you asked
   about.** `destination=below` on an ask (`:llm-ask destination=below …`,
   or the menu's destination row) writes the answer on new lines beneath

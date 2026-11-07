@@ -409,4 +409,136 @@ mod tests {
         release.send(()).unwrap();
         assert!(settle_woken(&mut b, |b| inline(b).live_count() == 0).await);
     }
+
+    /// `<leader>aaj` on line 1 with `destination=<kind>`, after `prefix` (a
+    /// register, `"a`).
+    fn ask_to(a: &mut App, prefix: &str, kind: &str) {
+        press_chars(a, &format!("{prefix} aaj"));
+        press_chars(a, &format!("destination={kind} explain"));
+        key(a, KeyCode::Enter);
+    }
+
+    /// LL.14a: the echo area takes the reply's first line and says how much
+    /// more `:llm-last` holds; the buffer and the layout do not change.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_echo_answer_shows_its_first_line() {
+        let (mut a, release) =
+            app_streaming(&["It is a list.\n", "Of greek\nletters."], End::Done, 200);
+        ask_to(&mut a, "", "echo");
+        assert!(message(&a).contains("will show here"), "{}", message(&a));
+        release.send(()).unwrap();
+        release.send(()).unwrap();
+        assert!(
+            settle_woken(&mut a, |a| message(a).starts_with("It is a list.")).await,
+            "{}",
+            message(&a)
+        );
+        assert_eq!(message(&a), "It is a list. (+2 lines; :llm-last shows all)");
+        assert_eq!(text(&a), TEXT);
+        assert_eq!(a.editor.pane_tree.leaves().len(), 1);
+
+        // `:llm-last` opens the hidden session with the whole reply.
+        press_chars(&mut a, ":llm-last");
+        key(&mut a, KeyCode::Enter);
+        assert_eq!(a.editor.pane_tree.leaves().len(), 2);
+        let chats: LlmChatsHandle = (*a.editor.services.get::<LlmChatsHandle>().unwrap()).clone();
+        let name = chats.last_ask().unwrap();
+        assert!(
+            settle_woken(&mut a, |a| {
+                a.editor
+                    .buffers
+                    .by_name(&name)
+                    .and_then(|b| a.editor.buffers.document_handle(b))
+                    .is_some_and(|h| h.text().contains("letters."))
+            })
+            .await,
+            "the chat shows the full reply"
+        );
+    }
+
+    /// `"a` before the operator names the register; a multi-line reply puts
+    /// as lines.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_register_answer_lands_in_the_typed_register() {
+        let (mut a, release) = app_streaming(&["fn x() {}\n", "fn y() {}"], End::Done, 200);
+        ask_to(&mut a, "\"a", "register");
+        assert!(message(&a).contains("register \"a"), "{}", message(&a));
+        release.send(()).unwrap();
+        release.send(()).unwrap();
+        assert!(
+            settle_woken(&mut a, |a| message(a).contains("is in register")).await,
+            "{}",
+            message(&a)
+        );
+        let reg = a
+            .editor
+            .registers
+            .get(&lattice_grammar::Register::Named('a'))
+            .unwrap();
+        assert_eq!(reg.content, "fn x() {}\nfn y() {}\n");
+        assert_eq!(text(&a), TEXT, "nothing written into the buffer");
+        press_chars(&mut a, "gg\"ap");
+        assert_eq!(
+            text(&a),
+            "alpha beta\nfn x() {}\nfn y() {}\ngamma delta\nepsilon zeta\n"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_failed_register_answer_leaves_the_register_alone() {
+        let (mut a, _release) = app_streaming(&[], End::Done, 500);
+        ask_to(&mut a, "\"b", "register");
+        assert!(
+            settle_woken(&mut a, |a| message(a).starts_with("llm:")
+                && !message(a).contains("asking"))
+            .await,
+            "{}",
+            message(&a)
+        );
+        assert!(
+            !a.editor
+                .registers
+                .contains_key(&lattice_grammar::Register::Named('b'))
+        );
+    }
+
+    /// A request that may use tools needs a chat to show and approve them in:
+    /// aimed at the buffer, it opens one instead and says so.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_tools_request_aimed_in_place_opens_a_chat_instead() {
+        let (mut a, release) = app_streaming(&["answer"], End::Done, 200);
+        press_chars(&mut a, ":setlocal llm.tools=lattice.read");
+        key(&mut a, KeyCode::Enter);
+        let chats: LlmChatsHandle = (*a.editor.services.get::<LlmChatsHandle>().unwrap()).clone();
+        let buffer = a.editor.document_buffer_id;
+        assert!(
+            settle_woken(&mut a, |_| chats
+                .resolve_for(buffer)
+                .is_ok_and(|r| !r.values.tools.is_empty()))
+            .await,
+            "the tools setting never reached the llm layer"
+        );
+        for kind in ["below", "echo", "register"] {
+            ask_to(&mut a, "", kind);
+            assert!(
+                message(&a).contains("need a chat"),
+                "{kind}: {}",
+                message(&a)
+            );
+            assert_eq!(inline(&a).live_count(), 0);
+            press_chars(&mut a, ":only");
+            key(&mut a, KeyCode::Enter);
+        }
+        let _ = release.send(());
+        assert_eq!(text(&a), TEXT);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn llm_last_with_nothing_asked_says_so() {
+        let (mut a, _release) = app_streaming(&[], End::Done, 200);
+        press_chars(&mut a, ":llm-last");
+        key(&mut a, KeyCode::Enter);
+        assert!(message(&a).contains("no answer to show"), "{}", message(&a));
+        assert_eq!(a.editor.pane_tree.leaves().len(), 1);
+    }
 }

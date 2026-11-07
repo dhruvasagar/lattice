@@ -269,6 +269,10 @@ pub struct LlmChats {
     /// thread, where no file may be read. Refreshed off-thread at chat start and
     /// by every request. `Arc` so a refresh task can write it.
     project_cache: Arc<RwLock<Option<ProjectLayer>>>,
+    /// The latest ask's session, by name, for `:llm-last` (LL.14a). Every ask
+    /// has one, shown or hidden: echo, register, `below` and rewrite answers
+    /// keep theirs so the full reply can be seen and followed up.
+    last_ask: Mutex<Option<String>>,
     next_chat: AtomicU32,
     next_system: AtomicU32,
     next_bind: AtomicU64,
@@ -296,6 +300,7 @@ impl LlmChats {
             menu_ask: RwLock::new(HashMap::new()),
             project_root: RwLock::new(None),
             project_cache: Arc::new(RwLock::new(None)),
+            last_ask: Mutex::new(None),
             next_chat: AtomicU32::new(1),
             next_system: AtomicU32::new(1),
             next_bind: AtomicU64::new(1),
@@ -668,7 +673,23 @@ impl LlmChats {
     /// `from`'s session settings copied into it as [`create_with`](Self::create_with)
     /// copies them. The counter keeps every request its own buffer.
     pub fn create_for_source(&self, from: BufferId, hint: &str) -> Arc<ChatSession> {
-        self.create_named(None, Some(from), Some(hint))
+        let session = self.create_named(None, Some(from), Some(hint));
+        *self.last_ask.lock().unwrap_or_else(|e| e.into_inner()) = Some(session.name.clone());
+        session
+    }
+
+    /// The latest ask's session name, while the session is still kept: an
+    /// unshown one is dropped once [`UNBOUND_CAP`] newer ones are waiting.
+    pub fn last_ask(&self) -> Option<String> {
+        let name = self
+            .last_ask
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()?;
+        let reg = self.reg();
+        let kept = reg.unbound.iter().any(|s| s.name == name)
+            || reg.by_buffer.values().any(|(_, s)| s.name == name);
+        kept.then_some(name)
     }
 
     fn create_named(

@@ -27,12 +27,19 @@
 //! - **An oversized source asks first** ([`ASK_CONFIRM_BYTES`]): a yes sends it,
 //!   a no sends nothing.
 //! - **`destination=<buffer>`** continues that chat instead of opening a new
-//!   one. The kinds not built yet (`echo`, ...) open a new buffer and say so
+//!   one. A kind not built yet (`review`) opens a new buffer and says so
 //!   rather than refuse.
 //!
 //! LL.13b builds **`destination=below`**: the answer streams into the source
 //! buffer under the span ([`super::sink`]). A read-only or composed source
 //! cannot take it, so the answer opens in a new buffer and the echo says so.
+//!
+//! LL.14a builds **`destination=echo`** and **`destination=register`**: the
+//! complete reply goes to the echo area or a register. The register is the
+//! one typed before the operator (`"a<leader>aaj`), the unnamed register
+//! otherwise. **A request that may use tools needs a chat** (design §5): aimed
+//! at `below`, `echo` or a register, it opens in a new buffer and says so,
+//! because a tool call has nowhere to be shown or approved outside one.
 //!
 //! **`.` does not repeat an ask** (design §11, decided here). `.` repeats the
 //! last change, and an ask changes nothing, as `y` changes nothing; making it
@@ -58,7 +65,8 @@ use super::chat::{LlmChats, LlmChatsHandle, SendPlan};
 use super::commands::parse_request_args;
 use super::menu::MENU_SOURCE;
 use super::modes::chat::LlmChatMode;
-use super::settings::{RequestOverrides, SettingKey, is_buffer_name};
+use super::settings::{RawSet, RequestOverrides, SettingKey, is_buffer_name, parse_tools};
+use super::sink::Quiet;
 use crate::conversation::{Block, SourceLink};
 
 pub const ASK_OPERATOR: &str = "operator:llm-ask";
@@ -86,6 +94,8 @@ pub struct AskSource {
     pub buffer: BufferId,
     pub range: Range,
     pub text: String,
+    /// The register typed before the operator, for `destination=register`.
+    pub register: lattice_grammar::Register,
 }
 
 /// Asks the operator captured, until their prompt is submitted.
@@ -170,6 +180,7 @@ pub(crate) fn captured(ctx: &OperatorContext) -> Option<AskSource> {
         buffer: ctx.buffer_id,
         range: ctx.range,
         text,
+        register: ctx.register,
     })
 }
 
@@ -225,6 +236,17 @@ fn below_refusal(
         return Some("this view shows several files");
     }
     None
+}
+
+/// Whether this request may call tools: its own `tools=`, else the source
+/// session's. Tools reach the model only through a chat (design §5).
+fn may_use_tools(chats: &LlmChats, buffer: BufferId, values: &RawSet) -> bool {
+    match values.get(&SettingKey::Tools) {
+        Some(text) => parse_tools(text).is_some_and(|t| !t.is_empty()),
+        None => chats
+            .resolve_for(buffer)
+            .is_ok_and(|r| !r.values.tools.is_empty()),
+    }
 }
 
 /// Capture the span, or say why there is nothing to ask about.
@@ -402,7 +424,16 @@ pub fn ask_effect(
     });
     let mut note = None;
     let mut below = None;
+    let mut quiet = None;
+    let in_place = matches!(destination.as_deref(), Some("below" | "echo" | "register"));
     let target = match destination.as_deref() {
+        Some(kind) if in_place && may_use_tools(chats, source.buffer, &values) => {
+            note = Some(format!(
+                "llm: this request may use tools, which need a chat; destination={kind} \
+                 opened a new buffer instead"
+            ));
+            None
+        }
         Some(name) if is_buffer_name(name) => {
             let chat = store
                 .and_then(|s| s.find_by_name(name))
@@ -424,7 +455,24 @@ pub fn ask_effect(
             }
             None
         }
-        Some(kind @ ("review" | "register" | "echo")) => {
+        Some(kind @ ("echo" | "register")) => {
+            match asks.inline.get() {
+                Some(_) => {
+                    quiet = Some(if kind == "echo" {
+                        Quiet::Echo
+                    } else {
+                        Quiet::Register(source.register)
+                    });
+                }
+                None => {
+                    note = Some(format!(
+                        "llm: destination={kind} is not set up here; the answer opened in a new buffer"
+                    ));
+                }
+            }
+            None
+        }
+        Some(kind @ "review") => {
             note = Some(format!(
                 "llm: destination={kind} is not built yet; the answer opened in a new buffer"
             ));
@@ -445,6 +493,17 @@ pub fn ask_effect(
             line: source.range.start.line,
         }),
     };
+    if let (Some(quiet), Some(inline)) = (quiet, asks.inline.get()) {
+        return inline.start_quiet(
+            chats,
+            source.buffer,
+            &hint,
+            block,
+            typed.trim().to_string(),
+            overrides,
+            quiet,
+        );
+    }
     if let (Some(inline), Some(store)) = (below, store) {
         return inline.start(
             chats,
@@ -686,6 +745,7 @@ pub fn register_ex(
                     buffer: ctx.buffer_id,
                     range: Range::new(Position::new(a, 0), Position::new(b + 1, 0)),
                     text,
+                    register: lattice_grammar::Register::Unnamed,
                 };
                 Ok(ask_effect(
                     &chats,
@@ -713,6 +773,7 @@ mod tests {
             buffer: BufferId(n),
             range: Range::new(Position::new(0, 0), Position::new(0, 1)),
             text: "x".into(),
+            register: lattice_grammar::Register::Unnamed,
         }
     }
 

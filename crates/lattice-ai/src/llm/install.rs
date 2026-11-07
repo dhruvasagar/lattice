@@ -73,6 +73,47 @@ pub fn install(boot: &mut impl SubsystemBoot) {
         Arc::new(super::sink::LlmInline::new(boot.runtime_handle().clone()));
     inline.set_effects(boot.inbound::<super::sink::InlineEffects, _>(|e| e.0));
     boot.register_service::<super::sink::LlmInlineHandle>(inline.clone());
+    // LL.14d: a chat that answers while its window is closed says so, and
+    // quitting with a request running asks for `!` first.
+    {
+        let store = boot.buffer_store().clone();
+        let notices = inline.clone();
+        chats.set_done_hook(Arc::new(move |buffer, name, failed| {
+            if store.is_displayed(buffer) {
+                return;
+            }
+            let effect = match failed {
+                None => super::operators::echo(
+                    lattice_grammar::effect::EchoLevel::Info,
+                    format!("llm: {name} has answered"),
+                ),
+                Some(e) => super::operators::echo(
+                    lattice_grammar::effect::EchoLevel::Error,
+                    format!("llm: {name} failed: {e}"),
+                ),
+            };
+            notices.send(vec![effect]);
+        }));
+    }
+    if let Some(guards) = boot.service::<lattice_mode::QuitGuardsHandle>() {
+        let in_flight = chats.clone();
+        guards.register(
+            "llm",
+            Arc::new(move || {
+                // Sessions, not the registry: a request being prepared is not
+                // registered yet, and quitting would drop it all the same.
+                let running = in_flight.in_flight();
+                (running > 0).then(|| {
+                    let noun = if running == 1 {
+                        "request is"
+                    } else {
+                        "requests are"
+                    };
+                    format!("llm: {running} {noun} running; :llm-requests lists them")
+                })
+            }),
+        );
+    }
     // LL.14b: `*llm-requests*` repaints itself on request state changes and
     // wakes the editor through the same bus.
     let bus = boot.event_bus().clone();

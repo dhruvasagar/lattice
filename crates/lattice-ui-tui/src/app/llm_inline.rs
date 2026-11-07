@@ -772,4 +772,90 @@ mod tests {
         }
         assert!(settle_woken(&mut a, |a| llm_badge(a).is_empty()).await);
     }
+
+    /// `<leader>aaj` with no destination: a chat opens beside the source.
+    fn ask_in_chat(a: &mut App) {
+        press_chars(a, " aaj");
+        press_chars(a, "explain");
+        key(a, KeyCode::Enter);
+    }
+
+    fn running(a: &App) -> usize {
+        let chats: LlmChatsHandle = (*a.editor.services.get::<LlmChatsHandle>().unwrap()).clone();
+        chats
+            .requests()
+            .snapshot()
+            .iter()
+            .filter(|r| !r.state.is_terminal())
+            .count()
+    }
+
+    /// LL.14d: a chat whose window was closed keeps answering, and says when
+    /// it is done, without a keystroke.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_hidden_chat_says_when_it_has_answered() {
+        let (mut a, release) = app_streaming(&["one ", "two"], End::Done, 200);
+        ask_in_chat(&mut a);
+        assert_eq!(a.editor.pane_tree.leaves().len(), 2);
+        assert!(settle(&mut a, |a| running(a) == 1).await);
+        ex(&mut a, "only");
+        assert_eq!(a.editor.pane_tree.leaves().len(), 1);
+        release.send(()).unwrap();
+        release.send(()).unwrap();
+        assert!(
+            settle_woken(&mut a, |a| message(a).contains("has answered")).await,
+            "{}",
+            message(&a)
+        );
+        assert!(message(&a).starts_with("llm: *llm:"), "{}", message(&a));
+    }
+
+    /// A chat in view needs no notice: the answer is on screen.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_visible_chat_finishes_quietly() {
+        let (mut a, release) = app_streaming(&["one ", "two"], End::Done, 200);
+        ask_in_chat(&mut a);
+        assert!(settle(&mut a, |a| running(a) == 1).await);
+        release.send(()).unwrap();
+        release.send(()).unwrap();
+        // The registry is not on screen; polled.
+        assert!(settle(&mut a, |a| running(a) == 0).await);
+        // Give a notice, if one were coming, time to land.
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        let _ = a.editor.run_tick_pending();
+        assert!(!message(&a).contains("has answered"), "{}", message(&a));
+    }
+
+    /// `:q` on the last window with a request running asks for `!`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn quitting_with_a_request_running_needs_a_bang() {
+        let (mut a, release) = app_streaming(&["one ", "two"], End::Done, 200);
+        // An echo answer leaves the buffer clean, so only this guard speaks.
+        ask_to(&mut a, "", "echo");
+        assert!(settle(&mut a, |a| running(a) == 1).await);
+        ex(&mut a, "q");
+        assert!(!a.editor.should_quit, "refused");
+        assert!(
+            message(&a).contains("1 request is running")
+                && message(&a).contains("add ! to override"),
+            "{}",
+            message(&a)
+        );
+        ex(&mut a, "q!");
+        assert!(a.editor.should_quit, "`!` quits anyway");
+        let _ = release.send(());
+    }
+
+    /// The request exists only once its key and settings resolve, off the
+    /// editor thread; `:q` in that window would still drop it, so it is
+    /// refused too.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn quitting_right_after_asking_is_refused_too() {
+        let (mut a, release) = app_streaming(&["one"], End::Done, 200);
+        ask_to(&mut a, "", "echo");
+        ex(&mut a, "q");
+        assert!(!a.editor.should_quit, "{}", message(&a));
+        assert!(message(&a).contains("add ! to override"), "{}", message(&a));
+        let _ = release.send(());
+    }
 }

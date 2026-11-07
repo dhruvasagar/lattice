@@ -71,6 +71,22 @@ target rather than just a slower number.
 
 ---
 
+## LL.14d — recording which buffers are displayed, on the publish path (2026-11-07)
+
+`publish_render_state` now records the current tab's shown buffers for
+`BufferStore::is_displayed`, comparing against the stored set without allocating and storing only
+when the layout changed. `dispatch_publish` before and after:
+
+| Bench | Before | After |
+|---|---|---|
+| `keystroke_publish_2000` | 6.00 µs | 6.29 µs |
+| `keystroke_publish_100000` | 6.23 µs | 6.21 µs |
+| `steady_state` | 4.28 µs | 4.34 µs |
+
+Confidence intervals overlap in every row: a few compares over a handful of panes.
+
+---
+
 ## LL.13b — a typed key while an answer streams (2026-11-07)
 
 `dispatch_publish::keystroke_while_streaming` (`lattice-host/benches/dispatch_publish.rs`), beside

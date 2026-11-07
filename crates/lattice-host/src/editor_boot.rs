@@ -300,6 +300,9 @@ impl Editor {
         // Editor literal), which is the identity `<C-g>` depends on.
         let foreground_cancel: lattice_mode::ForegroundCancelHandle = Arc::default();
         boot.register_service::<lattice_mode::ForegroundCancelHandle>(foreground_cancel.clone());
+        // LL.14d: work that is not a buffer refuses `:q` through its owner's
+        // check. Phase A for the same reason: installs register checks.
+        boot.register_service::<lattice_mode::QuitGuardsHandle>(Arc::default());
 
         // Typed-options registry (DESIGN.md §5.12). Single source of truth
         // for every option's *current value*: each `Option<T>` owns a

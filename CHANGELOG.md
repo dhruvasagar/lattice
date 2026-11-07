@@ -4,7 +4,9 @@
 
 ### Added
 - **The modeline shows when an LLM request is running:** `llm`, or
-  `llm 3` for three, wherever you are.
+  `llm 3` for three, wherever you are. A chat whose window you closed
+  says when it has answered, and `:q` with a request running asks for
+  `!` rather than dropping it.
 - **See and stop running LLM requests from anywhere.** `:llm-requests`
   lists every request with its model and where its answer is going, and
   updates itself; `dd` stops one. `:llm-stop` stops this buffer's request,

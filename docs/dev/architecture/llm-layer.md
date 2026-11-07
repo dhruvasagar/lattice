@@ -440,7 +440,11 @@ the editor's wake, LL.13b), the document actor
 rebasing a host write positioned before an append (LL.13a, `owner-write-caret.md` §10), a language binding
 for a non-language major, `OperatorSpec::mutates`, `OperatorSpec::repeatable` made real (LL.11c:
 a non-mutating operator `.` repeats, its prompt replayed pre-filled), operator binding on `SubsystemBoot`, the
-`OptionOrigin` variants, and `Mode::write_action` (a form buffer such as `:llm-system` is
+`OptionOrigin` variants, a quit guard (`lattice_mode::QuitGuards`, LL.14d: `:q` refuses while
+a subsystem's check names work it would lose, so a request in flight is never dropped silently),
+a displayed-buffer query (`BufferStore::is_displayed`, LL.14d: the host records which buffers
+the current tab shows on each publish, so a chat answering behind a closed window can say so and
+one in view stays quiet), and `Mode::write_action` (a form buffer such as `:llm-system` is
 submitted, not saved, so a mode must be able to claim a bare `:w` the way it claims `gr`
 through `refresh_action`, rather than the host knowing system prompts).
 

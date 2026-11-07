@@ -416,8 +416,10 @@ async fn the_caret_stays_in_the_prompt_while_text_arrives_above() {
     assert!(text.contains("streamed in\nmore\n"), "{text:?}");
 }
 
-/// An open chat, even one mid-request with an unsent prompt typed, does not hold
-/// up `:qa`.
+/// An open chat, even one mid-request with an unsent prompt typed, is never
+/// "unsaved changes" to `:qa`. The request in flight is what holds it up
+/// (LL.14d's quit guard, with its own message), and once that stops, `:qa`
+/// quits.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_chat_buffer_does_not_block_quit_all() {
     let addr = serve(Duration::from_secs(30));
@@ -437,11 +439,64 @@ async fn the_chat_buffer_does_not_block_quit_all() {
 
     // What `:qa` runs (`Effect::QuitEditor` -> `do_quit`), dirty guard included.
     editor.do_quit(false, lattice_grammar::QuitScope::All);
+    let said = editor
+        .last_message
+        .as_ref()
+        .map(|m| m.text.clone())
+        .unwrap_or_default();
+    assert!(!editor.should_quit, "a running request holds up `:qa`");
+    assert!(said.contains("request is running"), "{said}");
+    assert!(
+        !said.contains("no write since"),
+        "the chat is not unsaved: {said}"
+    );
+
+    // Stopped, and the turn over: what the guard reads (internal state, so
+    // polled).
+    handle.interrupt(&session);
+    assert!(settle(&mut editor, |_| handle.in_flight() == 0).await);
+    editor.do_quit(false, lattice_grammar::QuitScope::All);
     assert!(
         editor.should_quit,
         "`:qa` was blocked by the chat buffer: {:?}",
         editor.last_message.as_ref().map(|m| &m.text)
     );
+}
+
+/// LL.14d: the host records which buffers the current tab shows, on every
+/// publish, and the store answers from that.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_store_knows_which_buffers_are_displayed() {
+    let mut editor = Editor::boot(CoreDocument::from_text("scratch\n"));
+    let source = editor.active_pane_buffer_id();
+    let store = editor
+        .services
+        .get::<lattice_mode::BufferStoreHandle>()
+        .unwrap();
+    editor.publish_render_state();
+    assert!(store.is_displayed(source));
+    let chat = open_chat(&mut editor);
+    editor.publish_render_state();
+    assert!(
+        store.is_displayed(chat),
+        "the chat replaced the source in the pane"
+    );
+    assert!(
+        !store.is_displayed(source),
+        "and the source is no longer shown"
+    );
+    editor.do_split_pane(lattice_core::ui::pane::SplitOrientation::Vertical);
+    editor.publish_render_state();
+    editor.handle_effect(lattice_grammar::Effect::FocusBuffer(source.0));
+    editor.publish_render_state();
+    assert!(
+        store.is_displayed(source) && store.is_displayed(chat),
+        "one in each pane"
+    );
+    editor.do_only_pane();
+    editor.publish_render_state();
+    assert!(store.is_displayed(source));
+    assert!(!store.is_displayed(chat), "closing its window hides it");
 }
 
 // ---------------------------------------------------------------------------

@@ -295,6 +295,10 @@ pub struct LlmChats {
     /// has one, shown or hidden: echo, register, `below` and rewrite answers
     /// keep theirs so the full reply can be seen and followed up.
     last_ask: Mutex<Option<String>>,
+    /// Told when a shown chat's turn ends (LL.14d): the chat's buffer, its
+    /// name, and the failure if it failed. Install sets it to a notice for a
+    /// chat whose buffer is not displayed; unset, nothing is told.
+    done_hook: std::sync::OnceLock<DoneHook>,
     next_chat: AtomicU32,
     next_system: AtomicU32,
     next_bind: AtomicU64,
@@ -323,6 +327,7 @@ impl LlmChats {
             project_root: RwLock::new(None),
             project_cache: Arc::new(RwLock::new(None)),
             last_ask: Mutex::new(None),
+            done_hook: std::sync::OnceLock::new(),
             next_chat: AtomicU32::new(1),
             next_system: AtomicU32::new(1),
             next_bind: AtomicU64::new(1),
@@ -700,6 +705,11 @@ impl LlmChats {
         session
     }
 
+    /// Set what a shown chat's finished turn tells. Once, at install.
+    pub fn set_done_hook(&self, hook: DoneHook) {
+        let _ = self.done_hook.set(hook);
+    }
+
     /// The latest ask's session name, while the session is still kept: an
     /// unshown one is dropped once [`UNBOUND_CAP`] newer ones are waiting.
     pub fn last_ask(&self) -> Option<String> {
@@ -956,6 +966,20 @@ impl LlmChats {
             Some(s) => self.interrupt(&s),
             None => self.requests.cancel(id),
         }
+    }
+
+    /// How many sessions have a turn in flight: from the submit, before the
+    /// request exists (its key and settings resolve first, off the editor
+    /// thread), until the turn ends. What quitting would lose (LL.14d); the
+    /// registry alone misses a request still being prepared.
+    pub fn in_flight(&self) -> usize {
+        let reg = self.reg();
+        reg.by_buffer
+            .values()
+            .map(|(_, s)| s)
+            .chain(reg.unbound.iter())
+            .filter(|s| s.is_busy())
+            .count()
     }
 
     /// The request registry, for listings.
@@ -1263,16 +1287,33 @@ impl LlmChats {
                 .unwrap_or_else(|e| e.into_inner()),
         );
         if !waiters.is_empty() {
-            let outcome = told.map(|()| session.last_reply());
+            let outcome = told.clone().map(|()| session.last_reply());
             for tx in waiters {
                 let _ = tx.send(outcome.clone());
             }
+        }
+        // A shown chat's turn is over (nothing queued behind it, and the
+        // user did not stop it): say so, if the hook decides it should be
+        // said. A hidden ask's session has no buffer; its sink reports.
+        if !started_next
+            && !closed
+            && !interrupted
+            && let (Some(hook), Some(buffer)) = (self.done_hook.get(), self.buffer_of(session))
+        {
+            hook(
+                buffer,
+                &session.name,
+                told.as_ref().err().map(String::as_str),
+            );
         }
         if started_next {
             self.start_request(session);
         }
     }
 }
+
+/// See [`LlmChats::set_done_hook`]: the chat's buffer, its name, its failure.
+pub type DoneHook = Arc<dyn Fn(BufferId, &str, Option<&str>) + Send + Sync>;
 
 /// Read a system prompt that names a file (`~/...`, `/...`, `./...`). Only the
 /// user's own config reaches here: a project's file path is refused in

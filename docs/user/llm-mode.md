@@ -130,7 +130,12 @@ buffer keeps what arrived and ends with `[interrupted]`.
 
 While any request runs, the modeline shows `llm` (`llm 3` for three), so
 one running in a chat you closed the window of, or writing into another
-buffer, is never out of sight.
+buffer, is never out of sight. A chat whose window you closed keeps
+answering, and the echo area says when it has (or that it failed).
+
+`:q` on the last window, or `:qa`, with a request running says so and does
+not quit; `:q!` quits anyway, and the request ends with the editor. Nothing
+resumes a request later.
 
 ### Requests that may use tools
 

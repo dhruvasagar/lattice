@@ -172,6 +172,15 @@ pub trait BufferStore: Send + Sync {
         flags: BufferFlags,
         name: Option<String>,
     );
+
+    /// LL.14d: whether `id` is shown in a pane of the current tab right now,
+    /// for a subsystem that tells the user about work in a buffer they cannot
+    /// see (a chat answering while its window is closed). Default `true`: a
+    /// store with no panes cannot say a buffer is hidden, and "hidden" is the
+    /// claim that sends a notice, so the safe answer is the quiet one.
+    fn is_displayed(&self, _id: BufferId) -> bool {
+        true
+    }
 }
 
 /// Concrete service-registry-friendly wrapper around
@@ -228,6 +237,11 @@ impl BufferStoreHandle {
     /// is not `name_for(id).is_some()`.
     pub fn contains_buffer(&self, id: BufferId) -> bool {
         self.inner.contains_buffer(id)
+    }
+
+    /// Forwards to [`BufferStore::is_displayed`].
+    pub fn is_displayed(&self, id: BufferId) -> bool {
+        self.inner.is_displayed(id)
     }
 
     /// H.1 pass-through wrapper. See

@@ -2259,6 +2259,21 @@ impl Editor {
         // line compare). Also refreshes `inline_diag_deadline`, which
         // the editor actor's timer arm re-reads to retarget its sleep.
         self.update_inline_diag_gate();
+        // LL.14d: record which buffers the current tab shows, for a subsystem
+        // that tells the user about work in one they cannot see
+        // (`BufferStore::is_displayed`). The active leaf's stored buffer can
+        // lag the live one until the next snapshot, so the live one stands in
+        // for it. A compare and no allocation when the layout is unchanged.
+        let active = self.pane_tree.active_index();
+        let shown = self
+            .pane_tree
+            .leaves()
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i != active)
+            .map(|(_, p)| p.buffer_id)
+            .chain(std::iter::once(self.active_pane_buffer_id()));
+        self.buffers.set_displayed(shown);
         // D.5.a (2026-05-30): apply any diff-mode toggles
         // queued by the `DiffSubsystem` since the previous
         // tick. Must run before `build_render_state` reads
@@ -31780,6 +31795,16 @@ impl Editor {
                         id.0
                     ),
                 );
+                return;
+            }
+            // LL.14d: then work that is not a buffer, through its owner's
+            // check (`lattice_mode::QuitGuards`): an LLM request in flight.
+            let refusal = self
+                .services
+                .get::<lattice_mode::QuitGuardsHandle>()
+                .and_then(|g| g.refusal());
+            if let Some(why) = refusal {
+                self.set_message(EchoLevel::Error, format!("{why} (add ! to override)"));
                 return;
             }
         }

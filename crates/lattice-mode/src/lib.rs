@@ -194,6 +194,7 @@ pub mod plugin_meta_sink;
 // for "open the multibuffer view a provider owns", replacing the
 // per-provider `AppEffect` variant + host arm + plugin-boundary arm.
 pub mod provider_view;
+pub mod quit_guard;
 // SI.12: text ranges a mode tints while active (snippet placeholders).
 pub mod range_highlight;
 pub mod registry;
@@ -336,6 +337,7 @@ pub use crate::pending_inlays::{InlayRow, PendingInlays, PendingInlaysHandle};
 pub use crate::pending_synthetic_highlights::{
     HighlightsOp, PendingSyntheticHighlights, PendingSyntheticHighlightsHandle,
 };
+pub use crate::quit_guard::{QuitCheck, QuitGuards, QuitGuardsHandle};
 // M.4 dep-inversion: layer-input types live in `lattice-config`
 // now. Re-exported here for compatibility -- callers that
 // imported from `lattice_mode` keep working.

@@ -288,9 +288,33 @@ pub struct BufferRegistry {
     /// `Default` (=0) so this slot composes with the existing
     /// `#[derive(Default)]` without an explicit `Default` impl.
     version: Arc<std::sync::atomic::AtomicU64>,
+    /// LL.14d: the buffers shown in the current tab's panes, set by the
+    /// editor on every publish ([`Self::set_displayed`]) and read from any
+    /// thread through [`lattice_mode::BufferStore::is_displayed`]. Not a
+    /// registry mutation, so it does not bump [`Self::version`].
+    displayed: Arc<arc_swap::ArcSwap<std::collections::HashSet<lattice_core::BufferId>>>,
 }
 
 impl BufferRegistry {
+    /// Record which buffers the current tab's panes show. Stores only when
+    /// the set changed, so an unchanged layout costs a compare and no
+    /// allocation on the publish path.
+    pub fn set_displayed<I>(&self, shown: I)
+    where
+        I: IntoIterator<Item = lattice_core::BufferId> + Clone,
+    {
+        // Same set both ways round, without building one: a handful of
+        // panes, so the quadratic second pass is a few compares.
+        let current = self.displayed.load();
+        let unchanged = shown.clone().into_iter().all(|id| current.contains(&id))
+            && current
+                .iter()
+                .all(|id| shown.clone().into_iter().any(|s| s == *id));
+        if !unchanged {
+            self.displayed.store(Arc::new(shown.into_iter().collect()));
+        }
+    }
+
     /// Perf plan B.4.b: monotonic mutation counter. Read by the
     /// publish cache (see [`crate::render_state::PublishCache`])
     /// to decide whether the cached `buffers` / `tabs` Arcs can be
@@ -932,6 +956,10 @@ impl lattice_mode::BufferStore for BufferRegistry {
         self.scope_dir_of(id)
     }
 
+    fn is_displayed(&self, id: lattice_core::BufferId) -> bool {
+        self.displayed.load().contains(&id)
+    }
+
     /// H.1 (2026-05-31): generic Document-shaped buffer
     /// insertion for extension crates (`lattice-multibuffer`
     /// today; future plugin-defined Document-shaped kinds).
@@ -1077,6 +1105,25 @@ mod tests {
         r.insert(eph);
         assert_eq!(r.listed_ids_sorted(), vec![id_a]);
         assert_eq!(r.sorted_ids(), vec![id_a, id_eph]);
+    }
+
+    #[test]
+    fn the_displayed_set_follows_the_panes_and_ignores_repeats_and_order() {
+        use lattice_core::BufferId;
+        use lattice_mode::BufferStore as _;
+        let r = BufferRegistry::new();
+        assert!(!r.is_displayed(BufferId(1)));
+        r.set_displayed([BufferId(1), BufferId(2), BufferId(1)]);
+        let stored = Arc::as_ptr(&r.displayed.load_full());
+        assert!(r.is_displayed(BufferId(1)) && r.is_displayed(BufferId(2)));
+        // The same set again, reordered and repeated: nothing is stored.
+        r.set_displayed([BufferId(2), BufferId(1)]);
+        assert_eq!(Arc::as_ptr(&r.displayed.load_full()), stored);
+        r.set_displayed([BufferId(2)]);
+        assert!(
+            !r.is_displayed(BufferId(1)),
+            "a closed window hides its buffer"
+        );
     }
 
     #[test]

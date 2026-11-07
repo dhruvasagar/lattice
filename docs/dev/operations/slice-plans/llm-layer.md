@@ -467,7 +467,7 @@ deleted anchor, `u` while streaming, read-only fallback, second request at one p
 gets an "interrupted" marker; nothing left behind on an immediate failure; the view follows only when
 the caret is at the end; only streamed lines change on screen.
 
-### LL.14 — Other destinations and running requests 🚧
+### LL.14 — Other destinations and running requests ✅
 
 Carved into three, each its own commit:
 
@@ -500,8 +500,20 @@ pushed elements from the shared resolver). Tests: `llm_inline.rs` (+2: shown and
 key, store and painted row; counted), `modeline.rs` unit. *A restored session never resumes a
 request* holds by construction: there is no session restore, and the registry is in memory only.
 
-**LL.14d — Hidden chat says it is done; `:q` warns 📝.** Both need host surface not in design §10
-(a displayed-buffer query, a quit guard); held for a decision.
+**LL.14d — Hidden chat says it is done; `:q` warns ✅.** Two generic host primitives, decided (A)
+and (A) and added to design §10's exceptions. `lattice_mode::QuitGuards` (Phase-A service): owners
+register a cheap check, `do_quit` without `!` consults them after the dirty guard; the llm layer's
+counts sessions with a turn in flight (`LlmChats::in_flight`), not registered requests: a request
+registers only after its key and settings resolve off-thread, and a `:q` in that window would drop
+it (caught by the quit test under load; `quitting_right_after_asking_is_refused_too` pins it). `BufferStore::is_displayed` (default `true`, the quiet answer): the host's
+`BufferRegistry` holds the current tab's shown buffers, refreshed in `publish_render_state` with an
+allocation-free compare when unchanged; `LlmChats::set_done_hook` echoes "has answered" / "failed"
+through the inline bus for a shown chat's finished turn only when its buffer is not displayed.
+Tests: `llm_inline.rs` (+4: hidden notifies without a key, visible stays quiet, `:q` needs `!`,
+and right after the ask),
+`llm_chat_buffer.rs` (quit test now asserts the request guard, not the dirty one, then quits once
+stopped; displayed set across replace, split, focus, `:only`), `buffer_registry` unit, `quit_guard`
+units (2). Bench: `dispatch_publish` keystroke/steady-state unchanged within noise.
 
 
 **Files:** `src/llm/sink.rs` (echo, register), `src/llm/modes/requests.rs`, `src/llm/commands.rs`

@@ -98,7 +98,8 @@ impl LlmInline {
         self.send(Vec::new());
     }
 
-    fn send(&self, effects: Vec<Effect>) {
+    /// Hand `effects` to the editor and wake it.
+    pub(crate) fn send(&self, effects: Vec<Effect>) {
         if let Some(bus) = self
             .effects
             .lock()

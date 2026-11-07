@@ -173,4 +173,93 @@ mod tests {
             "`.` repeated the last change, `x`"
         );
     }
+
+    // ── LL.10c ──────────────────────────────────────────────────────────────
+
+    fn chats(a: &App) -> lattice_ai::llm::chat::LlmChatsHandle {
+        (*a.editor
+            .services
+            .get::<lattice_ai::llm::chat::LlmChatsHandle>()
+            .expect("llm chats"))
+        .clone()
+    }
+
+    fn picker_title(a: &App) -> Option<String> {
+        a.editor.picker.as_ref().map(|p| p.title.clone())
+    }
+
+    fn message(a: &App) -> String {
+        a.editor
+            .last_message
+            .as_ref()
+            .map(|m| m.text.clone())
+            .unwrap_or_default()
+    }
+
+    /// `<leader>aA` opens the menu first; its `a` row moves the held ask on
+    /// to the instruction prompt.
+    #[test]
+    fn the_menu_first_ask_opens_the_menu_then_the_prompt() {
+        let mut a = app_with(TEXT, 10);
+        let source = a.editor.document_buffer_id;
+        press_chars(&mut a, " aAj");
+        let title = picker_title(&a).unwrap_or_default();
+        assert!(
+            title.contains("LLM settings"),
+            "the menu is open: {title:?}"
+        );
+        assert!(chats(&a).menu_ask(source).is_some(), "holding the ask");
+        press_chars(&mut a, "a");
+        assert!(prompt_is_open(&a), "active: {}", active_name(&a));
+        assert!(chats(&a).menu_ask(source).is_none(), "moved on");
+        assert_eq!(
+            asks(&a).take(1).map(|s| s.text),
+            Some("alpha beta\ngamma delta".into())
+        );
+    }
+
+    /// A menu opened by hand after a dismissed `<leader>aA` holds no ask.
+    #[test]
+    fn a_menu_opened_by_hand_holds_no_stale_ask() {
+        let mut a = app_with(TEXT, 10);
+        let source = a.editor.document_buffer_id;
+        press_chars(&mut a, " aAj");
+        assert!(chats(&a).menu_ask(source).is_some());
+        key(&mut a, KeyCode::Esc);
+        submit_ex(&mut a, "llm-menu");
+        assert!(picker_title(&a).is_some(), "the menu is open");
+        assert!(chats(&a).menu_ask(source).is_none(), "and holds no ask");
+    }
+
+    /// An oversized source asks first; `y` sends it.
+    #[test]
+    fn an_oversized_ask_is_confirmed_then_sent() {
+        let big: String = (0..2000)
+            .map(|i| format!("let line_{i} = {i};\n"))
+            .collect();
+        let mut a = app_with(&big, 10);
+        press_chars(&mut a, "VG aa");
+        assert_eq!(asks(&a).pending_count(), 1, "active: {}", active_name(&a));
+        press_chars(&mut a, "sum");
+        key(&mut a, KeyCode::Enter);
+        let title = picker_title(&a).unwrap_or_default();
+        assert!(title.contains("KB"), "a confirm, not a send: {title:?}");
+        assert_eq!(chat_panes(&a), 0, "nothing sent before the yes");
+        press_chars(&mut a, "y");
+        assert_eq!(chat_panes(&a), 1, "sent on the yes: {}", message(&a));
+        assert_eq!(asks(&a).pending_count(), 0);
+    }
+
+    /// `llm.exclude` refuses at the operator, before an instruction is typed.
+    #[test]
+    fn an_excluded_file_is_refused_before_the_prompt() {
+        let dir = unique_tempdir();
+        let path = dir.join(".env");
+        std::fs::write(&path, "API_TOKEN=hunter2\n").unwrap();
+        let mut a = app_with_path("API_TOKEN=hunter2\n", 10, path);
+        press_chars(&mut a, " aaa");
+        assert_eq!(asks(&a).pending_count(), 0, "nothing held");
+        let msg = message(&a);
+        assert!(msg.contains(".env") && msg.contains("llm.exclude"), "{msg}");
+    }
 }

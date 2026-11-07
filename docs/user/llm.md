@@ -58,9 +58,11 @@ this layer"**.
 
 `llm.model` (`provider/model` or a bare model), `llm.system` (text; a path in your own
 config), `llm.temperature`, `llm.max_tokens`, `llm.reasoning`, `llm.messages` (`all`,
-`last`, a number), `llm.tools`, `llm.destination`, `llm.fold.reasoning` and
-`llm.fold.tools` (`closed` `open` `hidden`, applied to open chats live), `llm.profile`,
-and the global-only `llm.default_profile`, `llm.default_provider`.
+`last`, a number), `llm.tools`, `llm.destination` (a kind, or an open chat's buffer
+name to continue it), `llm.fold.reasoning` and `llm.fold.tools` (`closed` `open`
+`hidden`, applied to open chats live), `llm.profile`, and the global-only
+`llm.default_profile`, `llm.default_provider` and `llm.exclude` (globs naming files
+that are never sent; see [`llm-mode`](help:llm-mode)).
 
 A request reads its settings **once, when it starts**: change the model mid-reply and
 that reply finishes as it began.

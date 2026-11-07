@@ -161,11 +161,15 @@ impl Mode for LlmChatMode {
             },
             ActionHandlerContribution {
                 action_name: "action:llm-chat-menu",
-                handler: Arc::new(|_| {
-                    Some(Effect::OpenTransient {
-                        source: menu::MENU_SOURCE.to_string(),
-                        args: Args::None,
-                    })
+                handler: Arc::new({
+                    let chats = self.chats.clone();
+                    move |ctx: &ActionContext<'_>| {
+                        chats.disarm_menu_ask(lattice_core::BufferId(ctx.buffer_id.0 as u32));
+                        Some(Effect::OpenTransient {
+                            source: menu::MENU_SOURCE.to_string(),
+                            args: Args::None,
+                        })
+                    }
                 }),
             },
         ]);

@@ -16,7 +16,10 @@ use lattice_mode::{
 };
 
 use crate::llm::chat::LlmChatsHandle;
-use crate::llm::operators::{ACTION_ASK_SEND, LlmAsksHandle, send_handler};
+use crate::llm::operators::{
+    ACTION_ASK_CONFIRMED, ACTION_ASK_CONTINUE, ACTION_ASK_SEND, LlmAsksHandle, confirmed_handler,
+    continue_handler, send_handler,
+};
 
 pub struct LlmMode {
     chats: LlmChatsHandle,
@@ -53,10 +56,20 @@ impl Mode for LlmMode {
     }
 
     fn action_handlers(&self) -> Vec<ActionHandlerContribution> {
-        vec![ActionHandlerContribution {
-            action_name: ACTION_ASK_SEND,
-            handler: send_handler(self.chats.clone(), self.asks.clone()),
-        }]
+        vec![
+            ActionHandlerContribution {
+                action_name: ACTION_ASK_SEND,
+                handler: send_handler(self.chats.clone(), self.asks.clone()),
+            },
+            ActionHandlerContribution {
+                action_name: ACTION_ASK_CONTINUE,
+                handler: continue_handler(self.chats.clone(), self.asks.clone()),
+            },
+            ActionHandlerContribution {
+                action_name: ACTION_ASK_CONFIRMED,
+                handler: confirmed_handler(self.chats.clone(), self.asks.clone()),
+            },
+        ]
     }
 
     fn on_activate(&self, _ctx: ModeContext) -> LifecycleFuture<'_, ()> {

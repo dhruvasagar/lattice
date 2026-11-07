@@ -54,6 +54,25 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     register_actions(boot.commands_mut());
     super::menu::register_actions(boot.commands_mut());
     register_system_action(boot.commands_mut());
+    // LL.10b: the ask. The operators capture their span; `llm-mode` owns the
+    // prompt, menu-row and confirm handlers and the `<leader>a` layer. Before
+    // the menu, which resolves the `a` row's action from the registry.
+    let asks: super::operators::LlmAsksHandle = Arc::new(super::operators::LlmAsks::default());
+    boot.register_service::<super::operators::LlmAsksHandle>(asks.clone());
+    let store = boot.buffer_store().clone();
+    let ops = super::operators::register(
+        boot.commands_mut(),
+        chats.clone(),
+        asks.clone(),
+        store.clone(),
+    );
+    super::operators::register_ex(boot.commands_mut(), chats.clone(), asks.clone(), store);
+    boot.modes_mut()
+        .register(super::modes::llm_mode::LlmMode::new(chats.clone(), asks))
+        .expect("llm-mode register");
+    let layer = lattice_mode::KeymapLayer::MinorMode(super::modes::llm_mode::LlmMode::mode_id());
+    boot.bind_operator(layer, "<leader>aa", ops.ask);
+    boot.bind_operator(layer, "<leader>aA", ops.ask_menu);
     // The menu is a transient like magit's; its source is looked up under the
     // handle type, and a harness with no picker layer simply has none.
     if let Some(ids) = super::menu::MenuIds::resolve(boot.commands_mut()) {
@@ -63,21 +82,6 @@ pub fn install(boot: &mut impl SubsystemBoot) {
             .unwrap_or_else(|| Arc::new(lattice_picker::TransientSourceRegistry::new()));
         super::menu::register_source(&sources, chats.clone(), ids, boot.buffer_store().clone());
     }
-    // LL.10b: the ask. The operator captures its span; `llm-mode` owns the
-    // instruction prompt's handler and the `<leader>aa` layer it is bound in.
-    let asks: super::operators::LlmAsksHandle = Arc::new(super::operators::LlmAsks::default());
-    boot.register_service::<super::operators::LlmAsksHandle>(asks.clone());
-    let ask = super::operators::register(boot.commands_mut(), asks.clone());
-    let store = boot.buffer_store().clone();
-    super::operators::register_ex(boot.commands_mut(), chats.clone(), store);
-    boot.modes_mut()
-        .register(super::modes::llm_mode::LlmMode::new(chats.clone(), asks))
-        .expect("llm-mode register");
-    boot.bind_operator(
-        lattice_mode::KeymapLayer::MinorMode(super::modes::llm_mode::LlmMode::mode_id()),
-        "<leader>aa",
-        ask,
-    );
     super::commands::register(boot.commands_mut(), chats);
 
     // The drain publishes `ConversationProjected` after each re-projection edit

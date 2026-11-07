@@ -20,6 +20,7 @@ or a text object, and it asks about the text that covers:
 | `<leader>aaj` | This line and the next |
 | `<leader>aaa` | This line |
 | `<leader>aa` in Visual | The selection |
+| `<leader>aA{motion}` | The same, opening [`:llm-menu`](help:llm) first |
 
 `<leader>` is `<Space>` unless you set `keymap.leader`.
 
@@ -39,6 +40,30 @@ The answer buffer is a chat: [`llm-chat-mode`](help:llm-chat-mode). Its
 first turn is what you sent, under a head line naming the file and lines,
 folded when it is long. `gf` on it goes back to that place. Type a
 follow-up in its prompt and `<CR>` continues the conversation.
+
+### Choosing settings first
+
+`<leader>aA` is the same operator, but it opens the settings menu before
+the prompt. Change the model, the temperature or where the answer goes,
+then press `a` to type the instruction. Choices made in the menu's
+next-request scope apply to this ask only; in its session scope they stay
+on the buffer you asked from. `q` dismisses the menu and sends nothing.
+
+### Continuing a chat
+
+An ask normally opens a new chat. To add it to one already open, name that
+chat as the destination:
+
+```
+:'<,'>llm-ask destination=*llm:main.rs:1* and this part?
+```
+
+The text and the instruction become the next turn of that chat, with its
+history, and it is shown beside you as a new answer would be. The `d` row
+of `<leader>aA`'s menu sets the same thing. A name that is not an open chat
+is refused. The other destinations (`below`, `echo`, `register`,
+`review`) are not built yet: an ask that names one opens a new chat and
+says so.
 
 ### From the command line
 
@@ -65,6 +90,28 @@ round. `@profile` in the instruction picks a profile for this request;
 only what you typed is read for it, never the text you are asking about.
 A profile that would turn on tools cannot be confirmed from an ask: open a
 chat with `:llm <profile>` instead.
+
+## Files that are never sent
+
+`llm.exclude` is a list of globs naming files whose text is never sent.
+Asking from one is refused before the prompt opens, with the file and the
+glob it matched. The default covers files that hold secrets by
+convention:
+
+```toml
+[llm]
+exclude = [".env", ".env.*", "*.pem", "*.key", "id_rsa*", "id_ed25519*", ".netrc"]
+```
+
+A glob without a `/` matches the file name in any directory; one with a
+`/` matches the whole path. Setting it **replaces** the list, so copy the
+default if you want to add to it. `:set llm.exclude?` shows the current
+list, and an empty list excludes nothing.
+
+## Large selections
+
+A selection over 32 KB (about 8,000 tokens) asks before it is sent, naming
+its size. `y` sends it; anything else sends nothing.
 
 ## Read-only buffers and other sources
 

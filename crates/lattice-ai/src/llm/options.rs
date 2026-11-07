@@ -19,6 +19,80 @@
 
 use super::settings::{SettingKey, validate};
 
+/// What `llm.exclude` refuses when nothing overrides it: files that hold
+/// secrets by convention.
+pub const DEFAULT_EXCLUDE: &[&str] = &[
+    ".env",
+    ".env.*",
+    "*.pem",
+    "*.key",
+    "id_rsa*",
+    "id_ed25519*",
+    ".netrc",
+];
+
+/// `llm.exclude`: globs naming files whose text is never sent (design §5).
+///
+/// A glob without a `/` is matched against the file name, so `.env` refuses
+/// every `.env` in the tree; one with a `/` is matched against the whole path.
+/// The value **replaces** the default, as `:set` does for every list option, so
+/// `:set llm.exclude?` shows exactly what a user is about to replace. Empty
+/// excludes nothing, deliberately.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExcludeGlobs(pub Vec<String>);
+
+impl Default for ExcludeGlobs {
+    fn default() -> Self {
+        Self(DEFAULT_EXCLUDE.iter().map(|g| g.to_string()).collect())
+    }
+}
+
+impl ExcludeGlobs {
+    /// The first glob `path` matches, if any.
+    pub fn matching(&self, path: &std::path::Path) -> Option<&str> {
+        let name = path.file_name()?;
+        self.0.iter().map(String::as_str).find(|glob| {
+            let Ok(matcher) = globset::Glob::new(glob).map(|g| g.compile_matcher()) else {
+                return false;
+            };
+            if glob.contains('/') {
+                matcher.is_match(path)
+            } else {
+                matcher.is_match(name)
+            }
+        })
+    }
+}
+
+impl lattice_config::OptionType for ExcludeGlobs {
+    fn parse(s: &str) -> Result<Self, String> {
+        let globs: Vec<String> = s
+            .split(',')
+            .map(str::trim)
+            .filter(|g| !g.is_empty())
+            .map(str::to_string)
+            .collect();
+        for glob in &globs {
+            globset::Glob::new(glob)
+                .map_err(|e| format!("llm.exclude: `{glob}` is not a glob ({e})"))?;
+        }
+        Ok(Self(globs))
+    }
+
+    fn format(&self) -> String {
+        self.0.join(",")
+    }
+
+    fn type_label() -> &'static str {
+        "globs"
+    }
+
+    /// A TOML array joins into this (`exclude = [".env", "*.pem"]`).
+    fn accepts_list() -> bool {
+        true
+    }
+}
+
 fn check(key: SettingKey, value: &str) -> Result<(), String> {
     validate(key, value)
 }
@@ -111,8 +185,9 @@ lattice_config::options! {
     #[validate(v_tools)]
     pub LlmTools: String = String::new();
 
-    /// Where output goes: `chat`, `below`, `review`, `register` or `echo`.
-    /// Empty means the invocation's own default.
+    /// Where output goes: `chat`, `below`, `review`, `register` or `echo`, or
+    /// an open chat's buffer name (`*llm:3*`) to continue that chat. Empty
+    /// means the invocation's own default.
     #[name("llm.destination")]
     #[validate(v_destination)]
     pub LlmDestination: String = String::new();
@@ -140,6 +215,12 @@ lattice_config::options! {
     #[name("llm.default_profile")]
     #[validate(v_profile)]
     pub LlmDefaultProfile: String = String::new();
+
+    /// Files whose text is never sent, as globs: `.env`, `*.pem`. A glob with
+    /// no `/` matches the file name anywhere; one with a `/` matches the path.
+    /// Replaces the default list rather than adding to it. Global only.
+    #[name("llm.exclude")]
+    pub LlmExclude: ExcludeGlobs = ExcludeGlobs::default();
 
     /// The provider a bare `llm.model` runs on. Optional when only one provider
     /// is configured. Global only.

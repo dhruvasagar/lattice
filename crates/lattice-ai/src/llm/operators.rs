@@ -17,6 +17,19 @@
 //! `*messages*`, a help page) runs it. **A blockwise selection collapses to one
 //! span** (`blockwise_per_row: false`): an ask is about the text, not per row.
 //!
+//! LL.10c adds the edges every ask passes through, in this order:
+//!
+//! - **`llm.exclude`** refuses a source whose file matches, by name, before the
+//!   prompt opens, so no instruction is typed for nothing.
+//! - **`<leader>aA`** is the same operator opening `:llm-menu` first: the menu
+//!   holds the ask and gains an `a` row that opens the instruction prompt, so
+//!   choices made in it (next-request scope, or the session) reach this ask.
+//! - **An oversized source asks first** ([`ASK_CONFIRM_BYTES`]): a yes sends it,
+//!   a no sends nothing.
+//! - **`destination=<buffer>`** continues that chat instead of opening a new
+//!   one. The kinds not built yet (`below`, `echo`, ...) open a new buffer and
+//!   say so rather than refuse.
+//!
 //! **`.` does not repeat an ask** (design §11, decided here). `.` repeats the
 //! last change, and an ask changes nothing, as `y` changes nothing; making it
 //! repeatable would also re-send a prompt the user typed once. A macro records
@@ -35,15 +48,29 @@ use lattice_grammar::registry::{
 use lattice_mode::{ActionContext, ActionHandler, BufferStoreHandle};
 use lattice_protocol::position::Range;
 
+use lattice_grammar::args::{ArgValue, Args};
+
 use super::chat::{LlmChats, LlmChatsHandle, SendPlan};
 use super::commands::parse_request_args;
+use super::menu::MENU_SOURCE;
 use super::modes::chat::LlmChatMode;
-use super::settings::RequestOverrides;
+use super::settings::{RequestOverrides, SettingKey, is_buffer_name};
 use crate::conversation::{Block, SourceLink};
 
 pub const ASK_OPERATOR: &str = "operator:llm-ask";
+/// The ask operator that opens `:llm-menu` before the instruction prompt.
+pub const ASK_MENU_OPERATOR: &str = "operator:llm-ask-menu";
 /// The instruction prompt's submit action.
 pub const ACTION_ASK_SEND: &str = "action:llm-ask-send";
+/// The menu row that moves a held ask on to its instruction prompt.
+pub const ACTION_ASK_CONTINUE: &str = "action:llm-ask-continue";
+/// The yes half of the oversized-source confirm.
+pub const ACTION_ASK_CONFIRMED: &str = "action:llm-ask-confirmed";
+
+/// A source larger than this asks before it is sent (about 8k tokens). Large
+/// enough that no paragraph, function or file of ordinary size meets it; small
+/// enough that a `ggVG` over a generated file does not go out unasked.
+pub const ASK_CONFIRM_BYTES: usize = 32 * 1024;
 
 /// Asks waiting for their instruction. A prompt cancelled with `<Esc>` leaves
 /// its ask behind, so the oldest are dropped past this many.
@@ -89,6 +116,15 @@ impl LlmAsks {
         pending.remove(i).map(|(_, s)| s)
     }
 
+    /// Whether ask `token` is still held.
+    pub fn holds(&self, token: u64) -> bool {
+        self.pending
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .any(|(t, _)| *t == token)
+    }
+
     /// How many asks wait for an instruction.
     #[doc(hidden)]
     pub fn pending_count(&self) -> usize {
@@ -125,20 +161,88 @@ fn captured(ctx: &OperatorContext) -> Option<AskSource> {
     })
 }
 
-fn operator_ask(asks: &LlmAsks, ctx: &mut OperatorContext) -> Result<Effect, CommandError> {
-    let Some(source) = captured(ctx) else {
-        return Ok(Effect::Echo {
-            level: EchoLevel::Info,
-            text: "llm: nothing to ask about (the span is empty)".to_string(),
-        });
-    };
-    let lines = line_span(source.range);
-    let token = asks.hold(source);
-    Ok(Effect::OpenPrompt {
+/// The one-line prompt that takes ask `token`'s instruction.
+fn instruction_prompt(token: u64, lines: &str) -> Effect {
+    Effect::OpenPrompt {
         prompt: format!("Ask about {lines}: "),
         initial: String::new(),
         on_submit_action: ACTION_ASK_SEND.to_string(),
         buffer_name: Some(prompt_buffer_name(token)),
+    }
+}
+
+fn echo(level: EchoLevel, text: String) -> Effect {
+    Effect::Echo { level, text }
+}
+
+/// Why `buffer`'s text may not be sent, if `llm.exclude` names its file.
+fn refusal(
+    chats: &LlmChats,
+    store: Option<&BufferStoreHandle>,
+    buffer: BufferId,
+) -> Option<Effect> {
+    let path = store?.path_for(buffer)?;
+    let glob = chats.excluded(&path)?;
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.display().to_string());
+    Some(echo(
+        EchoLevel::Error,
+        format!("llm: {name} matches llm.exclude (`{glob}`); nothing was sent"),
+    ))
+}
+
+/// Capture the span, or say why there is nothing to ask about.
+fn capture_for_ask(
+    chats: &LlmChats,
+    store: &BufferStoreHandle,
+    ctx: &OperatorContext,
+) -> Result<AskSource, Effect> {
+    if let Some(refused) = refusal(chats, Some(store), ctx.buffer_id) {
+        return Err(refused);
+    }
+    captured(ctx).ok_or_else(|| {
+        echo(
+            EchoLevel::Info,
+            "llm: nothing to ask about (the span is empty)".to_string(),
+        )
+    })
+}
+
+fn operator_ask(
+    chats: &LlmChats,
+    asks: &LlmAsks,
+    store: &BufferStoreHandle,
+    ctx: &mut OperatorContext,
+) -> Result<Effect, CommandError> {
+    let source = match capture_for_ask(chats, store, ctx) {
+        Ok(source) => source,
+        Err(why) => return Ok(why),
+    };
+    let lines = line_span(source.range);
+    let token = asks.hold(source);
+    Ok(instruction_prompt(token, &lines))
+}
+
+/// `<leader>aA`: hold the ask and open the menu over the source, armed with it.
+fn operator_ask_menu(
+    chats: &LlmChats,
+    asks: &LlmAsks,
+    store: &BufferStoreHandle,
+    ctx: &mut OperatorContext,
+) -> Result<Effect, CommandError> {
+    let source = match capture_for_ask(chats, store, ctx) {
+        Ok(source) => source,
+        Err(why) => return Ok(why),
+    };
+    let buffer = source.buffer;
+    let lines = line_span(source.range);
+    let token = asks.hold(source);
+    chats.arm_menu_ask(buffer, token, lines);
+    Ok(Effect::OpenTransient {
+        source: MENU_SOURCE.to_string(),
+        args: Args::None,
     })
 }
 
@@ -182,25 +286,27 @@ fn label_of(store: Option<&BufferStoreHandle>, source: &AskSource) -> (String, S
 }
 
 /// Send `source` with the typed `instruction` (leading `key=value` words are
-/// this request's overrides) to a new dedicated buffer shown beside the source.
+/// this request's overrides) to a new dedicated buffer shown beside the source,
+/// or to the chat `destination` names.
 ///
 /// The new chat copies the source buffer's session settings and any menu choice
 /// waiting for its next request; nothing stays linked (design §4). Only the
-/// typed instruction is scanned for `@profile`, never the source text.
+/// typed instruction is scanned for `@profile`, never the source text. A source
+/// over [`ASK_CONFIRM_BYTES`] is held and confirmed first unless `confirmed`.
 pub fn ask_effect(
     chats: &Arc<LlmChats>,
+    asks: &LlmAsks,
     store: Option<&BufferStoreHandle>,
     source: AskSource,
     instruction: &str,
+    confirmed: bool,
 ) -> Effect {
+    if let Some(refused) = refusal(chats, store, source.buffer) {
+        return refused;
+    }
     let (args, typed) = match parse_request_args(instruction) {
         Ok(parsed) => parsed,
-        Err(e) => {
-            return Effect::Echo {
-                level: EchoLevel::Error,
-                text: e,
-            };
-        }
+        Err(e) => return echo(EchoLevel::Error, e),
     };
     let mut overrides = RequestOverrides::default();
     match chats.plan_send(source.buffer, &typed) {
@@ -212,21 +318,68 @@ pub fn ask_effect(
         // Tools reach an ask only through a chat's confirm; an ask has no
         // prompt left to confirm into once it is sent.
         SendPlan::NeedsConfirm(p) => {
-            return Effect::Echo {
-                level: EchoLevel::Error,
-                text: format!(
+            return echo(
+                EchoLevel::Error,
+                format!(
                     "llm: @{p} enables tools, which an ask cannot confirm; open a chat with :llm {p}"
                 ),
-            };
+            );
         }
     }
+    let (label, hint, lang) = label_of(store, &source);
+    if !confirmed && source.text.len() > ASK_CONFIRM_BYTES {
+        let size = source.text.len();
+        let token = asks.hold(source);
+        return Effect::Confirm {
+            prompt: format!(
+                "Send {} KB from {label} (about {}k tokens)?",
+                size.div_ceil(1024),
+                size.div_ceil(4000)
+            ),
+            yes_action: ACTION_ASK_CONFIRMED.to_string(),
+            args: Args::List(vec![
+                ArgValue::String(token.to_string()),
+                ArgValue::String(instruction.to_string()),
+            ]),
+        };
+    }
     let mut values = chats.next_request(source.buffer);
-    chats.clear_next_request(source.buffer);
     values.extend(args);
+    // Where it goes: this request's `destination=`, else the source session's.
+    let destination = values.get(&SettingKey::Destination).cloned().or_else(|| {
+        chats
+            .resolve_for(source.buffer)
+            .ok()
+            .and_then(|r| r.values.destination)
+    });
+    let mut note = None;
+    let target = match destination.as_deref() {
+        Some(name) if is_buffer_name(name) => {
+            let chat = store
+                .and_then(|s| s.find_by_name(name))
+                .and_then(|id| chats.for_buffer(id));
+            match chat {
+                Some(chat) => Some(chat),
+                None => {
+                    return echo(
+                        EchoLevel::Error,
+                        format!("llm: destination {name} is not an open chat"),
+                    );
+                }
+            }
+        }
+        Some(kind @ ("below" | "review" | "register" | "echo")) => {
+            note = Some(format!(
+                "llm: destination={kind} is not built yet; the answer opened in a new buffer"
+            ));
+            None
+        }
+        _ => None,
+    };
+    values.remove(&SettingKey::Destination);
+    chats.clear_next_request(source.buffer);
     overrides.values = values;
 
-    let (label, hint, lang) = label_of(store, &source);
-    let session = chats.create_for_source(source.buffer, &hint);
     let block = Block::Source {
         label,
         lang,
@@ -236,16 +389,20 @@ pub fn ask_effect(
             line: source.range.start.line,
         }),
     };
+    let session = target.unwrap_or_else(|| chats.create_for_source(source.buffer, &hint));
     chats.submit_source(&session, block, typed.trim().to_string(), overrides);
-    Effect::DisplaySyntheticBuffer {
+    let display = Effect::DisplaySyntheticBuffer {
         name: session.name.clone(),
         mode_id: LlmChatMode::mode_id().as_str().to_string(),
         content: None,
         split: lattice_core::ui::pane::SplitOrientation::Vertical,
+    };
+    match note {
+        Some(text) => Effect::Many(vec![display, echo(EchoLevel::Info, text)]),
+        None => display,
     }
 }
 
-/// `action:llm-ask-send`: the instruction prompt was submitted.
 pub fn send_handler(chats: LlmChatsHandle, asks: LlmAsksHandle) -> ActionHandler {
     Arc::new(move |ctx: &ActionContext<'_>| -> Option<Effect> {
         let store = ctx.services.get::<BufferStoreHandle>();
@@ -261,38 +418,155 @@ pub fn send_handler(chats: LlmChatsHandle, asks: LlmAsksHandle) -> ActionHandler
             });
         };
         let instruction = ctx.prompt_value.unwrap_or_default();
-        Some(ask_effect(&chats, store.as_deref(), source, instruction))
+        Some(ask_effect(
+            &chats,
+            &asks,
+            store.as_deref(),
+            source,
+            instruction,
+            false,
+        ))
     })
 }
 
-/// Register `operator:llm-ask` and declare its prompt's action. Returns the
-/// operator's id for `bind_operator`.
-pub fn register(registry: &mut CommandRegistry, asks: LlmAsksHandle) -> OperatorId {
-    registry.register_action(
-        ACTION_ASK_SEND,
-        "llm: send the ask the instruction prompt was opened for.",
-        ActionSpec {
-            apply: Arc::new(|_| Ok(Effect::None)),
-            args_schema: vec![],
-        },
-    );
-    registry.register_operator(
+/// The menu's `a` row: move the ask the menu holds on to its instruction prompt.
+pub fn continue_handler(chats: LlmChatsHandle, asks: LlmAsksHandle) -> ActionHandler {
+    Arc::new(move |ctx: &ActionContext<'_>| -> Option<Effect> {
+        let buffer = BufferId(ctx.buffer_id.0 as u32);
+        let Some((token, lines)) = chats.disarm_menu_ask(buffer) else {
+            return Some(echo(
+                EchoLevel::Error,
+                "llm: no ask is waiting; use <leader>aA again".to_string(),
+            ));
+        };
+        if !asks.holds(token) {
+            return Some(echo(
+                EchoLevel::Error,
+                "llm: that ask was dropped; ask again".to_string(),
+            ));
+        }
+        Some(instruction_prompt(token, &lines))
+    })
+}
+
+/// The yes half of the oversized-source confirm. The token and the instruction
+/// travel in the confirm's args, so what is confirmed is what is sent.
+pub fn confirmed_handler(chats: LlmChatsHandle, asks: LlmAsksHandle) -> ActionHandler {
+    Arc::new(move |ctx: &ActionContext<'_>| -> Option<Effect> {
+        let Args::List(items) = &ctx.args else {
+            return None;
+        };
+        let (Some(ArgValue::String(token)), Some(ArgValue::String(instruction))) =
+            (items.first(), items.get(1))
+        else {
+            return None;
+        };
+        let source = token.parse().ok().and_then(|t| asks.take(t));
+        let Some(source) = source else {
+            return Some(echo(
+                EchoLevel::Error,
+                "llm: that ask was dropped; ask again".to_string(),
+            ));
+        };
+        let store = ctx.services.get::<BufferStoreHandle>();
+        Some(ask_effect(
+            &chats,
+            &asks,
+            store.as_deref(),
+            source,
+            instruction,
+            true,
+        ))
+    })
+}
+
+/// The operator ids `bind_operator` binds.
+pub struct AskOperators {
+    pub ask: OperatorId,
+    pub ask_menu: OperatorId,
+}
+
+fn ask_spec(
+    apply: impl Fn(&mut OperatorContext) -> Result<Effect, CommandError> + Send + Sync + 'static,
+) -> OperatorSpec {
+    OperatorSpec {
+        // It reads the span and changes nothing, so read-only buffers run it.
+        mutates: false,
+        // `.` repeats changes; an ask is not one (see the module docs).
+        repeatable: false,
+        // An ask is about the text: a block selection is one span.
+        blockwise_per_row: false,
+        post_motion_char: false,
+        args_schema: vec![],
+        apply: Arc::new(apply),
+    }
+}
+
+/// Register both ask operators and declare the actions their prompt, menu row
+/// and confirm fire. `store` resolves a source's file for `llm.exclude`.
+pub fn register(
+    registry: &mut CommandRegistry,
+    chats: LlmChatsHandle,
+    asks: LlmAsksHandle,
+    store: BufferStoreHandle,
+) -> AskOperators {
+    for (name, doc) in [
+        (
+            ACTION_ASK_SEND,
+            "llm: send the ask the instruction prompt was opened for.",
+        ),
+        (
+            ACTION_ASK_CONTINUE,
+            "llm: type the instruction for the ask the menu is holding.",
+        ),
+        (
+            ACTION_ASK_CONFIRMED,
+            "llm: send an oversized ask after its confirm.",
+        ),
+    ] {
+        registry.register_action(
+            name,
+            doc,
+            ActionSpec {
+                apply: Arc::new(|_| Ok(Effect::None)),
+                // A confirm's args travel through the dialog's transient
+                // state, keyed by this schema: a value with no slot is
+                // dropped. The oversized confirm carries two.
+                args_schema: if name == ACTION_ASK_CONFIRMED {
+                    vec![
+                        lattice_grammar::ArgSpec::optional(
+                            "token",
+                            lattice_grammar::ArgKind::String,
+                            "the held ask",
+                        ),
+                        lattice_grammar::ArgSpec::optional(
+                            "instruction",
+                            lattice_grammar::ArgKind::String,
+                            "the instruction typed for it",
+                        ),
+                    ]
+                } else {
+                    vec![]
+                },
+            },
+        );
+    }
+    let (c, a, st) = (chats.clone(), asks.clone(), store.clone());
+    let ask = registry.register_operator(
         ASK_OPERATOR,
         "Ask a language model about the {motion}/{text-object} that follows: type an \
          instruction, and the answer opens in a new buffer beside this one, which keeps \
          the focus. `<leader>aaip` asks about a paragraph; in Visual, about the selection.",
-        OperatorSpec {
-            // It reads the span and changes nothing, so read-only buffers run it.
-            mutates: false,
-            // `.` repeats changes; an ask is not one (see the module docs).
-            repeatable: false,
-            // An ask is about the text: a block selection is one span.
-            blockwise_per_row: false,
-            post_motion_char: false,
-            args_schema: vec![],
-            apply: Arc::new(move |ctx| operator_ask(&asks, ctx)),
-        },
-    )
+        ask_spec(move |ctx| operator_ask(&c, &a, &st, ctx)),
+    );
+    let ask_menu = registry.register_operator(
+        ASK_MENU_OPERATOR,
+        "Ask about the {motion}/{text-object} that follows, opening `:llm-menu` first: \
+         change the model, temperature or destination for this ask, then `a` to type the \
+         instruction.",
+        ask_spec(move |ctx| operator_ask_menu(&chats, &asks, &store, ctx)),
+    );
+    AskOperators { ask, ask_menu }
 }
 
 /// Register `:llm-ask`: `:'<,'>llm-ask [key=value…] instruction` asks about the
@@ -301,10 +575,10 @@ pub fn register(registry: &mut CommandRegistry, asks: LlmAsksHandle) -> Operator
 pub fn register_ex(
     registry: &mut CommandRegistry,
     chats: LlmChatsHandle,
+    asks: LlmAsksHandle,
     store: BufferStoreHandle,
 ) {
     use lattice_agent::parse_rest_as_text;
-    use lattice_grammar::args::Args;
     use lattice_grammar::command::LatencyClass;
     use lattice_grammar::registry::{ExCommandSpec, SurfaceForm};
     use lattice_protocol::position::Position;
@@ -346,7 +620,14 @@ pub fn register_ex(
                     range: Range::new(Position::new(a, 0), Position::new(b + 1, 0)),
                     text,
                 };
-                Ok(ask_effect(&chats, Some(&store), source, &instruction))
+                Ok(ask_effect(
+                    &chats,
+                    &asks,
+                    Some(&store),
+                    source,
+                    &instruction,
+                    false,
+                ))
             }),
             args_schema: vec![],
             surface_form: SurfaceForm::Keyword,

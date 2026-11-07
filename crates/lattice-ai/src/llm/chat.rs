@@ -204,6 +204,11 @@ pub struct LlmChats {
     /// Which scope `:llm-menu` writes to, per buffer. It stays where the user
     /// left it: switching it is a mode, not a one-shot.
     menu_scope: RwLock<HashMap<BufferId, MenuScope>>,
+    /// The ask `<leader>aA` holds while its menu is open over a buffer: the
+    /// ask's token and the lines it covers. The menu shows an `a` row for it,
+    /// which opens the instruction prompt; opening the menu any other way
+    /// disarms it, so a later `:llm-menu` offers no stale ask.
+    menu_ask: RwLock<HashMap<BufferId, (u64, String)>>,
     /// Where `.lattice/llm.toml` is looked for. `None` finds the project root
     /// from the working directory when a request starts.
     project_root: RwLock<Option<std::path::PathBuf>>,
@@ -234,6 +239,7 @@ impl LlmChats {
             folds_seen: RwLock::new(HashMap::new()),
             next_request: RwLock::new(HashMap::new()),
             menu_scope: RwLock::new(HashMap::new()),
+            menu_ask: RwLock::new(HashMap::new()),
             project_root: RwLock::new(None),
             project_cache: Arc::new(RwLock::new(None)),
             next_chat: AtomicU32::new(1),
@@ -449,6 +455,43 @@ impl LlmChats {
             .get(&buffer)
             .copied()
             .unwrap_or_default()
+    }
+
+    /// Hold ask `token` (covering `lines`) for the menu opened over `buffer`.
+    pub fn arm_menu_ask(&self, buffer: BufferId, token: u64, lines: String) {
+        self.menu_ask
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(buffer, (token, lines));
+    }
+
+    /// The ask the menu over `buffer` is holding, if any.
+    pub fn menu_ask(&self, buffer: BufferId) -> Option<(u64, String)> {
+        self.menu_ask
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&buffer)
+            .cloned()
+    }
+
+    /// Release the ask the menu over `buffer` was holding.
+    pub fn disarm_menu_ask(&self, buffer: BufferId) -> Option<(u64, String)> {
+        self.menu_ask
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&buffer)
+    }
+
+    /// The `llm.exclude` glob `path` matches, if any: its text must not be sent.
+    /// Without a registry (a bare test) the default list applies.
+    pub fn excluded(&self, path: &std::path::Path) -> Option<String> {
+        let reg = self.registry.read().unwrap_or_else(|e| e.into_inner());
+        let globs = reg
+            .as_ref()
+            .and_then(|r| r.get_typed::<super::options::LlmExclude>())
+            .map(|v| (*v).clone())
+            .unwrap_or_default();
+        globs.matching(path).map(str::to_string)
     }
 
     /// Flip the menu's scope for `buffer` and return the new one.

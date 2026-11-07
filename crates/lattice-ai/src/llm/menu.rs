@@ -64,6 +64,9 @@ pub struct MenuIds {
     edit: CommandId,
     scope: CommandId,
     clear: CommandId,
+    /// The `a` row a held ask adds (`<leader>aA`). `None` where the ask
+    /// operators are not registered.
+    ask: Option<CommandId>,
 }
 
 impl MenuIds {
@@ -72,6 +75,7 @@ impl MenuIds {
             edit: registry.id_by_name(ACTION_EDIT)?,
             scope: registry.id_by_name(ACTION_SCOPE)?,
             clear: registry.id_by_name(ACTION_CLEAR)?,
+            ask: registry.id_by_name(super::operators::ACTION_ASK_CONTINUE),
         })
     }
 }
@@ -164,42 +168,61 @@ pub fn build(
         Some(p) => format!("LLM settings for {session} -- {p}"),
         None => format!("LLM settings for {session}"),
     };
+    // `<leader>aA` holds its ask here until `a` moves it on to the prompt.
+    let held = ids.ask.zip(chats.menu_ask(buffer));
+    let mut groups = Vec::with_capacity(4);
+    if let Some((ask, (_, lines))) = &held {
+        groups.push(TransientGroup {
+            label: "Ask".to_string(),
+            items: vec![TransientItem {
+                key: vec!["a".to_string()],
+                label: "ask".to_string(),
+                description: format!("type the instruction for {lines}"),
+                kind: TransientItemKind::action(*ask),
+            }],
+        });
+    }
+    groups.extend([
+        TransientGroup {
+            label: format!("Scope: {}", scope_word(scope)),
+            items: vec![TransientItem {
+                key: vec!["=".to_string()],
+                label: "switch scope".to_string(),
+                description: match scope {
+                    MenuScope::Session => {
+                        "now: changes last for the session; = for the next request only"
+                    }
+                    MenuScope::NextRequest => {
+                        "now: changes apply to the next request only; = for the session"
+                    }
+                }
+                .to_string(),
+                kind: TransientItemKind::action(ids.scope),
+            }],
+        },
+        TransientGroup {
+            label: "Settings".to_string(),
+            items: rows,
+        },
+        TransientGroup {
+            label: "Overrides".to_string(),
+            items: vec![TransientItem {
+                key: vec!["x".to_string()],
+                label: "clear".to_string(),
+                description: "drop this session's overrides and any pending choice".to_string(),
+                kind: TransientItemKind::action(ids.clear),
+            }],
+        },
+    ]);
     TransientSpec {
         title,
-        groups: vec![
-            TransientGroup {
-                label: format!("Scope: {}", scope_word(scope)),
-                items: vec![TransientItem {
-                    key: vec!["=".to_string()],
-                    label: "switch scope".to_string(),
-                    description: match scope {
-                        MenuScope::Session => {
-                            "now: changes last for the session; = for the next request only"
-                        }
-                        MenuScope::NextRequest => {
-                            "now: changes apply to the next request only; = for the session"
-                        }
-                    }
-                    .to_string(),
-                    kind: TransientItemKind::action(ids.scope),
-                }],
-            },
-            TransientGroup {
-                label: "Settings".to_string(),
-                items: rows,
-            },
-            TransientGroup {
-                label: "Overrides".to_string(),
-                items: vec![TransientItem {
-                    key: vec!["x".to_string()],
-                    label: "clear".to_string(),
-                    description: "drop this session's overrides and any pending choice".to_string(),
-                    kind: TransientItemKind::action(ids.clear),
-                }],
-            },
-        ],
+        groups,
         preview: None,
-        footer: Some("= scope  q dismiss".to_string()),
+        footer: Some(if held.is_some() {
+            "a ask  = scope  q dismiss".to_string()
+        } else {
+            "= scope  q dismiss".to_string()
+        }),
     }
 }
 

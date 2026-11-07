@@ -339,6 +339,7 @@ pub fn register(registry: &mut CommandRegistry, chats: LlmChatsHandle) {
             surface_form: SurfaceForm::Keyword,
         },
     );
+    let menu_chats = chats.clone();
     registry.register_ex_command(
         "llm-menu",
         "Show every LLM setting for this buffer's session with where each value came from, and \
@@ -348,7 +349,10 @@ pub fn register(registry: &mut CommandRegistry, chats: LlmChatsHandle) {
             accepts_bang: false,
             accepts_range: false,
             parse_args: Arc::new(parse_rest_as_text),
-            apply: Arc::new(|_| {
+            apply: Arc::new(move |ctx| {
+                // Opened by hand, the menu holds no ask: drop one a dismissed
+                // `<leader>aA` menu left behind.
+                menu_chats.disarm_menu_ask(ctx.buffer_id);
                 Ok(Effect::OpenTransient {
                     source: MENU_SOURCE.to_string(),
                     args: Args::None,

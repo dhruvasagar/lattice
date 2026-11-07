@@ -314,7 +314,7 @@ operator's is `true` because the WIT `operator-spec` has no such bit. `bind_oper
 `OperatorChordWirer` service, extended with `bind_in(layer, ..)`. The linewise form repeats the
 prefix's last key. `fold` and `g/` are now `mutates = false`, so a read-only buffer runs them.
 
-### LL.10 — Ask and send 🚧
+### LL.10 — Ask and send ✅
 
 Carved into three slices, one commit each.
 
@@ -322,7 +322,7 @@ Carved into three slices, one commit each.
 |---|---|---|
 | LL.10a | `Effect::DisplaySyntheticBuffer`: show a named buffer in another pane, focus unmoved, reuse a pane already in the same major, else split. Host-applied; TUI + GPUI peer arms; no WIT mirror yet. Tests: `lattice-host/tests/display_synthetic_buffer.rs` (7). | ✅ |
 | LL.10b | `llm-mode` (`Universal` minor), the ask operator, the instruction prompt, the request buffer with the source as a folded first turn; read-only sources; blockwise collapses to one span; `.` decided. | ✅ |
-| LL.10c | `<leader>aA` (menu first), `destination=<buffer>`, size threshold, `llm.exclude` refusing `.env`. | 📝 |
+| LL.10c | `<leader>aA` (menu first), `destination=<buffer>`, size threshold, `llm.exclude` refusing `.env`. | ✅ |
 
 **LL.10b landed.** `operator:llm-ask` (`mutates: false`, `blockwise_per_row: false`) captures its
 span when it runs and opens an `Effect::OpenPrompt` whose buffer name (`*llm-ask:<token>*`) carries
@@ -348,6 +348,19 @@ it, as charwise Visual does (`past_head` in `dispatcher.rs`). That also changes 
 block, which share the collapse; they still act on one anchor..head span rather than vim's
 rectangle, a pre-existing gap this slice does not take on.
 
+
+**LL.10c landed.** `operator:llm-ask-menu` (`<leader>aA`) holds its ask and opens `:llm-menu`
+armed with it (`LlmChats::arm_menu_ask`, per-buffer menu state beside `menu_scope`); the menu gains
+an `a` row (`action:llm-ask-continue`) that opens the instruction prompt. Opening the menu by hand
+(`:llm-menu`, `<M-m>`) disarms it, so no stale ask is offered. `llm.exclude` is a typed list option
+(`ExcludeGlobs`, `globset`; name-only globs match the file name, `/` globs the path; replaces the
+default `.env`/`.env.*`/`*.pem`/`*.key`/`id_rsa*`/`id_ed25519*`/`.netrc`), checked at the operator
+before the prompt and again in `ask_effect`, which `:llm-ask` reaches. A source over
+`ASK_CONFIRM_BYTES` (32 KiB) is held and returned as `Effect::Confirm`; its yes action declares a
+two-slot schema, since a confirm's args travel through the schema and an unslotted value is dropped.
+`destination` now accepts a chat buffer name (`is_buffer_name`); an ask naming one submits to that
+session, an unknown name is refused, and `below`/`echo`/`register`/`review` (LL.13-14) open a new
+buffer with a note. The threshold is a constant, not an option: nothing yet asks to tune it.
 
 **Files:** `src/llm/modes/llm_mode.rs` (global minor, `<leader>a` chords), `src/llm/operators.rs`,
 `src/llm/sink.rs`, `docs/user/llm-mode.md`.

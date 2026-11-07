@@ -285,3 +285,179 @@ async fn the_answer_starts_from_a_copy_of_the_source_settings_and_stays_unlinked
         "not linked back either"
     );
 }
+
+// ── LL.10c ──────────────────────────────────────────────────────────────────
+
+fn scratch_dir(name: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!(
+        "lattice-llm-ask-{name}-{}-{}",
+        std::process::id(),
+        Instant::now().elapsed().as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+/// An editor over `text`, as the file `path` (no disk read).
+fn boot_at(path: &std::path::Path, text: &str) -> Editor {
+    let doc = lattice_core::DocumentBuilder::default()
+        .with_text(text)
+        .with_path(path.to_path_buf())
+        .build();
+    Editor::boot(doc)
+}
+
+fn message(editor: &Editor) -> String {
+    editor
+        .last_message
+        .as_ref()
+        .map(|m| m.text.clone())
+        .unwrap_or_default()
+}
+
+/// Design §5: `llm.exclude` refuses `.env` by default, by name, and nothing
+/// is opened or sent.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_excluded_file_is_refused_by_name_and_nothing_is_sent() {
+    let (addr, bodies) = serve();
+    let dir = scratch_dir("env");
+    let mut editor = boot_at(&dir.join(".env"), "API_TOKEN=hunter2\n");
+    chats(&editor).set_config(config_for(addr));
+
+    ex(&mut editor, "llm-ask what is this");
+    let msg = message(&editor);
+    assert!(msg.contains(".env") && msg.contains("llm.exclude"), "{msg}");
+    assert_eq!(editor.pane_tree.leaves().len(), 1, "nothing opened");
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(bodies.lock().unwrap().is_empty(), "nothing sent");
+}
+
+/// The value replaces the default list, and a bad glob is refused by `:set`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn llm_exclude_replaces_the_default_and_refuses_a_bad_glob() {
+    let (addr, bodies) = serve();
+    let dir = scratch_dir("custom");
+
+    let mut notes = boot_at(&dir.join("notes.txt"), "private notes\n");
+    chats(&notes).set_config(config_for(addr));
+    ex(&mut notes, "set llm.exclude=[");
+    assert!(
+        message(&notes).contains("not a glob"),
+        "{}",
+        message(&notes)
+    );
+    ex(&mut notes, "set llm.exclude=*.txt");
+    ex(&mut notes, "llm-ask hi");
+    assert!(message(&notes).contains("notes.txt"), "{}", message(&notes));
+
+    let mut env = boot_at(&dir.join(".env"), "EDITOR=lattice\n");
+    chats(&env).set_config(config_for(addr));
+    ex(&mut env, "set llm.exclude=*.txt");
+    ex(&mut env, "llm-ask hi");
+    let sent = settle(&mut env, |_| !bodies.lock().unwrap().is_empty()).await;
+    assert!(sent, "`.env` is not excluded once the list is replaced");
+    assert!(!bodies.lock().unwrap()[0].contains("private notes"));
+}
+
+/// Design §5 edge cases: an oversized source asks first, and nothing is sent
+/// before the answer. The yes half is the TUI test (the dialog is the
+/// renderer's).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_oversized_source_asks_before_anything_is_sent() {
+    let (addr, bodies) = serve();
+    let big: String = (0..2000)
+        .map(|i| format!("let line_{i} = {i};\n"))
+        .collect();
+    assert!(big.len() > lattice_ai::llm::operators::ASK_CONFIRM_BYTES);
+    let mut editor = Editor::boot(CoreDocument::from_text(&big));
+    chats(&editor).set_config(config_for(addr));
+
+    let mut out = DispatchOutcome::default();
+    editor.execute_ex_line("%llm-ask summarise", &mut out);
+    let confirm = out.effects.iter().find_map(|e| match e {
+        lattice_grammar::effect::Effect::Confirm {
+            prompt, yes_action, ..
+        } => Some((prompt.clone(), yes_action.clone())),
+        _ => None,
+    });
+    let (prompt, yes) = confirm.expect("a confirm, not a send");
+    assert!(
+        prompt.contains("KB") && prompt.contains("tokens"),
+        "{prompt}"
+    );
+    assert_eq!(yes, lattice_ai::llm::operators::ACTION_ASK_CONFIRMED);
+    assert_eq!(editor.pane_tree.leaves().len(), 1);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(bodies.lock().unwrap().is_empty(), "nothing before the yes");
+}
+
+/// Design §3: `destination=<buffer>` continues that chat instead of opening a
+/// new one, and the model sees the earlier exchange.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn destination_continues_an_open_chat() {
+    let (addr, bodies) = serve();
+    let mut editor = Editor::boot(CoreDocument::from_text(SOURCE));
+    chats(&editor).set_config(config_for(addr));
+    ex(&mut editor, "1llm-ask one");
+    let first = chat_buffer(&editor).unwrap();
+    let name = editor.buffers.name_of(first).unwrap();
+    assert!(settle_woken(&mut editor, |e| text_of(e, first).contains("It defines b.")).await);
+
+    ex(&mut editor, &format!("2llm-ask destination={name} two"));
+    assert_eq!(
+        chat_buffer(&editor),
+        Some(first),
+        "the same chat, in its pane"
+    );
+    assert_eq!(editor.pane_tree.leaves().len(), 2);
+    let got = settle(&mut editor, |_| bodies.lock().unwrap().len() >= 2).await;
+    assert!(got, "the second ask was never sent");
+    let second = bodies.lock().unwrap()[1].clone();
+    assert!(
+        second.contains("fn a() {}") && second.contains("fn b() {}"),
+        "{second}"
+    );
+    assert!(
+        second.contains("It defines b."),
+        "the earlier answer is history: {second}"
+    );
+    let names: Vec<String> = editor
+        .buffers
+        .sorted_ids()
+        .into_iter()
+        .filter_map(|id| editor.buffers.name_of(id))
+        .filter(|n| n.starts_with("*llm:"))
+        .collect();
+    assert_eq!(names.len(), 1, "no second chat: {names:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_destination_naming_no_chat_is_refused() {
+    let (addr, bodies) = serve();
+    let mut editor = Editor::boot(CoreDocument::from_text(SOURCE));
+    chats(&editor).set_config(config_for(addr));
+    ex(&mut editor, "1llm-ask destination=*llm:nope* hi");
+    assert!(
+        message(&editor).contains("not an open chat"),
+        "{}",
+        message(&editor)
+    );
+    assert_eq!(editor.pane_tree.leaves().len(), 1);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(bodies.lock().unwrap().is_empty());
+}
+
+/// A destination kind not built yet still answers, in a new buffer, and says so.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_destination_not_built_yet_opens_a_new_buffer_and_says_so() {
+    let (addr, _bodies) = serve();
+    let mut editor = Editor::boot(CoreDocument::from_text(SOURCE));
+    chats(&editor).set_config(config_for(addr));
+    ex(&mut editor, "1llm-ask destination=below hi");
+    assert_eq!(editor.pane_tree.leaves().len(), 2);
+    assert!(
+        message(&editor).contains("not built yet"),
+        "{}",
+        message(&editor)
+    );
+}

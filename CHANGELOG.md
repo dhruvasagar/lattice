@@ -18,7 +18,12 @@
   reuses that pane. It works from read-only buffers such as
   `*compilation*` and help, and `:'<,'>llm-ask explain this` does the same
   from the command line. `gf` on the sent text in the answer goes back to
-  it. See `:help llm-mode`.
+  it. `<leader>aA` opens the settings menu first, and
+  `destination=*llm:…*` adds the ask to a chat already open. A selection
+  over 32 KB asks before it is sent. See `:help llm-mode`.
+- **Secrets are never sent to a language model.** `llm.exclude` lists globs
+  of files whose text an ask refuses to send, by name; the default covers
+  `.env`, `*.pem`, `*.key` and SSH keys.
 
 ### Fixed
 - **Semantic colours no longer land on the wrong characters.** A request to

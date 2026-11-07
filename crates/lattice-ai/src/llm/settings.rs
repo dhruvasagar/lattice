@@ -195,7 +195,10 @@ pub fn validate(key: SettingKey, value: &str) -> Result<(), String> {
                 ))
             }
         }
-        SettingKey::Destination => one_of(&["chat", "below", "review", "register", "echo"]),
+        // Or a chat buffer's name, to continue that chat (`*llm:foo.rs:2*`).
+        SettingKey::Destination if is_buffer_name(v) => Ok(()),
+        SettingKey::Destination => one_of(&["chat", "below", "review", "register", "echo"])
+            .map_err(|e| format!("{e}, or a chat's buffer name (`*llm:3*`)")),
         SettingKey::FoldReasoning | SettingKey::FoldTools => one_of(&["closed", "open", "hidden"]),
         SettingKey::Profile => {
             if v.chars()
@@ -806,6 +809,12 @@ pub fn global_set(registry: &lattice_config::ConfigRegistry) -> RawSet {
         out.insert(SettingKey::MaxTokens, n.to_string());
     }
     out
+}
+
+/// Whether a `destination` value names a buffer (`*llm:3*`) rather than a kind
+/// of destination.
+pub fn is_buffer_name(v: &str) -> bool {
+    v.len() > 2 && v.starts_with('*') && v.ends_with('*')
 }
 
 #[cfg(test)]

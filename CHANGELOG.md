@@ -3,6 +3,8 @@
 ## Unreleased
 
 ### Added
+- **The modeline shows when an LLM request is running:** `llm`, or
+  `llm 3` for three, wherever you are.
 - **See and stop running LLM requests from anywhere.** `:llm-requests`
   lists every request with its model and where its answer is going, and
   updates itself; `dd` stops one. `:llm-stop` stops this buffer's request,

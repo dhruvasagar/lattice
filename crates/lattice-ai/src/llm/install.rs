@@ -21,6 +21,14 @@ pub fn install(boot: &mut impl SubsystemBoot) {
         None,
     ));
     boot.register_service::<RequestRegistryHandle>(registry.clone());
+    // LL.14c: the modeline says whether a request is running. The element's
+    // descriptor is registered by `llm-mode` on its first activation: the
+    // host builds the modeline service after this install runs.
+    super::modeline::spawn_forwarder(
+        registry.clone(),
+        boot.event_bus().clone(),
+        boot.runtime_handle(),
+    );
 
     // The user's `[llm]` table, read once here (boot is not the editor thread's
     // hot path). Problems become log lines; a bad provider is skipped.

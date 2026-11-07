@@ -490,7 +490,18 @@ hear "interrupted" (inline marker, quiet echo); an unowned request is cancelled 
 carry `source` and `destination`: a hidden ask's `RequestTarget.buffer` is its source buffer and its
 label says where the answer goes. `:llm-stop` stops this buffer's one request, else the only live
 one, else opens the list. No host or renderer change. No bench: a repaint per state change, nothing
-per key. Tests: `llm_inline.rs` (+4), `requests.rs` units (3). **LL.14c — Modeline, hidden-done notice, `:q` warns 📝.**
+per key. Tests: `llm_inline.rs` (+4), `requests.rs` units (3). **LL.14c — The modeline ✅.** `src/llm/modeline.rs`: a `Scope::Global` `llm` element, right zone
+ahead of the LSP badge, and a forwarder that folds `RequestStateChanged` into the running count and
+publishes `ModelineElementUpdate` only when it moves (`llm`, `llm N`, hidden at zero); the host's
+existing modeline wake repaints off-keystroke. The descriptor is registered by `llm-mode`'s first
+activation, not at install: `lattice_ai::install` runs before the host builds the modeline service
+(`editor_boot.rs`), so a lookup there finds nothing. No host or renderer change (both peers paint
+pushed elements from the shared resolver). Tests: `llm_inline.rs` (+2: shown and cleared without a
+key, store and painted row; counted), `modeline.rs` unit. *A restored session never resumes a
+request* holds by construction: there is no session restore, and the registry is in memory only.
+
+**LL.14d — Hidden chat says it is done; `:q` warns 📝.** Both need host surface not in design §10
+(a displayed-buffer query, a quit guard); held for a decision.
 
 
 **Files:** `src/llm/sink.rs` (echo, register), `src/llm/modes/requests.rs`, `src/llm/commands.rs`

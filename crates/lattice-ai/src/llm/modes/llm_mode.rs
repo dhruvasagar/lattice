@@ -10,6 +10,11 @@
 //! are bound into this mode's keymap layer by `install` through
 //! `SubsystemBoot::bind_operator`, so they exist only where the mode is active;
 //! a `keymap()` entry cannot express operator-pending composition.
+//!
+//! It also registers the `llm` modeline element (LL.14c), once, on its first
+//! activation: the host's modeline service is built after the llm layer's
+//! install, so the mode, reaching it through its context, is the owner that
+//! can.
 
 use lattice_mode::{
     ActionHandlerContribution, ActivationPolicy, CapabilitySet, LifecycleFuture, Mode, ModeContext,
@@ -27,6 +32,7 @@ pub struct LlmMode {
     chats: LlmChatsHandle,
     asks: LlmAsksHandle,
     rewrites: LlmRewritesHandle,
+    modeline_registered: std::sync::atomic::AtomicBool,
 }
 
 impl LlmMode {
@@ -35,6 +41,7 @@ impl LlmMode {
             chats,
             asks,
             rewrites,
+            modeline_registered: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -86,7 +93,14 @@ impl Mode for LlmMode {
         ]
     }
 
-    fn on_activate(&self, _ctx: ModeContext) -> LifecycleFuture<'_, ()> {
+    fn on_activate(&self, ctx: ModeContext) -> LifecycleFuture<'_, ()> {
+        use std::sync::atomic::Ordering;
+        if !self.modeline_registered.load(Ordering::Acquire)
+            && let Some(svc) = ctx.service::<lattice_mode::ModelineServiceHandle>()
+        {
+            crate::llm::modeline::register_element(&svc);
+            self.modeline_registered.store(true, Ordering::Release);
+        }
         Box::pin(async { Ok(()) })
     }
 }

@@ -688,4 +688,88 @@ mod tests {
             let _ = release.send(());
         }
     }
+
+    fn llm_badge(a: &App) -> String {
+        a.editor
+            .modeline
+            .snapshot()
+            .content_for(
+                lattice_mode::ModelineKey::Global,
+                &lattice_mode::ElementId::new("llm"),
+            )
+            .map(|c| c.plain())
+            .unwrap_or_default()
+    }
+
+    /// The painted modeline, after the publish the editor actor's wake arm
+    /// runs between its tick and the paint.
+    fn modeline_row(a: &mut App) -> String {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        a.editor.publish_render_state();
+        let a = &*a;
+        let mut t = Terminal::new(TestBackend::new(100, 12)).unwrap();
+        let snap = a.ad().snapshot.clone();
+        t.draw(|f| {
+            let _ = crate::render::draw_frame(f, a, &snap);
+        })
+        .unwrap();
+        let buf = t.backend().buffer().clone();
+        // The active pane's modeline: the row that names the buffer.
+        (0..12u16)
+            .map(|y| {
+                (0..100u16)
+                    .map(|x| buf[(x, y)].symbol().to_string())
+                    .collect::<String>()
+            })
+            .rfind(|r| r.contains("[no name]"))
+            .unwrap_or_default()
+    }
+
+    /// LL.14c: the modeline says a request is running, and stops saying so
+    /// when it ends, both without a keystroke.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_modeline_shows_a_running_request_until_it_ends() {
+        let (mut a, release) = app_streaming(&["one ", "two"], End::Done, 200);
+        assert_eq!(llm_badge(&a), "");
+        ask_below(&mut a);
+        assert!(
+            settle_woken(&mut a, |a| llm_badge(a) == "llm").await,
+            "{:?}",
+            llm_badge(&a)
+        );
+        assert!(
+            modeline_row(&mut a).contains(" llm "),
+            "painted: {:?}",
+            modeline_row(&mut a)
+        );
+        release.send(()).unwrap();
+        release.send(()).unwrap();
+        assert!(
+            settle_woken(&mut a, |a| llm_badge(a).is_empty()).await,
+            "{:?}",
+            llm_badge(&a)
+        );
+        assert!(
+            !modeline_row(&mut a).contains(" llm "),
+            "{:?}",
+            modeline_row(&mut a)
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_modeline_counts_several_running_requests() {
+        let (mut a, release) = app_streaming(&["one ", "two"], End::Done, 200);
+        ask_to(&mut a, "", "echo");
+        ask_to(&mut a, "", "echo");
+        assert!(
+            settle_woken(&mut a, |a| llm_badge(a) == "llm 2").await,
+            "{:?}",
+            llm_badge(&a)
+        );
+        for _ in 0..4 {
+            let _ = release.send(());
+        }
+        assert!(settle_woken(&mut a, |a| llm_badge(a).is_empty()).await);
+    }
 }

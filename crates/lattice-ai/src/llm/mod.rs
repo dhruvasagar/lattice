@@ -16,6 +16,7 @@ pub mod config;
 pub mod history;
 pub mod install;
 pub mod menu;
+pub mod modeline;
 pub mod modes;
 pub mod operators;
 pub mod options;

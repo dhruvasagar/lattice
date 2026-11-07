@@ -128,6 +128,10 @@ them from anywhere:
 Stopping works like `<C-c>` in a chat: an answer being written into the
 buffer keeps what arrived and ends with `[interrupted]`.
 
+While any request runs, the modeline shows `llm` (`llm 3` for three), so
+one running in a chat you closed the window of, or writing into another
+buffer, is never out of sight.
+
 ### Requests that may use tools
 
 A model calling tools needs somewhere to show the call and ask your

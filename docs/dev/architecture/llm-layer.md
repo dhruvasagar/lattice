@@ -263,7 +263,7 @@ A `llm.exclude` glob list refuses matches such as `.env`.
 | Chat: caret in the prompt while text streams above | The caret stays in the prompt, by the existing owner-write adoption |
 | Inline: read-only source | Dedicated buffer, and says so |
 | Inline: second request at one point | Refused, pointing at `:llm-requests` |
-| Rewrite: source changed while waiting | Diff marked stale; accepting takes a deliberate confirm |
+| Rewrite: source changed while waiting | Accepting does not apply: the diff reopens against the text as it is now, with the accepted text as the proposal. Accepting that is the deliberate confirm, and it shows what it overwrites, which a yes/no dialog cannot (LL.11b) |
 | Rewrite: source buffer closed | Result moves to a session buffer, so the answer is not lost |
 | Rewrite: blockwise, or across multibuffer files | Refused up front, with the reason |
 | Rewrite: repeated by `.` or a macro | Diffs queue and open one at a time |

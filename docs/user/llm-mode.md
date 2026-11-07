@@ -1,6 +1,6 @@
 ---
-summary: "llm-mode: ask a language model about any text, from any buffer. <leader>aa{motion} asks about the motion's text; the answer opens beside you without taking the focus. :'<,'>llm-ask does the same from the command line."
-related: [llm, llm-chat-mode, ask, operator, model]
+summary: "llm-mode: ask a language model about any text, from any buffer, or have it rewrite text. <leader>aa{motion} asks about the motion's text; the answer opens beside you without taking the focus. <leader>ar{motion} rewrites it through a diff you accept or reject."
+related: [llm, llm-chat-mode, ask, rewrite, operator, model, diff]
 ---
 
 # llm-mode
@@ -80,6 +80,53 @@ The keys are `model`, `profile`, `temperature`, `max_tokens` and the other
 because a system prompt is a paragraph and has `:llm-system`. A bad value
 is named and nothing is sent.
 
+## Rewriting text
+
+`<leader>ar` is an operator that changes text, and it never changes it
+directly: the answer opens as a **diff** for you to accept or reject.
+
+| Keys | Rewrites |
+|---|---|
+| `<leader>arip` | The paragraph |
+| `<leader>arr` | This line |
+| `<leader>ar` in Visual | The selection |
+
+A prompt takes the instruction (`make this a match`, `fix the grammar`);
+`<CR>` sends, `<Esc>` sends nothing, and an empty instruction sends
+nothing. The echo area says the rewrite is running; you can go on editing.
+When the answer arrives, a diff opens in a new tab: on the left the text as
+it was in your buffer, saved or not; on the right the proposal, which you
+can edit. `:diff-accept` replaces the text with the right side, edits
+included, as **one change**: one `u` undoes it. `:diff-reject` leaves the
+buffer as it was. Nothing is written to disk either way; save when you
+want to.
+
+The rewritten text follows your edits while the model works: lines added
+above it move it, as a mark would move. Then:
+
+- **You changed the text itself** while the diff was open: accepting does
+  not apply it. The diff opens again, now against the text as it is, with
+  what you accepted as the proposal, so you see exactly what would be
+  replaced. Accept that to apply it.
+- **You deleted it:** nothing is applied, and the answer opens in its chat
+  buffer so it is not lost.
+- **You closed the buffer:** the same, the answer opens in its chat.
+
+Models often wrap code in a <code>```</code> fence even when asked not to;
+a reply that is one fenced block is unwrapped before the diff.
+
+Each rewrite is a conversation, kept out of sight: its chat holds what was
+sent and the full answer, and opens when a rewrite cannot be applied.
+
+Rewrites queue: a second one waits for the first diff to be accepted or
+rejected before its own opens, so a macro that rewrites several places
+shows them to you one at a time.
+
+A rewrite is refused up front, with the reason, in a read-only buffer, in
+a view composed from several files (a search result: rewrite in the file),
+over a block selection (`<C-v>`: one replacement cannot stand for a
+column of pieces), and in a file `llm.exclude` names.
+
 ## Settings
 
 The answer's chat starts from a **copy** of the asking buffer's settings
@@ -121,10 +168,12 @@ refused: `*compilation*`, `*messages*`, help pages. A block selection
 
 ## Repeating
 
-`.` does not repeat an ask. It repeats your last *change*, and an ask is
+`.` does not repeat an ask or a rewrite. It repeats your last *change*, and an ask is
 not one, in the same way `y` is not; it would also re-send a prompt you
-typed once. A macro that asks runs the ask and moves on: the request runs
-in the background and the macro does not wait for the answer.
+typed once. A rewrite's change lands later, through its diff, so there is
+no change for `.` to repeat. A macro that asks or rewrites runs it and
+moves on: the request runs in the background and the macro does not wait
+for the answer; its rewrites' diffs queue.
 
 ## See also
 

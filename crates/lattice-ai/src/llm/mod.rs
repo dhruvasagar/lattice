@@ -22,6 +22,7 @@ pub mod options;
 pub mod prompt_cookie;
 pub mod provider;
 pub mod request;
+pub mod rewrite;
 pub mod settings;
 pub mod transport;
 

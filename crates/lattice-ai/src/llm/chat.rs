@@ -126,9 +126,44 @@ pub struct ChatSession {
     warned: Mutex<HashSet<String>>,
     /// Set when the buffer closes: no queued prompt is sent after it.
     closed: AtomicBool,
+    /// Told when the turn in flight ends: the reply's text, or why there is
+    /// none. A rewrite (LL.11) waits here for the text it sends to review.
+    turn_waiters: Mutex<Vec<tokio::sync::oneshot::Sender<Result<String, String>>>>,
 }
 
 impl ChatSession {
+    /// Resolves when the turn now in flight (or the next one, if none is)
+    /// ends: `Ok` with the reply's text, `Err` with the error, or
+    /// `"interrupted"` when it was stopped.
+    pub fn wait_turn_end(&self) -> tokio::sync::oneshot::Receiver<Result<String, String>> {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.turn_waiters
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(tx);
+        rx
+    }
+
+    /// The text of the latest assistant turn.
+    pub fn last_reply(&self) -> String {
+        self.store
+            .snapshot()
+            .turns
+            .iter()
+            .rev()
+            .find(|t| t.role == crate::conversation::Role::Assistant)
+            .map(|t| {
+                t.blocks
+                    .iter()
+                    .filter_map(|b| match b {
+                        crate::conversation::Block::Text(text) => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<String>()
+            })
+            .unwrap_or_default()
+    }
+
     /// The model the next request would use, for the headerline.
     pub fn model(&self) -> Option<String> {
         self.label.lock().unwrap_or_else(|e| e.into_inner()).clone()
@@ -637,6 +672,7 @@ impl LlmChats {
             api_key: Mutex::new(None),
             warned: Mutex::new(HashSet::new()),
             closed: AtomicBool::new(false),
+            turn_waiters: Mutex::new(Vec::new()),
         });
         {
             let mut reg = self.reg();
@@ -1072,6 +1108,12 @@ impl LlmChats {
     fn end_turn(self: &Arc<Self>, session: &Arc<ChatSession>, error: Option<String>) {
         let closed = session.closed.load(Ordering::Acquire);
         let failed = error.is_some();
+        let interrupted = session.turn().interrupted;
+        let told = match &error {
+            Some(e) => Err(e.clone()),
+            None if interrupted => Err("interrupted".to_string()),
+            None => Ok(()),
+        };
         let started_next = {
             let mut turn = session.turn();
             let mut started = false;
@@ -1098,6 +1140,18 @@ impl LlmChats {
             };
             started
         };
+        let waiters: Vec<_> = std::mem::take(
+            &mut *session
+                .turn_waiters
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()),
+        );
+        if !waiters.is_empty() {
+            let outcome = told.map(|()| session.last_reply());
+            for tx in waiters {
+                let _ = tx.send(outcome.clone());
+            }
+        }
         if started_next {
             self.start_request(session);
         }

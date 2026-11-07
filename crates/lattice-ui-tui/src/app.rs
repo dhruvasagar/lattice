@@ -146,6 +146,7 @@ mod comment_plugin;
 mod keystroke_glyph_ratchet;
 mod lifecycle;
 mod llm_ask;
+mod llm_rewrite;
 mod lsp;
 mod lsp_log_buffers;
 mod lsp_watcher;

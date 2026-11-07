@@ -67,12 +67,32 @@ pub fn install(boot: &mut impl SubsystemBoot) {
         store.clone(),
     );
     super::operators::register_ex(boot.commands_mut(), chats.clone(), asks.clone(), store);
+    // LL.11b: the rewrite. Its answer reaches review, and its result the
+    // editor, from a task; the inbound bus carries that back with a wake, so a
+    // finished rewrite shows without a keystroke.
+    let diffs = boot
+        .service::<lattice_diff::ProgrammaticDiffBus>()
+        .map(|h| (*h).clone());
+    let rewrites: super::rewrite::LlmRewritesHandle = Arc::new(super::rewrite::LlmRewrites::new(
+        boot.runtime_handle().clone(),
+        diffs,
+    ));
+    rewrites.set_effects(boot.inbound::<super::rewrite::RewriteEffects, _>(|e| e.0));
+    boot.register_service::<super::rewrite::LlmRewritesHandle>(rewrites.clone());
+    let store = boot.buffer_store().clone();
+    let rewrite_op =
+        super::rewrite::register(boot.commands_mut(), chats.clone(), rewrites.clone(), store);
     boot.modes_mut()
-        .register(super::modes::llm_mode::LlmMode::new(chats.clone(), asks))
+        .register(super::modes::llm_mode::LlmMode::new(
+            chats.clone(),
+            asks,
+            rewrites,
+        ))
         .expect("llm-mode register");
     let layer = lattice_mode::KeymapLayer::MinorMode(super::modes::llm_mode::LlmMode::mode_id());
     boot.bind_operator(layer, "<leader>aa", ops.ask);
     boot.bind_operator(layer, "<leader>aA", ops.ask_menu);
+    boot.bind_operator(layer, "<leader>ar", rewrite_op);
     // The menu is a transient like magit's; its source is looked up under the
     // handle type, and a harness with no picker layer simply has none.
     if let Some(ids) = super::menu::MenuIds::resolve(boot.commands_mut()) {

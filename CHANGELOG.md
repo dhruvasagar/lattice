@@ -21,6 +21,14 @@
   it. `<leader>aA` opens the settings menu first, and
   `destination=*llm:…*` adds the ask to a chat already open. A selection
   over 32 KB asks before it is sent. See `:help llm-mode`.
+- **Have a language model rewrite text, through a diff.** `<leader>ar` is
+  an operator: `<leader>arip` rewrites a paragraph after you type an
+  instruction. The answer opens as a diff against the text as it is in your
+  buffer, saved or not; edit the proposal if you like, and `:diff-accept`
+  applies it as one change that one `u` undoes. Nothing is written to disk.
+  The text follows your edits while the model works; if you changed it, the
+  diff opens again against the text as it is now, and if you deleted it or closed the buffer the answer
+  opens in its chat instead of being lost. Rewrites queue one diff at a time.
 - **Secrets are never sent to a language model.** `llm.exclude` lists globs
   of files whose text an ask refuses to send, by name; the default covers
   `.env`, `*.pem`, `*.key` and SSH keys.

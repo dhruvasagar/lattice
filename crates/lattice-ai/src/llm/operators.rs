@@ -146,7 +146,7 @@ fn token_of(name: &str) -> Option<u64> {
 
 /// The text `range` covers in `ctx`'s document. A linewise span ends at the
 /// next line's start, so its final newline is not part of what was asked about.
-fn captured(ctx: &OperatorContext) -> Option<AskSource> {
+pub(crate) fn captured(ctx: &OperatorContext) -> Option<AskSource> {
     let mut text = ctx.document.buffer().slice(ctx.range).ok()?;
     if ctx.linewise && text.ends_with('\n') {
         text.pop();
@@ -171,12 +171,12 @@ fn instruction_prompt(token: u64, lines: &str) -> Effect {
     }
 }
 
-fn echo(level: EchoLevel, text: String) -> Effect {
+pub(crate) fn echo(level: EchoLevel, text: String) -> Effect {
     Effect::Echo { level, text }
 }
 
 /// Why `buffer`'s text may not be sent, if `llm.exclude` names its file.
-fn refusal(
+pub(crate) fn refusal(
     chats: &LlmChats,
     store: Option<&BufferStoreHandle>,
     buffer: BufferId,
@@ -248,7 +248,7 @@ fn operator_ask_menu(
 
 /// The 1-based lines `range` covers: `3`, or `3-10`. A span ending at a line's
 /// start (linewise) does not include that line.
-fn line_span(range: Range) -> String {
+pub(crate) fn line_span(range: Range) -> String {
     let first = range.start.line;
     let last = if range.end.byte == 0 && range.end.line > first {
         range.end.line - 1
@@ -264,7 +264,10 @@ fn line_span(range: Range) -> String {
 
 /// `foo.rs:3` or `foo.rs:3-10`, and the name hint (`foo.rs`), for `source`.
 /// A file is named by its file name; any other buffer by its buffer name.
-fn label_of(store: Option<&BufferStoreHandle>, source: &AskSource) -> (String, String, String) {
+pub(crate) fn label_of(
+    store: Option<&BufferStoreHandle>,
+    source: &AskSource,
+) -> (String, String, String) {
     let path = store.and_then(|s| s.path_for(source.buffer));
     let name = path
         .as_ref()
@@ -283,6 +286,35 @@ fn label_of(store: Option<&BufferStoreHandle>, source: &AskSource) -> (String, S
         lang
     };
     (format!("{name}:{at}"), name, lang)
+}
+
+/// Split a typed instruction into its leading `key=value` overrides and the
+/// text, and decide a typed `@profile`. Only the typed text is scanned, never
+/// the source. A profile that widens tools is refused: an ask or a rewrite has
+/// no prompt left to confirm into once it is sent.
+pub(crate) fn request_args(
+    chats: &LlmChats,
+    buffer: BufferId,
+    instruction: &str,
+) -> Result<(super::settings::RawSet, String, RequestOverrides), Effect> {
+    let (args, typed) = parse_request_args(instruction).map_err(|e| echo(EchoLevel::Error, e))?;
+    let mut overrides = RequestOverrides::default();
+    match chats.plan_send(buffer, &typed) {
+        SendPlan::Plain => {}
+        SendPlan::Profile(p) => {
+            overrides.profile = Some(p);
+            overrides.pasted_profile = true;
+        }
+        SendPlan::NeedsConfirm(p) => {
+            return Err(echo(
+                EchoLevel::Error,
+                format!(
+                    "llm: @{p} enables tools, which this request cannot confirm; open a chat with :llm {p}"
+                ),
+            ));
+        }
+    }
+    Ok((args, typed, overrides))
 }
 
 /// Send `source` with the typed `instruction` (leading `key=value` words are
@@ -304,28 +336,10 @@ pub fn ask_effect(
     if let Some(refused) = refusal(chats, store, source.buffer) {
         return refused;
     }
-    let (args, typed) = match parse_request_args(instruction) {
+    let (args, typed, mut overrides) = match request_args(chats, source.buffer, instruction) {
         Ok(parsed) => parsed,
-        Err(e) => return echo(EchoLevel::Error, e),
+        Err(why) => return why,
     };
-    let mut overrides = RequestOverrides::default();
-    match chats.plan_send(source.buffer, &typed) {
-        SendPlan::Plain => {}
-        SendPlan::Profile(p) => {
-            overrides.profile = Some(p);
-            overrides.pasted_profile = true;
-        }
-        // Tools reach an ask only through a chat's confirm; an ask has no
-        // prompt left to confirm into once it is sent.
-        SendPlan::NeedsConfirm(p) => {
-            return echo(
-                EchoLevel::Error,
-                format!(
-                    "llm: @{p} enables tools, which an ask cannot confirm; open a chat with :llm {p}"
-                ),
-            );
-        }
-    }
     let (label, hint, lang) = label_of(store, &source);
     if !confirmed && source.text.len() > ASK_CONFIRM_BYTES {
         let size = source.text.len();

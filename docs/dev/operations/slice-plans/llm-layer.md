@@ -383,7 +383,12 @@ and saved on Accept, and LL.17's edit tools need the same buffer-text review.
 | Slice | Scope | Status |
 |---|---|---|
 | LL.11a | `lattice-diff`: `DiffBaseline::{Disk, Text}`, `OnAccept::{Save, ReturnText}` on `ProgrammaticDiffRequest`; host reads the baseline from text when given, names (not paths) a returned-text right side, and sends its live text back on Accept before the outcome (`ProgrammaticAccept`). `lattice-agent::review_text`. Tests: host text-review accept (edits returned, nothing written) and reject; agent round-trips. | ✅ |
-| LL.11b | `<leader>ar` rewrite operator, instruction prompt, hidden session, review through `review_text`, accept applied through a tracked range, stale confirm, closed source, refusals, fence unwrap, `.`/macro queue. | 📝 |
+| LL.11b | `<leader>ar` rewrite operator (`src/llm/rewrite.rs`), instruction prompt, hidden session (`ChatSession::wait_turn_end`), review through `review_text`, accept applied over a `NeverGrows` tracked range as one edit, a changed span reviewed again against its current text (the deliberate confirm; a `Confirm` effect sent from the task would be dropped, since off-keystroke effects reach only host-applied variants), deleted span / closed source show the session, refusals (read-only by `mutates`, blockwise, composed view, `llm.exclude`, empty), fence unwrap, diffs queued one at a time, a macro replays a rewrite. Tests: `lattice-ui-tui/src/app/llm_rewrite.rs` end to end against a mock server (11). | ✅ |
+| LL.11c | `.` repeats a rewrite (design §11 names it the operator `.` should reach). The host records `.` only from a mutating effect (`effect_mutates`), and a rewrite's effect is its prompt, so this needs a host change design §10 does not list: honour `OperatorSpec::repeatable`. Dhruva chose this (A) on 2026-11-07 over "no `.`" and "`.` resends without a prompt" (which would send unseen, against §5): `.` re-runs the operator, its prompt pre-filled with the last instruction. | 📝 |
+
+**Noted for follow-up:** a programmatic diff takes the focus when it opens. A rewrite's answer
+arriving while the user types sends the remaining keys to the diff. The tests hold the answer to
+avoid it; openDiff behaves the same. A UX question for the diff subsystem, not this slice.
 
 
 **Files:** `src/llm/rewrite.rs` (on `lattice_agent::review_diff`).

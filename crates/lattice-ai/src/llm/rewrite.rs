@@ -1,0 +1,564 @@
+//! The rewrite operator (`<leader>ar{motion}`, LL.11b): change text through
+//! diff review, never by a direct write (design §2).
+//!
+//! The operator captures its span, tracks it in the document so it follows
+//! edits made while the model works, and opens an instruction prompt. Submitting
+//! sends the span and the instruction on a **hidden session** (design §5: the
+//! answer can always be seen and followed up), waits for the reply, and opens
+//! it as a side-by-side diff against the span's text through
+//! [`lattice_agent::review_text`]: the baseline is the buffer's text, which may
+//! be unsaved, and nothing is written to disk.
+//!
+//! On accept, the accepted text (the user's edits to the proposed side
+//! included) replaces the tracked span as one edit, in the buffer's own undo
+//! history. Then:
+//!
+//! - **The span changed while the review was open:** accepting does not apply;
+//!   the diff reopens against what the span holds now, with the accepted text
+//!   as the proposal, so the deliberate confirm (design §5) shows what it
+//!   would overwrite. A yes/no dialog could not. Accepting that applies.
+//! - **The span was deleted:** nothing is applied; the answer stays in its
+//!   session buffer, which is shown.
+//! - **The source buffer closed:** the answer is shown in its session buffer
+//!   rather than lost.
+//! - **A reply wrapped in a code fence** is unwrapped: models fence code even
+//!   when told not to.
+//!
+//! **Diffs open one at a time.** A second rewrite (another operator, or a macro
+//! replaying one) waits for the first review to close.
+//!
+//! Refused up front, with the reason: a read-only buffer (the operator
+//! mutates, so the host refuses it), a composed view such as a multibuffer
+//! (its lines are not its own text), an `llm.exclude` file, an empty span.
+//!
+//! **`.` does not repeat a rewrite.** The operator's own effect is the prompt;
+//! the change lands later, through review, so there is no edit for `.` to
+//! replay. A macro does replay it, and its diffs queue.
+
+use std::collections::VecDeque;
+use std::sync::{Arc, Mutex};
+
+use lattice_core::BufferId;
+use lattice_core::tracked::{Stickiness, TrackedRangeChange, TrackedRangeId};
+use lattice_grammar::CommandError;
+use lattice_grammar::effect::{EchoLevel, Effect};
+use lattice_grammar::registry::{
+    ActionSpec, CommandRegistry, OperatorContext, OperatorId, OperatorSpec,
+};
+use lattice_mode::inbound::InboundBus;
+use lattice_mode::{ActionContext, ActionHandler, BufferStoreHandle};
+use lattice_protocol::edit::Edit;
+use lattice_protocol::position::Range;
+use tokio::runtime::Handle;
+
+use super::chat::{ChatSession, LlmChats, LlmChatsHandle};
+use super::modes::chat::LlmChatMode;
+use super::operators::{AskSource, captured, echo, label_of, line_span, refusal, request_args};
+use crate::conversation::{Block, SourceLink};
+
+pub const REWRITE_OPERATOR: &str = "operator:llm-rewrite";
+/// The instruction prompt's submit action.
+pub const ACTION_REWRITE_SEND: &str = "action:llm-rewrite-send";
+
+/// Rewrites waiting for their instruction past this many are dropped, oldest
+/// first, as cancelled asks are.
+const PENDING_CAP: usize = 16;
+
+/// A captured span, tracked in its document.
+#[derive(Debug, Clone)]
+struct Held {
+    source: AskSource,
+    tracked: TrackedRangeId,
+}
+
+/// Effects a rewrite's background task sends back to the editor.
+pub struct RewriteEffects(pub Vec<Effect>);
+
+/// The rewrites in flight: held spans, and the gate that keeps diffs opening
+/// one at a time.
+pub struct LlmRewrites {
+    runtime: Handle,
+    next: Mutex<u64>,
+    pending: Mutex<VecDeque<(u64, Held)>>,
+    review_gate: tokio::sync::Mutex<()>,
+    /// Where the task's echoes reach the editor, with a wake.
+    effects: Mutex<Option<InboundBus<RewriteEffects>>>,
+    /// The host's diff bus. `None` in a harness without one: rewrites refuse.
+    diffs: Option<lattice_diff::ProgrammaticDiffBus>,
+}
+
+pub type LlmRewritesHandle = Arc<LlmRewrites>;
+
+impl LlmRewrites {
+    pub fn new(runtime: Handle, diffs: Option<lattice_diff::ProgrammaticDiffBus>) -> Self {
+        Self {
+            runtime,
+            next: Mutex::new(0),
+            pending: Mutex::new(VecDeque::new()),
+            review_gate: tokio::sync::Mutex::new(()),
+            effects: Mutex::new(None),
+            diffs,
+        }
+    }
+
+    /// Connect the bus a task's effects return on.
+    pub fn set_effects(&self, bus: InboundBus<RewriteEffects>) {
+        *self.effects.lock().unwrap_or_else(|e| e.into_inner()) = Some(bus);
+    }
+
+    fn token(&self) -> u64 {
+        let mut next = self.next.lock().unwrap_or_else(|e| e.into_inner());
+        *next += 1;
+        *next
+    }
+
+    fn hold(&self, held: Held) -> u64 {
+        let token = self.token();
+        let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+        pending.push_back((token, held));
+        while pending.len() > PENDING_CAP {
+            pending.pop_front();
+        }
+        token
+    }
+
+    fn take(&self, token: u64) -> Option<Held> {
+        let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+        let i = pending.iter().position(|(t, _)| *t == token)?;
+        pending.remove(i).map(|(_, h)| h)
+    }
+
+    /// How many rewrites wait for an instruction.
+    #[doc(hidden)]
+    pub fn pending_count(&self) -> usize {
+        self.pending.lock().unwrap_or_else(|e| e.into_inner()).len()
+    }
+
+    fn send(&self, effects: Vec<Effect>) {
+        if let Some(bus) = self
+            .effects
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+        {
+            let _ = bus.send(RewriteEffects(effects));
+        }
+    }
+}
+
+/// The prompt buffer's name for rewrite `token`.
+pub fn prompt_buffer_name(token: u64) -> String {
+    format!("*llm-rewrite:{token}*")
+}
+
+fn token_of(name: &str) -> Option<u64> {
+    name.strip_prefix("*llm-rewrite:")?
+        .strip_suffix('*')?
+        .parse()
+        .ok()
+}
+
+/// A reply wrapped in one code fence, unwrapped; anything else unchanged.
+pub fn unwrap_fence(reply: &str) -> &str {
+    let trimmed = reply.trim();
+    let Some(after_open) = trimmed.strip_prefix("```") else {
+        return reply;
+    };
+    let Some(body_start) = after_open.find('\n') else {
+        return reply;
+    };
+    let body = &after_open[body_start + 1..];
+    match body.strip_suffix("```") {
+        Some(inner) if !inner.contains("\n```") => inner,
+        _ => reply,
+    }
+}
+
+/// The reply as the span's replacement: unfenced, and ending in a newline
+/// exactly when the span did.
+fn replacement(reply: &str, original: &str) -> String {
+    let mut text = unwrap_fence(reply).to_string();
+    let wants_newline = original.ends_with('\n');
+    while text.ends_with('\n') {
+        text.pop();
+    }
+    if wants_newline {
+        text.push('\n');
+    }
+    text
+}
+
+fn operator_rewrite(
+    chats: &LlmChats,
+    rewrites: &LlmRewrites,
+    store: &BufferStoreHandle,
+    ctx: &mut OperatorContext,
+) -> Result<Effect, CommandError> {
+    if let Some(refused) = refusal(chats, Some(store), ctx.buffer_id) {
+        return Ok(refused);
+    }
+    if matches!(
+        ctx.document.selections().primary().visual,
+        Some(lattice_protocol::selection::VisualMode::Blockwise)
+    ) {
+        return Ok(echo(
+            EchoLevel::Error,
+            "llm: a rewrite replaces one span; a block is a column of pieces, so select \
+             it charwise or linewise"
+                .to_string(),
+        ));
+    }
+    if store
+        .handle_for(ctx.buffer_id)
+        .is_some_and(|h| h.display_line_numbers().is_some())
+    {
+        return Ok(echo(
+            EchoLevel::Error,
+            "llm: a rewrite changes a file's own text; this view is composed from several, \
+             so rewrite in the file itself"
+                .to_string(),
+        ));
+    }
+    let Some(source) = captured(ctx) else {
+        return Ok(echo(
+            EchoLevel::Info,
+            "llm: nothing to rewrite (the span is empty)".to_string(),
+        ));
+    };
+    let buffer = ctx.document.buffer();
+    let (Ok(start), Ok(end)) = (
+        buffer.position_to_byte(source.range.start),
+        buffer.position_to_byte(source.range.end),
+    ) else {
+        return Ok(echo(
+            EchoLevel::Error,
+            "llm: the span is outside the buffer".to_string(),
+        ));
+    };
+    // The span as captured: a linewise capture dropped its final newline from
+    // the text, so the tracked bytes stop where the text does.
+    let end = end.min(start + source.text.len());
+    let tracked = TrackedRangeId::next();
+    ctx.document
+        .update_tracked_ranges(|t| t.insert(tracked, start..end, Stickiness::NeverGrows));
+    let lines = line_span(source.range);
+    let token = rewrites.hold(Held { source, tracked });
+    Ok(Effect::OpenPrompt {
+        prompt: format!("Rewrite {lines}: "),
+        initial: String::new(),
+        on_submit_action: ACTION_REWRITE_SEND.to_string(),
+        buffer_name: Some(prompt_buffer_name(token)),
+    })
+}
+
+/// What the model is asked, around the user's instruction.
+fn framed(instruction: &str) -> String {
+    format!(
+        "Rewrite the text above as follows: {}\n\nReply with only the rewritten text: no \
+         explanation, no code fence.",
+        instruction.trim()
+    )
+}
+
+pub fn send_handler(chats: LlmChatsHandle, rewrites: LlmRewritesHandle) -> ActionHandler {
+    Arc::new(move |ctx: &ActionContext<'_>| -> Option<Effect> {
+        let store = ctx.services.get::<BufferStoreHandle>()?;
+        let prompt = BufferId(ctx.buffer_id.0 as u32);
+        let token = store.name_for(prompt).and_then(|n| token_of(&n))?;
+        let Some(held) = rewrites.take(token) else {
+            return Some(echo(
+                EchoLevel::Error,
+                "llm: that rewrite was dropped; ask again".to_string(),
+            ));
+        };
+        let instruction = ctx.prompt_value.unwrap_or_default();
+        Some(start(&chats, &rewrites, &store, held, instruction))
+    })
+}
+
+fn untrack(store: &BufferStoreHandle, buffer: BufferId, tracked: TrackedRangeId) {
+    if let Some(handle) = store.handle_for(buffer) {
+        drop(handle.update_tracked_ranges(vec![TrackedRangeChange::Untrack(tracked)]));
+    }
+}
+
+fn start(
+    chats: &Arc<LlmChats>,
+    rewrites: &Arc<LlmRewrites>,
+    store: &BufferStoreHandle,
+    held: Held,
+    instruction: &str,
+) -> Effect {
+    let Some(diffs) = rewrites.diffs.clone() else {
+        untrack(store, held.source.buffer, held.tracked);
+        return echo(
+            EchoLevel::Error,
+            "llm: rewrites need diff review, which this editor has not set up".to_string(),
+        );
+    };
+    let (args, typed, mut overrides) = match request_args(chats, held.source.buffer, instruction) {
+        Ok(parsed) => parsed,
+        Err(why) => {
+            untrack(store, held.source.buffer, held.tracked);
+            return why;
+        }
+    };
+    if typed.trim().is_empty() {
+        untrack(store, held.source.buffer, held.tracked);
+        return echo(
+            EchoLevel::Info,
+            "llm: a rewrite needs an instruction; nothing was sent".to_string(),
+        );
+    }
+    let mut values = chats.next_request(held.source.buffer);
+    chats.clear_next_request(held.source.buffer);
+    values.extend(args);
+    overrides.values = values;
+
+    let (label, hint, lang) = label_of(Some(store), &held.source);
+    let session = chats.create_for_source(held.source.buffer, &hint);
+    let block = Block::Source {
+        label: label.clone(),
+        lang,
+        text: held.source.text.clone(),
+        link: Some(SourceLink {
+            buffer: held.source.buffer,
+            line: held.source.range.start.line,
+        }),
+    };
+    let ended = session.wait_turn_end();
+    chats.submit_source(&session, block, framed(&typed), overrides);
+
+    let task = Task {
+        rewrites: rewrites.clone(),
+        store: store.clone(),
+        diffs,
+        session,
+        held,
+        label,
+    };
+    rewrites.runtime.spawn(task.run(ended));
+    echo(
+        EchoLevel::Info,
+        "llm: rewriting; the diff opens when the answer arrives".to_string(),
+    )
+}
+
+/// One rewrite, from the reply to the edit.
+struct Task {
+    rewrites: Arc<LlmRewrites>,
+    store: BufferStoreHandle,
+    diffs: lattice_diff::ProgrammaticDiffBus,
+    session: Arc<ChatSession>,
+    held: Held,
+    label: String,
+}
+
+impl Task {
+    fn show_session(&self, why: String) -> Vec<Effect> {
+        vec![
+            Effect::DisplaySyntheticBuffer {
+                name: self.session.name.clone(),
+                mode_id: LlmChatMode::mode_id().as_str().to_string(),
+                content: None,
+                split: lattice_core::ui::pane::SplitOrientation::Vertical,
+            },
+            echo(EchoLevel::Info, why),
+        ]
+    }
+
+    async fn run(self, ended: tokio::sync::oneshot::Receiver<Result<String, String>>) {
+        let buffer = self.held.source.buffer;
+        let reply = match ended.await {
+            Ok(Ok(reply)) => reply,
+            Ok(Err(e)) if e == "interrupted" => {
+                untrack(&self.store, buffer, self.held.tracked);
+                self.rewrites.send(vec![echo(
+                    EchoLevel::Info,
+                    "llm: rewrite stopped; nothing changed".to_string(),
+                )]);
+                return;
+            }
+            Ok(Err(e)) => {
+                untrack(&self.store, buffer, self.held.tracked);
+                self.rewrites.send(vec![echo(
+                    EchoLevel::Error,
+                    format!("llm: rewrite failed ({e}); nothing changed"),
+                )]);
+                return;
+            }
+            Err(_) => return,
+        };
+        let proposed = replacement(&reply, &self.held.source.text);
+
+        // One diff at a time: a second rewrite waits here for the first review.
+        let _gate = self.rewrites.review_gate.lock().await;
+        if !self.store.contains_buffer(buffer) {
+            let name = self.session.name.clone();
+            self.rewrites.send(
+                self.show_session(format!("llm: the source closed; the rewrite is in {name}")),
+            );
+            return;
+        }
+        let path = self
+            .store
+            .path_for(buffer)
+            .unwrap_or_else(|| std::path::PathBuf::from(&self.label));
+        let mut baseline = self.held.source.text.clone();
+        let mut proposed = proposed;
+        let mut tab_name = format!("rewrite {}", self.label);
+        loop {
+            let reviewed = lattice_agent::review_text(
+                &self.diffs,
+                lattice_agent::TextReviewRequest {
+                    path: path.clone(),
+                    baseline: baseline.clone(),
+                    proposed,
+                    tab_name: tab_name.clone(),
+                },
+            )
+            .await;
+            let accepted = match reviewed {
+                Ok(Some(text)) => text,
+                Ok(None) | Err(_) => {
+                    untrack(&self.store, buffer, self.held.tracked);
+                    self.rewrites.send(vec![echo(
+                        EchoLevel::Info,
+                        "llm: rewrite rejected; nothing changed".to_string(),
+                    )]);
+                    return;
+                }
+            };
+            match span_now(&self.store, buffer, self.held.tracked) {
+                None => {
+                    let name = self.session.name.clone();
+                    self.rewrites.send(self.show_session(format!(
+                        "llm: the rewritten text was deleted; the rewrite is in {name}"
+                    )));
+                    return;
+                }
+                Some(now) if now == baseline => {
+                    apply(&self.store, buffer, self.held.tracked, &accepted);
+                    self.rewrites.send(vec![echo(
+                        EchoLevel::Info,
+                        "llm: rewrite applied".to_string(),
+                    )]);
+                    return;
+                }
+                // Changed under the review: review again against what is
+                // there now, so accepting is a deliberate choice made seeing it.
+                Some(now) => {
+                    self.rewrites.send(vec![echo(
+                        EchoLevel::Info,
+                        format!(
+                            "llm: {} changed during the review; review it again against the text as it is now",
+                            self.label
+                        ),
+                    )]);
+                    baseline = now;
+                    proposed = accepted;
+                    tab_name = format!("rewrite {} (changed)", self.label);
+                }
+            }
+        }
+    }
+}
+
+/// The text the tracked span holds now, or `None` if it was deleted.
+fn span_now(
+    store: &BufferStoreHandle,
+    buffer: BufferId,
+    tracked: TrackedRangeId,
+) -> Option<String> {
+    let snap = store.handle_for(buffer)?.snapshot();
+    let range = snap.tracked_ranges.get(tracked)?;
+    if range.collapsed {
+        return None;
+    }
+    let text = snap.buffer.as_string();
+    text.get(range.start..range.end).map(str::to_string)
+}
+
+/// Replace the tracked span with `text` as one edit, then stop tracking it.
+fn apply(store: &BufferStoreHandle, buffer: BufferId, tracked: TrackedRangeId, text: &str) {
+    let Some(handle) = store.handle_for(buffer) else {
+        return;
+    };
+    let snap = handle.snapshot();
+    let Some(range) = snap.tracked_ranges.get(tracked) else {
+        return;
+    };
+    let (Ok(start), Ok(end)) = (
+        snap.buffer.byte_to_position(range.start),
+        snap.buffer.byte_to_position(range.end),
+    ) else {
+        return;
+    };
+    drop(handle.apply_edit_batch(vec![Edit::replace(Range::new(start, end), text)]));
+    drop(handle.update_tracked_ranges(vec![TrackedRangeChange::Untrack(tracked)]));
+}
+
+/// Register `operator:llm-rewrite` and the action its prompt fires.
+pub fn register(
+    registry: &mut CommandRegistry,
+    chats: LlmChatsHandle,
+    rewrites: LlmRewritesHandle,
+    store: BufferStoreHandle,
+) -> OperatorId {
+    registry.register_action(
+        ACTION_REWRITE_SEND,
+        "llm: send the rewrite the instruction prompt was opened for.",
+        ActionSpec {
+            apply: Arc::new(|_| Ok(Effect::None)),
+            args_schema: vec![],
+        },
+    );
+    registry.register_operator(
+        REWRITE_OPERATOR,
+        "Rewrite the {motion}/{text-object} that follows with a language model: type an \
+         instruction, and the answer opens as a diff against the text. Accepting applies it \
+         as one undoable edit; nothing is written to disk.",
+        OperatorSpec {
+            // It changes the buffer, so read-only buffers refuse it.
+            mutates: true,
+            // The change lands through review, later; `.` has nothing to replay.
+            repeatable: false,
+            blockwise_per_row: false,
+            post_motion_char: false,
+            args_schema: vec![],
+            apply: Arc::new(move |ctx| operator_rewrite(&chats, &rewrites, &store, ctx)),
+        },
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::panic)]
+    use super::*;
+
+    #[test]
+    fn a_fenced_reply_is_unwrapped() {
+        assert_eq!(unwrap_fence("```rust\nfn a() {}\n```"), "fn a() {}\n");
+        assert_eq!(unwrap_fence("  ```\nx\n```\n"), "x\n");
+        assert_eq!(unwrap_fence("plain text"), "plain text");
+    }
+
+    #[test]
+    fn two_fences_are_not_one() {
+        let reply = "```\na\n```\nand\n```\nb\n```";
+        assert_eq!(unwrap_fence(reply), reply);
+    }
+
+    #[test]
+    fn the_replacement_ends_as_the_span_did() {
+        assert_eq!(replacement("```\nx\n```", "a\nb"), "x");
+        assert_eq!(replacement("x", "a\n"), "x\n");
+        assert_eq!(replacement("x\n\n", "a"), "x");
+    }
+
+    #[test]
+    fn the_prompt_name_carries_the_token() {
+        assert_eq!(token_of(&prompt_buffer_name(7)), Some(7));
+        assert_eq!(token_of("*llm-ask:7*"), None);
+    }
+}

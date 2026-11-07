@@ -81,7 +81,8 @@ For a position `p` and an applied edit replacing `original_range` with
 | Where `p` is | Result |
 |---|---|
 | strictly before `original_range.start` | unchanged |
-| at or after `original_range.end` | shifted by `inserted_range.end - original_range.end` |
+| at or after `original_range.end`, on its line | re-measured from `inserted_range.end` |
+| on a later line | line shifted by the edit's line delta; column unchanged |
 | strictly inside `original_range` | clamped to `inserted_range.end` |
 
 The third row is the only judgement call. Clamping to the *end* of the
@@ -272,8 +273,39 @@ the anchor, and marks the buffer seen, so the adopt that follows does not hand i
 whichever pane wrote through last. This moves a stored caret for every edit made
 while the pane was away, not only appends, which is what vim does for other windows.
 
-**Known gap, for LL.13.** The write-through (§4.2) sets the document's selections
-outright. An append landing between the host computing its caret and that write
-lands is then overwritten: the caret is off by the appended length until the next
-adopt. It was latent for the conversation prompt; a sink writing once per frame
-makes it reachable. LL.13, which adds the sink, owns the fix and its test.
+## 10. Writes positioned before an append (LL.13a)
+
+A stream writes from another thread, so an append can reach the document between
+the host adopting the caret at the start of a key and the key's own write. Two
+writes were then positioned in coordinates the text had already left: the Insert
+key itself (`Edit::insert(self.cursor, …)`), which went in above where the caret
+visibly was, possibly inside the response, and the write-through, which put back
+the caret the append had just moved. A third race hid in the host's bookkeeping:
+it recorded `text_version` after its own edit, which swallowed an append that
+landed just after it, so that append was never adopted.
+
+**The document actor rebases, because it is where every write is serialized.** The
+document keeps a short log of its appends with the version each produced. The host
+tags the two caret-positioned writes with the version its caret is in (the one it
+last adopted or wrote); the actor moves them over the appends since, in the turn
+that applies them. An insert at an append's point goes after it, where the caret
+visibly is; a deletion ending at that point keeps the appended text. If anything
+but an append changed the text since, the write is used as given, which is exactly
+the behaviour before. After its own edit the host records `pre_append_version`,
+the version before any trailing run of appends, instead of `text_version`.
+
+Rejected: routing stream writes through the editor thread as a host effect, which
+serializes them with keys trivially but puts every frame's write on that thread,
+needs an effect per kind of concurrent writer, and leaves a plugin writing straight
+to a document handle racy. The rebase covers any writer that appends, a plugin
+included, with no host code per writer.
+
+Not rebased: edit batches (each edit is in the coordinates the ones before it make,
+so an append would have to be carried through them first; they come from operators
+and completion accepts, not typing) and non-append owner writes.
+
+**The transform table was wrong on two rows until here.** The earlier code shifted
+the column of every later line when an edit kept the line count, and kept the column
+on the edit's own line when it did not. Both put a caret on different text; the
+first one moved a chat prompt caret sideways whenever a transcript line above it
+was rewritten in place. §4.1's table now states the rule the code implements.

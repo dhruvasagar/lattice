@@ -63,6 +63,9 @@ use crate::snapshot::{DocumentSnapshot, PublishedSnapshot};
 pub(crate) enum ActorMsg {
     ApplyEdit {
         edit: Edit,
+        /// LL.13a: the `text_version` the edit was positioned against, to be
+        /// rebased over appends since (`Document::apply_edit_based_on`).
+        based_on: Option<u64>,
         reply: oneshot::Sender<Result<lattice_core::buffer::AppliedEdit, RuntimeError>>,
     },
     ApplyEditBatch {
@@ -88,6 +91,8 @@ pub(crate) enum ActorMsg {
     },
     SetSelections {
         selections: SelectionSet,
+        /// LL.13a: as `ApplyEdit::based_on`.
+        based_on: Option<u64>,
         reply: oneshot::Sender<Result<(), RuntimeError>>,
     },
     /// GD.7d: declare the current text the clean baseline without
@@ -205,8 +210,16 @@ impl DocumentActor {
 
     fn handle(&mut self, msg: ActorMsg) {
         match msg {
-            ActorMsg::ApplyEdit { edit, reply } => {
-                let result = self.document.apply_edit(edit).map_err(RuntimeError::Core);
+            ActorMsg::ApplyEdit {
+                edit,
+                based_on,
+                reply,
+            } => {
+                let result = match based_on {
+                    Some(v) => self.document.apply_edit_based_on(edit, v),
+                    None => self.document.apply_edit(edit),
+                }
+                .map_err(RuntimeError::Core);
                 self.publish();
                 let _ = reply.send(result);
             }
@@ -242,8 +255,15 @@ impl DocumentActor {
                 self.publish();
                 let _ = reply.send(result);
             }
-            ActorMsg::SetSelections { selections, reply } => {
-                self.document.set_selections(selections);
+            ActorMsg::SetSelections {
+                selections,
+                based_on,
+                reply,
+            } => {
+                match based_on {
+                    Some(v) => self.document.set_selections_based_on(selections, v),
+                    None => self.document.set_selections(selections),
+                }
                 self.publish();
                 let _ = reply.send(Ok(()));
             }

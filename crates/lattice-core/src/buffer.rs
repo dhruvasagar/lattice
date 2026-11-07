@@ -475,7 +475,8 @@ fn snap_to_char_boundary(rope: &Rope, byte: usize) -> usize {
 /// | Where `p` is relative to `edit.original_range` | Result |
 /// |---|---|
 /// | strictly before `original_range.start` | unchanged |
-/// | at or after `original_range.end` | shifted by `inserted_range.end - original_range.end` |
+/// | at or after `original_range.end`, on its line | re-measured from `inserted_range.end` |
+/// | on a later line | line shifted by the edit's line delta; column unchanged |
 /// | strictly inside `original_range` | clamped to `inserted_range.end` |
 /// | at `original_range.start` (non-empty range) | stays at `inserted_range.start` |
 ///
@@ -504,23 +505,23 @@ pub fn transform_position(pos: Position, edit: &AppliedEdit) -> Position {
     let inserted = edit.inserted_range;
 
     if pos >= original.end {
+        // On the edit's last line, the text after the edit moved with it:
+        // re-measure from where the replacement ends. On a later line only
+        // the line number moves; the line's own text, and the column on it,
+        // is untouched. (Before LL.13a the byte was shifted on every later
+        // line when the edit kept the line count, and kept on the edit's own
+        // line when it did not; both put a caret on different text.)
+        if pos.line == original.end.line {
+            let column = pos.byte.saturating_sub(original.end.byte);
+            return Position::new(inserted.end.line, inserted.end.byte.saturating_add(column));
+        }
         let d_line = inserted.end.line as i64 - original.end.line as i64;
-        let d_byte = inserted.end.byte as i64 - original.end.byte as i64;
         let new_line = if d_line >= 0 {
             pos.line.saturating_add(d_line as u32)
         } else {
             pos.line.saturating_sub((-d_line) as u32)
         };
-        let new_byte = if d_line == 0 {
-            if d_byte >= 0 {
-                pos.byte.saturating_add(d_byte as u32)
-            } else {
-                pos.byte.saturating_sub((-d_byte) as u32)
-            }
-        } else {
-            pos.byte
-        };
-        return Position::new(new_line, new_byte);
+        return Position::new(new_line, pos.byte);
     }
 
     if pos < original.start {
@@ -545,6 +546,54 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
     use super::*;
     use lattice_protocol::edit::Edit;
+
+    #[test]
+    fn a_position_on_a_later_line_keeps_its_column() {
+        let mut buf = Buffer::from_text("abc\ndef\n");
+        let applied = buf
+            .apply_edit(&Edit::insert(Position::new(0, 1), "XY"))
+            .unwrap();
+        assert_eq!(
+            transform_position(Position::new(1, 2), &applied),
+            Position::new(1, 2)
+        );
+    }
+
+    #[test]
+    fn a_position_after_a_line_adding_insert_on_its_line_is_remeasured() {
+        let mut buf = Buffer::from_text("Hello world\n");
+        // "lo\nWor" at byte 5: the text after it moves to the new line.
+        let applied = buf
+            .apply_edit(&Edit::insert(Position::new(0, 5), "lo\nWor"))
+            .unwrap();
+        assert_eq!(buf.as_string(), "Hellolo\nWor world\n");
+        // A caret on " world"'s `w` (byte 6) is now on line 1, after "Wor ".
+        assert_eq!(
+            transform_position(Position::new(0, 6), &applied),
+            Position::new(1, 4)
+        );
+    }
+
+    #[test]
+    fn a_position_after_a_line_joining_delete_on_its_line_is_remeasured() {
+        let mut buf = Buffer::from_text("ab\ncd\nef\n");
+        // Delete from (0,1) to (1,1): "b\nc".
+        let applied = buf
+            .apply_edit(&Edit::delete(lattice_protocol::position::Range::new(
+                Position::new(0, 1),
+                Position::new(1, 1),
+            )))
+            .unwrap();
+        assert_eq!(buf.as_string(), "ad\nef\n");
+        assert_eq!(
+            transform_position(Position::new(1, 2), &applied),
+            Position::new(0, 2)
+        );
+        assert_eq!(
+            transform_position(Position::new(2, 1), &applied),
+            Position::new(1, 1)
+        );
+    }
 
     #[test]
     fn from_str_roundtrips() {

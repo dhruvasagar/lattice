@@ -257,6 +257,24 @@ pub trait Document: Send + Sync + 'static + std::fmt::Debug {
 
     fn set_selections(&self, selections: SelectionSet) -> Pending<()>;
 
+    /// LL.13a: [`Self::apply_edit`] for an edit positioned against
+    /// `text_version == based_on`, rebased in the actor turn over appends
+    /// made since, so a key typed while a stream writes lands at the caret.
+    ///
+    /// Default: ignore `based_on`. Only a kind that takes appends
+    /// ([`Self::append_to_tracked`]) has anything to rebase over.
+    fn apply_edit_based_on(&self, edit: Edit, based_on: u64) -> Pending<AppliedEdit> {
+        let _ = based_on;
+        self.apply_edit(edit)
+    }
+
+    /// LL.13a: [`Self::set_selections`], rebased as
+    /// [`Self::apply_edit_based_on`] is. Default: ignore `based_on`.
+    fn set_selections_based_on(&self, selections: SelectionSet, based_on: u64) -> Pending<()> {
+        let _ = based_on;
+        self.set_selections(selections)
+    }
+
     /// GD.7d: declare the current text the clean baseline without
     /// writing it anywhere, so [`Self::dirty`] reads `false` until the
     /// next edit (and again after undoing back to this point).

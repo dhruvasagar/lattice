@@ -8,6 +8,7 @@
 //! starting empty and populated by the `lattice_mode::ModeRegistry`
 //! when M.3 lands the per-buffer-kind major modes.
 
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -141,6 +142,16 @@ pub struct Document {
     /// adopts the caret an append moved when this is newer than its own
     /// last write, in any buffer, not only one with an editable tail.
     append_version: u64,
+    /// LL.13a: the latest appends, each with the `text_version` it produced,
+    /// so a write positioned against an older version can be rebased over
+    /// them ([`Self::apply_edit_based_on`]). Appends only, newest last,
+    /// bounded by [`APPEND_LOG_CAP`].
+    append_log: VecDeque<(u64, AppliedEdit)>,
+    /// LL.13a: bumped by every undo and redo; each stream remembers the value
+    /// at its previous append (`stream_fences`), and a stream that sees it
+    /// moved is refused with [`AppendOutcome::Undone`].
+    undo_seq: u64,
+    stream_fences: HashMap<TrackedRangeId, u64>,
     // M.4 follow-up: `modes: ActiveModes` removed. The canonical
     // active-modes map is `App.active_modes: HashMap<BufferId,
     // ActiveModes>` (M.2.1) -- per-buffer, not per-document, and
@@ -247,6 +258,9 @@ impl DocumentBuilder {
             group_has_entry: false,
             stream_top: None,
             append_version: 0,
+            append_log: VecDeque::new(),
+            undo_seq: 0,
+            stream_fences: HashMap::new(),
         }
     }
 }
@@ -537,12 +551,26 @@ impl Document {
         let Some(range) = self.tracked.get(id) else {
             return Ok(AppendOutcome::Unknown);
         };
+        if self
+            .stream_fences
+            .get(&id)
+            .is_some_and(|seen| *seen != self.undo_seq)
+        {
+            return Ok(AppendOutcome::Undone);
+        }
         if range.collapsed {
             return Ok(AppendOutcome::Collapsed);
         }
         if text.is_empty() {
             return Ok(AppendOutcome::Appended);
         }
+        // Fences of streams whose range is gone are dropped as we go, so the
+        // map holds at most the streams still tracked.
+        if self.stream_fences.len() > 8 {
+            let tracked = &self.tracked;
+            self.stream_fences.retain(|f, _| tracked.get(*f).is_some());
+        }
+        self.stream_fences.insert(id, self.undo_seq);
         self.linked_edits.clear();
         let at = self.buffer.byte_to_position(range.end)?;
         let applied = self.buffer.apply_edit(&Edit::insert(at, text))?;
@@ -573,12 +601,114 @@ impl Document {
         self.version += 1;
         self.text_version += 1;
         self.append_version = self.text_version;
+        if self.append_log.len() == APPEND_LOG_CAP {
+            self.append_log.pop_front();
+        }
+        self.append_log.push_back((self.text_version, applied));
         Ok(AppendOutcome::Appended)
     }
 
     /// `text_version` after the latest [`Self::append_to_tracked`]; 0 if none.
     pub fn append_version(&self) -> u64 {
         self.append_version
+    }
+
+    /// The `text_version` before the current trailing run of appends:
+    /// [`Self::text_version`] itself when the latest change was not an
+    /// append. A writer that reads the version after its own edit uses this,
+    /// not `text_version`, as the version it has seen, so an append that
+    /// landed just after the edit still reads as unseen (LL.13a).
+    pub fn pre_append_version(&self) -> u64 {
+        let mut v = self.text_version;
+        for (version, _) in self.append_log.iter().rev() {
+            if *version != v {
+                break;
+            }
+            v -= 1;
+        }
+        v
+    }
+
+    /// The appends applied after `text_version == based_on`, oldest first,
+    /// or `None` when something other than an append changed the text since,
+    /// or the log no longer reaches back that far.
+    fn appends_since(&self, based_on: u64) -> Option<Vec<&AppliedEdit>> {
+        if based_on >= self.text_version {
+            return Some(Vec::new());
+        }
+        let needed = usize::try_from(self.text_version - based_on).ok()?;
+        let start = self.append_log.len().checked_sub(needed)?;
+        let mut out = Vec::with_capacity(needed);
+        for (i, (version, applied)) in self.append_log.iter().skip(start).enumerate() {
+            if *version != based_on + 1 + i as u64 {
+                return None;
+            }
+            out.push(applied);
+        }
+        Some(out)
+    }
+
+    /// `edit`, positioned against `text_version == based_on`, moved over the
+    /// appends since so it lands on the text it was aimed at (LL.13a).
+    ///
+    /// A stream writes from another thread, so an edit the host positioned
+    /// from its caret can reach the actor after an append it has not seen.
+    /// Rebasing here, in the turn that applies the edit, is what keeps a key
+    /// typed during a stream at the caret. An insert at an append's point
+    /// goes after it, where the caret visibly is; a deletion ending at that
+    /// point does not take the appended text with it. When the text changed
+    /// by anything other than an append since `based_on`, the edit is used
+    /// as given, as before.
+    pub fn rebase_edit(&self, mut edit: Edit, based_on: u64) -> Edit {
+        let Some(appends) = self.appends_since(based_on) else {
+            return edit;
+        };
+        let empty = edit.range.start == edit.range.end;
+        for applied in appends {
+            edit.range.start = transform_position(edit.range.start, applied);
+            edit.range.end = if empty {
+                edit.range.start
+            } else {
+                transform_end(edit.range.end, applied)
+            };
+        }
+        edit
+    }
+
+    /// [`Self::apply_edit`] after [`Self::rebase_edit`].
+    ///
+    /// # Errors
+    ///
+    /// Those of [`Self::apply_edit`].
+    pub fn apply_edit_based_on(&mut self, edit: Edit, based_on: u64) -> CoreResult<AppliedEdit> {
+        let edit = self.rebase_edit(edit, based_on);
+        self.apply_edit(edit)
+    }
+
+    /// [`Self::set_selections`] with every position moved over the appends
+    /// since `text_version == based_on`, the same rule a caret the document
+    /// already held was moved by (LL.13a). The host writes its caret through
+    /// after each key; one positioned before an append it had not seen would
+    /// otherwise overwrite the caret the append moved.
+    pub fn set_selections_based_on(&mut self, selections: SelectionSet, based_on: u64) {
+        let Some(appends) = self.appends_since(based_on) else {
+            self.set_selections(selections);
+            return;
+        };
+        let primary = selections.primary_index();
+        let moved = selections
+            .all()
+            .iter()
+            .map(|s| {
+                let mut s = *s;
+                for applied in &appends {
+                    s.anchor = transform_position(s.anchor, applied);
+                    s.head = transform_position(s.head, applied);
+                }
+                s
+            })
+            .collect();
+        self.set_selections(SelectionSet::from_parts(moved, primary));
     }
 
     /// Open an undo-coalescing group: every edit applied until
@@ -722,6 +852,7 @@ impl Document {
     pub fn undo(&mut self) -> CoreResult<Vec<AppliedEdit>> {
         self.linked_edits.clear();
         self.stream_top = None;
+        self.undo_seq += 1;
         let entry = self.undo.pop_for_undo().ok_or(CoreError::NothingToUndo)?;
         let mut applied = Vec::with_capacity(entry.inverse_edits.len());
         let mut redo_inverses = Vec::with_capacity(entry.inverse_edits.len());
@@ -751,6 +882,7 @@ impl Document {
     pub fn redo(&mut self) -> CoreResult<Vec<AppliedEdit>> {
         self.linked_edits.clear();
         self.stream_top = None;
+        self.undo_seq += 1;
         let entry = self.undo.pop_for_redo().ok_or(CoreError::NothingToRedo)?;
         let mut applied = Vec::with_capacity(entry.inverse_edits.len());
         let mut undo_inverses = Vec::with_capacity(entry.inverse_edits.len());
@@ -832,6 +964,28 @@ impl Document {
         {
             self.clean_position = None;
         }
+    }
+}
+
+/// How many appends a write positioned against an older version can be
+/// rebased over ([`Document::rebase_edit`]). A stream writes at most once a
+/// frame and a key's dispatch takes well under one, so one entry is the
+/// common case; the cap only bounds memory.
+const APPEND_LOG_CAP: usize = 64;
+
+/// The end of a non-empty range, moved over an insertion `applied`. Unlike
+/// [`transform_position`], an end exactly at the insertion point stays: the
+/// inserted text is after the range, not in it.
+fn transform_end(
+    end: lattice_protocol::position::Position,
+    applied: &AppliedEdit,
+) -> lattice_protocol::position::Position {
+    if applied.original_range.start == applied.original_range.end
+        && end <= applied.original_range.start
+    {
+        end
+    } else {
+        transform_position(end, applied)
     }
 }
 

@@ -36,6 +36,11 @@
   `.env`, `*.pem`, `*.key` and SSH keys.
 
 ### Fixed
+- **A caret no longer slides sideways when text above it is rewritten.**
+  When text above the caret was rewritten without changing the number of
+  lines, as a chat transcript update can do above the prompt, the caret
+  moved by the length change and landed on different text. It now keeps
+  its column.
 - **A split keeps its caret on its text.** Editing a buffer in one split
   left the caret of another split on the same buffer at its old position,
   so it pointed at different text when you went back. The caret of a split

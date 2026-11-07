@@ -5,6 +5,12 @@
 //! Driven through `dispatch_fused`, the production keystroke entry that
 //! adopts an owner write's caret before the key runs, and through
 //! `activate_pane`, the `<C-w>w` path.
+//!
+//! LL.13a: a stream writes from another thread, so an append can land
+//! after the key's dispatch adopted the caret and before its edit reaches
+//! the document. Bare `Editor::dispatch` runs the key without that
+//! adoption, which is exactly the state inside the window, so the race is
+//! reproduced deterministically rather than by timing.
 
 #![allow(clippy::unwrap_used, clippy::panic)]
 
@@ -139,4 +145,79 @@ async fn an_unknown_anchor_writes_nothing() {
         .unwrap();
     assert_eq!(out, AppendOutcome::Unknown);
     assert_eq!(text(&editor), "x\n");
+}
+
+/// Insert mode, the caret at the end of a streaming response, and a chunk
+/// lands inside the key's dispatch: the character goes after the chunk, where
+/// the caret visibly is, and the response stays contiguous.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_key_typed_while_a_chunk_lands_goes_after_the_chunk() {
+    let mut editor = boot("ab\n");
+    let id = anchor(&editor, 2).await;
+    editor
+        .document
+        .append_to_tracked(id, "R1".to_string())
+        .await
+        .unwrap();
+    key(&mut editor, Action::None); // seen: the next key adopts nothing
+    editor.set_cursor_clamped(Position::new(0, 4));
+    key(&mut editor, Action::None);
+    assert_eq!(editor.cursor, Position::new(0, 4), "at the end of `R1`");
+    // The window: adopted already, the chunk lands, then the key's edit.
+    editor
+        .document
+        .append_to_tracked(id, "R2".to_string())
+        .await
+        .unwrap();
+    let _ = editor.dispatch(Action::Insert("X".to_string()));
+    assert_eq!(text(&editor), "abR1R2X\n");
+    let span = editor
+        .document
+        .snapshot()
+        .tracked_ranges
+        .get(id)
+        .map(|r| r.start..r.end)
+        .unwrap();
+    assert_eq!(&text(&editor)[span], "R1R2");
+    assert_eq!(editor.cursor, Position::new(0, 7), "after the `X`");
+}
+
+/// The host writes its caret through at the end of every key. One computed
+/// before an append it had not seen must not put the caret back: the next
+/// key still lands on the text the caret was on.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_caret_written_through_after_an_unseen_append_stays_on_its_text() {
+    let mut editor = boot("ab\ncd\n");
+    editor.set_cursor_clamped(Position::new(1, 0));
+    key(&mut editor, Action::None);
+    let id = anchor(&editor, 3).await;
+    editor
+        .document
+        .append_to_tracked(id, "new\n".to_string())
+        .await
+        .unwrap();
+    // A motion inside the window: to (1, 1) in the coordinates the host saw,
+    // written through (at the end of `dispatch`) after the append.
+    editor.set_cursor_clamped(Position::new(1, 1));
+    let _ = editor.dispatch(Action::None);
+    key(&mut editor, Action::Insert("X".to_string()));
+    assert_eq!(text(&editor), "ab\nnew\ncXd\n");
+}
+
+/// The host's own edit, then an append before it reads the version back:
+/// the append is still one it has not seen, so its caret follows it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_append_just_after_the_hosts_own_edit_is_still_adopted() {
+    let mut editor = boot("ab\ncd\n");
+    editor.set_cursor_clamped(Position::new(1, 1));
+    key(&mut editor, Action::None);
+    let id = anchor(&editor, 3).await;
+    key(&mut editor, Action::Insert("X".to_string()));
+    editor
+        .document
+        .append_to_tracked(id, "new\n".to_string())
+        .await
+        .unwrap();
+    key(&mut editor, Action::Insert("Y".to_string()));
+    assert_eq!(text(&editor), "ab\nnew\ncXYd\n");
 }

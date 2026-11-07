@@ -238,3 +238,172 @@ proptest! {
         prop_assert_eq!(text.len(), seed.len() + expected.len() + typed);
     }
 }
+
+// ---- LL.13a: writes positioned before an append, and `u` during a stream ----
+
+fn pos(doc: &Document, byte: usize) -> Position {
+    doc.buffer().byte_to_position(byte).unwrap()
+}
+
+/// The race a stream opens: the host positions a key from its caret, and an
+/// append lands before the key reaches the document. Rebased, the key goes
+/// where the caret visibly was: after the response.
+#[test]
+fn a_key_typed_at_the_point_before_an_append_lands_after_it() {
+    let (mut doc, id) = anchored("ab\n", 2);
+    doc.append_to_tracked(id, "R1").unwrap();
+    let base = doc.text_version();
+    let caret = pos(&doc, 4); // after "R1": the end of the response
+    doc.append_to_tracked(id, "R2").unwrap();
+    doc.apply_edit_based_on(Edit::insert(caret, "X"), base)
+        .unwrap();
+    assert_eq!(doc.text(), "abR1R2X\n");
+    assert_eq!(span(&doc, id), "R1R2");
+}
+
+#[test]
+fn a_key_below_the_point_moves_with_the_append() {
+    let (mut doc, id) = anchored("ab\ncd\n", 3);
+    let base = doc.text_version();
+    let caret = Position::new(1, 1);
+    doc.append_to_tracked(id, "new\n").unwrap();
+    doc.apply_edit_based_on(Edit::insert(caret, "X"), base)
+        .unwrap();
+    assert_eq!(doc.text(), "ab\nnew\ncXd\n");
+}
+
+#[test]
+fn a_key_above_the_point_is_not_moved() {
+    let (mut doc, id) = anchored("ab\ncd\n", 3);
+    let base = doc.text_version();
+    doc.append_to_tracked(id, "new\n").unwrap();
+    doc.apply_edit_based_on(Edit::insert(Position::new(0, 1), "X"), base)
+        .unwrap();
+    assert_eq!(doc.text(), "aXb\nnew\ncd\n");
+}
+
+/// Backspace at the end of the response, against a version before the next
+/// chunk: it deletes the character the user saw, not the chunk with it.
+#[test]
+fn a_deletion_ending_at_the_point_does_not_take_the_append() {
+    let (mut doc, id) = anchored("", 0);
+    doc.append_to_tracked(id, "abc").unwrap();
+    let base = doc.text_version();
+    doc.append_to_tracked(id, "def").unwrap();
+    doc.apply_edit_based_on(
+        Edit::delete(Range::new(Position::new(0, 2), Position::new(0, 3))),
+        base,
+    )
+    .unwrap();
+    assert_eq!(doc.text(), "abdef");
+}
+
+/// Anything but an append in between, and the position cannot be corrected:
+/// it is used as given, which is what happened before rebasing existed.
+#[test]
+fn a_non_append_change_since_leaves_the_edit_as_given() {
+    let (mut doc, id) = anchored("ab\ncd\n", 3);
+    let base = doc.text_version();
+    insert_at_byte(&mut doc, 0, "Z");
+    doc.append_to_tracked(id, "new\n").unwrap();
+    doc.apply_edit_based_on(Edit::insert(Position::new(1, 1), "X"), base)
+        .unwrap();
+    // `(1, 1)` of the text as it now stands: inside the appended line.
+    assert_eq!(doc.text(), "Zab\nnXew\ncd\n");
+}
+
+#[test]
+fn a_caret_written_through_late_is_moved_by_the_append_it_missed() {
+    use lattice_core::protocol::selection::{Selection, SelectionSet};
+    let (mut doc, id) = anchored("ab\ncd\n", 3);
+    let base = doc.text_version();
+    doc.append_to_tracked(id, "one\ntwo\n").unwrap();
+    doc.set_selections_based_on(
+        SelectionSet::single(Selection::cursor(Position::new(1, 1))),
+        base,
+    );
+    assert_eq!(doc.selections().primary().head, Position::new(3, 1));
+}
+
+#[test]
+fn the_version_before_trailing_appends_is_what_an_editor_has_seen() {
+    let (mut doc, id) = anchored("x\n", 2);
+    assert_eq!(doc.pre_append_version(), doc.text_version());
+    insert_at_byte(&mut doc, 0, "U");
+    let mine = doc.text_version();
+    doc.append_to_tracked(id, "a").unwrap();
+    doc.append_to_tracked(id, "b").unwrap();
+    assert_eq!(doc.pre_append_version(), mine);
+    insert_at_byte(&mut doc, 0, "V");
+    assert_eq!(doc.pre_append_version(), doc.text_version());
+}
+
+#[test]
+fn an_undo_during_a_stream_refuses_its_next_chunk() {
+    let (mut doc, id) = anchored("x\n", 2);
+    doc.append_to_tracked(id, "one").unwrap();
+    doc.undo().unwrap();
+    assert_eq!(doc.text(), "x\n", "the undo took the response");
+    assert_eq!(
+        doc.append_to_tracked(id, " two").unwrap(),
+        AppendOutcome::Undone
+    );
+    assert_eq!(doc.text(), "x\n", "nothing written after the `u`");
+}
+
+/// Any `u` stops the stream, not only one that reached its text: the user
+/// is going back, and a response still arriving would fight them.
+#[test]
+fn an_undo_of_the_users_own_edit_also_stops_the_stream() {
+    let (mut doc, id) = anchored("x\n", 2);
+    doc.append_to_tracked(id, "one").unwrap();
+    insert_at_byte(&mut doc, 0, "U");
+    doc.undo().unwrap();
+    assert_eq!(
+        doc.append_to_tracked(id, " two").unwrap(),
+        AppendOutcome::Undone
+    );
+    assert_eq!(doc.text(), "x\none");
+}
+
+#[test]
+fn an_undo_before_the_first_chunk_does_not_stop_it() {
+    let (mut doc, id) = anchored("x\n", 0);
+    insert_at_byte(&mut doc, 2, "U");
+    doc.undo().unwrap();
+    assert_eq!(
+        doc.append_to_tracked(id, "R").unwrap(),
+        AppendOutcome::Appended
+    );
+}
+
+proptest! {
+    /// A key typed at a caret read before any number of appends lands where
+    /// it would have with no stream running: before the response if the
+    /// caret was before the point, after the whole response if at or after.
+    #[test]
+    fn a_key_typed_against_an_old_version_lands_on_its_text(
+        seed in "[ab\n]{0,16}",
+        point in 0usize..17,
+        caret in 0usize..17,
+        chunks in proptest::collection::vec("[xy\n]{1,4}", 1..8),
+    ) {
+        let point = point.min(seed.len());
+        let caret = caret.min(seed.len());
+        let (mut doc, id) = anchored(&seed, point);
+        let base = doc.text_version();
+        let at = pos(&doc, caret);
+        let response: String = chunks.concat();
+        for c in &chunks {
+            doc.append_to_tracked(id, c).unwrap();
+        }
+        doc.apply_edit_based_on(Edit::insert(at, "#"), base).unwrap();
+        let expected = if caret < point {
+            format!("{}#{}{}{}", &seed[..caret], &seed[caret..point], response, &seed[point..])
+        } else {
+            format!("{}{}{}#{}", &seed[..point], response, &seed[point..caret], &seed[caret..])
+        };
+        prop_assert_eq!(doc.text(), expected);
+        prop_assert_eq!(span(&doc, id), response);
+    }
+}

@@ -81,6 +81,10 @@ pub struct DocumentSnapshot {
     /// adopts the caret an append moved when this is newer than its own last
     /// write (LL.12).
     pub append_version: u64,
+    /// LL.13a: `text_version` before the trailing run of appends
+    /// (`Document::pre_append_version`): what a writer that just edited has
+    /// seen, an append landing right after its edit excluded.
+    pub pre_append_version: u64,
 }
 
 impl DocumentSnapshot {
@@ -111,6 +115,7 @@ impl DocumentSnapshot {
             tracked_ranges: Arc::clone(doc.tracked_ranges()),
             linked_edits: (!doc.linked_edits().is_empty()).then(|| Arc::from(doc.linked_edits())),
             append_version: doc.append_version(),
+            pre_append_version: doc.pre_append_version(),
         }
     }
 

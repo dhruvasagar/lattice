@@ -408,7 +408,7 @@ in any buffer, and inactive panes' carets anchored as tracked ranges while away
 among them) and `lattice-host/tests/anchored_append_caret.rs` (4). Benches:
 `document_edit_p99_us::append_to_tracked`, `runtime::apply_edit_round_trip_during_appends`.
 A save made mid-stream is invalidated by the next amend (`dirty()` would otherwise lie).
-**Handed to LL.13:** the write-through race in `owner-write-caret.md` §9.
+**Handed to LL.13:** the write-through race in `owner-write-caret.md` §9 (closed by LL.13a).
 
 **Why:** inline output's substrate. The main core change.
 
@@ -432,7 +432,22 @@ adoption does not double-move a caret the host positioned itself; Insert's undo 
 
 **Bench:** append cost against document size; keystroke latency during appends.
 
-### LL.13 — Inline output 📝
+### LL.13 — Inline output 🚧
+
+Carved in two when the sink's writer exposed a race with the host's keys (decided with
+Dhruva: rebase in the actor, not route writes through the editor).
+
+**LL.13a — Writes positioned before an append ✅.** The document actor rebases the host's
+caret-positioned edit and its write-through over appends made since the version the host's caret
+is in (`Document::apply_edit_based_on` / `set_selections_based_on`, a bounded append log); the host
+records `pre_append_version` after its own edits; `AppendOutcome::Undone` refuses a stream's next
+chunk after any undo or redo, so `u` while streaming cancels with nothing landing after it.
+`transform_position` fixed on two rows that put a caret on different text (`owner-write-caret.md`
+§10). Tests: `anchored_append.rs` (+11, a second proptest), `buffer.rs` (+3),
+`anchored_append_caret.rs` (+3, the race reproduced by bare `dispatch`). Bench:
+`document_edit_p99_us::rebase_over_appends`.
+
+**LL.13b — The `below` destination 📝.**
 
 **Files:** `src/llm/sink.rs` (document-span sink, one write per frame interval).
 

@@ -3824,6 +3824,7 @@ fn snapshot_from_composed_doc(
         selections,
         tracked_ranges: Default::default(),
         append_version: 0,
+        pre_append_version: 0,
         linked_edits: None,
     }
 }
@@ -3870,6 +3871,7 @@ fn compose_snapshot(
         selections,
         tracked_ranges: Default::default(),
         append_version: 0,
+        pre_append_version: 0,
         linked_edits: None,
     }
 }

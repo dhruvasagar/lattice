@@ -22854,13 +22854,23 @@ impl Editor {
         if self.read_only_edit_rejected(&edit) {
             return Err(lattice_runtime::RuntimeError::ReadOnly);
         }
-        let mut result = block_on(self.document.apply_edit(edit));
+        // LL.13a: positioned from the caret, which is in the coordinates of
+        // the version the host last saw; the actor rebases it over any append
+        // a stream made since, so a key typed during a stream lands at the
+        // caret rather than where the caret was before the text arrived.
+        // Unrecorded reads as 0, as in the adopt gate: from 0 the actor either
+        // rebases over nothing but appends or, failing that, uses the edit as
+        // given.
+        let seen = self.seen_text_version();
+        let mut result = block_on(self.document.apply_edit_based_on(edit, seen));
         if let Ok(applied) = result.as_mut() {
             // OWC: record the text version so the host knows it issued
-            // this edit (not an owner write).
+            // this edit (not an owner write). `pre_append_version`, not
+            // `text_version`: an append that landed just after this edit is
+            // not one the host has seen, and must still be adopted (LL.13a).
             let snap = self.document.snapshot();
             self.last_seen_text_version
-                .insert(self.document_buffer_id, snap.text_version);
+                .insert(self.document_buffer_id, snap.pre_append_version);
             // SI.7: an edit inside a linked range (a snippet mirror) was
             // copied into its siblings by the document. Publish the copies
             // with it, and hand callers the edit's range as it stands after
@@ -22946,13 +22956,19 @@ impl Editor {
         if edits.iter().any(|e| self.read_only_edit_rejected(e)) {
             return Err(lattice_runtime::RuntimeError::ReadOnly);
         }
+        // Not rebased (LL.13a): each edit of a batch is in the coordinates
+        // the ones before it produce, so an append would have to be carried
+        // through them first. Batches come from operators and completion
+        // accepts, not from typing; the recorded version below is still the
+        // one that keeps a following append adopted.
         let result = block_on(self.document.apply_edit_batch(edits));
         if let Ok(applied) = result.as_ref() {
             // OWC: record the text version so the host knows it issued
-            // this edit (not an owner write).
+            // this edit (not an owner write); `pre_append_version`, as in
+            // `apply_edit_blocking`.
             let snap = self.document.snapshot();
             self.last_seen_text_version
-                .insert(self.document_buffer_id, snap.text_version);
+                .insert(self.document_buffer_id, snap.pre_append_version);
             // SI.7: and the copies the document made into linked ranges.
             match snap.linked_edits.as_deref() {
                 Some(linked) => {
@@ -23010,9 +23026,10 @@ impl Editor {
         };
         let applied = block_on(handle.apply_edit(edit))?;
         let snap = handle.snapshot();
-        // OWC: record the text version for peer edits too.
+        // OWC: record the text version for peer edits too
+        // (`pre_append_version`, as in `apply_edit_blocking`).
         self.last_seen_text_version
-            .insert(target, snap.text_version);
+            .insert(target, snap.pre_append_version);
         let path = snap.path().map(|p| p.to_path_buf());
         let edit_event = lattice_protocol::event::AppliedEdit {
             original_range: applied.original_range,
@@ -23789,7 +23806,19 @@ impl Editor {
         } else {
             SelectionSet::single(Selection::cursor(self.cursor))
         };
-        let _ = block_on(self.document.set_selections(selections));
+        // LL.13a: rebased over appends the host has not seen yet, or this
+        // would put back the caret an append just moved.
+        let seen = self.seen_text_version();
+        let _ = block_on(self.document.set_selections_based_on(selections, seen));
+    }
+
+    /// The active document's text version the host's caret is in: the one it
+    /// last adopted or wrote, 0 if neither yet (as the adopt gate reads it).
+    fn seen_text_version(&self) -> u64 {
+        self.last_seen_text_version
+            .get(&self.document_buffer_id)
+            .copied()
+            .unwrap_or(0)
     }
 
     /// OWC: if the active document's text_version has advanced beyond
@@ -23810,11 +23839,7 @@ impl Editor {
         let buf_id = self.document_buffer_id;
         let snap = self.document.snapshot();
         let doc_tv = snap.text_version;
-        let last_seen = self
-            .last_seen_text_version
-            .get(&buf_id)
-            .copied()
-            .unwrap_or(0);
+        let last_seen = self.seen_text_version();
         let has_editable_tail = self.active_editable_tail().is_some();
         if should_adopt_owner_write(has_editable_tail, doc_tv, snap.append_version, last_seen) {
             let head = snap.selections.primary().head;

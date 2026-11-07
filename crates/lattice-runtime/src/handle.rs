@@ -201,7 +201,22 @@ impl RopeDocumentHandle {
     /// Apply one edit. Resolves to the resulting `AppliedEdit`
     /// (range info + replaced text) once the actor commits.
     pub fn apply_edit(&self, edit: Edit) -> Pending<AppliedEdit> {
-        self.send(|reply| ActorMsg::ApplyEdit { edit, reply })
+        self.send(|reply| ActorMsg::ApplyEdit {
+            edit,
+            based_on: None,
+            reply,
+        })
+    }
+
+    /// [`Self::apply_edit`], rebased over appends made after
+    /// `text_version == based_on`. See
+    /// [`crate::document::Document::apply_edit_based_on`].
+    pub fn apply_edit_based_on(&self, edit: Edit, based_on: u64) -> Pending<AppliedEdit> {
+        self.send(|reply| ActorMsg::ApplyEdit {
+            edit,
+            based_on: Some(based_on),
+            reply,
+        })
     }
 
     /// Apply multiple edits as one undo unit.
@@ -233,7 +248,21 @@ impl RopeDocumentHandle {
     }
 
     pub fn set_selections(&self, selections: SelectionSet) -> Pending<()> {
-        self.send(|reply| ActorMsg::SetSelections { selections, reply })
+        self.send(|reply| ActorMsg::SetSelections {
+            selections,
+            based_on: None,
+            reply,
+        })
+    }
+
+    /// [`Self::set_selections`], rebased as
+    /// [`Self::apply_edit_based_on`] is.
+    pub fn set_selections_based_on(&self, selections: SelectionSet, based_on: u64) -> Pending<()> {
+        self.send(|reply| ActorMsg::SetSelections {
+            selections,
+            based_on: Some(based_on),
+            reply,
+        })
     }
 
     /// Track, untrack or restick ranges the document keeps in place across
@@ -436,6 +465,14 @@ impl crate::document::Document for RopeDocumentHandle {
 
     fn set_selections(&self, selections: SelectionSet) -> Pending<()> {
         RopeDocumentHandle::set_selections(self, selections)
+    }
+
+    fn apply_edit_based_on(&self, edit: Edit, based_on: u64) -> Pending<AppliedEdit> {
+        RopeDocumentHandle::apply_edit_based_on(self, edit, based_on)
+    }
+
+    fn set_selections_based_on(&self, selections: SelectionSet, based_on: u64) -> Pending<()> {
+        RopeDocumentHandle::set_selections_based_on(self, selections, based_on)
     }
 
     fn mark_clean(&self) -> Pending<()> {

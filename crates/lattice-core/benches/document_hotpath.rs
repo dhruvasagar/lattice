@@ -274,8 +274,43 @@ fn append_to_tracked(c: &mut Criterion) {
     g.finish();
 }
 
+/// LL.13a: a typed character positioned before `k` appends it had not seen,
+/// rebased over them in the turn that applies it. `k = 0` is the cost every
+/// key now pays for the check; one append is the case a stream produces.
+fn rebase_over_appends(c: &mut Criterion) {
+    use lattice_core::tracked::{Stickiness, TrackedRangeId};
+    let mut g = c.benchmark_group("document_edit_p99_us::rebase_over_appends");
+    for k in [0usize, 1, 8] {
+        g.throughput(Throughput::Elements(1));
+        g.bench_with_input(BenchmarkId::from_parameter(k), &k, |bencher, &k| {
+            bencher.iter_with_setup(
+                || {
+                    let mut d = build_doc(1_000);
+                    let at = (d.buffer().byte_len() / 2) as usize;
+                    let id = TrackedRangeId::next();
+                    d.update_tracked_ranges(|t| t.insert(id, at..at, Stickiness::NeverGrows));
+                    let base = d.text_version();
+                    for _ in 0..k {
+                        d.append_to_tracked(id, "token ").unwrap();
+                    }
+                    (d, base)
+                },
+                |(mut d, base)| {
+                    d.apply_edit_based_on(
+                        Edit::insert(black_box(Position::new(900, 0)), "x"),
+                        base,
+                    )
+                    .unwrap();
+                },
+            );
+        });
+    }
+    g.finish();
+}
+
 criterion_group!(
     benches,
+    rebase_over_appends,
     append_to_tracked,
     viewport_walk,
     insert_at_middle,

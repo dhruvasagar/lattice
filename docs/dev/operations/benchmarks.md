@@ -71,6 +71,22 @@ target rather than just a slower number.
 
 ---
 
+## LL.13a — rebasing a key over appends it had not seen (2026-11-07)
+
+`document_edit_p99_us::rebase_over_appends/{k}` (`lattice-core/benches/document_hotpath.rs`):
+a typed character in a 1 000-line document, positioned before `k` appends and rebased over them
+in the turn that applies it. Every key now goes through this path; `k = 0` is what that costs
+when nothing is streaming.
+
+| k | 0 | 1 | 8 | `insert_at_middle/1000` (reference) |
+|---|---|---|---|---|
+| time | 1.71 µs | 1.65 µs | 1.81 µs | 1.85 µs |
+
+Within noise of a plain insert at every `k`: the check is a version compare, and a rebase is a
+handful of position transforms against a log the actor already holds.
+
+---
+
 ## LL.12 — anchored append, and a keystroke during a stream (2026-11-07)
 
 `document_edit_p99_us::append_to_tracked` (`lattice-core/benches/document_hotpath.rs`)

@@ -150,6 +150,11 @@ pub enum AppendOutcome {
     /// No such range, or a document kind without text of its own: nothing
     /// was written.
     Unknown,
+    /// An undo or redo ran since this stream's previous append: nothing was
+    /// written, and the stream should stop. `u` while a response streams
+    /// cancels it (design `llm-layer.md` §5); refusing here, in the same
+    /// turn as the write, means no chunk can land after the user's `u`.
+    Undone,
 }
 
 /// One change to a document's tracked ranges, as a caller outside the

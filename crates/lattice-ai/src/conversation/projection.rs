@@ -4,10 +4,11 @@
 //! produces into its buffer, and the fold sources in `tool_fold` read the spans.
 
 use crate::conversation::model::{
-    Block, Conversation, EditStatus, PermissionStatus, Role, ToolKind, ToolStatus,
+    Block, Conversation, EditStatus, PermissionStatus, Role, SourceLink, ToolKind, ToolStatus,
 };
 use crate::conversation::tool_fold::{
-    ConversationFold, ConversationFoldKind, reasoning_fold_identity, tool_fold_identity,
+    ConversationFold, ConversationFoldKind, reasoning_fold_identity, source_fold_identity,
+    tool_fold_identity,
 };
 
 /// How a foldable block (reasoning, a tool call) is shown.
@@ -132,6 +133,36 @@ pub fn project_conversation_with(
     conv: &Conversation,
     opts: &ProjectionOptions,
 ) -> (String, Vec<ConversationFold>) {
+    let layout = layout(conv, opts);
+    (layout.text, layout.folds)
+}
+
+/// LL.10b: the source a [`Block::Source`] spanning `line` links back to, in the
+/// projection `opts` give. Re-runs the layout pass, so the answer can never
+/// disagree with the text; it is pure and runs only on a `gf`.
+pub fn source_at_line(
+    conv: &Conversation,
+    opts: &ProjectionOptions,
+    line: u32,
+) -> Option<SourceLink> {
+    layout(conv, opts)
+        .sources
+        .into_iter()
+        .find(|(start, end, _)| (*start..=*end).contains(&line))
+        .map(|(_, _, link)| link)
+}
+
+/// One layout pass: the text, its folds, and the line span of each linked
+/// source block.
+struct Layout {
+    text: String,
+    folds: Vec<ConversationFold>,
+    sources: Vec<(u32, u32, SourceLink)>,
+}
+
+fn layout(conv: &Conversation, opts: &ProjectionOptions) -> Layout {
+    let mut sources: Vec<(u32, u32, SourceLink)> = Vec::new();
+    let mut source_ordinal: usize = 0;
     let mut s = Sink {
         out: String::new(),
         line: 0,
@@ -206,6 +237,36 @@ pub fn project_conversation_with(
                         ConversationFoldKind::ToolCall,
                     );
                 }
+                Block::Source {
+                    label,
+                    lang,
+                    text,
+                    link,
+                } => {
+                    let ordinal = source_ordinal;
+                    source_ordinal += 1;
+                    let start = s.line;
+                    s.push("\u{25b8} ");
+                    s.line(&one_line(label));
+                    if opts.markdown {
+                        push_fenced(&mut s, lang, text);
+                    } else {
+                        for l in text.split('\n') {
+                            s.push("    ");
+                            s.line(l);
+                        }
+                    }
+                    if let Some(link) = link {
+                        sources.push((start, s.line - 1, *link));
+                    }
+                    push_fold(
+                        &mut folds,
+                        start,
+                        s.line - 1,
+                        source_fold_identity(ordinal),
+                        ConversationFoldKind::Source,
+                    );
+                }
                 Block::Edit { path, status } => {
                     s.push("  \u{270e} ");
                     s.push(path);
@@ -260,7 +321,11 @@ pub fn project_conversation_with(
         }
         s.end_line();
     }
-    (s.out, folds)
+    Layout {
+        text: s.out,
+        folds,
+        sources,
+    }
 }
 
 /// In markdown form a blank line after a speaker label, so a first line of
@@ -496,6 +561,9 @@ mod tests {
     ) -> PermissionOption {
         PermissionOption::new(id, name, kind)
     }
+
+    use crate::conversation::model::SourceLink;
+    use crate::conversation::tool_fold::ConversationFoldKind;
 
     #[test]
     fn renders_turn_headers_and_blocks() {
@@ -756,6 +824,64 @@ mod tests {
 
     /// The drain clears the prompt exactly when this rises, so a queued prompt
     /// becoming a turn must leave it unchanged.
+    fn asked(lines: usize) -> Conversation {
+        let text = (0..lines)
+            .map(|n| format!("fn f{n}() {{}}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut c = Conversation::default();
+        c.push_user_source(
+            Block::Source {
+                label: "foo.rs:3-4".into(),
+                lang: "rust".into(),
+                text,
+                link: Some(SourceLink {
+                    buffer: lattice_core::BufferId(7),
+                    line: 2,
+                }),
+            },
+            "explain",
+        );
+        c
+    }
+
+    const MD: ProjectionOptions = ProjectionOptions {
+        markdown: true,
+        reasoning: FoldDisplay::Closed,
+        tools: FoldDisplay::Closed,
+    };
+
+    /// LL.10b: what an ask sent is a head line naming its place over the text
+    /// in a fence of its language, then the typed instruction.
+    #[test]
+    fn a_source_block_is_a_head_line_over_a_fence_then_the_instruction() {
+        let (text, folds) = project_conversation_with(&asked(2), &MD);
+        assert!(
+            text.starts_with(
+                "you:\n\n\u{25b8} foo.rs:3-4\n```rust\nfn f0() {}\nfn f1() {}\n```\nexplain\n"
+            ),
+            "{text:?}"
+        );
+        assert_eq!(folds.len(), 1);
+        assert_eq!(folds[0].kind, ConversationFoldKind::Source);
+        assert_eq!((folds[0].start_line, folds[0].end_line), (2, 6));
+    }
+
+    /// `gf` finds the block from any of its lines, and nothing outside it.
+    #[test]
+    fn a_line_of_the_source_block_links_back_and_others_do_not() {
+        let conv = asked(2);
+        let link = SourceLink {
+            buffer: lattice_core::BufferId(7),
+            line: 2,
+        };
+        for line in 2..=6 {
+            assert_eq!(source_at_line(&conv, &MD, line), Some(link), "line {line}");
+        }
+        assert_eq!(source_at_line(&conv, &MD, 0), None);
+        assert_eq!(source_at_line(&conv, &MD, 7), None, "the instruction");
+    }
+
     #[test]
     fn submission_count_rises_on_a_submit_and_not_on_a_dequeue() {
         let mut conv = Conversation::default();

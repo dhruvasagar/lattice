@@ -145,6 +145,7 @@ mod comment_plugin;
 #[cfg(test)]
 mod keystroke_glyph_ratchet;
 mod lifecycle;
+mod llm_ask;
 mod lsp;
 mod lsp_log_buffers;
 mod lsp_watcher;

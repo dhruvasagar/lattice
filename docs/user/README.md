@@ -173,6 +173,7 @@ same surface).
 |   — permission prompts     | [`ai-permission-mode`](help:ai-permission-mode) | ✅      |
 |   — agent process log      | [`ai-log-mode`](help:ai-log-mode) | ✅      |
 | LLM chat                   | [`llm-chat-mode`](help:llm-chat-mode) | ✅      |
+| Ask about any text         | [`llm-mode`](help:llm-mode) | ✅      |
 |   — settings and profiles  | [`llm`](help:llm)                        | ✅      |
 |   — system prompt          | [`llm-system-mode`](help:llm-system-mode) | ✅      |
 | Languages                  | [`languages`](help:languages)            | ✅      |

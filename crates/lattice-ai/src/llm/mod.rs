@@ -17,6 +17,7 @@ pub mod history;
 pub mod install;
 pub mod menu;
 pub mod modes;
+pub mod operators;
 pub mod options;
 pub mod prompt_cookie;
 pub mod provider;

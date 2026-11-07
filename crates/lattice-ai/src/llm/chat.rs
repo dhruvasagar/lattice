@@ -53,6 +53,16 @@ use crate::conversation::{
     UsageSnapshot,
 };
 
+/// The part of a buffer name a chat's name carries: no `*` and no whitespace,
+/// so `*llm:<hint>:<n>*` stays one recognisable token, and at most 40 chars.
+fn name_hint(hint: &str) -> String {
+    hint.chars()
+        .filter(|c| *c != '*')
+        .map(|c| if c.is_whitespace() { '-' } else { c })
+        .take(40)
+        .collect()
+}
+
 /// Provider tag of a chat's [`SessionKey`].
 pub const SESSION_PROVIDER: &str = "llm";
 
@@ -534,8 +544,28 @@ impl LlmChats {
     /// from the source's starts the chat fresh from that profile: the source's
     /// overrides were made on top of another base and do not carry over.
     pub fn create_with(&self, profile: Option<&str>, from: Option<BufferId>) -> Arc<ChatSession> {
+        self.create_named(profile, from, None)
+    }
+
+    /// LL.10b: the dedicated buffer of an ask from `from`: a chat whose name
+    /// says what it is about (`*llm:foo.rs:4*`, `hint` being `foo.rs`), with
+    /// `from`'s session settings copied into it as [`create_with`](Self::create_with)
+    /// copies them. The counter keeps every request its own buffer.
+    pub fn create_for_source(&self, from: BufferId, hint: &str) -> Arc<ChatSession> {
+        self.create_named(None, Some(from), Some(hint))
+    }
+
+    fn create_named(
+        &self,
+        profile: Option<&str>,
+        from: Option<BufferId>,
+        hint: Option<&str>,
+    ) -> Arc<ChatSession> {
         let n = self.next_chat.fetch_add(1, Ordering::Relaxed);
-        let name = format!("*llm:{n}*");
+        let name = match hint.map(name_hint).filter(|h| !h.is_empty()) {
+            Some(h) => format!("*llm:{h}:{n}*"),
+            None => format!("*llm:{n}*"),
+        };
         let key = SessionKey::new(SESSION_PROVIDER, n);
         let bus = self.bus.clone();
         let store = ConversationStore::new(Arc::new(move |ev| bus.publish_typed(ev)));
@@ -692,6 +722,54 @@ impl LlmChats {
         };
         if send_now {
             self.start_request(session);
+        }
+    }
+
+    /// LL.10b: send `source` from a buffer, with the typed `instruction`, as
+    /// the first turn of a chat [`create_for_source`](Self::create_for_source)
+    /// made. A chat that already has a turn running queues it as text instead,
+    /// which only a caller reusing a chat (LL.10c's `destination=`) can reach.
+    pub fn submit_source(
+        self: &Arc<Self>,
+        session: &Arc<ChatSession>,
+        source: crate::conversation::Block,
+        instruction: String,
+        mut overrides: RequestOverrides,
+    ) {
+        if let Some(p) = overrides.values.remove(&SettingKey::Profile)
+            && overrides.profile.is_none()
+        {
+            overrides.profile = Some(p);
+        }
+        let started = {
+            let mut turn = session.turn();
+            if turn.busy {
+                false
+            } else {
+                session.store.mutate(&session.key, |c| {
+                    c.error = None;
+                    c.push_user_source(source.clone(), &instruction);
+                    c.status = SessionStatus::Thinking;
+                });
+                turn.busy = true;
+                turn.interrupted = false;
+                turn.current = overrides.clone();
+                true
+            }
+        };
+        if started {
+            self.start_request(session);
+        } else {
+            let text = match &source {
+                crate::conversation::Block::Source { text, .. } if instruction.is_empty() => {
+                    text.clone()
+                }
+                crate::conversation::Block::Source { text, .. } => {
+                    format!("{text}\n\n{instruction}")
+                }
+                _ => instruction,
+            };
+            self.submit_with(session, text, overrides);
         }
     }
 

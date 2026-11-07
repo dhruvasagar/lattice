@@ -63,6 +63,21 @@ pub fn install(boot: &mut impl SubsystemBoot) {
             .unwrap_or_else(|| Arc::new(lattice_picker::TransientSourceRegistry::new()));
         super::menu::register_source(&sources, chats.clone(), ids, boot.buffer_store().clone());
     }
+    // LL.10b: the ask. The operator captures its span; `llm-mode` owns the
+    // instruction prompt's handler and the `<leader>aa` layer it is bound in.
+    let asks: super::operators::LlmAsksHandle = Arc::new(super::operators::LlmAsks::default());
+    boot.register_service::<super::operators::LlmAsksHandle>(asks.clone());
+    let ask = super::operators::register(boot.commands_mut(), asks.clone());
+    let store = boot.buffer_store().clone();
+    super::operators::register_ex(boot.commands_mut(), chats.clone(), store);
+    boot.modes_mut()
+        .register(super::modes::llm_mode::LlmMode::new(chats.clone(), asks))
+        .expect("llm-mode register");
+    boot.bind_operator(
+        lattice_mode::KeymapLayer::MinorMode(super::modes::llm_mode::LlmMode::mode_id()),
+        "<leader>aa",
+        ask,
+    );
     super::commands::register(boot.commands_mut(), chats);
 
     // The drain publishes `ConversationProjected` after each re-projection edit

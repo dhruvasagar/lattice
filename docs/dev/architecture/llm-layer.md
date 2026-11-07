@@ -445,8 +445,12 @@ through `refresh_action`, rather than the host knowing system prompts).
 
 Each of these is settled by the slice that needs it, and none changes the UX above.
 
-- **`.` on an operator under `<leader>a`.** `OperatorSpec::repeatable` is informational and
-  `.` is decided host-side. Macros record invocations, so they should work; both need a test.
+- ~~**`.` on an operator under `<leader>a`.**~~ **Settled by LL.10b: `.` does not repeat an
+  ask.** `.` repeats the last change and an ask changes nothing, as `y` changes nothing
+  (strict vim semantics, paramount #3); a repeat would also re-send a prompt typed once. The
+  host already decides this from the effect (`effect_mutates`), so no flag is needed. Rewrite
+  (LL.11) is a change and is the operator `.` should reach. A macro replays the ask's
+  invocations and does not wait for the request.
 - **Headings and folds.** A reply's own `#` headings produce section folds that overlap the
   block folds. Turn labels stay plain lines for this reason. Confirm `zM` and `za` compose.
 - **`rmcp` against Claude Code.** Source review of 3.8.0 is favourable: `CustomNotification`

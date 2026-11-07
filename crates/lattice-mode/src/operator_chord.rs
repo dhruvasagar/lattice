@@ -65,6 +65,15 @@ pub trait OperatorChordWirer: Send + Sync {
         doubled: Option<lattice_protocol::chord::KeyChord>,
         post_motion_char: bool,
     );
+
+    /// LL.10b: `chord` with `<leader>` replaced by the configured leader, as
+    /// the keymap does for every chord it registers. A subsystem names its
+    /// operator `<leader>aa`; the leader is known only once the keymap exists,
+    /// which is when [`bind_in`](Self::bind_in) runs. The default replaces
+    /// nothing, for binders with no keymap behind them.
+    fn expand_leader(&self, chord: &str) -> String {
+        chord.to_string()
+    }
 }
 
 /// The shared handle. Registered by the host under THIS alias, and looked up

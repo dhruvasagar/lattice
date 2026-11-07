@@ -934,24 +934,16 @@ fn resolve_grammar_range(
                     // would cut a multi-byte `é` in half, and the edit's
                     // char-boundary snap would then delete none of it),
                     // clamped to line length.
-                    let buffer = document.buffer();
-                    let line_len = line_byte_len(buffer, b.line);
-                    let head_len = buffer
-                        .line(b.line)
-                        .and_then(|line| line.get(b.byte as usize..)?.chars().next())
-                        .map_or(1, |c| c.len_utf8() as u32);
-                    let extended_end = Position::new(b.line, (b.byte + head_len).min(line_len));
-                    Ok(ProtoRange::new(a, extended_end))
+                    Ok(ProtoRange::new(a, past_head(document.buffer(), b)))
                 }
                 Some(lattice_protocol::selection::VisualMode::Blockwise) => {
-                    // Reached when a non-operator path resolves a
-                    // grammar Range::Selection while Visual is
-                    // Blockwise (e.g. a future motion that takes a
-                    // range arg). Operators bypass this branch via
-                    // `execute_operator_blockwise`. Fall back to a
-                    // single contiguous range here -- no per-row
-                    // semantics for non-operators in v1.
-                    Ok(ProtoRange::new(a, b))
+                    // Reached by an operator that collapses a block to one
+                    // span (`blockwise_per_row: false`: `>`, `gU`, the LLM
+                    // ask) and by a non-operator resolving a selection while
+                    // Visual is Blockwise. One contiguous range anchor..head,
+                    // no per-row semantics -- and, as charwise, inclusive of
+                    // the head's character: the caret's cell is selected.
+                    Ok(ProtoRange::new(a, past_head(document.buffer(), b)))
                 }
             }
         }
@@ -1113,6 +1105,19 @@ fn line_byte_len(buffer: &lattice_core::Buffer, line: u32) -> u32 {
         .get(line as usize)
         .map(|l| l.trim_end_matches('\n').len() as u32)
         .unwrap_or(0)
+}
+
+/// The position just past the character at `head`, clamped to its line: where
+/// a visual selection ending at `head` ends, since vim's visual ranges include
+/// the head. Past the whole character, not one byte, so a multi-byte `é` is not
+/// cut in half (an edit's char-boundary snap would then delete none of it).
+fn past_head(buffer: &lattice_core::Buffer, head: Position) -> Position {
+    let line_len = line_byte_len(buffer, head.line);
+    let head_len = buffer
+        .line(head.line)
+        .and_then(|line| line.get(head.byte as usize..)?.chars().next())
+        .map_or(1, |c| c.len_utf8() as u32);
+    Position::new(head.line, (head.byte + head_len).min(line_len))
 }
 
 #[cfg(test)]

@@ -37,6 +37,9 @@ use crate::llm::menu;
 use crate::llm::settings::RequestOverrides;
 use lattice_grammar::args::{ArgValue, Args};
 
+/// `gf` on the text an ask sent: go back to where it came from.
+const ACTION_GOTO_SOURCE: &str = "action:llm-chat-goto-source";
+
 /// The yes half of the confirm shown when `@profile` would widen tools.
 const ACTION_SEND_WIDENED: &str = "action:llm-chat-send-widened";
 
@@ -149,6 +152,10 @@ impl Mode for LlmChatMode {
                 handler: Arc::new(|_| Some(Effect::KillBuffer)),
             },
             ActionHandlerContribution {
+                action_name: ACTION_GOTO_SOURCE,
+                handler: goto_source_handler(self.chats.clone()),
+            },
+            ActionHandlerContribution {
                 action_name: ACTION_SEND_WIDENED,
                 handler: send_widened_handler(self.chats.clone()),
             },
@@ -234,6 +241,13 @@ fn keymap_entries() -> &'static [KeymapEntry] {
                 mode: Insert, chord: "<C-c>",
                 doc: "llm-chat: interrupt the reply",
                 cmd: "action:llm-chat-interrupt"
+            },
+            // vim's `gf` edits the file under the cursor in this window; on the
+            // text an ask sent, the file is where that text came from.
+            keymap_entry! {
+                mode: Normal, chord: "gf",
+                doc: "llm-chat: go to where the sent text came from",
+                cmd: "action:llm-chat-goto-source"
             },
             keymap_entry! {
                 mode: Normal, chord: "gq",
@@ -322,6 +336,25 @@ fn send_widened_handler(chats: LlmChatsHandle) -> ActionHandler {
     })
 }
 
+/// `gf`: on a source block, open its buffer in this window at its first line,
+/// as vim's `gf` opens a file. Off one, nothing happens.
+fn goto_source_handler(chats: LlmChatsHandle) -> ActionHandler {
+    Arc::new(move |ctx: &ActionContext<'_>| -> Option<Effect> {
+        let buffer = lattice_core::BufferId(ctx.buffer_id.0 as u32);
+        let session = chats.for_buffer(buffer)?;
+        let conv = session.store.snapshot();
+        let opts = chats.projection_options_for(buffer);
+        let link = crate::conversation::projection::source_at_line(&conv, &opts, ctx.cursor.line)?;
+        Some(Effect::Many(vec![
+            Effect::FocusBuffer(link.buffer.0),
+            Effect::CursorMoveIn {
+                target: link.buffer,
+                position: lattice_protocol::position::Position::new(link.line, 0),
+            },
+        ]))
+    })
+}
+
 fn interrupt_handler(chats: LlmChatsHandle) -> ActionHandler {
     Arc::new(move |ctx: &ActionContext<'_>| -> Option<Effect> {
         if let Some(session) = chats.for_buffer(lattice_core::BufferId(ctx.buffer_id.0 as u32)) {
@@ -346,6 +379,10 @@ pub fn register_actions(registry: &mut lattice_grammar::CommandRegistry) {
             "llm-chat: interrupt the reply.",
         ),
         ("action:llm-chat-close", "llm-chat: close the chat."),
+        (
+            ACTION_GOTO_SOURCE,
+            "llm-chat: go to where the text an ask sent came from.",
+        ),
         ("action:llm-chat-menu", "llm-chat: open the settings menu."),
         (
             ACTION_SEND_WIDENED,

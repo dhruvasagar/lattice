@@ -63,7 +63,15 @@ pub const REASONING_FOLD_NAMESPACE: u64 = 0xA1F0_0002_0000_0000;
 pub enum ConversationFoldKind {
     ToolCall,
     Reasoning,
+    /// LL.10b: text sent from a buffer. Folded by the tool-call source, so a
+    /// chat registers no third source for it.
+    Source,
 }
+
+/// LL.10b: a source block of at most this many text lines starts open; a longer
+/// one starts closed, so the answer is not pushed off the screen by what was
+/// asked about. `za` opens or closes either.
+pub const SOURCE_OPEN_LINES: u32 = 8;
 
 /// TCF: one foldable region in the projected transcript, produced by
 /// [`project_conversation`]. `start_line` is the fold head (stays visible when
@@ -85,6 +93,15 @@ pub fn tool_fold_identity(tool_call_id: &str) -> u64 {
     let mut h = DefaultHasher::new();
     "ai:tool".hash(&mut h);
     tool_call_id.hash(&mut h);
+    h.finish()
+}
+
+/// LL.10b: stable identity for a source fold, keyed on the block's ordinal in
+/// document order, as reasoning's is. Namespaced with `"ai:source"`.
+pub fn source_fold_identity(ordinal: usize) -> u64 {
+    let mut h = DefaultHasher::new();
+    "ai:source".hash(&mut h);
+    ordinal.hash(&mut h);
     h.finish()
 }
 
@@ -158,18 +175,26 @@ fn folds_of_kind(
             None => return Vec::new(),
         },
     };
-    let shown = match want {
-        ConversationFoldKind::ToolCall => opts.tools,
-        ConversationFoldKind::Reasoning => opts.reasoning,
-    };
     spans
         .into_iter()
-        .filter(|s| s.kind == want)
-        .map(|s| Fold {
-            start_line: s.start_line,
-            end_line: s.end_line,
-            closed: shown != FoldDisplay::Open,
-            identity: Some(s.identity),
+        .filter(|s| {
+            s.kind == want
+                || (want == ConversationFoldKind::ToolCall
+                    && s.kind == ConversationFoldKind::Source)
+        })
+        .map(|s| {
+            let closed = match s.kind {
+                ConversationFoldKind::ToolCall => opts.tools != FoldDisplay::Open,
+                ConversationFoldKind::Reasoning => opts.reasoning != FoldDisplay::Open,
+                // The head and the two fence lines are not text.
+                ConversationFoldKind::Source => s.end_line - s.start_line > SOURCE_OPEN_LINES + 2,
+            };
+            Fold {
+                start_line: s.start_line,
+                end_line: s.end_line,
+                closed,
+                identity: Some(s.identity),
+            }
         })
         .collect()
 }
@@ -284,6 +309,46 @@ mod tests {
             }],
             ..Default::default()
         }
+    }
+
+    /// LL.10b: what an ask sent starts open when short and closed when long,
+    /// so a long selection does not push the answer off the screen.
+    #[test]
+    fn a_source_block_folds_closed_only_when_long() {
+        use crate::conversation::model::SourceLink;
+        use crate::conversation::{ProjectionOptions, ProjectionSource};
+        let folds_for = |lines: usize| {
+            let text = vec!["x"; lines].join("\n");
+            let mut conv = Conversation::default();
+            conv.push_user_source(
+                Block::Source {
+                    label: "a:1".into(),
+                    lang: "text".into(),
+                    text,
+                    link: Some(SourceLink {
+                        buffer: BufferId(1),
+                        line: 0,
+                    }),
+                },
+                "",
+            );
+            let store = ConversationStore::new(Arc::new(|_| {}));
+            store.mutate(&lattice_agent::SessionKey::new("t", 1), |c| {
+                *c = conv.clone()
+            });
+            let opts = ProjectionOptions {
+                markdown: true,
+                ..ProjectionOptions::default()
+            };
+            ToolCallFoldSource::new(store, BufferId(1))
+                .with_options(ProjectionSource::fixed(opts))
+                .compute_folds()
+        };
+        let short = folds_for(SOURCE_OPEN_LINES as usize);
+        assert_eq!(short.len(), 1);
+        assert!(!short[0].closed, "{short:?}");
+        let long = folds_for(SOURCE_OPEN_LINES as usize + 1);
+        assert!(long[0].closed, "{long:?}");
     }
 
     #[test]

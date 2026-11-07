@@ -11,6 +11,14 @@
   streaming in, and survive `gr`, and the header says which are active. They
   never edit a file, unlike `:v/pat/d`, which in an editable results view
   deletes the lines from your files.
+- **Ask a language model about any text.** `<leader>aa` is an operator:
+  `<leader>aaip` asks about a paragraph, `<leader>aa` in Visual about the
+  selection, and a prompt takes the instruction. The answer opens in a new
+  chat beside you while your caret, mode and pane stay put; a second ask
+  reuses that pane. It works from read-only buffers such as
+  `*compilation*` and help, and `:'<,'>llm-ask explain this` does the same
+  from the command line. `gf` on the sent text in the answer goes back to
+  it. See `:help llm-mode`.
 
 ### Fixed
 - **Semantic colours no longer land on the wrong characters.** A request to

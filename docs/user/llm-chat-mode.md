@@ -29,6 +29,7 @@ behind a reply.
 | `<C-j>` | Insert | Insert a newline in the prompt |
 | `<C-c>` | Insert | Interrupt the reply |
 | `gq` | Normal | Close the chat |
+| `gf` | Normal | On text an ask sent, go back to where it came from |
 
 `<CR>` sends, which is why a newline needs its own key.
 
@@ -141,5 +142,6 @@ as it does in a markdown file.
 
 - [`ai-conversation-mode`](help:ai-conversation-mode) — the agent
   conversation buffer.
+- [`llm-mode`](help:llm-mode) — asking about text from any buffer.
 - [`repl-mode`](help:repl-mode) — the insert-entry keys.
 - [`llm`](help:llm) — settings, profiles and project config.

@@ -113,4 +113,8 @@ impl lattice_mode::OperatorChordWirer for HostOperatorChordWirer {
             post_motion_char,
         );
     }
+
+    fn expand_leader(&self, chord: &str) -> String {
+        self.keymap.expand_leader(chord)
+    }
 }

@@ -27,11 +27,14 @@ pub fn messages(conv: &Conversation) -> Vec<Message> {
                     .blocks
                     .iter()
                     .filter_map(|b| match b {
-                        Block::Text(s) => Some(s.as_str()),
+                        Block::Text(s) => Some(s.clone()),
+                        Block::Source {
+                            label, lang, text, ..
+                        } => Some(source_message(label, lang, text)),
                         _ => None,
                     })
                     .collect::<Vec<_>>()
-                    .join("\n");
+                    .join("\n\n");
                 if !text.is_empty() {
                     // A user turn whose reply never came (it failed, or was
                     // interrupted first) is superseded: two user messages in a
@@ -66,6 +69,20 @@ pub fn messages(conv: &Conversation) -> Vec<Message> {
         }
     }
     out
+}
+
+/// How sent text reaches the model: its label, then the text in a fence long
+/// enough that nothing inside it can close it. The model sees what the user
+/// saw, with the place it came from.
+fn source_message(label: &str, lang: &str, text: &str) -> String {
+    let mut run = 0;
+    let mut best = 0;
+    for c in text.chars() {
+        run = if c == '`' { run + 1 } else { 0 };
+        best = best.max(run);
+    }
+    let fence = "`".repeat(best.max(2) + 1);
+    format!("From {label}:\n{fence}{lang}\n{text}\n{fence}")
 }
 
 #[cfg(test)]
@@ -127,6 +144,28 @@ mod tests {
             &parts[2],
             AssistantPart::Reasoning { data: None, .. }
         ));
+    }
+
+    /// LL.10b: sent text reaches the model with its place, in a fence no
+    /// backtick inside it can close, before the instruction.
+    #[test]
+    fn a_source_turn_sends_its_label_and_fenced_text_then_the_instruction() {
+        let mut c = Conversation::default();
+        c.push_user_source(
+            Block::Source {
+                label: "a.md:1".into(),
+                lang: "markdown".into(),
+                text: "```\ncode\n```".into(),
+                link: None,
+            },
+            "fix it",
+        );
+        assert_eq!(
+            messages(&c),
+            vec![Message::User(
+                "From a.md:1:\n````markdown\n```\ncode\n```\n````\n\nfix it".into()
+            )]
+        );
     }
 
     #[test]

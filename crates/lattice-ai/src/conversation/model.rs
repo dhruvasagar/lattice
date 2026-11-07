@@ -187,6 +187,22 @@ pub enum Block {
     },
     /// An agent-proposed file edit (AU‑4 wires the diff review).
     Edit { path: String, status: EditStatus },
+    /// LL.10b: text the user sent from a buffer, as the first part of their
+    /// turn. Shown as a head line naming where it came from over the text in
+    /// a fence, folded when long, so what was sent stays visible without
+    /// burying the answer; the model gets it with its label (see
+    /// `llm::history`). A user's typed instruction follows as a `Text` block.
+    Source {
+        /// Where it came from, for the head line and for the model:
+        /// `foo.rs:3-10`.
+        label: String,
+        /// The fence's language (`rust`), or `text` when unknown.
+        lang: String,
+        text: String,
+        /// Where `gf` on the block goes back to; `None` when the source has
+        /// no buffer to return to.
+        link: Option<SourceLink>,
+    },
     /// AUX‑1: an inline permission request awaiting or reflecting user action.
     Permission {
         id: String,
@@ -195,6 +211,14 @@ pub enum Block {
         options: Vec<PermissionOption>,
         status: PermissionStatus,
     },
+}
+
+/// Where a [`Block::Source`] came from: the buffer and the first line sent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SourceLink {
+    pub buffer: lattice_core::BufferId,
+    /// 0-based.
+    pub line: u32,
 }
 
 /// One turn: a role and its ordered blocks.
@@ -278,6 +302,19 @@ impl Conversation {
         self.turns.push(Turn {
             role: Role::User,
             blocks: vec![Block::Text(text.to_string())],
+        });
+    }
+
+    /// LL.10b: a user turn that sends `source` from a buffer, followed by the
+    /// typed `instruction` when there is one.
+    pub fn push_user_source(&mut self, source: Block, instruction: &str) {
+        let mut blocks = vec![source];
+        if !instruction.is_empty() {
+            blocks.push(Block::Text(instruction.to_string()));
+        }
+        self.turns.push(Turn {
+            role: Role::User,
+            blocks,
         });
     }
 

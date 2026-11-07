@@ -303,6 +303,9 @@ pub use crate::tick_callback::{
     TickCallback, TickCallbackRegistration, TickCallbackRegistry, TickCallbackRegistryHandle,
 };
 pub use lattice_keymap::KeymapEntry;
+/// The layer [`SubsystemBoot::bind_operator`] binds into, re-exported so a
+/// subsystem can name it without depending on `lattice-keymap` itself.
+pub use lattice_keymap::KeymapLayer;
 // BC.5: the host pushes the `<C-x>` leader layer (it owns the `KeymapHandle` +
 // config), calling `emacs_keys_layer_bindings`; `EmacsKeysMode::mode_id` keys
 // the layer + the K.1.c per-keystroke gate.

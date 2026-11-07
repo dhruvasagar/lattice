@@ -232,9 +232,12 @@ pub fn open_system(
     }
 }
 
-/// The lines a `:'<,'>llm-system` range names, joined. The host has already
-/// made a Visual selection into line addresses, so only lines arrive here.
-fn range_text(ctx: &lattice_grammar::registry::ExCommandContext) -> Result<Option<String>, String> {
+/// The 0-based first and last line a command's range names, `None` without a
+/// range. The host has already made a Visual selection into line addresses, so
+/// only lines arrive here.
+pub(crate) fn range_lines(
+    ctx: &lattice_grammar::registry::ExCommandContext,
+) -> Result<Option<(u32, u32)>, String> {
     use lattice_grammar::range::{RangeEnv, resolve_lines};
     let Some(range) = &ctx.range else {
         return Ok(None);
@@ -249,15 +252,30 @@ fn range_text(ctx: &lattice_grammar::registry::ExCommandContext) -> Result<Optio
         marks: &marks,
         search: &search,
     };
-    match resolve_lines(range, &env, true).map_err(|e| format!("llm: {}", e.0))? {
-        Some((a, b)) => Ok(Some(
-            (a..=b)
-                .filter_map(|l| ctx.buffer.line(l))
-                .collect::<Vec<_>>()
-                .join("\n"),
-        )),
+    resolve_lines(range, &env, true).map_err(|e| format!("llm: {}", e.0))
+}
+
+/// The lines a `:'<,'>llm-system` range names, joined.
+fn range_text(ctx: &lattice_grammar::registry::ExCommandContext) -> Result<Option<String>, String> {
+    if ctx.range.is_none() {
+        return Ok(None);
+    }
+    match range_lines(ctx)? {
+        Some((a, b)) => Ok(Some(lines_text(ctx, a, b))),
         None => Err("llm: give :llm-system a line range or select text first".to_string()),
     }
+}
+
+/// Lines `a..=b` of the command's buffer, joined.
+pub(crate) fn lines_text(
+    ctx: &lattice_grammar::registry::ExCommandContext,
+    a: u32,
+    b: u32,
+) -> String {
+    (a..=b)
+        .filter_map(|l| ctx.buffer.line(l))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 pub fn register(registry: &mut CommandRegistry, chats: LlmChatsHandle) {

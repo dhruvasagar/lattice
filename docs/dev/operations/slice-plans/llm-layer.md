@@ -321,8 +321,32 @@ Carved into three slices, one commit each.
 | Slice | Scope | Status |
 |---|---|---|
 | LL.10a | `Effect::DisplaySyntheticBuffer`: show a named buffer in another pane, focus unmoved, reuse a pane already in the same major, else split. Host-applied; TUI + GPUI peer arms; no WIT mirror yet. Tests: `lattice-host/tests/display_synthetic_buffer.rs` (7). | ✅ |
-| LL.10b | `llm-mode` (global minor), the ask operator, the instruction prompt, the request buffer with the source as a folded first turn; read-only, multibuffer and terminal sources; blockwise collapses to one span; macros do not wait; `.` decided or recorded. | 📝 |
+| LL.10b | `llm-mode` (`Universal` minor), the ask operator, the instruction prompt, the request buffer with the source as a folded first turn; read-only sources; blockwise collapses to one span; `.` decided. | ✅ |
 | LL.10c | `<leader>aA` (menu first), `destination=<buffer>`, size threshold, `llm.exclude` refusing `.env`. | 📝 |
+
+**LL.10b landed.** `operator:llm-ask` (`mutates: false`, `blockwise_per_row: false`) captures its
+span when it runs and opens an `Effect::OpenPrompt` whose buffer name (`*llm-ask:<token>*`) carries
+the held ask to `action:llm-ask-send`; `<Esc>` fires nothing and held asks are capped at 16.
+`:'<,'>llm-ask [key=value…] instruction` is the scriptable front-end (current line without a range).
+Both end in `ask_effect`: `LlmChats::create_for_source` (named `*llm:<file>:<n>*`, settings copied
+as `create_with` copies them, plus the source's pending menu choices) and `submit_source`, then
+`Effect::DisplaySyntheticBuffer`. The source is a new conversation block, `Block::Source { label,
+lang, text, link }`: projected as a `▸ foo.rs:3-10` head over a fence in the file's language, folded
+by the tool-call fold source and closed past 8 lines, sent to the model as `From <label>:` and a
+fence; `gf` in the chat goes back through `source_at_line`. `llm-mode` is `Universal`, so
+`*compilation*`, `*messages*` and terminal buffers have the chord. One generic seam change:
+`bind_operator` now expands `<leader>` through the binder (`OperatorChordWirer::expand_leader`) at
+bind time, and `lattice-mode` re-exports `KeymapLayer` so a subsystem can call it. `.` is decided
+(design §11): an ask is not repeatable. `@profile` that widens tools is refused from an ask with a
+pointer to `:llm <profile>`, since an ask has no prompt to confirm into. Not covered here: an ask
+from a multibuffer or terminal through the operator is exercised only through `llm-mode`'s
+`Universal` activation, not a keystroke test; `sink.rs` is not needed until LL.13 (the dedicated
+buffer reuses the chat's sink).
+One grammar fix fell out of the blockwise test: a block collapsed to one span (`blockwise_per_row:
+false`) ended *before* the head's character, so the caret's column was dropped. It now ends past
+it, as charwise Visual does (`past_head` in `dispatcher.rs`). That also changes `gU`/`gu`/`g~` on a
+block, which share the collapse; they still act on one anchor..head span rather than vim's
+rectangle, a pre-existing gap this slice does not take on.
 
 
 **Files:** `src/llm/modes/llm_mode.rs` (global minor, `<leader>a` chords), `src/llm/operators.rs`,

@@ -56,7 +56,6 @@ use lattice_mode::tick_callback::{
 use lattice_mode::{
     BufferStoreHandle, ModeRegistry, OperatorChordWirerHandle, ServiceRegistry, SubsystemBoot,
 };
-use lattice_protocol::chord::KeyChord;
 use lattice_protocol::event_registry::Event as TypedEvent;
 use lattice_runtime::EventBus;
 use tokio::runtime::Handle;
@@ -136,7 +135,9 @@ pub struct BootContext {
 /// One `bind_operator` request awaiting the keymap.
 struct PendingOperatorBinding {
     layer: KeymapLayer,
-    prefix: Vec<KeyChord>,
+    /// As written: `<leader>` is expanded, and the chord parsed, by the
+    /// binder, once the keymap knows the leader.
+    prefix: String,
     op: OperatorId,
     post_motion_char: bool,
 }
@@ -248,13 +249,25 @@ impl BootContext {
     }
 
     fn bind_now(binder: &OperatorChordWirerHandle, p: &PendingOperatorBinding) {
+        let expanded = binder.expand_leader(&p.prefix);
+        let prefix = match lattice_protocol::parse_chord_sequence(&expanded) {
+            Ok(chords) if !chords.is_empty() => chords,
+            outcome => {
+                tracing::error!(
+                    prefix = %p.prefix,
+                    ?outcome,
+                    "bind_operator: chord does not parse, operator left unbound"
+                );
+                return;
+            }
+        };
         // The linewise form repeats the prefix's last key (`gaa`, `yy`).
         binder.bind_in(
             p.layer,
             lattice_grammar::SourceLocation::synthetic("subsystem-operator"),
-            &p.prefix,
+            &prefix,
             p.op,
-            p.prefix.last().cloned(),
+            prefix.last().cloned(),
             p.post_motion_char,
         );
     }
@@ -347,17 +360,10 @@ impl SubsystemBoot for BootContext {
     }
 
     fn bind_operator(&mut self, layer: KeymapLayer, prefix: &str, op: OperatorId) {
-        let prefix = match lattice_protocol::parse_chord_sequence(prefix) {
-            Ok(p) if !p.is_empty() => p,
-            outcome => {
-                tracing::error!(
-                    prefix,
-                    ?outcome,
-                    "bind_operator: chord does not parse, operator left unbound"
-                );
-                return;
-            }
-        };
+        if prefix.is_empty() {
+            tracing::error!("bind_operator: empty chord, operator left unbound");
+            return;
+        }
         // A bind after the freeze is a programming error, but not worth a panic
         // at boot: log it and leave the operator unbound, as a bad chord does.
         let Some(registry) = self.command_registry.as_ref() else {
@@ -367,7 +373,7 @@ impl SubsystemBoot for BootContext {
         let post_motion_char = registry.operator_post_motion_char(op.0);
         let pending = PendingOperatorBinding {
             layer,
-            prefix,
+            prefix: prefix.to_string(),
             op,
             post_motion_char,
         };
@@ -396,6 +402,7 @@ mod tests {
     use super::*;
     use crate::buffer_registry::BufferRegistry;
     use lattice_mode::tick_callback::TickCallbackRegistry;
+    use lattice_protocol::chord::KeyChord;
     use std::sync::Mutex;
     use std::time::Duration;
 
@@ -662,6 +669,59 @@ mod tests {
         let bound = binder.0.lock().unwrap();
         assert_eq!(bound.len(), 1);
         assert!(!bound[0].3);
+    }
+
+    /// LL.10b: `<leader>` is the binder's to expand, at bind time, as the
+    /// keymap expands it for its own chords; a subsystem writes `<leader>aa`.
+    #[tokio::test]
+    async fn bind_operator_expands_the_leader_through_the_binder() {
+        #[derive(Default)]
+        struct CommaLeader(RecordingBinder);
+        impl lattice_mode::OperatorChordWirer for CommaLeader {
+            fn wire(
+                &self,
+                _: OperatorId,
+                _: &str,
+                _: Option<char>,
+                _: lattice_mode::ModeId,
+                _: u32,
+                _: &str,
+                _: bool,
+            ) -> Result<(), String> {
+                Ok(())
+            }
+            fn bind_in(
+                &self,
+                layer: KeymapLayer,
+                source: lattice_grammar::SourceLocation,
+                prefix: &[KeyChord],
+                op: OperatorId,
+                doubled: Option<KeyChord>,
+                post_motion_char: bool,
+            ) {
+                self.0
+                    .bind_in(layer, source, prefix, op, doubled, post_motion_char);
+            }
+            fn expand_leader(&self, chord: &str) -> String {
+                chord.replace("<leader>", ",")
+            }
+        }
+        let mut boot = ctx();
+        let op = probe_op(&mut boot, false);
+        let binder = Arc::new(CommaLeader::default());
+        boot.set_operator_binder(binder.clone());
+        boot.bind_operator(layer(), "<leader>aa", op);
+        let bound = binder.0.0.lock().unwrap();
+        assert_eq!(bound.len(), 1);
+        assert_eq!(
+            bound[0].1,
+            vec![
+                KeyChord::char(','),
+                KeyChord::char('a'),
+                KeyChord::char('a')
+            ]
+        );
+        assert_eq!(bound[0].2, Some(KeyChord::char('a')));
     }
 
     /// A chord that does not parse is logged and skipped, not a failed boot

@@ -137,6 +137,19 @@ opening the side-by-side diff and resolving the oneshot on `:diff-accept` /
 `:diff-reject`. **`lattice-agent` is the producer and awaiter; the host is the
 consumer and resolver.** That drain is irreducibly host-side and does not move.
 
+**A change to a buffer is reviewed against the buffer, not the file.** `openDiff`
+diffs a file on disk and its Accept saves it, which is right for an agent that
+edits files and wrong for a change to text the user is editing: the buffer may be
+unsaved or have no file, so the disk side would be stale and the save would write
+over the user's edits. The request therefore says both halves explicitly:
+`DiffBaseline::{Disk, Text}` for the left side and `OnAccept::{Save, ReturnText}`
+for what an Accept does. `review_text` is the second producer: it supplies the
+buffer's text as the baseline and gets the accepted right side back, edits
+included, so the caller applies it as an ordinary edit in the buffer's own undo
+history. A returned-text diff's right side carries no path, so `:w` in it cannot
+reach the file. The LLM layer's rewrite (LL.11) and its edit tools (LL.17) both
+review through it.
+
 Session-scoped teardown — reject and close every diff an origin session opened,
 once that session dies — is written once. For MCP that fires on WebSocket
 disconnect; for ACP it fires when the supervisor observes the child exit. Same

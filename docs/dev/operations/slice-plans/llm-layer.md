@@ -374,7 +374,17 @@ turn with a link, focus stays, repeat asks reuse the pane, `<leader>aA` opens th
 multibuffer and terminal sources; blockwise ask collapses to one span; macro does not wait; `.` repeats
 or the gap is recorded here (design §11).
 
-### LL.11 — Rewrite through review 📝
+### LL.11 — Rewrite through review 🚧
+
+Carved into two slices, one commit each. Dhruva chose (A) on 2026-11-07: extend the
+programmatic diff rather than give rewrite its own review buffer, because the bus diffed disk
+and saved on Accept, and LL.17's edit tools need the same buffer-text review.
+
+| Slice | Scope | Status |
+|---|---|---|
+| LL.11a | `lattice-diff`: `DiffBaseline::{Disk, Text}`, `OnAccept::{Save, ReturnText}` on `ProgrammaticDiffRequest`; host reads the baseline from text when given, names (not paths) a returned-text right side, and sends its live text back on Accept before the outcome (`ProgrammaticAccept`). `lattice-agent::review_text`. Tests: host text-review accept (edits returned, nothing written) and reject; agent round-trips. | ✅ |
+| LL.11b | `<leader>ar` rewrite operator, instruction prompt, hidden session, review through `review_text`, accept applied through a tracked range, stale confirm, closed source, refusals, fence unwrap, `.`/macro queue. | 📝 |
+
 
 **Files:** `src/llm/rewrite.rs` (on `lattice_agent::review_diff`).
 

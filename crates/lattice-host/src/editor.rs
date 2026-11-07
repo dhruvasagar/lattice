@@ -207,6 +207,16 @@ impl std::fmt::Debug for SessionBackedMinor {
     }
 }
 
+/// What a programmatic diff's Accept does with the proposed side
+/// ([`lattice_diff::OnAccept`], with the save path resolved).
+#[derive(Debug)]
+pub enum ProgrammaticAccept {
+    /// Write the right side's live text to this path.
+    Save(std::path::PathBuf),
+    /// Send the right side's live text back, unsaved.
+    ReturnText(tokio::sync::oneshot::Sender<String>),
+}
+
 /// I4 (openDiff) D-fix.1: the pane/buffer bookkeeping needed to tear a
 /// programmatic side-by-side diff down cleanly — close the two transient diff
 /// panes and return focus to the pane the `openDiff` was launched from (the
@@ -2038,8 +2048,12 @@ pub struct Editor {
     /// honored in `tear_down_single_diff_session` (a `DiffOutcome::Accept` writes
     /// the buffer here before firing the bound oneshot — the openDiff
     /// `FILE_SAVED` contract: the review *is* the save). Removed on teardown.
+    ///
+    /// LL.11a: the value is what an Accept does — save to a path (openDiff), or
+    /// hand the right side's text back to a producer that applies it to a
+    /// buffer itself (a rewrite).
     pub programmatic_diff_accept_paths:
-        std::collections::HashMap<lattice_core::BufferId, std::path::PathBuf>,
+        std::collections::HashMap<lattice_core::BufferId, ProgrammaticAccept>,
     /// I4 (openDiff) D-fix.1: per programmatic-diff-session pane teardown info,
     /// keyed by the session's primary (proposed) `BufferId`. Recorded by
     /// `open_programmatic_diff`; consumed by `finish_programmatic_diff_panes`

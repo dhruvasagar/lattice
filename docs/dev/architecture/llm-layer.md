@@ -343,7 +343,7 @@ command works).
 | Highlighting without being that language | `Editor::lang_for_major` falls back to the mode registry's language index, which is how a plugin major with no file path gets a grammar | The chat major declares markdown there |
 | Not blocking quit | `*messages*` and `*ai:opencode*` are synthetic-name Documents | Dedicated buffers follow them, not `ephemeral`, which also hides from `:ls` |
 | Option origin | `OptionOrigin`: `Default`, `GlobalConfig`, `BufferLocal`, `ModeContribution` | Needs `Profile` and `Project` variants |
-| Diff review | `review_diff`, `ProgrammaticDiffBus` | Direct reuse |
+| Diff review | `review_diff`, `ProgrammaticDiffBus` | Reuse, extended: the bus diffed disk and saved on Accept, wrong for a buffer with unsaved edits or no file. LL.11a adds a text baseline and an unsaved, returned Accept (`review_text`, agent-integration.md) |
 | Cancellation | `CancellationToken` in `lattice_protocol` | Direct reuse |
 | Permission popup | `ai-permission-mode` | Built on ACP's `PermissionOption`; must be made protocol-neutral |
 | Off-thread execution | `boot.runtime_handle()` is `lsp_runtime()`, a multi-thread runtime. The editor actor itself is `current_thread`, so a bare `tokio::spawn` from a handler lands on the actor thread | Requests spawn on the boot handle, explicitly, and a test pins it |

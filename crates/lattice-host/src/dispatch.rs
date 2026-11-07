@@ -5633,11 +5633,13 @@ impl Editor {
             .iter()
             .map(|session| {
                 let primary = session.buffer_id();
-                let label = self
-                    .programmatic_diff_accept_paths
-                    .get(&primary)
-                    .map(|p| p.display().to_string())
-                    .unwrap_or_else(|| format!("review #{}", primary.0));
+                let label = match self.programmatic_diff_accept_paths.get(&primary) {
+                    Some(crate::editor::ProgrammaticAccept::Save(p)) => p.display().to_string(),
+                    _ => self
+                        .buffers
+                        .name_of(primary)
+                        .unwrap_or_else(|| format!("review #{}", primary.0)),
+                };
                 (
                     RawCandidate::plain(label, CandidateKind::File),
                     lattice_picker::RoutingPayload::ResolveDiff {
@@ -5856,18 +5858,29 @@ impl Editor {
         // so it never leaks. A write failure is surfaced to the user but does not
         // suppress the outcome (the user did accept); the agent's reply may then
         // overstate the save, an acceptable rare degradation.
-        if let Some(save_path) = self.programmatic_diff_accept_paths.remove(&primary)
+        //
+        // LL.11a: a `ReturnText` target instead sends that text back unsaved,
+        // before the outcome, so a producer that sees `Accept` finds it there.
+        if let Some(target) = self.programmatic_diff_accept_paths.remove(&primary)
             && matches!(outcome, Some(crate::diff::subsystem::DiffOutcome::Accept))
             && let Some(handle) = self.buffers.document_handle(primary)
-            && let Err(e) = std::fs::write(&save_path, handle.text())
         {
-            self.set_message(
-                EchoLevel::Error,
-                format!(
-                    "openDiff accept: failed to write {}: {e}",
-                    save_path.display()
-                ),
-            );
+            match target {
+                crate::editor::ProgrammaticAccept::Save(save_path) => {
+                    if let Err(e) = std::fs::write(&save_path, handle.text()) {
+                        self.set_message(
+                            EchoLevel::Error,
+                            format!(
+                                "openDiff accept: failed to write {}: {e}",
+                                save_path.display()
+                            ),
+                        );
+                    }
+                }
+                crate::editor::ProgrammaticAccept::ReturnText(tx) => {
+                    let _ = tx.send(handle.text());
+                }
+            }
         }
 
         // D.6.e: fire the completion signal first, before
@@ -7350,6 +7363,8 @@ impl Editor {
 
         let lattice_diff::ProgrammaticDiffRequest {
             old_file_path,
+            baseline,
+            on_accept,
             new_file_path,
             new_contents,
             tab_name,
@@ -7366,7 +7381,29 @@ impl Editor {
         // file degrades to an empty baseline (all-Add hunks) — the same
         // defensible degradation `OnDiskSource::snapshot` chooses — rather than
         // failing the whole open.
-        let original = std::fs::read_to_string(&old_file_path).unwrap_or_default();
+        //
+        // LL.11a: a producer reviewing a change to a buffer supplies the
+        // buffer's text instead, which may be unsaved; disk would be wrong.
+        let original = match baseline {
+            lattice_diff::DiffBaseline::Disk => {
+                std::fs::read_to_string(&old_file_path).unwrap_or_default()
+            }
+            lattice_diff::DiffBaseline::Text(text) => text,
+        };
+        // A returned-text diff's right side carries no path, so `:w` in it
+        // cannot write the file; it is named instead.
+        let (accept, right_path, right_name) = match on_accept {
+            lattice_diff::OnAccept::Save => (
+                crate::editor::ProgrammaticAccept::Save(new_file_path.clone()),
+                Some(new_file_path.clone()),
+                None,
+            ),
+            lattice_diff::OnAccept::ReturnText(tx) => (
+                crate::editor::ProgrammaticAccept::ReturnText(tx),
+                None,
+                Some(format!("{tab_name} (proposed)")),
+            ),
+        };
         let base_label = old_file_path
             .file_name()
             .map(|n| format!("{} (baseline)", n.to_string_lossy()))
@@ -7396,8 +7433,7 @@ impl Editor {
         // carrying `new_file_path` so Accept can save it (I4.1).
         let right_idx = self.pane_tree.split_active(SplitOrientation::Vertical);
         self.pane_tree.set_active(right_idx);
-        let right_id =
-            self.create_inmemory_document(&new_contents, Some(new_file_path.clone()), None);
+        let right_id = self.create_inmemory_document(&new_contents, right_path, right_name);
         // D-fix.2: highlight the proposed side using the new file's language.
         self.install_inmemory_syntax(right_id, &new_contents, &new_file_path);
         let _ = self.activate_buffer(right_id);
@@ -7450,8 +7486,7 @@ impl Editor {
         // refocuses claude.
         if let Some(session) = self.diff_subsystem.lookup_session_for(right_id) {
             session.bind_completion(response);
-            self.programmatic_diff_accept_paths
-                .insert(right_id, new_file_path);
+            self.programmatic_diff_accept_paths.insert(right_id, accept);
             self.programmatic_diff_panes.insert(
                 right_id,
                 crate::editor::ProgrammaticDiffPanes {
@@ -9152,6 +9187,8 @@ impl Editor {
             new_contents: ours,
             tab_name: format!("autoread conflict: {}", path.display()),
             origin_session: 0,
+            baseline: lattice_diff::DiffBaseline::Disk,
+            on_accept: lattice_diff::OnAccept::Save,
             response,
         };
         self.autoread_conflict_open.insert(id);
@@ -50292,6 +50329,95 @@ mod tests {
     /// oneshot to the registered session, and records the Accept save
     /// target. `:diff-accept` fires `Accept` back to the awaiting
     /// producer — the openDiff blocking-await contract.
+    /// LL.11a: a change to a buffer is reviewed against text the producer
+    /// supplies, not the file on disk, and an accept hands the right side back
+    /// (edits included) without writing anything. The right side has no path,
+    /// so `:w` in it cannot write over the file.
+    #[tokio::test]
+    async fn a_text_review_diffs_against_supplied_text_and_returns_it_unsaved() {
+        use tokio::sync::oneshot;
+        let mut path = std::env::temp_dir();
+        path.push("lattice-ll11a-text-review.rs");
+        std::fs::write(&path, "on disk\n").expect("write the file");
+
+        let mut editor = Editor::default();
+        editor.config.init_from_linkme();
+        let (tx, rx) = oneshot::channel::<crate::diff::subsystem::DiffOutcome>();
+        let (text_tx, text_rx) = oneshot::channel::<String>();
+        editor.open_programmatic_diff(lattice_diff::ProgrammaticDiffRequest {
+            old_file_path: path.clone(),
+            baseline: lattice_diff::DiffBaseline::Text("unsaved buffer text\n".to_string()),
+            on_accept: lattice_diff::OnAccept::ReturnText(text_tx),
+            new_file_path: path.clone(),
+            new_contents: "proposed\n".to_string(),
+            tab_name: "rewrite".to_string(),
+            origin_session: 0,
+            response: tx,
+        });
+
+        let right_id = editor.active_pane_buffer_id();
+        let baseline_id = editor.pane_tree.leaves()[1].buffer_id;
+        let text_of = |e: &Editor, id| e.buffers.document_handle(id).unwrap().text();
+        assert_eq!(text_of(&editor, baseline_id), "unsaved buffer text\n");
+        assert_eq!(editor.buffers.document_path(right_id), None, "no path");
+        assert!(
+            editor
+                .buffers
+                .name_of(right_id)
+                .is_some_and(|n| n.contains("proposed")),
+            "named instead"
+        );
+
+        // The user edits the proposed side before accepting.
+        let handle = editor.buffers.document_handle(right_id).unwrap();
+        let _ = handle
+            .apply_edit(lattice_protocol::edit::Edit::insert(
+                lattice_protocol::position::Position::new(0, 0),
+                "edited ".to_string(),
+            ))
+            .await;
+        editor.do_diff_accept();
+
+        assert_eq!(
+            rx.await.expect("an outcome"),
+            crate::diff::subsystem::DiffOutcome::Accept
+        );
+        assert_eq!(text_rx.await.expect("the text"), "edited proposed\n");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "on disk\n",
+            "nothing was written"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// A rejected text review sends no text: the producer sees the reject.
+    #[tokio::test]
+    async fn a_rejected_text_review_returns_no_text() {
+        use tokio::sync::oneshot;
+        let mut editor = Editor::default();
+        editor.config.init_from_linkme();
+        let (tx, rx) = oneshot::channel::<crate::diff::subsystem::DiffOutcome>();
+        let (text_tx, text_rx) = oneshot::channel::<String>();
+        editor.open_programmatic_diff(lattice_diff::ProgrammaticDiffRequest {
+            old_file_path: std::path::PathBuf::from("/nonexistent/ll11a.rs"),
+            baseline: lattice_diff::DiffBaseline::Text("a\n".to_string()),
+            on_accept: lattice_diff::OnAccept::ReturnText(text_tx),
+            new_file_path: std::path::PathBuf::from("/nonexistent/ll11a.rs"),
+            new_contents: "b\n".to_string(),
+            tab_name: "rewrite".to_string(),
+            origin_session: 0,
+            response: tx,
+        });
+        editor.do_diff_reject();
+        assert_eq!(
+            rx.await.expect("an outcome"),
+            crate::diff::subsystem::DiffOutcome::Reject
+        );
+        assert!(text_rx.await.is_err(), "no text on a reject");
+        assert!(editor.programmatic_diff_accept_paths.is_empty());
+    }
+
     #[tokio::test]
     async fn open_programmatic_diff_side_by_side_accept_fires_completion() {
         use tokio::sync::oneshot;
@@ -50316,6 +50442,8 @@ mod tests {
             new_contents: "fn main() { todo!() }\n".to_string(),
             tab_name: "demo".to_string(),
             origin_session: 0,
+            baseline: lattice_diff::DiffBaseline::Disk,
+            on_accept: lattice_diff::OnAccept::Save,
             response: tx,
         });
 
@@ -50354,9 +50482,11 @@ mod tests {
             right_id,
             "primary = the proposed buffer"
         );
-        assert_eq!(
-            editor.programmatic_diff_accept_paths.get(&right_id),
-            Some(&path),
+        assert!(
+            matches!(
+                editor.programmatic_diff_accept_paths.get(&right_id),
+                Some(crate::editor::ProgrammaticAccept::Save(p)) if *p == path
+            ),
             "the Accept save target is recorded against the proposed buffer"
         );
 
@@ -50435,6 +50565,8 @@ mod tests {
             new_contents: "fn main() { todo!() }\n".to_string(),
             tab_name: "demo".to_string(),
             origin_session: 0,
+            baseline: lattice_diff::DiffBaseline::Disk,
+            on_accept: lattice_diff::OnAccept::Save,
             response: tx,
         });
 
@@ -50478,6 +50610,8 @@ mod tests {
             new_contents: proposed,
             tab_name: "demo".to_string(),
             origin_session: 0,
+            baseline: lattice_diff::DiffBaseline::Disk,
+            on_accept: lattice_diff::OnAccept::Save,
             response: tx,
         });
 
@@ -50517,6 +50651,8 @@ mod tests {
             new_contents: proposed,
             tab_name: "demo".to_string(),
             origin_session: 0,
+            baseline: lattice_diff::DiffBaseline::Disk,
+            on_accept: lattice_diff::OnAccept::Save,
             response: tx,
         });
 
@@ -50583,6 +50719,8 @@ mod tests {
             new_contents: "a2\n".to_string(),
             tab_name: "one".to_string(),
             origin_session: 1,
+            baseline: lattice_diff::DiffBaseline::Disk,
+            on_accept: lattice_diff::OnAccept::Save,
             response: tx1,
         });
         let (tx2, mut rx2) = oneshot::channel::<crate::diff::subsystem::DiffOutcome>();
@@ -50592,6 +50730,8 @@ mod tests {
             new_contents: "b2\n".to_string(),
             tab_name: "two".to_string(),
             origin_session: 1,
+            baseline: lattice_diff::DiffBaseline::Disk,
+            on_accept: lattice_diff::OnAccept::Save,
             response: tx2,
         });
         assert_eq!(
@@ -50642,6 +50782,8 @@ mod tests {
             new_contents: "new\n".to_string(),
             tab_name: "demo".to_string(),
             origin_session: 0,
+            baseline: lattice_diff::DiffBaseline::Disk,
+            on_accept: lattice_diff::OnAccept::Save,
             response: tx,
         });
         assert_eq!(
@@ -50701,6 +50843,8 @@ mod tests {
             new_contents: "new\n".to_string(),
             tab_name: "demo".to_string(),
             origin_session: 0,
+            baseline: lattice_diff::DiffBaseline::Disk,
+            on_accept: lattice_diff::OnAccept::Save,
             response: tx,
         });
         let proposed = editor.active_pane_buffer_id();
@@ -50759,6 +50903,8 @@ mod tests {
             new_contents: "one\n".to_string(),
             tab_name: "conn1".to_string(),
             origin_session: 1,
+            baseline: lattice_diff::DiffBaseline::Disk,
+            on_accept: lattice_diff::OnAccept::Save,
             response: tx1,
         });
         let prop1 = editor.active_pane_buffer_id();
@@ -50771,6 +50917,8 @@ mod tests {
             new_contents: "two\n".to_string(),
             tab_name: "conn2".to_string(),
             origin_session: 2,
+            baseline: lattice_diff::DiffBaseline::Disk,
+            on_accept: lattice_diff::OnAccept::Save,
             response: tx2,
         });
         let prop2 = editor.active_pane_buffer_id();
@@ -50836,6 +50984,8 @@ mod tests {
             new_contents: "x\n".to_string(),
             tab_name: "no-session".to_string(),
             origin_session: 0, // a non-IDE producer
+            baseline: lattice_diff::DiffBaseline::Disk,
+            on_accept: lattice_diff::OnAccept::Save,
             response: tx,
         });
         assert_eq!(editor.programmatic_diff_panes.len(), 1);
@@ -50885,6 +51035,8 @@ mod tests {
             new_contents: "fn main() {}\n".to_string(),
             tab_name: "demo".to_string(),
             origin_session: 0,
+            baseline: lattice_diff::DiffBaseline::Disk,
+            on_accept: lattice_diff::OnAccept::Save,
             response: tx,
         });
 

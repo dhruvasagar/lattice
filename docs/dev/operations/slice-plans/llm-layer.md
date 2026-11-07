@@ -524,13 +524,25 @@ when ambiguous; `:llm-last` after echo, register and rewrite; hidden buffer keep
 without a keypress; tools-enabled request aimed at `below` moves and says so; `:q` warns and restore
 never resumes a request; modeline repaints off-keystroke.
 
-### LL.15 — Context and inspect 📝
+### LL.15 — Context and inspect ✅
 
 **Files:** `src/llm/context.rs`, `src/llm/modes/context.rs`, `<leader>ac`, `:llm-context`, `:llm-inspect`.
 
 **Tests:** attached buffer and file text read at send time; `dd` removes; excluded file refused; inspect
 matches what the mock server receives byte for byte and shows no key; a closed attached buffer is
 reported, not silently dropped.
+
+**Landed.** `src/llm/context.rs` (items, send-time read, the inspect rendering, the operator and
+`:llm-context` / `:llm-context-add` / `:llm-inspect`), `src/llm/modes/context.rs` (`*llm-context*`
+with `dd`, `*llm-inspect*`; both repaint from a `watch` counter and wake through the inline bus).
+`LlmChats::prepare` is the send's preparation factored out of `start_request`, so the chat preview
+and the send build the same request. Context is per buffer, copied into sessions made from it;
+spans are tracked ranges (linewise grow at edges). An unreadable item fails the request. Tests:
+`lattice-ui-tui/src/app/llm_context.rs` (5, against a recording mock: span edit and file read at
+send, inspect equals received bytes in a buffer and as a chat preview, no key shown, `dd` removes
+and the next request goes without it, excluded refused, closed buffer refuses the chat's request),
+units in `context.rs` (3) and `modes/context.rs` (1). Not built: a `context on/off` setting (design
+§4 lists it among overridable values); removing items is the way to send without them.
 
 ## Tools
 

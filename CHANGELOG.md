@@ -3,6 +3,11 @@
 ## Unreleased
 
 ### Added
+- **Context for LLM requests:** `<leader>ac{motion}` and
+  `:llm-context-add [file…]` attach text that requests from a buffer
+  carry, read when each request is sent; attached lines follow edits.
+  `:llm-context` lists it (`dd` removes), and `:llm-inspect` shows exactly
+  what a request sends, key redacted; in a chat, before it is sent.
 - **The modeline shows when an LLM request is running:** `llm`, or
   `llm 3` for three, wherever you are. A chat whose window you closed
   says when it has answered, and `:q` with a request running asks for

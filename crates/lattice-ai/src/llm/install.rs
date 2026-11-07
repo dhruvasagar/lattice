@@ -53,8 +53,12 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     spawn_options_listener(chats.clone(), boot.event_bus());
     boot.register_service::<LlmChatsHandle>(chats.clone());
 
+    // `chats` reads context from the host's buffers when a request is sent.
+    chats.set_store(boot.buffer_store().clone());
+    let chat_mode = LlmChatMode::new(chats.clone());
+    let anchors = chat_mode.anchors();
     boot.modes_mut()
-        .register(LlmChatMode::new(chats.clone()))
+        .register(chat_mode)
         .expect("llm-chat-mode register");
     boot.modes_mut()
         .register(LlmSystemMode::new(chats.clone()))
@@ -125,6 +129,23 @@ pub fn install(boot: &mut impl SubsystemBoot) {
         ))
         .expect("llm-requests-mode register");
     super::modes::requests::register_actions(boot.commands_mut());
+    // LL.15: what requests carry, and exactly what one sends. Both views
+    // repaint themselves and wake the editor through the same bus.
+    boot.modes_mut()
+        .register(super::modes::context::LlmContextMode::new(
+            chats.clone(),
+            inline.clone(),
+        ))
+        .expect("llm-context-mode register");
+    boot.modes_mut()
+        .register(super::modes::context::LlmInspectMode::new(
+            chats.clone(),
+            inline.clone(),
+        ))
+        .expect("llm-inspect-mode register");
+    super::modes::context::register_actions(boot.commands_mut());
+    let store = boot.buffer_store().clone();
+    let attach_op = super::context::register(boot.commands_mut(), chats.clone(), store, anchors);
     asks.set_inline(inline);
     boot.register_service::<super::operators::LlmAsksHandle>(asks.clone());
     let store = boot.buffer_store().clone();
@@ -161,6 +182,7 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     boot.bind_operator(layer, "<leader>aa", ops.ask);
     boot.bind_operator(layer, "<leader>aA", ops.ask_menu);
     boot.bind_operator(layer, "<leader>ar", rewrite_op);
+    boot.bind_operator(layer, "<leader>ac", attach_op);
     // The menu is a transient like magit's; its source is looked up under the
     // handle type, and a harness with no picker layer simply has none.
     if let Some(ids) = super::menu::MenuIds::resolve(boot.commands_mut()) {

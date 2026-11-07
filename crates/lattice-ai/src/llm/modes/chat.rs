@@ -63,6 +63,12 @@ impl LlmChatMode {
     pub fn mode_id() -> ModeId {
         ModeId::new("llm-chat-mode")
     }
+
+    /// Where each chat buffer's prompt starts, shared with `:llm-inspect`,
+    /// which reads the prompt to show what sending it would send.
+    pub fn anchors(&self) -> PromptAnchors {
+        self.anchors.clone()
+    }
 }
 
 /// The activation guard: the shared transcript guard, plus the chat's release.

@@ -278,7 +278,13 @@ pub fn read_prompt(ctx: &ActionContext<'_>, anchors: &PromptAnchors) -> Option<S
     let buffer_id = BufferId(ctx.buffer_id.0 as u32);
     let handle = store.handle_for(buffer_id)?;
     let anchor = anchors.get(buffer_id)?;
-    let snap = handle.snapshot();
+    prompt_in(&handle.snapshot(), anchor)
+}
+
+/// The prompt in `snap`, a chat buffer whose prompt starts at line `anchor`;
+/// `None` when it is empty. [`read_prompt`] for a caller holding the snapshot
+/// and anchor rather than an action (`:llm-inspect`).
+pub fn prompt_in(snap: &lattice_runtime::DocumentSnapshot, anchor: u32) -> Option<String> {
     // CV.3: content space — the prompt region is user-typed lines;
     // a phantom empty line after the terminating newline is not one.
     let last_line = snap.buffer.content_line_count().saturating_sub(1);

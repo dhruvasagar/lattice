@@ -217,11 +217,46 @@ only what you typed is read for it, never the text you are asking about.
 A profile that would turn on tools cannot be confirmed from an ask: open a
 chat with `:llm <profile>` instead.
 
+## Context: more text with each request
+
+Context is text you attach so that requests from a buffer carry it along:
+the module a question is about, a type defined elsewhere, a notes file.
+
+| Keys or command | Attaches |
+|---|---|
+| `<leader>ac{motion}` | The lines or text the motion covers (`<leader>acip`, a paragraph) |
+| `:llm-context-add` | The whole buffer |
+| `:llm-context-add notes.md src/types.rs` | Those files |
+
+Attached text is read **when each request is sent**, not when you attach
+it, so the model sees it as it is then. Attached lines follow your edits:
+attach a function, change it, and the changed function is what goes.
+
+Context belongs to the buffer you attach it in. Every ask from that buffer
+carries it. A chat opened from the buffer takes a copy, and from then on
+has its own: what you attach in one chat never reaches another.
+
+`:llm-context` lists what requests from the current buffer carry, with
+where each item stands now. `dd` on a row removes it.
+
+If an item cannot be sent as the list shows it, the request is refused
+and the reason given; it is never sent without the item. That happens
+when its buffer was closed, its lines were deleted, its file cannot be
+read, or it now matches `llm.exclude`. Remove the item, or reopen it.
+
+### Seeing exactly what is sent
+
+`:llm-inspect` shows a request as it goes to the provider: the address,
+the headers, and the body, with the key shown as `<redacted>`. In a chat
+it shows what sending the prompt you have typed would send, before
+anything is sent: settings, system prompt and context included. In any
+other buffer it shows the last request sent from it.
+
 ## Files that are never sent
 
 `llm.exclude` is a list of globs naming files whose text is never sent.
 Asking from one is refused before the prompt opens, with the file and the
-glob it matched. The default covers files that hold secrets by
+glob it matched, and so is attaching one as context. The default covers files that hold secrets by
 convention:
 
 ```toml

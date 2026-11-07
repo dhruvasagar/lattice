@@ -153,10 +153,18 @@ fn keymap_entries() -> &'static [KeymapEntry] {
 
 /// Rewrite the list from the registry if it changed, then wake the editor.
 async fn paint(handle: &Arc<dyn Document>, chats: &LlmChatsHandle, inline: &LlmInlineHandle) {
-    let text = render(&chats.requests().snapshot());
+    if replace_text(handle, render(&chats.requests().snapshot())).await {
+        inline.wake();
+    }
+}
+
+/// Make `handle`'s whole text `text`, if it is not already. `true` when it
+/// changed, so the caller wakes the editor. Shared by the llm layer's
+/// self-refreshing views (this list, `*llm-context*`, `*llm-inspect*`).
+pub(crate) async fn replace_text(handle: &Arc<dyn Document>, text: String) -> bool {
     let snap = handle.snapshot();
     if snap.buffer.as_string() == text {
-        return;
+        return false;
     }
     let last = snap.buffer.rope_line_count().saturating_sub(1);
     let end = Position::new(
@@ -166,7 +174,7 @@ async fn paint(handle: &Arc<dyn Document>, chats: &LlmChatsHandle, inline: &LlmI
     let _ = handle
         .apply_edit_batch(vec![Edit::replace(Range::new(Position::ZERO, end), text)])
         .await;
-    inline.wake();
+    true
 }
 
 /// The listing's text: running requests in start order, then finished ones,

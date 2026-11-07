@@ -39,6 +39,7 @@ use tokio::runtime::Handle;
 
 use super::ApiKey;
 use super::config::{LlmConfig, ProviderConfig, omitted_params, resolve_key};
+use super::context::{Attached, ContextItem, WatchHandle};
 use super::history;
 use super::settings::{
     Layers, ProjectLayer, RawSet, RequestOverrides, Resolved, SettingKey, SettingsError, Trust,
@@ -142,6 +143,9 @@ pub struct ChatSession {
     /// Where this session's answers go, for `:llm-requests`: `below foo.rs:4`,
     /// `echo`, a register, a rewrite. A chat's is its own name.
     destination: Mutex<Option<String>>,
+    /// What this session's requests carry as context (LL.15): copied from
+    /// its source when it was made, its own from then on.
+    context: Mutex<Vec<Attached>>,
 }
 
 impl ChatSession {
@@ -232,6 +236,12 @@ impl ChatSession {
     }
 }
 
+/// A request ready to send but for its key ([`LlmChats::prepare`]).
+struct Prepared {
+    req: LlmRequest,
+    provider: ProviderConfig,
+}
+
 #[derive(Default)]
 struct Registry {
     /// Chats no buffer is bound to: freshly created ones awaiting their buffer's
@@ -299,6 +309,21 @@ pub struct LlmChats {
     /// name, and the failure if it failed. Install sets it to a notice for a
     /// chat whose buffer is not displayed; unset, nothing is told.
     done_hook: std::sync::OnceLock<DoneHook>,
+    /// The host's buffers: context is read from them when a request is sent,
+    /// and the list names them. Set once, at install; absent in bare tests.
+    store: std::sync::OnceLock<lattice_mode::BufferStoreHandle>,
+    /// Context attached in buffers that are not chats, per buffer (LL.15). A
+    /// chat's own is on its session.
+    source_context: RwLock<HashMap<BufferId, Vec<Attached>>>,
+    /// Whose context `*llm-context*` shows: the buffer `:llm-context` ran in.
+    listing_owner: Mutex<Option<BufferId>>,
+    /// Bumped when any context changes, or the list's owner does.
+    context_watch: WatchHandle,
+    /// What `*llm-inspect*` shows, and its counter.
+    inspect: Mutex<String>,
+    inspect_watch: WatchHandle,
+    /// The last request sent from each buffer, as `:llm-inspect` shows it.
+    last_sent: RwLock<HashMap<BufferId, Arc<String>>>,
     next_chat: AtomicU32,
     next_system: AtomicU32,
     next_bind: AtomicU64,
@@ -328,6 +353,13 @@ impl LlmChats {
             project_cache: Arc::new(RwLock::new(None)),
             last_ask: Mutex::new(None),
             done_hook: std::sync::OnceLock::new(),
+            store: std::sync::OnceLock::new(),
+            source_context: RwLock::new(HashMap::new()),
+            listing_owner: Mutex::new(None),
+            context_watch: Arc::default(),
+            inspect: Mutex::new(String::new()),
+            inspect_watch: Arc::default(),
+            last_sent: RwLock::new(HashMap::new()),
             next_chat: AtomicU32::new(1),
             next_system: AtomicU32::new(1),
             next_bind: AtomicU64::new(1),
@@ -710,6 +742,189 @@ impl LlmChats {
         let _ = self.done_hook.set(hook);
     }
 
+    /// The host's buffers, which context is read from. Once, at install.
+    pub fn set_store(&self, store: lattice_mode::BufferStoreHandle) {
+        let _ = self.store.set(store);
+    }
+
+    /// What requests from `buffer` carry as context (LL.15): a chat's own, or
+    /// what was attached in the buffer.
+    pub fn context_of(&self, buffer: BufferId) -> Vec<Attached> {
+        match self.for_buffer(buffer) {
+            Some(chat) => chat
+                .context
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone(),
+            None => self
+                .source_context
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(&buffer)
+                .cloned()
+                .unwrap_or_default(),
+        }
+    }
+
+    /// Run `f` on `buffer`'s context list, then tell the views.
+    fn with_context<R>(&self, buffer: BufferId, f: impl FnOnce(&mut Vec<Attached>) -> R) -> R {
+        let out = match self.for_buffer(buffer) {
+            Some(chat) => f(&mut chat.context.lock().unwrap_or_else(|e| e.into_inner())),
+            None => f(self
+                .source_context
+                .write()
+                .unwrap_or_else(|e| e.into_inner())
+                .entry(buffer)
+                .or_default()),
+        };
+        self.context_watch.bump();
+        out
+    }
+
+    /// Attach `item` to `buffer`'s context. `false` when it is already there.
+    pub fn attach(&self, buffer: BufferId, item: Attached) -> bool {
+        self.with_context(buffer, |list| {
+            if list.iter().any(|a| a.item == item.item) {
+                return false;
+            }
+            list.push(item);
+            true
+        })
+    }
+
+    /// Remove the `index`th item of `buffer`'s context. A span's tracked
+    /// range is released once no list holds it: a chat made from the buffer
+    /// shares it, and its copy must keep following edits.
+    pub fn detach(&self, buffer: BufferId, index: usize) -> Option<Attached> {
+        let removed = self.with_context(buffer, |list| {
+            (index < list.len()).then(|| list.remove(index))
+        })?;
+        if let ContextItem::Span { buffer: doc, range } = removed.item {
+            let held = {
+                let reg = self.reg();
+                let sessions = reg
+                    .by_buffer
+                    .values()
+                    .map(|(_, s)| s)
+                    .chain(reg.unbound.iter());
+                let in_sessions = sessions.into_iter().any(|s| {
+                    s.context
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .iter()
+                        .any(|a| a.item == removed.item)
+                });
+                in_sessions
+                    || self
+                        .source_context
+                        .read()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .values()
+                        .flatten()
+                        .any(|a| a.item == removed.item)
+            };
+            if !held && let Some(handle) = self.store.get().and_then(|s| s.handle_for(doc)) {
+                drop(handle.update_tracked_ranges(vec![
+                    lattice_core::tracked::TrackedRangeChange::Untrack(range),
+                ]));
+            }
+        }
+        Some(removed)
+    }
+
+    /// Show `buffer`'s context in `*llm-context*`.
+    pub fn set_listing_owner(&self, buffer: BufferId) {
+        *self.listing_owner.lock().unwrap_or_else(|e| e.into_inner()) = Some(buffer);
+        self.context_watch.bump();
+    }
+
+    /// Whose context `*llm-context*` shows.
+    pub fn listing_owner(&self) -> Option<BufferId> {
+        *self.listing_owner.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Bumped on every context change, for the list view.
+    pub fn context_watch(&self) -> &WatchHandle {
+        &self.context_watch
+    }
+
+    /// What `*llm-inspect*` shows now.
+    pub fn inspect_text(&self) -> String {
+        self.inspect
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// Bumped when the inspect text changes.
+    pub fn inspect_watch(&self) -> &WatchHandle {
+        &self.inspect_watch
+    }
+
+    fn set_inspect(&self, text: String) {
+        *self.inspect.lock().unwrap_or_else(|e| e.into_inner()) = text;
+        self.inspect_watch.bump();
+    }
+
+    /// The last request sent from `buffer`, as `:llm-inspect` shows it.
+    pub fn last_sent(&self, buffer: BufferId) -> Option<Arc<String>> {
+        self.last_sent
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&buffer)
+            .cloned()
+    }
+
+    /// `:llm-inspect` in a chat: show what sending `prompt` now would send,
+    /// built exactly as the request will be (settings, project file, system
+    /// prompt, context read now), with the key's place redacted. Shows the
+    /// failure instead when the request could not be built.
+    pub fn inspect_next(self: &Arc<Self>, buffer: BufferId, prompt: Option<String>) {
+        let Some(session) = self.for_buffer(buffer) else {
+            return;
+        };
+        self.set_inspect("(building the request…)\n".to_string());
+        let layers = self.layers_for(buffer, self.overrides_of(Some(&session), buffer));
+        let mut history = history::messages(&session.store.snapshot());
+        if let Some(p) = prompt {
+            history.push(Message::User(p));
+        }
+        let mut request = RequestOverrides {
+            values: self.next_request(buffer),
+            ..RequestOverrides::default()
+        };
+        request.profile = request.values.remove(&SettingKey::Profile);
+        let chats = self.clone();
+        self.runtime.spawn(async move {
+            let shown = match chats
+                .prepare(&session, buffer, layers, history, request)
+                .await
+            {
+                Ok(p) => match p
+                    .provider
+                    .build()
+                    .build(&p.req, &ApiKey::new(super::context::REDACTED))
+                {
+                    Ok(http) => super::context::show(&http),
+                    Err(e) => format!("llm: the request could not be built: {e}\n"),
+                },
+                Err(e) => format!("{e}\n"),
+            };
+            chats.set_inspect(shown);
+        });
+    }
+
+    /// `:llm-inspect` anywhere else: the last request sent from `buffer`.
+    pub fn inspect_last(&self, buffer: BufferId) -> bool {
+        match self.last_sent(buffer) {
+            Some(shown) => {
+                self.set_inspect((*shown).clone());
+                true
+            }
+            None => false,
+        }
+    }
+
     /// The latest ask's session name, while the session is still kept: an
     /// unshown one is dropped once [`UNBOUND_CAP`] newer ones are waiting.
     pub fn last_ask(&self) -> Option<String> {
@@ -766,6 +981,7 @@ impl LlmChats {
             turn_waiters: Mutex::new(Vec::new()),
             source: from,
             destination: Mutex::new(None),
+            context: Mutex::new(from.map(|b| self.context_of(b)).unwrap_or_default()),
         });
         {
             let mut reg = self.reg();
@@ -1010,75 +1226,24 @@ impl LlmChats {
         let layers = self.layers_for(buffer, self.overrides_of(Some(session), buffer));
         let history = history::messages(&session.store.snapshot());
         let request = session.turn().current.clone();
-        let default_provider = self.default_provider();
         let chats = self.clone();
         let session = session.clone();
         self.runtime.spawn(async move {
-            let mut layers = layers;
-            layers.project = chats.read_project(&session).await;
-            let resolved = match resolve(&layers, buffer, &request, Trust::User) {
-                Ok(r) => r,
-                Err(e) => {
-                    chats.end_turn(&session, Some(e.to_string()));
-                    return;
-                }
-            };
-            for refusal in &resolved.refused {
-                if session.first_report(format!("{}\u{0}{}", refusal.source, refusal.key)) {
-                    tracing::warn!(target: "lattice::llm", "{refusal}");
-                }
-            }
-            let chosen = chats
-                .config
-                .read()
-                .unwrap_or_else(|e| e.into_inner())
-                .choose(
-                    resolved.values.model.as_deref(),
-                    default_provider.as_deref(),
-                );
-            let chosen = match chosen {
-                Ok(c) => c,
+            let prepared = match chats
+                .prepare(&session, buffer, layers, history, request)
+                .await
+            {
+                Ok(p) => p,
                 Err(e) => {
                     chats.end_turn(&session, Some(e));
                     return;
                 }
             };
-            session.set_label(Some(chosen.model.clone()));
+            session.set_label(Some(prepared.req.model.clone()));
             session.store.mutate(&session.key, |c| {
-                c.assistant_label = Some(chosen.model.clone());
+                c.assistant_label = Some(prepared.req.model.clone());
             });
-            let system = match &resolved.values.system {
-                Some(text) if system_is_path(text) => match read_system_file(text).await {
-                    Ok(t) => Some(t),
-                    Err(e) => {
-                        chats.end_turn(&session, Some(e));
-                        return;
-                    }
-                },
-                other => other.clone(),
-            };
-            let mut params = Params {
-                max_tokens: resolved.values.max_tokens,
-                temperature: resolved.values.temperature,
-            };
-            for omission in omitted_params(&chosen.provider, &chosen.model, &resolved.values) {
-                omission.clear(&mut params);
-                if session.first_report(format!("omit\u{0}{}", omission.param)) {
-                    tracing::info!(
-                        target: "lattice::llm",
-                        "llm: {} is not sent to {} ({}): {}",
-                        omission.param,
-                        chosen.provider.name,
-                        chosen.model,
-                        omission.reason
-                    );
-                }
-            }
-            let history = resolved
-                .values
-                .messages
-                .apply(&history, |m| matches!(m, Message::User(_)));
-            let provider_cfg = chosen.provider;
+            let provider_cfg = prepared.provider;
             let cached = session
                 .api_key
                 .lock()
@@ -1104,13 +1269,7 @@ impl LlmChats {
                 chats.end_turn(&session, None);
                 return;
             }
-            let req = LlmRequest {
-                model: chosen.model.clone(),
-                system,
-                messages: history,
-                tools: Vec::new(),
-                params,
-            };
+            let req = prepared.req;
             let mut sink = ChatSink::new(session.store.clone(), session.key.clone(), &provider_cfg);
             sink.tap = session.turn().tap.clone();
             // A shown chat's requests belong to its buffer; a hidden ask's to
@@ -1122,6 +1281,18 @@ impl LlmChats {
                     .unwrap_or(BufferId(0)),
                 label: session.destination(),
             };
+            // What `:llm-inspect` shows for this buffer from now on: the same
+            // request, built with the key's place redacted (LL.15).
+            if let Ok(http) = provider_cfg
+                .build()
+                .build(&req, &ApiKey::new(super::context::REDACTED))
+            {
+                chats
+                    .last_sent
+                    .write()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .insert(target.buffer, Arc::new(super::context::show(&http)));
+            }
             let id = chats.requests.start_with_key(
                 target,
                 req,
@@ -1141,6 +1312,83 @@ impl LlmChats {
             }
             chats.register_request(id, &session);
         });
+    }
+
+    /// Build what a request from `session` sends, all but the key: settings
+    /// resolved over a freshly read project file, the model chosen, the system
+    /// prompt read, unsupported parameters dropped, the message scope applied
+    /// and the context read now and put at the head of the last user message.
+    /// `start_request` sends it; `:llm-inspect` shows it, so what is shown is
+    /// what would be sent.
+    async fn prepare(
+        self: &Arc<Self>,
+        session: &Arc<ChatSession>,
+        buffer: BufferId,
+        mut layers: Layers,
+        history: Vec<Message>,
+        request: RequestOverrides,
+    ) -> Result<Prepared, String> {
+        layers.project = self.read_project(session).await;
+        let resolved =
+            resolve(&layers, buffer, &request, Trust::User).map_err(|e| e.to_string())?;
+        for refusal in &resolved.refused {
+            if session.first_report(format!("{}\u{0}{}", refusal.source, refusal.key)) {
+                tracing::warn!(target: "lattice::llm", "{refusal}");
+            }
+        }
+        let chosen = self
+            .config
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .choose(
+                resolved.values.model.as_deref(),
+                self.default_provider().as_deref(),
+            )?;
+        let system = match &resolved.values.system {
+            Some(text) if system_is_path(text) => Some(read_system_file(text).await?),
+            other => other.clone(),
+        };
+        let mut params = Params {
+            max_tokens: resolved.values.max_tokens,
+            temperature: resolved.values.temperature,
+        };
+        for omission in omitted_params(&chosen.provider, &chosen.model, &resolved.values) {
+            omission.clear(&mut params);
+            if session.first_report(format!("omit\u{0}{}", omission.param)) {
+                tracing::info!(
+                    target: "lattice::llm",
+                    "llm: {} is not sent to {} ({}): {}",
+                    omission.param,
+                    chosen.provider.name,
+                    chosen.model,
+                    omission.reason
+                );
+            }
+        }
+        let mut messages = resolved
+            .values
+            .messages
+            .apply(&history, |m| matches!(m, Message::User(_)));
+        let items = session
+            .context
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        if let Some(block) =
+            super::context::read(&items, self.store.get(), |p| self.excluded(p)).await?
+        {
+            super::context::prepend(&mut messages, &block);
+        }
+        Ok(Prepared {
+            req: LlmRequest {
+                model: chosen.model,
+                system,
+                messages,
+                tools: Vec::new(),
+                params,
+            },
+            provider: chosen.provider,
+        })
     }
 
     /// Read `.lattice/llm.toml` for a request, report what could not be read once,

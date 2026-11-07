@@ -252,6 +252,28 @@ to diff review, exec asks; `<C-t>` trusts for that session.
 listing what is attached (`dd` removes), and `:llm-inspect` shows the exact payload.
 A `llm.exclude` glob list refuses matches such as `.env`.
 
+**Context** (LL.15) is attached per buffer, like session settings: asks from a buffer carry
+its list, and a session made from it (a chat, an ask's buffer) takes a copy and owns it from
+then on, so attaching in one chat never leaks into another. Items are a whole buffer, a span,
+or a file, and all are read when the request is sent: a span is a tracked range in its
+document, so it follows edits (linewise spans grow at their edges, as typing on their lines
+should; charwise ones keep to what was chosen). An item that cannot be read as the list
+shows it (buffer closed, span deleted, file unreadable, now excluded) **fails the request**
+rather than being skipped: the list is what the user agreed to send, and sending less would
+make it a lie. The block heads the request's last user message, so each request carries
+the context once and current, and earlier turns go as they were.
+
+`:llm-inspect` in a chat builds the next request through the same preparation the send
+uses (settings, project file, system prompt, context) and shows it with the key's place
+built as `<redacted>`, so no key is read to show it; elsewhere it shows the last request
+sent from the buffer. The body is shown pretty-printed; compacted, it is byte for byte what
+the provider received (pinned by the TUI tests against a recording mock).
+
+Rejected: one project-wide context list (asks from unrelated buffers would share it, and a
+chat could not narrow it); reading text at attach time (the model would see stale text with
+no sign of it); skipping an unreadable item with a warning (a silent narrowing of what the
+user saw listed).
+
 ### Edge cases
 
 | Situation | Behaviour |

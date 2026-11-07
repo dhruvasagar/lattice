@@ -1668,7 +1668,9 @@ impl GpuiApp {
             }
             // 3W.4: host-applied in `handle_effect`, so a `Many` that opens
             // a synthetic buffer and then acts on it runs in order.
-            Effect::OpenSyntheticBuffer { .. } | Effect::OpenSyntheticBufferAt { .. } => {}
+            Effect::OpenSyntheticBuffer { .. }
+            | Effect::OpenSyntheticBufferAt { .. }
+            | Effect::DisplaySyntheticBuffer { .. } => {}
             Effect::OpenLspTraceLog { server_id } => {
                 self.mutate_editor(move |e| e.do_open_lsp_trace_log(server_id.as_deref()));
             }

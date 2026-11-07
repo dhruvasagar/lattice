@@ -314,7 +314,16 @@ operator's is `true` because the WIT `operator-spec` has no such bit. `bind_oper
 `OperatorChordWirer` service, extended with `bind_in(layer, ..)`. The linewise form repeats the
 prefix's last key. `fold` and `g/` are now `mutates = false`, so a read-only buffer runs them.
 
-### LL.10 — Ask and send 📝
+### LL.10 — Ask and send 🚧
+
+Carved into three slices, one commit each.
+
+| Slice | Scope | Status |
+|---|---|---|
+| LL.10a | `Effect::DisplaySyntheticBuffer`: show a named buffer in another pane, focus unmoved, reuse a pane already in the same major, else split. Host-applied; TUI + GPUI peer arms; no WIT mirror yet. Tests: `lattice-host/tests/display_synthetic_buffer.rs` (7). | ✅ |
+| LL.10b | `llm-mode` (global minor), the ask operator, the instruction prompt, the request buffer with the source as a folded first turn; read-only, multibuffer and terminal sources; blockwise collapses to one span; macros do not wait; `.` decided or recorded. | 📝 |
+| LL.10c | `<leader>aA` (menu first), `destination=<buffer>`, size threshold, `llm.exclude` refusing `.env`. | 📝 |
+
 
 **Files:** `src/llm/modes/llm_mode.rs` (global minor, `<leader>a` chords), `src/llm/operators.rs`,
 `src/llm/sink.rs`, `docs/user/llm-mode.md`.

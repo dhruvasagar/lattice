@@ -1018,6 +1018,11 @@ fn effect_to_wit(e: &NativeEffect) -> Result<WitEffect, String> {
                         (host-only oil listing from a registered source)"
                 .to_string());
         }
+        NativeEffect::DisplaySyntheticBuffer { .. } => {
+            return Err("Effect::DisplaySyntheticBuffer has no WIT mirror yet \
+                        (host-only pane placement that leaves focus put)"
+                .to_string());
+        }
         NativeEffect::InTarget { .. } => {
             return Err("Effect::InTarget has no WIT mirror yet \
                         (host-only pane targeting, like OpenInTarget)"

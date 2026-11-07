@@ -91,7 +91,8 @@ Other properties of the buffer:
   overlap freely. Rejected: one buffer per source (unrelated questions share a
   history and must queue) and one reused `*llm*` (destroys the previous answer).
 - **Focus stays where it was.** The buffer opens in a split and repeat asks reuse
-  that pane. `gq` closes it. They are named `*llm:foo.rs:3*`, are found through a
+  that pane, through the generic `Effect::DisplaySyntheticBuffer` (design.md §5.10.5),
+  not an LLM-owned pane rule. `gq` closes it. They are named `*llm:foo.rs:3*`, are found through a
   picker, and an unsaved one does not block `:qa`.
 - **The source text is the first turn,** folded when long, with a link back, so
   what was sent is visible.

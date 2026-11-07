@@ -1312,6 +1312,36 @@ pub enum Effect {
         /// reason — the interesting behaviour rides a general-purpose major.
         activate_minor: Option<String>,
     },
+    /// LL.10a: show a named synthetic buffer in a pane **other than the
+    /// active one, leaving focus where it is** — Emacs's `display-buffer`,
+    /// where [`Effect::OpenSyntheticBuffer`] is `switch-to-buffer`.
+    ///
+    /// For output the user asked for while working somewhere else: an LLM
+    /// answer about the code under the caret, which has to appear without
+    /// taking the caret, the mode or the pane away from that code. The pane
+    /// is chosen, in order:
+    ///
+    /// 1. a non-active pane already showing this buffer — left as it is;
+    /// 2. a non-active pane showing a buffer whose major is `mode_id` —
+    ///    reused, so a second answer replaces the first in place instead of
+    ///    adding a split per request;
+    /// 3. otherwise a new `split` of the active pane.
+    ///
+    /// Zoom is cleared when the chosen pane would be hidden by it, as a
+    /// split already does. The active pane is never chosen. `content` seeds
+    /// a fresh buffer only, with [`Effect::OpenSyntheticBuffer`]'s rule.
+    /// Host-applied. Host/peer-only — no WIT mirror yet.
+    DisplaySyntheticBuffer {
+        /// Buffer name; an existing buffer of that name is displayed rather
+        /// than recreated.
+        name: String,
+        /// Major mode id; must be registered at boot. Also the reuse key.
+        mode_id: String,
+        /// Seed text for a fresh buffer.
+        content: Option<String>,
+        /// How to split when no pane can be reused.
+        split: lattice_core::ui::pane::SplitOrientation,
+    },
     /// MG.50: [`Effect::OpenSyntheticBuffer`] + cursor placement, in one
     /// step.
     ///

@@ -2228,6 +2228,11 @@ pub trait ModeActivator {
 - **Imperative** — a provider's trigger function, called with `&mut dyn ModeActivator`, invokes `ensure_named_document` directly (e.g. compilation's `start_compilation`: create the `*compilation*` buffer *and* kick off the run in one `&mut Editor` operation).
 - **Declarative** — a *pure* ex-command's `apply` closure (which has no `&mut Editor` / services in scope) returns `Effect::OpenSyntheticBuffer { name, mode_id }`; the host applies it (e.g. AI-log / ACP).
 
+The declarative front-end has two placements, the Emacs pair `switch-to-buffer` / `display-buffer`:
+
+- **`Effect::OpenSyntheticBuffer`** shows the buffer in the active pane and focuses it — for a view the user asked to go to (`:messages`, `:llm`).
+- **`Effect::DisplaySyntheticBuffer { name, mode_id, content, split }`** shows it in another pane and leaves focus, caret and mode where they were — for output about the code the user is still working in (an LLM answer, LL.10). The pane is, in order: a non-active pane already showing the buffer; a non-active pane whose buffer has major `mode_id` (so a repeat request replaces the last answer instead of adding a split per request); else a new `split` of the active pane. The active pane is never chosen, and zoom is cleared when it would hide the chosen pane. It is generic host placement, not an LLM primitive: any mode with output that must not steal focus uses it.
+
 **Lifecycle:**
 
 1. A trigger (either front-end above) creates the buffer + activates `major`.

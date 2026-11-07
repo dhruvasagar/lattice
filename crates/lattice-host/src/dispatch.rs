@@ -3827,6 +3827,16 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
                 activate_minor.as_deref(),
             );
         }
+        // LL.10a: host-applied for the same ordering reason as the open
+        // above; focus never moves.
+        Effect::DisplaySyntheticBuffer {
+            name,
+            mode_id,
+            content,
+            split,
+        } => {
+            editor.display_synthetic_buffer(&name, &mode_id, content.as_deref(), split);
+        }
         // MG.50: open, THEN position against the now-active buffer.
         Effect::OpenSyntheticBufferAt {
             name,
@@ -36239,6 +36249,76 @@ impl Editor {
         }
     }
 
+    /// LL.10a: [`Effect::DisplaySyntheticBuffer`](lattice_grammar::Effect::DisplaySyntheticBuffer)
+    /// — show `name` in a pane other than the active one and leave focus
+    /// where it is.
+    ///
+    /// The active pane's buffer, cursor, mode and scroll are never touched:
+    /// the chosen pane's fields are set directly instead of activating it,
+    /// so nothing a focus change runs (pane snapshot/load, buffer
+    /// activation, position history) happens. The buffer's major is still
+    /// activated when the buffer is created, by
+    /// `ensure_named_synthetic_document`, so it is fully set up before it
+    /// is first painted. See the effect for the pane-choice order.
+    pub fn display_synthetic_buffer(
+        &mut self,
+        name: &str,
+        mode_id: &str,
+        content: Option<&str>,
+        split: lattice_core::ui::pane::SplitOrientation,
+    ) {
+        let reused = self.buffers.by_name(name).is_some();
+        let mode = lattice_mode::ModeId::new(mode_id);
+        let id = self.ensure_named_synthetic_document(
+            name,
+            mode,
+            crate::synthetic_buffers::SYNTHETIC_BUFFER_FLAGS,
+        );
+        if let Some(text) = content
+            && !reused
+        {
+            self.replace_owned_buffer(id, text);
+        }
+        let active = self.pane_tree.active_index();
+        let others = || {
+            self.pane_tree
+                .leaves()
+                .iter()
+                .enumerate()
+                .filter(move |(i, _)| *i != active)
+        };
+        let showing = others().find_map(|(i, p)| (p.buffer_id == id).then_some(i));
+        let same_mode = || {
+            others().find_map(|(i, p)| {
+                self.active_modes
+                    .get(&p.buffer_id)
+                    .is_some_and(|m| m.is_active_major(mode))
+                    .then_some(i)
+            })
+        };
+        let pane = match showing.or_else(same_mode) {
+            Some(idx) => {
+                // Under zoom only the active pane is drawn, so a reused pane
+                // would receive the buffer and show nothing.
+                self.pane_tree.clear_zoom();
+                idx
+            }
+            // `split_active` keeps the active pane active, and clears zoom.
+            None => self.pane_tree.split_active(split),
+        };
+        if showing.is_none() {
+            let leaf = &mut self.pane_tree.leaves_mut()[pane];
+            leaf.buffer = BufferKind::Document;
+            leaf.buffer_id = id;
+            leaf.cursor = Default::default();
+            leaf.scroll = 0;
+            leaf.leftcol = 0;
+        }
+        if reused {
+            self.refresh_reopened_view(id);
+        }
+    }
+
     /// Re-run a reopened view's refresh, when its mode asked for that
     /// via [`Mode::refresh_on_open`](lattice_mode::Mode::refresh_on_open).
     ///
@@ -45070,6 +45150,7 @@ pub fn effect_mutates_or_yanks(effect: &lattice_grammar::Effect) -> bool {
         | Effect::OpenOil { .. }
         | Effect::OpenOilSource { .. }
         | Effect::InTarget { .. }
+        | Effect::DisplaySyntheticBuffer { .. }
         // LM.2: in-place re-list / toggle — like OpenOil, navigation, not a
         // user edit-mutation or yank.
         | Effect::OilNavigate { .. }
@@ -45237,6 +45318,7 @@ pub fn effect_mutates(effect: &lattice_grammar::Effect) -> bool {
         | Effect::OpenOil { .. }
         | Effect::OpenOilSource { .. }
         | Effect::InTarget { .. }
+        | Effect::DisplaySyntheticBuffer { .. }
         // LM.2: in-place re-list / toggle — like OpenOil, navigation, not a
         // user edit-mutation or yank.
         | Effect::OilNavigate { .. }

@@ -29,8 +29,9 @@ use tokio::runtime::Handle;
 use tokio_util::sync::CancellationToken;
 
 use super::provider::Provider;
+use super::tools::BoxFuture;
 use super::transport::{self, Outcome, SinkFlow, scrub};
-use super::{ApiKey, LlmRequest, StreamEvent, Usage};
+use super::{ApiKey, LlmRequest, StopReason, StreamEvent, Usage};
 
 /// How many finished requests the snapshot keeps for display.
 pub const RETAINED_TERMINAL: usize = 16;
@@ -167,6 +168,35 @@ impl RequestRegistry {
         key: ApiKey,
         sink: Box<dyn Sink>,
     ) -> RequestId {
+        self.start_inner(target, req, p, key, sink, None)
+    }
+
+    /// LL.16: start a request that may use tools. When an exchange ends asking
+    /// for tools, the request moves to `AwaitingTool` and `rounds` runs them
+    /// and supplies the next exchange; the request stays one id, one state and
+    /// one cancellation token throughout, so `:llm-stop` stops the whole loop
+    /// wherever it is.
+    pub fn start_loop(
+        &self,
+        target: RequestTarget,
+        req: LlmRequest,
+        p: Arc<dyn Provider>,
+        key: ApiKey,
+        sink: Box<dyn Sink>,
+        rounds: Box<dyn Rounds>,
+    ) -> RequestId {
+        self.start_inner(target, req, p, key, sink, Some(rounds))
+    }
+
+    fn start_inner(
+        &self,
+        target: RequestTarget,
+        req: LlmRequest,
+        p: Arc<dyn Provider>,
+        key: ApiKey,
+        sink: Box<dyn Sink>,
+        rounds: Option<Box<dyn Rounds>>,
+    ) -> RequestId {
         let shared = self.shared.clone();
         let id = RequestId(shared.next_id.fetch_add(1, Ordering::Relaxed));
         let token = CancellationToken::new();
@@ -184,9 +214,9 @@ impl RequestRegistry {
         // The inner task is joined so a panicking sink still ends in a terminal
         // state rather than a request stuck `Streaming` forever.
         shared.handle.spawn(async move {
-            let inner = work
-                .handle
-                .spawn(drive(work.clone(), id, req, p, key, sink, token));
+            let inner =
+                work.handle
+                    .spawn(drive(work.clone(), id, req, p, key, sink, token, rounds));
             if inner.await.is_err() {
                 work.finish(id, RequestState::Failed("the request task panicked".into()));
             }
@@ -282,31 +312,94 @@ fn evict_old_terminal(entries: &mut Vec<RequestInfo>) {
     });
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn drive(
     shared: Arc<Shared>,
     id: RequestId,
-    req: LlmRequest,
+    mut req: LlmRequest,
     provider: Arc<dyn Provider>,
     key: ApiKey,
     mut sink: Box<dyn Sink>,
     cancel: CancellationToken,
+    mut rounds: Option<Box<dyn Rounds>>,
 ) {
-    let outcome = run_request(
-        &shared,
-        id,
-        &req,
-        provider.as_ref(),
-        &key,
-        sink.as_mut(),
-        &cancel,
-    )
-    .await;
-    let state = match outcome {
-        Outcome::Done => RequestState::Done,
-        Outcome::Stopped | Outcome::Cancelled => RequestState::Cancelled,
-        Outcome::Failed(msg) => RequestState::Failed(msg),
+    let state = loop {
+        let mut watched = Watched {
+            inner: sink.as_mut(),
+            stop: None,
+        };
+        let outcome = run_request(
+            &shared,
+            id,
+            &req,
+            provider.as_ref(),
+            &key,
+            &mut watched,
+            &cancel,
+        )
+        .await;
+        let stop = watched.stop.take();
+        match outcome {
+            Outcome::Done => {}
+            Outcome::Stopped | Outcome::Cancelled => break RequestState::Cancelled,
+            Outcome::Failed(msg) => break RequestState::Failed(msg),
+        }
+        let Some(rounds) = rounds
+            .as_mut()
+            .filter(|_| stop == Some(StopReason::ToolUse))
+        else {
+            break RequestState::Done;
+        };
+        shared.transition(id, RequestState::AwaitingTool);
+        let round = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => break RequestState::Cancelled,
+            round = rounds.after_tools(&cancel) => round,
+        };
+        match round {
+            Round::Next(next) => req = next,
+            Round::Finish => break RequestState::Done,
+            Round::Fail(msg) => break RequestState::Failed(msg),
+        }
+        if cancel.is_cancelled() {
+            break RequestState::Cancelled;
+        }
     };
     shared.finish(id, state);
+}
+
+/// What runs between the exchanges of a tool loop (LL.16).
+pub trait Rounds: Send {
+    /// The last exchange ended asking for tools: run them, and say what
+    /// happens next. A cancel drops the future, so a round must leave its
+    /// record valid at any await point.
+    fn after_tools<'a>(&'a mut self, cancel: &'a CancellationToken) -> BoxFuture<'a, Round>;
+}
+
+/// The outcome of a round.
+#[derive(Debug)]
+pub enum Round {
+    /// Send this request next: the conversation so far, with the results.
+    Next(LlmRequest),
+    /// Nothing more to send.
+    Finish,
+    /// Stop the loop, saying why.
+    Fail(String),
+}
+
+/// A sink that remembers why the exchange ended.
+struct Watched<'a> {
+    inner: &'a mut dyn Sink,
+    stop: Option<StopReason>,
+}
+
+impl Sink for Watched<'_> {
+    fn event(&mut self, ev: StreamEvent) -> SinkFlow {
+        if let StreamEvent::Done(reason) = &ev {
+            self.stop = Some(reason.clone());
+        }
+        self.inner.event(ev)
+    }
 }
 
 async fn run_request(

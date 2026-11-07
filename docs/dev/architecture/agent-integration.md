@@ -76,26 +76,39 @@ agent may exercise on the editor:
 ```rust
 impl EditorAccess {
     // Reads — served from the state cache + the buffer store.
-    async fn current_selection(&self) -> Option<Selection>;
-    async fn open_editors(&self) -> Vec<OpenEditor>;
-    async fn workspace_folders(&self) -> Vec<String>;
-    async fn document_dirty(&self, path: &Path) -> bool;
-    async fn read_text_file(&self, path: &Path, line: Option<u32>, limit: Option<u32>)
-        -> Result<String, AgentError>;
+    fn current_selection(&self) -> Option<SelectionInfo>;
+    fn open_editors(&self) -> Vec<OpenEditor>;
+    fn workspace_folders(&self) -> &[String];
+    fn document_dirty(&self, path: &str) -> bool;
+    // LL.16: text as the user sees it — an open buffer's, unsaved edits included.
+    fn buffer_text(&self, path: &Path) -> Option<String>;
+    fn open_texts(&self) -> Vec<(PathBuf, String)>;
+    async fn read_text_file(&self, path: &Path) -> Result<String>;
 
-    // Writes — emitted as `Effect`s over the inbound bus, applied on the editor thread.
-    async fn open_file(&self, path: &Path, column: Option<u32>) -> Result<(), AgentError>;
-    async fn write_text_file(&self, path: &Path, contents: String) -> Result<(), AgentError>;
-    async fn save_document(&self, path: &Path) -> Result<(), AgentError>;
-
-    // Approval — the headline seam. Blocks until the user decides.
-    async fn review_diff(&self, req: DiffReviewRequest) -> Result<DiffOutcome, AgentError>;
+    // Writes — emitted over the inbound bus, applied on the editor thread.
+    async fn open_file(&self, path: PathBuf, column: Option<Utf16Pos>) -> Result<()>;
+    async fn save_document(&self, path: PathBuf) -> Result<()>;
+    async fn close_tab(&self, origin_session: u64, tab_name: String) -> Result<()>;
 
     // Session-scoped teardown. Rides the *write* bus (→ `Effect::CloseSessionDiffs`
     // / `CloseAllSessionDiffs`, applied host-side), NOT `ProgrammaticDiffBus`.
-    async fn close_session_diffs(&self, origin_session: u64, tab_name: Option<String>);
+    async fn close_session_diffs(&self, origin_session: u64) -> Result<()>;
 }
+
+// Approval — the headline seam, free functions beside the handle. Each blocks
+// until the user decides.
+async fn review_diff(bus: &ProgrammaticDiffBus, req: DiffReviewRequest) -> Result<DiffOutcome>;
+async fn review_text(bus: &ProgrammaticDiffBus, req: TextReviewRequest) -> Result<Option<String>>;
 ```
+
+**Corrected by LL.16, against the source.** This block once listed
+`read_text_file(path, line, limit)`, `write_text_file` and a `review_diff`
+method; none existed. Reads now exist and answer from the buffer when one is
+open, so a model never reasons over a saved file the user has since edited.
+Slicing by line is the caller's (the LLM layer's `read_file` tool caps and
+pages its output); the port returns the text. There is still no
+`write_text_file`: an agent's edit goes through review (LL.17), never straight
+to a buffer or the disk.
 
 It is a **concrete struct, not a trait.** There is exactly one implementation —
 the host — and a trait would buy nothing while costing `async fn` dyn-compat

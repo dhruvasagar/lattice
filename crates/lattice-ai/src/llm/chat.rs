@@ -50,8 +50,8 @@ use super::{
     Sink, SinkFlow, StopReason, StreamEvent,
 };
 use crate::conversation::{
-    ConversationStore, Cost, FoldDisplay, OpaqueReasoning, ProjectionOptions, Role, SessionStatus,
-    UsageSnapshot,
+    Conversation, ConversationStore, Cost, FoldDisplay, OpaqueReasoning, ProjectionOptions, Role,
+    SessionStatus, ToolCallData, ToolKind, ToolStatus, UsageSnapshot,
 };
 
 /// The part of a buffer name a chat's name carries: no `*` and no whitespace,
@@ -240,6 +240,8 @@ impl ChatSession {
 struct Prepared {
     req: LlmRequest,
     provider: ProviderConfig,
+    /// The tools this request may call, fixed for its whole loop.
+    offer: Arc<super::tools::Offer>,
 }
 
 #[derive(Default)]
@@ -324,6 +326,9 @@ pub struct LlmChats {
     inspect_watch: WatchHandle,
     /// The last request sent from each buffer, as `:llm-inspect` shows it.
     last_sent: RwLock<HashMap<BufferId, Arc<String>>>,
+    /// LL.16: every tool source, namespaced; a request's tools are an offer
+    /// made from it when the request starts.
+    tools: super::tools::ToolBrokerHandle,
     next_chat: AtomicU32,
     next_system: AtomicU32,
     next_bind: AtomicU64,
@@ -360,6 +365,7 @@ impl LlmChats {
             inspect: Mutex::new(String::new()),
             inspect_watch: Arc::default(),
             last_sent: RwLock::new(HashMap::new()),
+            tools: Arc::default(),
             next_chat: AtomicU32::new(1),
             next_system: AtomicU32::new(1),
             next_bind: AtomicU64::new(1),
@@ -380,6 +386,33 @@ impl LlmChats {
 
     /// Look for `.lattice/llm.toml` under `root` instead of the project root
     /// found from the working directory.
+    /// LL.16: the tool broker. A source added here is offered to any request
+    /// whose `llm.tools` selects it.
+    pub fn tools(&self) -> &super::tools::ToolBrokerHandle {
+        &self.tools
+    }
+
+    /// The root lattice's tools are confined to: the configured project root,
+    /// or the project around the working directory.
+    pub fn tools_root(&self) -> std::path::PathBuf {
+        self.configured_root()
+            .or_else(lattice_core::project::root_from_cwd)
+            .or_else(|| std::env::current_dir().ok())
+            .unwrap_or_default()
+    }
+
+    /// `llm.tool_rounds`, the most rounds of tool calls one request may run.
+    fn tool_rounds(&self) -> usize {
+        self.registry
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .and_then(|r| r.get_typed::<super::options::LlmToolRounds>())
+            .map(|v| *v)
+            .unwrap_or(super::options::DEFAULT_TOOL_ROUNDS)
+            .max(1) as usize
+    }
+
     pub fn set_project_root(&self, root: std::path::PathBuf) {
         *self.project_root.write().unwrap_or_else(|e| e.into_inner()) = Some(root);
     }
@@ -1270,8 +1303,10 @@ impl LlmChats {
                 return;
             }
             let req = prepared.req;
+            let offer = prepared.offer;
             let mut sink = ChatSink::new(session.store.clone(), session.key.clone(), &provider_cfg);
             sink.tap = session.turn().tap.clone();
+            sink.offer = Some(offer.clone());
             // A shown chat's requests belong to its buffer; a hidden ask's to
             // the buffer it asked from, where `:llm-stop` finds them.
             let target = RequestTarget {
@@ -1293,13 +1328,31 @@ impl LlmChats {
                     .unwrap_or_else(|e| e.into_inner())
                     .insert(target.buffer, Arc::new(super::context::show(&http)));
             }
-            let id = chats.requests.start_with_key(
-                target,
-                req,
-                provider_cfg.build(),
-                key,
-                Box::new(sink),
-            );
+            let id = if offer.is_empty() {
+                chats.requests.start_with_key(
+                    target,
+                    req,
+                    provider_cfg.build(),
+                    key,
+                    Box::new(sink),
+                )
+            } else {
+                let rounds = super::tool_loop::ChatRounds::new(
+                    session.store.clone(),
+                    session.key.clone(),
+                    offer,
+                    req.clone(),
+                    chats.tool_rounds(),
+                );
+                chats.requests.start_loop(
+                    target,
+                    req,
+                    provider_cfg.build(),
+                    key,
+                    Box::new(sink),
+                    Box::new(rounds),
+                )
+            };
             let interrupted = {
                 let mut turn = session.turn();
                 turn.request = Some(id);
@@ -1379,15 +1432,17 @@ impl LlmChats {
         {
             super::context::prepend(&mut messages, &block);
         }
+        let offer = Arc::new(self.tools.offer(&resolved.values.tools).await);
         Ok(Prepared {
             req: LlmRequest {
                 model: chosen.model,
                 system,
                 messages,
-                tools: Vec::new(),
+                tools: offer.descriptors(),
                 params,
             },
             provider: chosen.provider,
+            offer,
         })
     }
 
@@ -1507,6 +1562,7 @@ impl LlmChats {
             let mut started = false;
             session.store.mutate(&session.key, |c| {
                 c.status = SessionStatus::Idle;
+                c.settle_tool_calls(super::tool_loop::STOPPED);
                 if failed {
                     c.error = error;
                 }
@@ -1589,6 +1645,10 @@ struct ChatSink {
     pricing: Option<(f64, f64)>,
     /// The session's [`TextTap`], if it has one.
     tap: Option<TextTap>,
+    /// The request's tools, to show a call by its tool's name and server.
+    offer: Option<Arc<super::tools::Offer>>,
+    /// Calls whose arguments are still arriving: id -> (name called, raw JSON).
+    calls: HashMap<String, (String, String)>,
 }
 
 impl ChatSink {
@@ -1601,7 +1661,72 @@ impl ChatSink {
             key,
             pricing,
             tap: None,
+            offer: None,
+            calls: HashMap::new(),
         }
+    }
+
+    /// A call the model started: shown at once, pending, under its tool's
+    /// name (`read_file`), with its server as the label unless it is
+    /// lattice's own.
+    fn call_started(&mut self, c: &mut Conversation, id: String, name: String) {
+        let tool = self.offer.as_ref().and_then(|o| o.find(&name));
+        let (origin, title, kind) = match tool {
+            Some(t) => (
+                (t.server != super::tools::broker::LATTICE).then(|| t.server.clone()),
+                t.name.clone(),
+                t.kind,
+            ),
+            None => (None, name.clone(), ToolKind::Other),
+        };
+        c.push_tool_call(
+            id.clone(),
+            origin,
+            title,
+            ToolStatus::Pending,
+            kind,
+            None,
+            None,
+        );
+        self.calls.insert(id, (name, String::new()));
+    }
+
+    /// A call's arguments are complete: kept exactly for the next request,
+    /// and shown. Arguments that are not a JSON object are kept as `{}` with
+    /// the reason, which the call's result reports to the model.
+    fn call_ended(&mut self, c: &mut Conversation, id: String) {
+        let Some((name, raw)) = self.calls.remove(&id) else {
+            return;
+        };
+        let parsed = if raw.trim().is_empty() {
+            Ok(serde_json::json!({}))
+        } else {
+            serde_json::from_str::<serde_json::Value>(&raw)
+                .map_err(|e| format!("the arguments are not valid JSON ({e})"))
+                .and_then(|v| {
+                    if v.is_object() {
+                        Ok(v)
+                    } else {
+                        Err("the arguments must be a JSON object".to_string())
+                    }
+                })
+        };
+        let (input, malformed, shown) = match parsed {
+            Ok(v) => {
+                let shown = serde_json::to_string_pretty(&v).unwrap_or_else(|_| raw.clone());
+                (v, None, shown)
+            }
+            Err(why) => (serde_json::json!({}), Some(why), raw),
+        };
+        c.merge_tool_update(&id, None, None, Some(shown), None);
+        c.tool_calls.insert(
+            id,
+            ToolCallData {
+                name,
+                input,
+                malformed,
+            },
+        );
     }
 }
 
@@ -1611,7 +1736,8 @@ impl Sink for ChatSink {
             tap(t);
         }
         let pricing = self.pricing;
-        self.store.mutate(&self.key, |c| match ev {
+        let (store, key) = (self.store.clone(), self.key.clone());
+        store.mutate(&key, |c| match ev {
             StreamEvent::Text(t) => c.extend_text(Role::Assistant, &t),
             StreamEvent::Reasoning(t) => c.extend_reasoning(&t),
             StreamEvent::ReasoningData(d) => c.attach_reasoning_data(OpaqueReasoning {
@@ -1640,10 +1766,13 @@ impl Sink for ChatSink {
             }
             StreamEvent::Done(_) => {}
             StreamEvent::Error(e) => c.error = Some(e.to_string()),
-            // Tools arrive with the tool loop (LL.16).
-            StreamEvent::ToolCallStart { .. }
-            | StreamEvent::ToolCallInput { .. }
-            | StreamEvent::ToolCallEnd { .. } => {}
+            StreamEvent::ToolCallStart { id, name } => self.call_started(c, id, name),
+            StreamEvent::ToolCallInput { id, json_fragment } => {
+                if let Some((_, raw)) = self.calls.get_mut(&id) {
+                    raw.push_str(&json_fragment);
+                }
+            }
+            StreamEvent::ToolCallEnd { id } => self.call_ended(c, id),
         });
         SinkFlow::Continue
     }

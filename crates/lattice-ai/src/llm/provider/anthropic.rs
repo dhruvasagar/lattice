@@ -84,7 +84,21 @@ fn messages(msgs: &[Message]) -> Vec<Value> {
     let mut out: Vec<Value> = Vec::new();
     for m in msgs {
         match m {
-            Message::User(text) => out.push(json!({"role": "user", "content": text})),
+            Message::User(text) => {
+                // After tool results (a loop that was stopped, then a new
+                // prompt), the text joins their user message: roles must
+                // alternate, and text may follow `tool_result` blocks.
+                let joined = out
+                    .last_mut()
+                    .filter(|l| l["role"] == "user")
+                    .and_then(|l| l["content"].as_array_mut())
+                    .filter(|c| c.iter().all(|b| b["type"] == "tool_result"))
+                    .map(|c| c.push(json!({"type": "text", "text": text})))
+                    .is_some();
+                if !joined {
+                    out.push(json!({"role": "user", "content": text}));
+                }
+            }
             Message::Assistant(parts) => {
                 let blocks: Vec<Value> = parts.iter().filter_map(assistant_block).collect();
                 // The API rejects an assistant message with no content.
@@ -396,6 +410,24 @@ mod tests {
         let out = messages(&[r("a"), r("b")]);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0]["content"].as_array().map(Vec::len), Some(2));
+    }
+
+    /// A prompt after tool results joins their user message, so roles still
+    /// alternate (a stopped loop, then a new prompt).
+    #[test]
+    fn a_prompt_after_tool_results_joins_their_message() {
+        let out = messages(&[
+            Message::ToolResult {
+                id: "a".into(),
+                content: "stopped".into(),
+                is_error: true,
+            },
+            Message::User("go on".into()),
+        ]);
+        assert_eq!(out.len(), 1);
+        let content = out[0]["content"].as_array().unwrap();
+        assert_eq!(content[0]["type"], "tool_result");
+        assert_eq!(content[1], json!({"type": "text", "text": "go on"}));
     }
 
     #[test]

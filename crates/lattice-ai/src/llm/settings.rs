@@ -184,14 +184,15 @@ pub fn validate(key: SettingKey, value: &str) -> Result<(), String> {
             }
             let ok = v.split(',').map(str::trim).all(|t| {
                 !t.is_empty()
-                    && t.chars()
-                        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | ':' | '.'))
+                    && t.chars().all(|c| {
+                        c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | ':' | '.' | '*')
+                    })
             });
             if ok {
                 Ok(())
             } else {
                 Err(format!(
-                    "llm.tools must be `none` or comma-separated tool names, not `{v}`"
+                    "llm.tools must be `none` or comma-separated tool selectors (`lattice.read`, `github.*`), not `{v}`"
                 ))
             }
         }

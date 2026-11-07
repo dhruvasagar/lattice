@@ -234,6 +234,24 @@ lattice_config::options! {
     #[name("llm.prefix")]
     #[validate(v_prefix)]
     pub LlmPrefix: String = DEFAULT_PREFIX.to_string();
+
+    /// How many times one request may run tools before it stops and asks
+    /// you to send again: a guard against a model calling tools forever.
+    /// Global only.
+    #[name("llm.tool_rounds")]
+    #[validate(v_tool_rounds)]
+    pub LlmToolRounds: i64 = DEFAULT_TOOL_ROUNDS;
+}
+
+/// `llm.tool_rounds` when nothing sets it.
+pub const DEFAULT_TOOL_ROUNDS: i64 = 25;
+
+fn v_tool_rounds(v: &i64) -> Result<(), String> {
+    if *v >= 1 {
+        Ok(())
+    } else {
+        Err(format!("llm.tool_rounds must be at least 1, not {v}"))
+    }
 }
 
 /// `llm.prefix` when nothing sets it.

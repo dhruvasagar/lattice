@@ -138,6 +138,43 @@ tools = "closed"
 `<CR>` sends the prompt in this buffer. It does not follow markdown links,
 as it does in a markdown file.
 
+## Tools
+
+A chat can let the model read your project while it answers. Nothing is
+on until you choose it, with `llm.tools` in your config, a profile, or
+`:setlocal` in the chat:
+
+```toml
+[llm]
+tools = "lattice.read"
+```
+
+`lattice.read` gives these, each shown as a tool block in the transcript:
+
+| Tool | Does |
+|---|---|
+| `read_file` | Reads a file, up to 2000 lines at a time |
+| `list_directory` | Lists a directory |
+| `search` | Searches the project for a regular expression, skipping what `.gitignore` ignores |
+
+They run without asking, so they are kept to what you could see yourself:
+
+- **A file you have open is read as you have it**, unsaved edits
+  included, not as it is on disk.
+- **Only inside the project.** A path outside it (`../`, `/etc`, a link
+  out) is refused, and the model is told why.
+- **Never a file `llm.exclude` names**, as for everything else sent.
+
+A selector is `server.name`: one tool (`lattice.read_file`), a kind
+(`lattice.read`), or all of a server's (`lattice.*`). Edit and command
+tools come later; until then only reads exist.
+
+One request may run tools for up to `llm.tool_rounds` rounds (25 unless
+you set it). A model still calling tools then is stopped with a message;
+send again to let it go on. `:llm-stop` (or `<C-c>`) stops the request
+wherever it is, including while a tool runs, and the call is marked as
+stopped so the next prompt carries on cleanly.
+
 ## See also
 
 - [`ai-conversation-mode`](help:ai-conversation-mode) — the agent

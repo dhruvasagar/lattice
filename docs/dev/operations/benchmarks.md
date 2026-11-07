@@ -71,6 +71,24 @@ target rather than just a slower number.
 
 ---
 
+## LL.16 — building a tool loop's next request (2026-11-07)
+
+Each round of a tool loop builds its next request by projecting the chat's conversation through
+`history::messages`, on the request's task, never the editor thread. `llm_tool_history` measures
+that for a turn that has run `rounds` calls, each with a 2 KB result (bench profile):
+
+| Bench | Time |
+|---|---|
+| `llm_tool_history/rounds/10` | 2.00 µs |
+| `llm_tool_history/rounds/50` | 12.1 µs |
+| `llm_tool_history/rounds/200` | 50.2 µs |
+
+Linear in the calls, and far below a network round trip at the round limit (25 by default).
+Nothing in LL.16 runs on the keystroke path: the loop, the tools and their file reads run on the
+boot runtime, and the chat repaints through the existing conversation drain.
+
+---
+
 ## LL.14d — recording which buffers are displayed, on the publish path (2026-11-07)
 
 `publish_render_state` now records the current tab's shown buffers for

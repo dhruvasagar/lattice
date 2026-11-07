@@ -149,6 +149,7 @@ mod llm_ask;
 mod llm_context;
 mod llm_inline;
 mod llm_rewrite;
+mod llm_tools;
 mod lsp;
 mod lsp_log_buffers;
 mod lsp_watcher;

@@ -353,6 +353,48 @@ tool's edits happen in its own process, so they cannot pass through diff review,
 prompt before it runs. Tool results are untrusted input to the model, and a result cannot
 widen permissions.
 
+**The loop is one request** (LL.16). An exchange that ends asking for tools moves the request
+to `AwaitingTool`; the calls run; the next exchange goes out under the same id, state and
+cancellation token, so `:llm-stop` stops the whole loop wherever it is, and `:llm-requests`
+shows one row for it. The broker makes an **offer** when the request starts: the selection
+resolved once into the tools it may call. The loop calls through the offer and nothing else,
+so a result, being only text, has no path by which to add a tool or loosen a permission; a
+call to a name the offer lacks is refused by name.
+
+**The conversation store is the record, and the next exchange is built from it.** Each call's
+name and exact arguments sit in the session (`Conversation::tool_calls`, beside reasoning
+data), its result in the tool block; `history::messages` projects both, splitting a turn at
+each run of calls and answering **every** call it sends. A call stopped before it returned is
+answered with an error result, so the history is valid however the loop ended, and the
+request continuing a loop is the same projection as the one a later prompt sends. A call
+whose arguments never finished arriving is dropped with nothing to answer. Each continuation
+is the first request as sent plus everything after its last user message: settings, system
+prompt and context are not resolved again, so a loop keeps the terms it started with.
+
+**Names and selection.** A tool is `server.tool` wherever a person writes it and
+`server__tool` on the wire, since providers allow only `[A-Za-z0-9_-]`. Lattice's tools are
+namespaced like any server's, so a later server cannot collide with them. A selector is
+`server.*`, `server.name`, or a kind group (`read`, `edit`, `exec`) that applies only where
+kinds are trusted, that is, to lattice's own tools.
+
+**Lattice's read tools** (`read_file`, `list_directory`, `search`) answer from the buffer
+when the file is open, unsaved edits included (`EditorAccess::read_text_file`), and are
+confined to the project root and outside `llm.exclude`. They run without asking, and a
+result is untrusted input that can carry instructions, so a read that could reach `~/.ssh`
+would let any file a model reads exfiltrate it. Outputs are capped with a note saying how to
+read on. A request runs at most `llm.tool_rounds` rounds (default 25), then stops with a
+message.
+
+Arguments a tool cannot use come back as an error result, never a failed request: arguments
+that are not a JSON object are kept as `{}` (a provider rejects a call whose input is not an
+object) with the reason, and the call is not run.
+
+Rejected: a request id per exchange (the modeline, `:llm-requests` and `:llm-stop` would
+see a loop as unrelated requests, and a cancel between exchanges would find nothing to
+cancel); accumulating the loop's messages beside the store (two records of one conversation,
+and the store's is the one a later prompt sends, so a divergence would be a bug that only
+shows on the next turn).
+
 ## 7. UX contract and scope
 
 Streaming never moves the caret; the view follows only if the caret is already at

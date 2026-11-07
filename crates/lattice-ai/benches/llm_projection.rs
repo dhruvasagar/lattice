@@ -92,5 +92,44 @@ fn bench(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench);
+/// LL.16: each round of a tool loop builds its next request by projecting the
+/// conversation through `history::messages`, off the editor thread. This is
+/// that cost for a turn that has run `rounds` tool calls, each with a 2 KB
+/// result, so the per-round cost of a long loop is visible.
+fn bench_tool_history(c: &mut Criterion) {
+    use lattice_ai::conversation::ToolCallData;
+    let mut group = c.benchmark_group("llm_tool_history");
+    let output = "x".repeat(2048);
+    for rounds in [10usize, 50, 200] {
+        let mut conv = Conversation::default();
+        conv.push_user_text("work on it");
+        for i in 0..rounds {
+            let id = format!("call_{i}");
+            conv.extend_text(Role::Assistant, &format!("step {i}"));
+            conv.push_tool_call(
+                id.clone(),
+                None,
+                "read_file".into(),
+                ToolStatus::Ok,
+                ToolKind::Read,
+                Some("{ \"path\": \"src/lib.rs\" }".into()),
+                Some(output.clone()),
+            );
+            conv.tool_calls.insert(
+                id,
+                ToolCallData {
+                    name: "lattice__read_file".into(),
+                    input: serde_json::json!({"path": "src/lib.rs"}),
+                    malformed: None,
+                },
+            );
+        }
+        group.bench_with_input(BenchmarkId::new("rounds", rounds), &conv, |b, conv| {
+            b.iter(|| black_box(lattice_ai::llm::history::messages(black_box(conv))));
+        });
+    }
+    group.finish();
+}
+
+criterion_group!(benches, bench, bench_tool_history);
 criterion_main!(benches);

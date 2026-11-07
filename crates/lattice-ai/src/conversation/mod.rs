@@ -16,7 +16,8 @@ pub mod transcript;
 pub use model::{
     Block, Conversation, ConversationProjected, ConversationStore, ConversationUpdated, Cost,
     EditStatus, OpaqueReasoning, PendingPermissionView, PermissionKind, PermissionOption,
-    PermissionStatus, Role, SessionStatus, SourceLink, ToolKind, ToolStatus, Turn, UsageSnapshot,
+    PermissionStatus, Role, SessionStatus, SourceLink, ToolCallData, ToolKind, ToolStatus, Turn,
+    UsageSnapshot,
 };
 pub use projection::{
     FoldDisplay, ProjectionOptions, ProjectionSource, project_conversation,

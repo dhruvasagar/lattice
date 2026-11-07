@@ -228,6 +228,19 @@ pub struct Turn {
     pub blocks: Vec<Block>,
 }
 
+/// LL.16: a model's tool call as it must be sent back: the name it called (the
+/// wire name, `lattice__read_file`) and its arguments. `input` is the parsed
+/// object, or `{}` when the model's arguments were not valid JSON (the call's
+/// result then says so), since a provider rejects a call whose input is not
+/// an object.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ToolCallData {
+    pub name: String,
+    pub input: serde_json::Value,
+    /// Why the arguments could not be used, when they could not.
+    pub malformed: Option<String>,
+}
+
 /// Provider data that must come back verbatim with the reasoning it belongs to
 /// (a signature, say). Opaque to this module: `provider` names whose it is, so a
 /// different provider can drop it on the next request.
@@ -253,6 +266,12 @@ pub struct Conversation {
     /// Round-trip data for `Reasoning` blocks, keyed by `(turn, block)` index.
     /// Turns are append-only, so an index names the same block for life.
     pub reasoning_data: std::collections::BTreeMap<(usize, usize), OpaqueReasoning>,
+    /// LL.16: what the model sent for each of its tool calls, by call id: the
+    /// name it called and the arguments, as the provider needs them back on
+    /// the next request. The `ToolCall` block shows them; this keeps them
+    /// exact. A call whose arguments never finished arriving has no entry,
+    /// and is not sent back.
+    pub tool_calls: std::collections::BTreeMap<String, ToolCallData>,
     /// The last failure, shown after the transcript and cleared by the next
     /// send. Not part of the history a model is sent.
     pub error: Option<String>,
@@ -435,6 +454,22 @@ impl Conversation {
                 {
                     *status = new_status;
                     return;
+                }
+            }
+        }
+    }
+
+    /// LL.16: every tool call still pending or running is ended as failed,
+    /// with `why` as its output: a request that stopped leaves no call
+    /// showing as running, and the next request answers it with that error.
+    pub fn settle_tool_calls(&mut self, why: &str) {
+        for turn in &mut self.turns {
+            for block in &mut turn.blocks {
+                if let Block::ToolCall { status, output, .. } = block
+                    && matches!(status, ToolStatus::Pending | ToolStatus::Running)
+                {
+                    *status = ToolStatus::Err;
+                    *output = Some(why.to_string());
                 }
             }
         }

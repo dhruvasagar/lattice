@@ -167,3 +167,263 @@ pub fn failed_message(state: RequestState) -> String {
         other => panic!("expected Failed, got {other:?}"),
     }
 }
+
+// ---------------------------------------------------------------------------
+// LL.16: tool calls on the OpenAI-compatible wire, and a strict reading of
+// what comes back.
+// ---------------------------------------------------------------------------
+
+fn sse_events(events: &[serde_json::Value]) -> Vec<u8> {
+    let mut out = SSE_HEAD.to_string();
+    for e in events {
+        out.push_str(&format!("data: {e}\n\n"));
+    }
+    out.push_str("data: [DONE]\n\n");
+    out.into_bytes()
+}
+
+/// A reply that is one tool call, its arguments sent raw (they may be broken).
+pub fn openai_tool_call(id: &str, name: &str, raw_arguments: &str) -> Vec<u8> {
+    use serde_json::json;
+    sse_events(&[
+        json!({"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":id,"type":"function","function":{"name":name,"arguments":""}}]}}]}),
+        json!({"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":raw_arguments}}]}}]}),
+        json!({"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}),
+    ])
+}
+
+/// A reply that is plain text.
+pub fn openai_text(text: &str) -> Vec<u8> {
+    use serde_json::json;
+    sse_events(&[
+        json!({"choices":[{"index":0,"delta":{"content":text}}]}),
+        json!({"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}),
+    ])
+}
+
+/// The JSON body of a recorded request.
+pub fn body_json(request: &str) -> serde_json::Value {
+    let body = request.split_once("\r\n\r\n").map_or("", |(_, b)| b);
+    serde_json::from_str(body).unwrap_or(serde_json::Value::Null)
+}
+
+/// The tool names a recorded request offered.
+pub fn offered_tools(request: &str) -> Vec<String> {
+    body_json(request)["tools"]
+        .as_array()
+        .map(|t| {
+            t.iter()
+                .filter_map(|t| t["function"]["name"].as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// What a strict OpenAI-compatible server checks before accepting a request:
+/// every assistant tool call is answered by a `tool` message before anything
+/// else follows, no `tool` message answers a call that was not made, and
+/// every call's arguments are a JSON object.
+pub fn strictly_valid(request: &str) -> Result<(), String> {
+    let body = body_json(request);
+    let messages = body["messages"]
+        .as_array()
+        .ok_or("no messages array")?
+        .clone();
+    let mut open: Vec<String> = Vec::new();
+    for (i, m) in messages.iter().enumerate() {
+        let role = m["role"].as_str().unwrap_or("");
+        if role == "tool" {
+            let id = m["tool_call_id"].as_str().unwrap_or("");
+            let Some(pos) = open.iter().position(|o| o == id) else {
+                return Err(format!(
+                    "message {i}: a result for `{id}`, which no open call made"
+                ));
+            };
+            open.remove(pos);
+            continue;
+        }
+        if !open.is_empty() {
+            return Err(format!(
+                "message {i} ({role}) follows calls left unanswered: {open:?}"
+            ));
+        }
+        if let Some(calls) = m["tool_calls"].as_array() {
+            for c in calls {
+                let args = c["function"]["arguments"].as_str().unwrap_or("");
+                let parsed: serde_json::Value = serde_json::from_str(args)
+                    .map_err(|e| format!("message {i}: arguments `{args}` are not JSON: {e}"))?;
+                if !parsed.is_object() {
+                    return Err(format!("message {i}: arguments `{args}` are not an object"));
+                }
+                open.push(c["id"].as_str().unwrap_or("").to_string());
+            }
+        }
+    }
+    if open.is_empty() {
+        Ok(())
+    } else {
+        Err(format!("the request ends with calls unanswered: {open:?}"))
+    }
+}
+
+/// A model that answers each request with the next of `replies` (the last
+/// one repeats) and records every request it receives.
+pub async fn scripted(replies: Vec<Vec<u8>>) -> (SocketAddr, Arc<Mutex<Vec<String>>>) {
+    let log: Arc<Mutex<Vec<String>>> = Arc::default();
+    let seen = log.clone();
+    let replies = Arc::new(replies);
+    let addr = serve(move |req, mut s| {
+        let (seen, replies) = (seen.clone(), replies.clone());
+        async move {
+            let n = {
+                let mut g = seen.lock().unwrap();
+                g.push(req);
+                g.len()
+            };
+            let reply = replies[(n - 1).min(replies.len() - 1)].clone();
+            let _ = s.write_all(&reply).await;
+            let _ = s.shutdown().await;
+        }
+    })
+    .await;
+    (addr, log)
+}
+
+/// The chat layer over a mock OpenAI-compatible server at `addr`, with
+/// `tools` as the global `llm.tools` and `source` as lattice's tools.
+pub fn tool_chats(
+    addr: SocketAddr,
+    tools: &str,
+    source: Arc<dyn lattice_ai::llm::tools::ToolSource>,
+) -> lattice_ai::llm::chat::LlmChatsHandle {
+    use lattice_ai::llm::chat::{LlmChats, spawn_turn_listener};
+    use lattice_ai::llm::config::LlmConfig;
+    let text = format!(
+        "[llm]\ntools = \"{tools}\"\n[llm.providers.mock]\nkind = \"openai-compatible\"\nbase_url = \"http://{addr}/v1\"\nmodel = \"test-model\"\n"
+    );
+    let config = LlmConfig::from_table(&text.parse::<toml::Table>().unwrap());
+    let bus = Arc::new(lattice_runtime::EventBus::new());
+    let handle = tokio::runtime::Handle::current();
+    let requests = Arc::new(RequestRegistry::new(
+        handle.clone(),
+        Some(bus.clone()),
+        None,
+    ));
+    let chats = Arc::new(LlmChats::new(handle, requests, bus.clone(), config));
+    spawn_turn_listener(chats.clone(), &bus);
+    chats
+        .tools()
+        .add_source(lattice_ai::llm::tools::broker::LATTICE, source);
+    chats
+}
+
+/// Test tools, under lattice's namespace so they run without asking:
+/// `echo {text}` answers `echo: <text>`; `secret` must never run unless
+/// offered; `wait` blocks until released (or forever).
+#[derive(Default)]
+pub struct TestTools {
+    pub ran: Mutex<Vec<(String, serde_json::Value)>>,
+    pub release: tokio::sync::Notify,
+    pub echo_says: Mutex<Option<String>>,
+}
+
+impl lattice_ai::llm::tools::ToolSource for TestTools {
+    fn list(
+        &self,
+    ) -> lattice_ai::llm::tools::BoxFuture<
+        '_,
+        Result<Vec<lattice_ai::llm::tools::SourceTool>, lattice_ai::llm::tools::ToolError>,
+    > {
+        use lattice_ai::conversation::ToolKind;
+        use lattice_ai::llm::ToolDescriptor;
+        use lattice_ai::llm::tools::SourceTool;
+        let tool = |name: &str, schema| SourceTool {
+            descriptor: ToolDescriptor {
+                name: name.into(),
+                description: format!("test tool {name}"),
+                input_schema: schema,
+            },
+            kind: ToolKind::Read,
+        };
+        let tools = vec![
+            tool(
+                "echo",
+                serde_json::json!({"type":"object","properties":{"text":{"type":"string"}},"required":["text"]}),
+            ),
+            tool("secret", serde_json::json!({"type":"object"})),
+            tool("wait", serde_json::json!({"type":"object"})),
+        ];
+        Box::pin(async move { Ok(tools) })
+    }
+
+    fn call(
+        &self,
+        name: &str,
+        input: serde_json::Value,
+    ) -> lattice_ai::llm::tools::BoxFuture<
+        '_,
+        Result<lattice_ai::llm::tools::ToolOutput, lattice_ai::llm::tools::ToolError>,
+    > {
+        use lattice_ai::llm::tools::{ToolError, ToolOutput};
+        let name = name.to_string();
+        Box::pin(async move {
+            self.ran.lock().unwrap().push((name.clone(), input.clone()));
+            match name.as_str() {
+                "echo" => {
+                    let Some(text) = input["text"].as_str() else {
+                        return Err(ToolError::InvalidArguments("missing field `text`".into()));
+                    };
+                    let said = self.echo_says.lock().unwrap().clone();
+                    Ok(ToolOutput {
+                        text: said.unwrap_or_else(|| format!("echo: {text}")),
+                    })
+                }
+                "secret" => Ok(ToolOutput {
+                    text: "the secret".into(),
+                }),
+                "wait" => {
+                    self.release.notified().await;
+                    Ok(ToolOutput {
+                        text: "released".into(),
+                    })
+                }
+                other => Err(ToolError::UnknownTool(other.into())),
+            }
+        })
+    }
+}
+
+/// Wait until `f` holds, failing after five seconds.
+pub async fn until(what: &str, mut f: impl FnMut() -> bool) {
+    let start = Instant::now();
+    while !f() {
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "timed out waiting for: {what}"
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+}
+
+/// The chat's tool blocks: (title, status, output).
+pub fn tool_blocks(
+    session: &lattice_ai::llm::chat::ChatSession,
+) -> Vec<(String, lattice_ai::conversation::ToolStatus, Option<String>)> {
+    use lattice_ai::conversation::Block;
+    session
+        .store
+        .snapshot()
+        .turns
+        .iter()
+        .flat_map(|t| t.blocks.iter())
+        .filter_map(|b| match b {
+            Block::ToolCall {
+                title,
+                status,
+                output,
+                ..
+            } => Some((title.clone(), *status, output.clone())),
+            _ => None,
+        })
+        .collect()
+}

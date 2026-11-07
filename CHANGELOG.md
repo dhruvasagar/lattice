@@ -3,6 +3,12 @@
 ## Unreleased
 
 ### Added
+- **LLM chats can read your project.** With `llm.tools = "lattice.read"`,
+  a model may call `read_file`, `list_directory` and `search` while it
+  answers; each call shows as a tool block. Reads see unsaved edits, stay
+  inside the project and skip `llm.exclude` files. One request runs at
+  most `llm.tool_rounds` rounds of tools (25), and `:llm-stop` stops it
+  mid-tool without breaking the chat's history.
 - **The LLM chord prefix is configurable:** `llm.prefix` (default
   `<leader>a`), e.g. `prefix = "<C-c>."` under `[llm]` gives `<C-c>.aip`
   to ask about a paragraph. The commands have chords too now: `l` chat,

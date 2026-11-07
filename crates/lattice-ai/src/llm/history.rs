@@ -6,7 +6,7 @@
 //! the next turn) survive: no edit can reach it.
 
 use super::{AssistantPart, Message, ReasoningData};
-use crate::conversation::{Block, Conversation, Role};
+use crate::conversation::{Block, Conversation, Role, ToolStatus, Turn};
 
 /// Build the message history for the next request.
 ///
@@ -14,7 +14,8 @@ use crate::conversation::{Block, Conversation, Role};
 /// one message of its text and reasoning, with each reasoning block's round-trip
 /// data re-attached; a turn with nothing to send (a reply that failed before
 /// its first byte) is skipped, since providers reject an empty assistant
-/// message. Tool calls are not sent until the tool loop exists.
+/// message. A turn that used tools carries its calls and their results in
+/// order (see [`assistant_messages`]).
 ///
 /// A user turn left without a reply by the next user turn is dropped. Queued
 /// prompts and the shown error are not history.
@@ -45,30 +46,77 @@ pub fn messages(conv: &Conversation) -> Vec<Message> {
                     out.push(Message::User(text));
                 }
             }
-            Role::Assistant => {
-                let parts: Vec<AssistantPart> = turn
-                    .blocks
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(b, block)| match block {
-                        Block::Text(s) if !s.is_empty() => Some(AssistantPart::Text(s.clone())),
-                        Block::Reasoning(s) => Some(AssistantPart::Reasoning {
-                            text: s.clone(),
-                            data: conv.reasoning_data.get(&(t, b)).map(|d| ReasoningData {
-                                provider: d.provider.clone(),
-                                data: d.data.clone(),
-                            }),
-                        }),
-                        _ => None,
-                    })
-                    .collect();
-                if !parts.is_empty() {
-                    out.push(Message::Assistant(parts));
-                }
-            }
+            Role::Assistant => assistant_messages(conv, t, turn, &mut out),
         }
     }
     out
+}
+
+/// One assistant turn as messages. A turn that used tools holds several
+/// exchanges (text, calls, then more text after their results), so it splits
+/// at each run of calls: the assistant message ends with its calls, and a
+/// result for **every** call follows before anything else does. Providers
+/// reject a call left without a result, so a call that never got one (the
+/// request was stopped while it ran) is sent back with an error result saying
+/// so; a call whose arguments never finished arriving was never a call the
+/// model could expect an answer to, and is left out with nothing to answer.
+fn assistant_messages(conv: &Conversation, t: usize, turn: &Turn, out: &mut Vec<Message>) {
+    let mut parts: Vec<AssistantPart> = Vec::new();
+    let mut results: Vec<Message> = Vec::new();
+    let flush =
+        |parts: &mut Vec<AssistantPart>, results: &mut Vec<Message>, out: &mut Vec<Message>| {
+            if !parts.is_empty() {
+                out.push(Message::Assistant(std::mem::take(parts)));
+            }
+            out.append(results);
+        };
+    for (b, block) in turn.blocks.iter().enumerate() {
+        let part = match block {
+            Block::ToolCall {
+                id, status, output, ..
+            } => {
+                let Some(call) = conv.tool_calls.get(id) else {
+                    continue;
+                };
+                parts.push(AssistantPart::ToolCall {
+                    id: id.clone(),
+                    name: call.name.clone(),
+                    input: call.input.clone(),
+                });
+                results.push(tool_result(id, *status, output.as_deref()));
+                continue;
+            }
+            Block::Text(s) if !s.is_empty() => AssistantPart::Text(s.clone()),
+            Block::Reasoning(s) => AssistantPart::Reasoning {
+                text: s.clone(),
+                data: conv.reasoning_data.get(&(t, b)).map(|d| ReasoningData {
+                    provider: d.provider.clone(),
+                    data: d.data.clone(),
+                }),
+            },
+            _ => continue,
+        };
+        // Content after calls is the next exchange: answer the calls first.
+        if !results.is_empty() {
+            flush(&mut parts, &mut results, out);
+        }
+        parts.push(part);
+    }
+    flush(&mut parts, &mut results, out);
+}
+
+/// A call's result as the model gets it back.
+fn tool_result(id: &str, status: ToolStatus, output: Option<&str>) -> Message {
+    let (content, is_error) = match (status, output) {
+        (ToolStatus::Ok, Some(text)) => (text.to_string(), false),
+        (ToolStatus::Err, Some(text)) => (text.to_string(), true),
+        _ => ("the call was stopped before it returned".to_string(), true),
+    };
+    Message::ToolResult {
+        id: id.to_string(),
+        content,
+        is_error,
+    }
 }
 
 /// How sent text reaches the model: its label, then the text in a fence long
@@ -175,5 +223,96 @@ mod tests {
         c.queued.push("later".into());
         c.error = Some("boom".into());
         assert_eq!(messages(&c), vec![Message::User("hi".into())]);
+    }
+
+    fn call(c: &mut Conversation, id: &str, status: ToolStatus, output: Option<&str>) {
+        c.push_tool_call(
+            id.into(),
+            None,
+            "read_file".into(),
+            status,
+            crate::conversation::ToolKind::Read,
+            None,
+            output.map(str::to_string),
+        );
+        c.tool_calls.insert(
+            id.into(),
+            crate::conversation::ToolCallData {
+                name: "lattice__read_file".into(),
+                input: serde_json::json!({"path": id}),
+                malformed: None,
+            },
+        );
+    }
+
+    /// LL.16: one assistant turn with two exchanges becomes assistant (calls),
+    /// their results, then assistant again.
+    #[test]
+    fn a_turn_that_used_tools_splits_at_its_calls() {
+        let mut c = Conversation::default();
+        c.push_user_text("look");
+        c.extend_text(Role::Assistant, "reading");
+        call(&mut c, "a", ToolStatus::Ok, Some("A"));
+        call(&mut c, "b", ToolStatus::Err, Some("no such file"));
+        c.extend_text(Role::Assistant, "done");
+
+        let m = messages(&c);
+        assert_eq!(m.len(), 5, "{m:#?}");
+        let Message::Assistant(first) = &m[1] else {
+            panic!("{m:#?}")
+        };
+        assert_eq!(first.len(), 3);
+        assert!(matches!(&first[2], AssistantPart::ToolCall { id, .. } if id == "b"));
+        assert_eq!(
+            m[2],
+            Message::ToolResult {
+                id: "a".into(),
+                content: "A".into(),
+                is_error: false
+            }
+        );
+        assert_eq!(
+            m[3],
+            Message::ToolResult {
+                id: "b".into(),
+                content: "no such file".into(),
+                is_error: true
+            }
+        );
+        assert_eq!(
+            m[4],
+            Message::Assistant(vec![AssistantPart::Text("done".into())])
+        );
+    }
+
+    /// A call stopped before its result is answered with an error; one whose
+    /// arguments never arrived is not sent at all.
+    #[test]
+    fn every_sent_call_has_a_result_however_the_loop_stopped() {
+        let mut c = Conversation::default();
+        c.push_user_text("look");
+        call(&mut c, "a", ToolStatus::Running, None);
+        c.push_tool_call(
+            "half".into(),
+            None,
+            "read_file".into(),
+            ToolStatus::Pending,
+            crate::conversation::ToolKind::Read,
+            None,
+            None,
+        );
+        c.push_user_text("never mind");
+
+        let m = messages(&c);
+        assert_eq!(m.len(), 4, "{m:#?}");
+        let Message::Assistant(parts) = &m[1] else {
+            panic!("{m:#?}")
+        };
+        assert_eq!(parts.len(), 1, "the half-arrived call is left out");
+        assert!(matches!(
+            &m[2],
+            Message::ToolResult { id, is_error: true, .. } if id == "a"
+        ));
+        assert_eq!(m[3], Message::User("never mind".into()));
     }
 }

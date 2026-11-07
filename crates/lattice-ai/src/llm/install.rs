@@ -55,6 +55,40 @@ pub fn install(boot: &mut impl SubsystemBoot) {
 
     // `chats` reads context from the host's buffers when a request is sent.
     chats.set_store(boot.buffer_store().clone());
+    // LL.16: lattice's read tools, over an editor view of its own (open
+    // buffers by path, so a read sees unsaved text). Offered only to requests
+    // whose `llm.tools` selects them.
+    {
+        let cache =
+            lattice_agent::state_cache::spawn_read_cache(boot.event_bus(), boot.runtime_handle());
+        let access = lattice_agent::EditorAccess::new(
+            cache,
+            Some(boot.buffer_store().clone()),
+            Vec::new(),
+            None,
+        );
+        // Weak: the broker lives inside `chats`, so a strong handle here
+        // would be a cycle.
+        let (root_of, exclude_of) = (Arc::downgrade(&chats), Arc::downgrade(&chats));
+        chats.tools().add_source(
+            super::tools::broker::LATTICE,
+            Arc::new(super::tools::lattice::LatticeTools::new(
+                access,
+                Arc::new(move || {
+                    root_of
+                        .upgrade()
+                        .map(|c| c.tools_root())
+                        .unwrap_or_default()
+                }),
+                // Gone means the editor is closing; refuse rather than read.
+                Arc::new(move |p| {
+                    exclude_of
+                        .upgrade()
+                        .map_or(Some("(closing)".to_string()), |c| c.excluded(p))
+                }),
+            )),
+        );
+    }
     let chat_mode = LlmChatMode::new(chats.clone());
     let anchors = chat_mode.anchors();
     boot.modes_mut()

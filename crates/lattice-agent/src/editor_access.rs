@@ -134,6 +134,75 @@ impl EditorAccess {
         .unwrap_or(false)
     }
 
+    /// LL.16: the text of the open buffer showing `path`, unsaved edits and
+    /// all; `None` when no buffer shows it (or there is no buffer store).
+    ///
+    /// A path matches when it is the same as the buffer's, or both resolve
+    /// to the same file, so `src/../src/a.rs` finds `src/a.rs`.
+    pub fn buffer_text(&self, path: &Path) -> Option<String> {
+        let store = self.buffer_store.as_ref()?;
+        let wanted = std::fs::canonicalize(path).ok();
+        let id = {
+            let cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+            cache
+                .open_buffers
+                .iter()
+                .find(|(_, b)| {
+                    b.path.as_deref().is_some_and(|p| {
+                        p == path
+                            || wanted
+                                .as_ref()
+                                .is_some_and(|w| std::fs::canonicalize(p).ok().as_ref() == Some(w))
+                    })
+                })
+                .map(|(id, _)| *id)
+        }?;
+        let doc = store.handle_for(core_id(id))?;
+        let text = doc.snapshot().buffer.as_string();
+        Some(text)
+    }
+
+    /// LL.16: every open buffer that shows a file, as `(resolved path, text)`,
+    /// unsaved edits included. A search overlays these on what it reads from
+    /// disk, so it finds what the user sees.
+    pub fn open_texts(&self) -> Vec<(PathBuf, String)> {
+        let Some(store) = self.buffer_store.as_ref() else {
+            return Vec::new();
+        };
+        let open: Vec<(DocumentId, PathBuf)> = {
+            let cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+            cache
+                .open_buffers
+                .iter()
+                .filter_map(|(id, b)| b.path.clone().map(|p| (*id, p)))
+                .collect()
+        };
+        open.into_iter()
+            .filter_map(|(id, path)| {
+                let doc = store.handle_for(core_id(id))?;
+                let text = doc.snapshot().buffer.as_string();
+                Some((std::fs::canonicalize(&path).unwrap_or(path), text))
+            })
+            .collect()
+    }
+
+    /// LL.16: `path`'s text as the user sees it: the open buffer's, unsaved
+    /// edits included, or else the file on disk, read off the async runtime.
+    /// A file that is not UTF-8 is an error rather than lossy text, since a
+    /// model reasoning over replacement characters would edit the wrong bytes.
+    pub async fn read_text_file(&self, path: &Path) -> Result<String> {
+        if let Some(text) = self.buffer_text(path) {
+            return Ok(text);
+        }
+        let owned = path.to_path_buf();
+        let read = tokio::task::spawn_blocking(move || std::fs::read(&owned))
+            .await
+            .map_err(|e| AgentError::Io(e.to_string()))?
+            .map_err(|e| AgentError::Io(format!("{}: {e}", path.display())))?;
+        String::from_utf8(read)
+            .map_err(|_| AgentError::Io(format!("{}: not UTF-8 text", path.display())))
+    }
+
     /// Open `path`, optionally forcing the cursor to `column` (a UTF-16
     /// position; `None` opens without moving the cursor — re-opening an
     /// already-open file keeps its position).

@@ -558,7 +558,7 @@ an unparsable value is refused and the chords stay).
 
 ## Tools
 
-### LL.16 — ToolBroker, loop and read tools 📝
+### LL.16 — ToolBroker, loop and read tools ✅
 
 **Files:** `src/llm/tools/{mod,broker,lattice}.rs`, `src/llm/loop.rs`, `crates/lattice-agent/src/editor_access.rs`
 (reads against unsaved text), `docs/dev/architecture/agent-integration.md` (fix the stale §2).
@@ -576,6 +576,22 @@ returns; `cancelling_between_call_and_result_keeps_history_valid.rs`, where the 
 accepted by a strict mock (**review focus 3**); `malformed_tool_arguments_return_a_tool_error.rs`
 (**review focus 5**); an unknown tool name; a turn limit stops a runaway loop with a message; tool results
 never widen permissions.
+
+**Landed.** The loop is `src/llm/tool_loop.rs` (`loop` is a keyword), plugged into
+`RequestRegistry::start_loop` through a `Rounds` trait: one request id across exchanges, moving
+through `AwaitingTool`. Calls and exact arguments live in the session (`Conversation::tool_calls`),
+and `history::messages` projects them, answering every sent call (a stopped one with an error), so
+the continuing request and a later prompt's request are one projection. The broker offers a fixed
+set per request: wire names `server__tool`, selectors `server.*` / `server.name` / kind groups for
+lattice's own tools (`llm.tools` now accepts `*`). Read tools: `read_file`, `list_directory`,
+`search` (new `regex` and `ignore` deps on the `llm` feature), confined to the project root and
+outside `llm.exclude`. `EditorAccess` gained `buffer_text`, `open_texts` and `read_text_file`, and
+`agent-integration.md` §2 now matches the source. New global option `llm.tool_rounds` (25). The
+Anthropic adapter joins a prompt to a preceding tool-result message so roles alternate. Tests:
+`tests/llm_tool_loop.rs` (4), the two named review-focus files (1 + 2), units in `broker.rs` (3),
+`lattice.rs` (2), `history.rs` (2), `anthropic.rs` (1), and `lattice-ui-tui/src/app/llm_tools.rs`
+(2: unsaved text is what a read returns through the real install, a read outside the project is
+refused). Bench: `llm_tool_history`.
 
 ### LL.17 — Edit tools through review 📝
 

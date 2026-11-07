@@ -310,6 +310,24 @@ pub trait Document: Send + Sync + 'static + std::fmt::Debug {
         Pending::ready(Ok(()))
     }
 
+    /// Append `text` at the end of tracked range `id` and grow the range over
+    /// it, resolving the range in the actor's mailbox turn: streamed inline
+    /// output's write (LL.12, design `llm-layer.md` §9). The append amends its
+    /// own undo entry while that entry is the top of the stack. See
+    /// `lattice_core::Document::append_to_tracked`.
+    ///
+    /// Default: [`AppendOutcome::Unknown`](lattice_core::tracked::AppendOutcome),
+    /// writing nothing. A kind without text of its own (the multibuffer) has
+    /// nothing to anchor to, so a stream aimed at it refuses.
+    fn append_to_tracked(
+        &self,
+        id: lattice_core::tracked::TrackedRangeId,
+        text: String,
+    ) -> Pending<lattice_core::tracked::AppendOutcome> {
+        let _ = (id, text);
+        Pending::ready(Ok(lattice_core::tracked::AppendOutcome::Unknown))
+    }
+
     // ---- Grammar dispatch ----
 
     /// Dispatch a [`CommandInvocation`] through the impl's

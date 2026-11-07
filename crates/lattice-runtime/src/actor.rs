@@ -114,6 +114,14 @@ pub(crate) enum ActorMsg {
         changes: Vec<lattice_core::tracked::TrackedRangeChange>,
         reply: oneshot::Sender<Result<(), RuntimeError>>,
     },
+    /// Append text at the end of a tracked range and grow it, resolving
+    /// the range in this mailbox turn so no edit can land between reading
+    /// it and writing at it (LL.12, streamed inline output).
+    AppendToTracked {
+        id: lattice_core::tracked::TrackedRangeId,
+        text: String,
+        reply: oneshot::Sender<Result<lattice_core::tracked::AppendOutcome, RuntimeError>>,
+    },
     /// Run a [`lattice_grammar::execute`] dispatch against the
     /// document. The actor holds the only `&mut Document` so all
     /// invocation-driven mutations route here. Returns the
@@ -249,6 +257,16 @@ impl DocumentActor {
             // stack changes).
             ActorMsg::BeginUndoGroup => self.document.begin_undo_group(),
             ActorMsg::EndUndoGroup => self.document.end_undo_group(),
+            ActorMsg::AppendToTracked { id, text, reply } => {
+                let result = self
+                    .document
+                    .append_to_tracked(id, &text)
+                    .map_err(RuntimeError::Core);
+                if matches!(result, Ok(lattice_core::tracked::AppendOutcome::Appended)) {
+                    self.publish();
+                }
+                let _ = reply.send(result);
+            }
             ActorMsg::UpdateTrackedRanges { changes, reply } => {
                 self.document.update_tracked_ranges(|tracked| {
                     for change in changes {

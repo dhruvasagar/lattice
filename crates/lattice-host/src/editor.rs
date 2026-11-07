@@ -993,6 +993,13 @@ pub struct Editor {
     /// `text_version` exceeds this, the host did not issue the edit
     /// and should adopt the document's primary selection head.
     pub last_seen_text_version: HashMap<BufferId, u64>,
+    /// LL.12: each inactive pane's caret, anchored in its buffer as an empty
+    /// `NeverGrows` tracked range when the pane lost focus, so edits made
+    /// while it was away (a stream appending above it, another split on the
+    /// same buffer) move it as they would the active caret. Read back and
+    /// dropped when the pane is focused again (`Editor::load_active_pane`).
+    pub pane_caret_anchors:
+        HashMap<lattice_core::ui::pane::PaneId, (BufferId, lattice_core::tracked::TrackedRangeId)>,
     /// LA.2: the `LanguagesRegistered` drain — a plugin whose load changed the
     /// mode/language catalog lands here, and `run_tick_pending` re-resolves the
     /// majors and languages of buffers that were opened against the old one.

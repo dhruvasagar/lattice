@@ -246,3 +246,34 @@ Regression, in `lattice-host`:
 
 - a keystroke edit does not double-move the cursor
 - `apply_targeted_edit` still never moves the cursor
+
+## 9. Anchored appends and inactive panes (LL.12)
+
+Two gaps in §4.2 closed when streamed inline output needed them (design
+`llm-layer.md` §9).
+
+**Adoption beyond editable tails.** The adopt gate was "an editable tail, and the
+text moved underneath me", because a bulk owner rewrite of a read-only buffer (the
+dashboard populating) moved a deliberately placed caret to EOF. An anchored append
+(`Document::append_to_tracked`) is not that: it inserts at one point and moves the
+caret exactly as typing there would, in any buffer, the user's own file included.
+The document records `append_version`, the text version of its latest append, in the
+snapshot; the host adopts when that is newer than its own last write. Keyed to
+appends rather than to any change, the dashboard case stays unadopted; keyed to the
+host's last write, a caret the host placed after the append is not moved twice.
+
+**Inactive panes, through the anchor §4.3 deferred.** §4.2 promised adoption into
+the owning `PaneLeaf::cursor`; it was never built, and the document's single
+selection set cannot carry it (two splits on one buffer have two carets). Tracked
+ranges are the anchor primitive §4.3 named. When a pane loses focus its caret is
+anchored in its buffer as an empty `NeverGrows` range, which every edit moves with
+the same at-or-after shift as §4.1. Focusing the pane reads the caret back, drops
+the anchor, and marks the buffer seen, so the adopt that follows does not hand it
+whichever pane wrote through last. This moves a stored caret for every edit made
+while the pane was away, not only appends, which is what vim does for other windows.
+
+**Known gap, for LL.13.** The write-through (§4.2) sets the document's selections
+outright. An append landing between the host computing its caret and that write
+lands is then overwritten: the caret is off by the appended length until the next
+adopt. It was latent for the conversation prompt; a sink writing once per frame
+makes it reachable. LL.13, which adds the sink, owns the fix and its test.

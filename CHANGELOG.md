@@ -36,6 +36,10 @@
   `.env`, `*.pem`, `*.key` and SSH keys.
 
 ### Fixed
+- **A split keeps its caret on its text.** Editing a buffer in one split
+  left the caret of another split on the same buffer at its old position,
+  so it pointed at different text when you went back. The caret of a split
+  you are not in now moves with edits above it, as in vim.
 - **Semantic colours no longer land on the wrong characters.** A request to
   the language server made right after a keystroke reached it before the
   edit did, so the server answered for the text as it was. Semantic tokens

@@ -137,6 +137,21 @@ impl TrackedRange {
     }
 }
 
+/// What [`Document::append_to_tracked`](crate::Document::append_to_tracked)
+/// did: the anchored-append primitive behind streamed inline output (LL.12).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AppendOutcome {
+    /// The text went in at the range's end and the range grew over it.
+    Appended,
+    /// The range's text was replaced by an edit that covered more than it
+    /// (the user deleted the insertion point): nothing was written, and the
+    /// stream should stop.
+    Collapsed,
+    /// No such range, or a document kind without text of its own: nothing
+    /// was written.
+    Unknown,
+}
+
 /// One change to a document's tracked ranges, as a caller outside the
 /// document asks for it (the actor applies a list of these in order).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -264,6 +279,17 @@ impl TrackedRanges {
     pub fn set_stickiness(&mut self, id: TrackedRangeId, stickiness: Stickiness) {
         if let Some(r) = self.ranges.get_mut(&id) {
             r.stickiness = stickiness;
+        }
+    }
+
+    /// Set `id`'s span outright, leaving its stickiness, collapse flag and
+    /// link alone. For the document's own appends, which grow a range a
+    /// transform would not (a `NeverGrows` range refuses text at its edge,
+    /// which is exactly why user typing stays outside it).
+    pub(crate) fn set_span(&mut self, id: TrackedRangeId, start: usize, end: usize) {
+        if let Some(r) = self.ranges.get_mut(&id) {
+            r.start = start;
+            r.end = end;
         }
     }
 

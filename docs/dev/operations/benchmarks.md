@@ -71,6 +71,29 @@ target rather than just a slower number.
 
 ---
 
+## LL.12 — anchored append, and a keystroke during a stream (2026-11-07)
+
+`document_edit_p99_us::append_to_tracked` (`lattice-core/benches/document_hotpath.rs`)
+appends one chunk at a tracked anchor mid-document, on the amend path a stream takes after
+its first write. `runtime::apply_edit_round_trip_during_appends`
+(`lattice-runtime/benches/actor.rs`) times the keystroke round trip while another thread
+appends into the same document once a millisecond, several times the sink's
+one-write-per-frame pacing.
+
+| Bench | 10 | 1k | 100k / 50k |
+|---|---|---|---|
+| `append_to_tracked` | 2.68 µs | 1.37 µs | 66 µs |
+| `insert_at_middle` (reference, §baseline) | 2.2 µs | 1.5 µs | 76 µs |
+| `apply_edit_round_trip` | 73.2 µs | 72.2 µs | 73.5 µs |
+| `apply_edit_round_trip_during_appends` | — | 78.9 µs | 71.2 µs |
+
+An append costs what a typed character does: the anchor is found by id, and the 100k-line
+term is the same one every edit pays. A stream at more than a write per millisecond moves the
+keystroke round trip by less than run-to-run noise (the 1k mean's interval is 71-94 µs,
+the median sits on the baseline), so streamed output does not tax typing in the same buffer.
+
+---
+
 ## LL.4 — LLM stream decode throughput (2026-11-01)
 
 `crates/lattice-ai/benches/llm_decode.rs`. The request task decodes every

@@ -19,7 +19,7 @@ use lattice_protocol::selection::{Selection, SelectionSet};
 
 use crate::buffer::{AppliedEdit, Buffer, transform_position};
 use crate::error::{CoreError, CoreResult};
-use crate::tracked::TrackedRanges;
+use crate::tracked::{AppendOutcome, TrackedRangeId, TrackedRanges};
 use crate::undo::{UndoEntry, UndoStack};
 
 /// An editable document: a [`Buffer`] plus the bookkeeping every edit needs
@@ -130,6 +130,17 @@ pub struct Document {
     /// [`Self::begin_undo_group`] / [`Self::end_undo_group`].
     coalescing: bool,
     group_has_entry: bool,
+    /// The stream whose undo entry is the top of the stack, while it is:
+    /// its next [`Self::append_to_tracked`] amends that entry rather than
+    /// pushing. Any other edit, an undo or a redo seals it (sets `None`), so
+    /// one `u` removes a whole response when nothing interleaved and the
+    /// latest segment otherwise. A buried entry is never amended: that
+    /// would break linear undo (design `llm-layer.md` §9).
+    stream_top: Option<TrackedRangeId>,
+    /// `text_version` after the latest [`Self::append_to_tracked`]. The host
+    /// adopts the caret an append moved when this is newer than its own
+    /// last write, in any buffer, not only one with an editable tail.
+    append_version: u64,
     // M.4 follow-up: `modes: ActiveModes` removed. The canonical
     // active-modes map is `App.active_modes: HashMap<BufferId,
     // ActiveModes>` (M.2.1) -- per-buffer, not per-document, and
@@ -234,6 +245,8 @@ impl DocumentBuilder {
             // No undo group open at construction; the first edit pushes.
             coalescing: false,
             group_has_entry: false,
+            stream_top: None,
+            append_version: 0,
         }
     }
 }
@@ -491,6 +504,83 @@ impl Document {
         Ok(applied_set)
     }
 
+    /// Append `text` at the end of tracked range `id` and grow the range over
+    /// it: streamed inline output (design `llm-layer.md` §9, LL.12).
+    ///
+    /// The anchor is resolved here, in the same turn as the write, so no
+    /// user edit can land between reading the range and writing at it. The
+    /// stream's range is normally `NeverGrows`: text the user types at its
+    /// edges stays outside it, so the response stays one contiguous span and
+    /// the user's text stays after it, pushed down as it grows. The caret
+    /// goes with it: a caret at or after the insertion point shifts, as for
+    /// any edit.
+    ///
+    /// Undo: the append amends its own entry while that entry is the top of
+    /// the stack, and starts a new one otherwise. It never uses the
+    /// coalescing group an Insert session holds, so the user's `<Esc>` does
+    /// not close it and the stream does not absorb the user's typing; an
+    /// append during an Insert session makes the session's next keystroke
+    /// start a fresh entry above it. A stream write clears redo, as any
+    /// edit does.
+    ///
+    /// Linked ranges are not mirrored: a stream writes text, the user does
+    /// not type it.
+    ///
+    /// # Errors
+    ///
+    /// Those of [`Buffer::apply_edit`]; nothing is written on error.
+    pub fn append_to_tracked(
+        &mut self,
+        id: TrackedRangeId,
+        text: &str,
+    ) -> CoreResult<AppendOutcome> {
+        let Some(range) = self.tracked.get(id) else {
+            return Ok(AppendOutcome::Unknown);
+        };
+        if range.collapsed {
+            return Ok(AppendOutcome::Collapsed);
+        }
+        if text.is_empty() {
+            return Ok(AppendOutcome::Appended);
+        }
+        self.linked_edits.clear();
+        let at = self.buffer.byte_to_position(range.end)?;
+        let applied = self.buffer.apply_edit(&Edit::insert(at, text))?;
+        self.transform_for_edit(&applied);
+        Arc::make_mut(&mut self.tracked).set_span(id, range.start, range.end + text.len());
+        let inverse = vec![inverse_edit(&applied)];
+        if self.stream_top == Some(id) {
+            // Still the top: amend. Redo is already clear (the push that
+            // made this the top cleared it, and an undo would have sealed
+            // it). Depth is unchanged, so a save made since the last
+            // append no longer describes the text: the document is dirty.
+            if self.clean_position == Some(self.undo.undo_depth()) {
+                self.clean_position = None;
+            }
+            self.undo.amend_top(inverse);
+        } else {
+            let pre_push_depth = self.undo.undo_depth();
+            self.undo.push(UndoEntry {
+                inverse_edits: inverse,
+                label: String::new(),
+            });
+            self.invalidate_clean_if_lost(pre_push_depth);
+            self.stream_top = Some(id);
+            // An open Insert group's entry is now buried; its next edit
+            // must push, not amend the stream's entry.
+            self.group_has_entry = false;
+        }
+        self.version += 1;
+        self.text_version += 1;
+        self.append_version = self.text_version;
+        Ok(AppendOutcome::Appended)
+    }
+
+    /// `text_version` after the latest [`Self::append_to_tracked`]; 0 if none.
+    pub fn append_version(&self) -> u64 {
+        self.append_version
+    }
+
     /// Open an undo-coalescing group: every edit applied until
     /// [`Self::end_undo_group`] folds into a single undo entry rather
     /// than pushing its own. This is how a vim insert session
@@ -602,6 +692,8 @@ impl Document {
     /// (reverse-application), matching [`UndoStack::push`] /
     /// [`UndoStack::amend_top`].
     fn record_inverses(&mut self, inverses: Vec<Edit>) {
+        // Any other edit seals the stream's entry.
+        self.stream_top = None;
         if self.coalescing && self.group_has_entry {
             // Fold into the group's existing entry. Depth is unchanged
             // and redo stays cleared (the group's first push cleared it),
@@ -629,6 +721,7 @@ impl Document {
     /// [`CoreError::NothingToUndo`] if the undo stack is empty.
     pub fn undo(&mut self) -> CoreResult<Vec<AppliedEdit>> {
         self.linked_edits.clear();
+        self.stream_top = None;
         let entry = self.undo.pop_for_undo().ok_or(CoreError::NothingToUndo)?;
         let mut applied = Vec::with_capacity(entry.inverse_edits.len());
         let mut redo_inverses = Vec::with_capacity(entry.inverse_edits.len());
@@ -657,6 +750,7 @@ impl Document {
     /// last new edit.
     pub fn redo(&mut self) -> CoreResult<Vec<AppliedEdit>> {
         self.linked_edits.clear();
+        self.stream_top = None;
         let entry = self.undo.pop_for_redo().ok_or(CoreError::NothingToRedo)?;
         let mut applied = Vec::with_capacity(entry.inverse_edits.len());
         let mut undo_inverses = Vec::with_capacity(entry.inverse_edits.len());

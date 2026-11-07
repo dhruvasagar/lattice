@@ -398,7 +398,17 @@ diff stale and accepting needs confirmation; source closed moves the result to a
 blockwise and multi-file multibuffer refused up front; read-only refused; `.` and macro repeats queue
 one diff at a time; a model reply wrapped in a code fence is unwrapped.
 
-### LL.12 — Anchored append 📝
+### LL.12 — Anchored append ✅
+
+**Landed:** `Document::append_to_tracked` and `AppendOutcome` in core; the actor's
+`AppendToTracked` turn, `RopeDocumentHandle::append_to_tracked` and the runtime `Document`
+default (`Unknown`); `DocumentSnapshot::append_version`; the OWC adopt gate extended to appends
+in any buffer, and inactive panes' carets anchored as tracked ranges while away
+(`owner-write-caret.md` §9). Tests: `lattice-core/tests/anchored_append.rs` (12, a proptest
+among them) and `lattice-host/tests/anchored_append_caret.rs` (4). Benches:
+`document_edit_p99_us::append_to_tracked`, `runtime::apply_edit_round_trip_during_appends`.
+A save made mid-stream is invalidated by the next amend (`dirty()` would otherwise lie).
+**Handed to LL.13:** the write-through race in `owner-write-caret.md` §9.
 
 **Why:** inline output's substrate. The main core change.
 

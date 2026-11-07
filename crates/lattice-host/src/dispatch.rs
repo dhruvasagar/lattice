@@ -23816,7 +23816,7 @@ impl Editor {
             .copied()
             .unwrap_or(0);
         let has_editable_tail = self.active_editable_tail().is_some();
-        if should_adopt_owner_write(has_editable_tail, doc_tv, last_seen) {
+        if should_adopt_owner_write(has_editable_tail, doc_tv, snap.append_version, last_seen) {
             let head = snap.selections.primary().head;
             self.cursor = head;
             self.last_seen_text_version.insert(buf_id, doc_tv);
@@ -38612,6 +38612,7 @@ impl Editor {
             return;
         }
         self.snapshot_active_pane();
+        self.anchor_leaving_pane_caret();
         if !self.pane_tree.set_active(idx) {
             return;
         }
@@ -42883,9 +42884,68 @@ impl Editor {
     /// sync is a guarded no-op when the pane's buffer already
     /// matches `self.document_buffer_id` (the common case), so this
     /// is free on the hot paths that already agree.
+    /// LL.12: anchor the active pane's caret in its buffer before focus
+    /// leaves it, so edits made while it is away move it. See
+    /// [`Editor::pane_caret_anchors`].
+    fn anchor_leaving_pane_caret(&mut self) {
+        let pane = *self.pane_tree.active();
+        let Some(handle) = self.buffers.document_handle(pane.buffer_id) else {
+            return;
+        };
+        let Ok(byte) = handle.snapshot().buffer.position_to_byte(pane.cursor) else {
+            return;
+        };
+        let id = lattice_core::tracked::TrackedRangeId::next();
+        // Waited on: the anchor must be in place before an edit can be sent
+        // that it should follow. One actor round trip per focus change.
+        let _ = block_on(handle.update_tracked_ranges(vec![
+            lattice_core::tracked::TrackedRangeChange::Track {
+                id,
+                bytes: byte..byte,
+                stickiness: lattice_core::tracked::Stickiness::NeverGrows,
+            },
+        ]));
+        if let Some((old_buffer, old)) = self
+            .pane_caret_anchors
+            .insert(pane.id, (pane.buffer_id, id))
+            && let Some(old_handle) = self.buffers.document_handle(old_buffer)
+        {
+            drop(old_handle.update_tracked_ranges(vec![
+                lattice_core::tracked::TrackedRangeChange::Untrack(old),
+            ]));
+        }
+    }
+
+    /// LL.12: the caret a pane's anchor carried while it was away, if the
+    /// pane still shows the buffer it was anchored in. Drops the anchor, and
+    /// records the buffer as seen so the owner-write adoption that follows
+    /// does not replace this caret with whichever pane wrote through last.
+    fn take_anchored_caret(
+        &mut self,
+        pane: &lattice_core::ui::pane::PaneState,
+    ) -> Option<lattice_protocol::position::Position> {
+        let (buffer, id) = self.pane_caret_anchors.remove(&pane.id)?;
+        let handle = self.buffers.document_handle(buffer)?;
+        // Read before untracking: the untrack is not waited on.
+        let snap = handle.snapshot();
+        drop(
+            handle.update_tracked_ranges(vec![lattice_core::tracked::TrackedRangeChange::Untrack(
+                id,
+            )]),
+        );
+        if buffer != pane.buffer_id {
+            return None;
+        }
+        let range = snap.tracked_ranges.get(id)?;
+        let at = snap.buffer.byte_to_position(range.start).ok()?;
+        self.last_seen_text_version
+            .insert(buffer, snap.text_version);
+        Some(at)
+    }
+
     pub fn load_active_pane(&mut self) {
         let pane = *self.pane_tree.active();
-        self.cursor = pane.cursor;
+        self.cursor = self.take_anchored_caret(&pane).unwrap_or(pane.cursor);
         self.scroll = pane.scroll;
         self.leftcol = pane.leftcol;
         if matches!(pane.buffer, BufferKind::Help)
@@ -47639,12 +47699,23 @@ fn cells_edit_delta_from_applied(
 /// caret sitting at the (0,0) insertion point to EOF — but the host or user
 /// places their caret deliberately there, so adopting the transformed EOF
 /// dragged the viewport to the bottom (the dashboard-scrolls-to-bottom bug).
+///
+/// LL.12 adds the one other owner write a caret must follow: an anchored
+/// append (`append_to_tracked`, streamed inline output) into ANY buffer,
+/// including the user's own file. It moves the caret exactly as typing at
+/// the insertion point would, so adopting it is what keeps the user's next
+/// key where their caret visibly is. Gated on `append_version`, the text
+/// version of the latest append, rather than on any text change, so a bulk
+/// owner rewrite (the dashboard case) is still not adopted; and on its being
+/// newer than the host's own last write, so a caret the host placed after
+/// the append is not moved twice.
 fn should_adopt_owner_write(
     has_editable_tail: bool,
     doc_text_version: u64,
+    append_version: u64,
     last_seen: u64,
 ) -> bool {
-    has_editable_tail && doc_text_version > last_seen
+    (has_editable_tail && doc_text_version > last_seen) || append_version > last_seen
 }
 
 /// MG.17a: project a transient's toggled state onto an `args_schema`.
@@ -49046,9 +49117,9 @@ mod tests {
     fn owc_adopts_only_editable_tail_buffer_on_owner_write() {
         // Editable-tail buffer (the ACP conversation prompt) whose text
         // advanced past the host's last-issued version → follow the stream.
-        assert!(should_adopt_owner_write(true, 5, 4));
+        assert!(should_adopt_owner_write(true, 5, 0, 4));
         // Same buffer, no new owner write → nothing to adopt.
-        assert!(!should_adopt_owner_write(true, 4, 4));
+        assert!(!should_adopt_owner_write(true, 4, 0, 4));
     }
 
     #[test]
@@ -49056,8 +49127,20 @@ mod tests {
         // Read-only synthetic buffers (dashboard, help, messages, log): even
         // when an owner write advanced the text and moved the document
         // selection to EOF, the caret the host placed must stand.
-        assert!(!should_adopt_owner_write(false, 5, 4));
-        assert!(!should_adopt_owner_write(false, 99, 0));
+        assert!(!should_adopt_owner_write(false, 5, 0, 4));
+        assert!(!should_adopt_owner_write(false, 99, 0, 0));
+    }
+
+    #[test]
+    fn owc_adopts_an_anchored_append_in_any_buffer() {
+        // LL.12: a stream appended after the host's last write → follow it,
+        // tail or no tail.
+        assert!(should_adopt_owner_write(false, 7, 7, 4));
+        // The host wrote after the append (it placed the caret itself) →
+        // the append is already accounted for; do not move it twice.
+        assert!(!should_adopt_owner_write(false, 9, 7, 8));
+        // A bulk owner write after an older append → still not adopted.
+        assert!(!should_adopt_owner_write(false, 12, 7, 8));
     }
 
     // ── L7: Effect::Lsp classification ──────────────────────────

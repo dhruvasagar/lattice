@@ -245,6 +245,16 @@ impl RopeDocumentHandle {
         self.send(|reply| ActorMsg::UpdateTrackedRanges { changes, reply })
     }
 
+    /// Append `text` at the end of tracked range `id` and grow it. See
+    /// [`crate::document::Document::append_to_tracked`].
+    pub fn append_to_tracked(
+        &self,
+        id: lattice_core::tracked::TrackedRangeId,
+        text: String,
+    ) -> Pending<lattice_core::tracked::AppendOutcome> {
+        self.send(|reply| ActorMsg::AppendToTracked { id, text, reply })
+    }
+
     /// Open an undo-coalescing group on the actor so a run of edits (a
     /// vim insert session) collapses into a single undo unit until
     /// [`Self::end_undo_group`]. Fire-and-forget -- ordering against the
@@ -445,6 +455,14 @@ impl crate::document::Document for RopeDocumentHandle {
         changes: Vec<lattice_core::tracked::TrackedRangeChange>,
     ) -> Pending<()> {
         RopeDocumentHandle::update_tracked_ranges(self, changes)
+    }
+
+    fn append_to_tracked(
+        &self,
+        id: lattice_core::tracked::TrackedRangeId,
+        text: String,
+    ) -> Pending<lattice_core::tracked::AppendOutcome> {
+        RopeDocumentHandle::append_to_tracked(self, id, text)
     }
 
     fn dispatch_with_cancel(

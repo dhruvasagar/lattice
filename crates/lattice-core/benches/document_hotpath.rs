@@ -245,8 +245,38 @@ fn insert_into_linked_range(c: &mut Criterion) {
     g.finish();
 }
 
+/// LL.12: one streamed chunk appended at a tracked anchor mid-document, on
+/// the amend path a stream takes after its first write (the entry is still
+/// the top of the undo stack). Compare with `insert_at_middle` at the same
+/// size: the anchor is resolved by id, not by scanning, so an append should
+/// cost what a typed character does and nothing more.
+fn append_to_tracked(c: &mut Criterion) {
+    use lattice_core::tracked::{Stickiness, TrackedRangeId};
+    let mut g = c.benchmark_group("document_edit_p99_us::append_to_tracked");
+    for size in [10usize, 1_000, 100_000] {
+        g.throughput(Throughput::Elements(1));
+        g.bench_with_input(BenchmarkId::from_parameter(size), &size, |bencher, &sz| {
+            bencher.iter_with_setup(
+                || {
+                    let mut d = build_doc(sz);
+                    let at = (d.buffer().byte_len() / 2) as usize;
+                    let id = TrackedRangeId::next();
+                    d.update_tracked_ranges(|t| t.insert(id, at..at, Stickiness::NeverGrows));
+                    d.append_to_tracked(id, "warm ").unwrap();
+                    (d, id)
+                },
+                |(mut d, id)| {
+                    d.append_to_tracked(id, black_box("token ")).unwrap();
+                },
+            );
+        });
+    }
+    g.finish();
+}
+
 criterion_group!(
     benches,
+    append_to_tracked,
     viewport_walk,
     insert_at_middle,
     delete_at_middle,

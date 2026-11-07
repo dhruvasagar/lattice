@@ -262,4 +262,100 @@ mod tests {
         let msg = message(&a);
         assert!(msg.contains(".env") && msg.contains("llm.exclude"), "{msg}");
     }
+
+    // -----------------------------------------------------------------
+    // LL.15b: `llm.prefix`
+    // -----------------------------------------------------------------
+
+    fn keys(a: &App) -> lattice_ai::llm::modes::llm_mode::LlmKeysHandle {
+        (*a.editor
+            .services
+            .get::<lattice_ai::llm::modes::llm_mode::LlmKeysHandle>()
+            .expect("the llm keys"))
+        .clone()
+    }
+
+    fn ctrl(a: &mut App, c: char) {
+        press(a, KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL));
+    }
+
+    /// The default prefix is bound once `llm-mode` activates.
+    #[test]
+    fn the_chords_start_with_leader_a_by_default() {
+        let a = app_with("alpha\nbeta\n", 10);
+        assert_eq!(keys(&a).bound().as_deref(), Some("<leader>a"));
+    }
+
+    /// `:set llm.prefix=<C-c>.` moves every chord: the operators and the
+    /// commands answer under the new prefix and no longer under the old.
+    /// Held alone, the prefix lists them all, which is what which-key shows.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn setting_the_prefix_moves_every_chord() {
+        let mut a = app_with("alpha\nbeta\n", 10);
+        press_chars(&mut a, ":set llm.prefix=<C-c>.");
+        key(&mut a, KeyCode::Enter);
+        // Rebound off the editor thread, on the option's change event.
+        assert!(
+            settle(&mut a, |a| keys(a).bound().as_deref() == Some("<C-c>.")).await,
+            "{}",
+            message(&a)
+        );
+
+        let prefix = lattice_protocol::parse_chord_sequence("<C-c>.").unwrap();
+        let held = a
+            .editor
+            .keymap
+            .continuations_with_context(
+                lattice_keymap::BindingMode::Normal,
+                &prefix,
+                &[lattice_ai::llm::modes::llm_mode::LlmMode::mode_id()],
+            )
+            .expect("the prefix is a node");
+        let mut next: Vec<String> = held.children.iter().map(|c| c.chord.to_string()).collect();
+        next.sort();
+        for k in ["A", "C", "L", "R", "a", "c", "i", "k", "l", "m", "r"] {
+            assert!(
+                next.iter().any(|n| n == k),
+                "{k} missing under the prefix: {next:?}"
+            );
+        }
+
+        ctrl(&mut a, 'c');
+        press_chars(&mut a, ".aj");
+        assert!(prompt_is_open(&a), "the ask answers under the new prefix");
+        key(&mut a, KeyCode::Esc);
+        key(&mut a, KeyCode::Esc);
+
+        let held = asks(&a).pending_count();
+        press_chars(&mut a, " aaj");
+        assert_eq!(
+            asks(&a).pending_count(),
+            held,
+            "and no longer under the old one"
+        );
+        assert!(a.editor.buffers.by_name("*llm-ask:2*").is_none());
+        key(&mut a, KeyCode::Esc);
+
+        ctrl(&mut a, 'c');
+        press_chars(&mut a, ".R");
+        assert_eq!(
+            active_name(&a),
+            "*llm-requests*",
+            "a command chord moved too"
+        );
+    }
+
+    /// A value that is not keys is refused by `:set`, and the chords stay.
+    #[test]
+    fn a_prefix_that_is_not_keys_is_refused() {
+        let mut a = app_with("alpha\nbeta\n", 10);
+        press_chars(&mut a, ":set llm.prefix=<Nope");
+        key(&mut a, KeyCode::Enter);
+        assert!(
+            message(&a).contains("not a key sequence"),
+            "{}",
+            message(&a)
+        );
+        assert_eq!(keys(&a).bound().as_deref(), Some("<leader>a"));
+    }
 }

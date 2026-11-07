@@ -62,6 +62,24 @@ Provisional default chords, on an `llm-mode` minor active on every document:
 | `<leader>am` | Menu |
 | `<leader>al` | Open a chat |
 
+**The prefix is an option, `llm.prefix`** (default `<leader>a`; `<C-c>.` is the emacs-style
+alternative), and every chord above is that prefix plus one key. One value, global: a prefix
+per buffer would make the same muscle memory do different things in different windows, which
+costs more than the flexibility buys. `llm-mode` owns the chords and binds them into its own
+keymap layer, and **rebinds them on `OptionChanged`**, not once at install: `lattice.toml` is
+read after boot, so a prefix read at install would only ever see the default. The layer is the
+mode's alone, so a rebind drops the layer and binds afresh under the new prefix, and nothing
+under the old one can survive.
+
+The prefix alone opens no menu of its own. Held, it shows which-key's popup, which reads the
+same layer the dispatcher walks, so it can never list a chord that will not fire. A real
+transient on the bare prefix was weighed and deferred: it needs the prefix node to be both
+bound and a prefix, resolved by a vim-style `timeoutlen`, and an effect that starts an
+operator from a menu row. Both are generic host mechanisms (which-key.md §7 names the
+escalation as its intended follow-up), not llm features. Until then, a buffer that binds the
+prefix's first key by itself (`<C-c>` in `*compilation*`) shadows the llm chords there, by the
+trie's terminal-wins rule.
+
 ## 3. The dedicated buffer
 
 **A dedicated buffer is a transcript with a prompt.** It is a major mode implying

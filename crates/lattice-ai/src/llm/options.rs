@@ -226,4 +226,30 @@ lattice_config::options! {
     /// is configured. Global only.
     #[name("llm.default_provider")]
     pub LlmDefaultProvider: String = String::new();
+
+    /// The keys every llm chord starts with: `<leader>a` gives `<leader>aa`
+    /// (ask), `<leader>ar` (rewrite) and the rest; `<C-c>.` gives `<C-c>.a`.
+    /// Pressed alone and held, which-key lists what follows. Changing it
+    /// rebinds at once. Global only.
+    #[name("llm.prefix")]
+    #[validate(v_prefix)]
+    pub LlmPrefix: String = DEFAULT_PREFIX.to_string();
+}
+
+/// `llm.prefix` when nothing sets it.
+pub const DEFAULT_PREFIX: &str = "<leader>a";
+
+/// A prefix must be keys: it parses as a chord sequence (`<leader>` standing
+/// for whatever the leader is).
+#[allow(clippy::ptr_arg)]
+fn v_prefix(v: &String) -> Result<(), String> {
+    let keys = v
+        .replace("<leader>", "<Space>")
+        .replace("<Leader>", "<Space>");
+    match lattice_protocol::parse_chord_sequence(&keys) {
+        Ok(chords) if !chords.is_empty() => Ok(()),
+        _ => Err(format!(
+            "llm.prefix: `{v}` is not a key sequence (try `<leader>a` or `<C-c>.`)"
+        )),
+    }
 }

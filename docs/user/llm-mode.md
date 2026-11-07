@@ -22,7 +22,9 @@ or a text object, and it asks about the text that covers:
 | `<leader>aa` in Visual | The selection |
 | `<leader>aA{motion}` | The same, opening [`:llm-menu`](help:llm) first |
 
-`<leader>` is `<Space>` unless you set `keymap.leader`.
+`<leader>` is `<Space>` unless you set `keymap.leader`. Every llm chord
+starts with `<leader>a`; see [Changing the prefix](#changing-the-prefix)
+to use `<C-c>.` or anything else instead.
 
 A prompt opens for the instruction (`explain this`, `why does it panic?`).
 `<CR>` sends; `<Esc>` sends nothing. The text is captured when you press
@@ -216,6 +218,41 @@ round. `@profile` in the instruction picks a profile for this request;
 only what you typed is read for it, never the text you are asking about.
 A profile that would turn on tools cannot be confirmed from an ask: open a
 chat with `:llm <profile>` instead.
+
+## Changing the prefix
+
+Every llm chord is a prefix plus one key, and the prefix is the option
+`llm.prefix`, `<leader>a` unless you change it:
+
+```toml
+[llm]
+prefix = "<C-c>."
+```
+
+or `:set llm.prefix=<C-c>.` for this session. The chords move at once:
+
+| After the prefix | Does |
+|---|---|
+| `a{motion}` | Ask about the text |
+| `A{motion}` | Ask, opening `:llm-menu` first |
+| `r{motion}` | Rewrite the text |
+| `c{motion}` | Attach the text to the context |
+| `l` | `:llm`, open a chat |
+| `m` | `:llm-menu` |
+| `C` | `:llm-context` |
+| `i` | `:llm-inspect` |
+| `R` | `:llm-requests` |
+| `L` | `:llm-last` |
+| `k` | `:llm-stop` |
+
+Press the prefix and wait, and which-key lists these (`which-key.delay`,
+300 ms by default); the next key still runs its chord, so typing quickly
+never waits. A value that is not keys is refused and the chords stay put.
+
+A buffer that binds the prefix's first key by itself wins over the llm
+chords in that buffer: with `<C-c>.`, that is `*compilation*` and shell
+output, where `<C-c>` stops the command. Use `:llm-ask` there, or a prefix
+that does not start with `<C-c>`.
 
 ## Context: more text with each request
 

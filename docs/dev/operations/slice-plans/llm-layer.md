@@ -544,6 +544,18 @@ and the next request goes without it, excluded refused, closed buffer refuses th
 units in `context.rs` (3) and `modes/context.rs` (1). Not built: a `context on/off` setting (design
 §4 lists it among overridable values); removing items is the way to send without them.
 
+### LL.15b — The prefix is an option ✅
+
+Asked for mid-plan: `<C-c>.` as an alternative to `<leader>a`. `llm.prefix` (one value, global,
+validated as keys), and `LlmKeys` in `modes/llm_mode.rs` binds the four operators and seven command
+chords (`l m C i R L k`) into `llm-mode`'s layer on its first activation, rebinding on
+`OptionChanged` (the TOML is read after boot). The prefix alone shows which-key; a transient on
+the bare prefix was chosen against for now, since it needs vim-style `timeoutlen` resolution and a
+start-operator effect, both generic host work (design §2). Known limit, documented: a buffer
+binding `<C-c>` alone shadows `<C-c>.` chords. Tests: `lattice-ui-tui/src/app/llm_ask.rs` (3:
+default bound, `:set` moves operators and commands and which-key's continuations list all eleven,
+an unparsable value is refused and the chords stay).
+
 ## Tools
 
 ### LL.16 — ToolBroker, loop and read tools 📝

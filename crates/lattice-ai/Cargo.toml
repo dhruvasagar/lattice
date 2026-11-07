@@ -21,6 +21,7 @@ mcp = ["dep:tokio-tungstenite", "dep:dirs", "dep:getrandom", "dep:lattice-lsp", 
 [dependencies]
 lattice-protocol = { path = "../lattice-protocol" }
 lattice-mode = { path = "../lattice-mode" }
+lattice-keymap = { path = "../lattice-keymap" }
 lattice-grammar = { path = "../lattice-grammar" }
 lattice-runtime = { path = "../lattice-runtime" }
 lattice-core = { path = "../lattice-core" }

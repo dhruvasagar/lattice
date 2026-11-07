@@ -171,18 +171,52 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     let store = boot.buffer_store().clone();
     let rewrite_op =
         super::rewrite::register(boot.commands_mut(), chats.clone(), rewrites.clone(), store);
+    super::commands::register(boot.commands_mut(), chats.clone());
+    // LL.15b: every chord sits under `llm.prefix`; `llm-mode` binds them on
+    // its first activation and the listener rebinds them when it changes.
+    let keys: super::modes::llm_mode::LlmKeysHandle = {
+        use super::modes::llm_mode::{LlmKeys, PREFIX_COMMANDS, PrefixBindings, PrefixOperator};
+        let registry = boot.commands_mut();
+        let operator = |key, op: lattice_grammar::registry::OperatorId| PrefixOperator {
+            key,
+            op,
+            post_motion_char: registry.operator_post_motion_char(op.0),
+        };
+        let operators = vec![
+            operator("a", ops.ask),
+            operator("A", ops.ask_menu),
+            operator("r", rewrite_op),
+            operator("c", attach_op),
+        ];
+        let commands = PREFIX_COMMANDS
+            .iter()
+            .filter_map(|(key, name)| registry.id_by_name(name).map(|id| (*key, id)))
+            .collect();
+        let config = boot
+            .service::<Arc<lattice_config::ConfigRegistry>>()
+            .map(|c| (*c).clone());
+        Arc::new(LlmKeys::new(
+            PrefixBindings {
+                operators,
+                commands,
+            },
+            config,
+        ))
+    };
+    boot.register_service::<super::modes::llm_mode::LlmKeysHandle>(keys.clone());
+    super::modes::llm_mode::spawn_prefix_listener(
+        keys.clone(),
+        boot.event_bus(),
+        boot.runtime_handle(),
+    );
     boot.modes_mut()
         .register(super::modes::llm_mode::LlmMode::new(
             chats.clone(),
             asks,
             rewrites,
+            keys,
         ))
         .expect("llm-mode register");
-    let layer = lattice_mode::KeymapLayer::MinorMode(super::modes::llm_mode::LlmMode::mode_id());
-    boot.bind_operator(layer, "<leader>aa", ops.ask);
-    boot.bind_operator(layer, "<leader>aA", ops.ask_menu);
-    boot.bind_operator(layer, "<leader>ar", rewrite_op);
-    boot.bind_operator(layer, "<leader>ac", attach_op);
     // The menu is a transient like magit's; its source is looked up under the
     // handle type, and a harness with no picker layer simply has none.
     if let Some(ids) = super::menu::MenuIds::resolve(boot.commands_mut()) {
@@ -192,7 +226,6 @@ pub fn install(boot: &mut impl SubsystemBoot) {
             .unwrap_or_else(|| Arc::new(lattice_picker::TransientSourceRegistry::new()));
         super::menu::register_source(&sources, chats.clone(), ids, boot.buffer_store().clone());
     }
-    super::commands::register(boot.commands_mut(), chats);
 
     // The drain publishes `ConversationProjected` after each re-projection edit
     // lands; waking the editor on it is what paints a streamed reply without a

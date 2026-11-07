@@ -68,8 +68,15 @@ pub const SESSION_PROVIDER: &str = "llm";
 
 pub type LlmChatsHandle = Arc<LlmChats>;
 
+/// Sees each piece of reply text as it streams, on the request task: inline
+/// output (LL.13b) writes the reply into a buffer from here. Must not block.
+pub type TextTap = Arc<dyn Fn(&str) + Send + Sync>;
+
 #[derive(Default)]
 struct TurnState {
+    /// Set by [`ChatSession::set_text_tap`]; every request this session
+    /// starts hands its reply text to it as well as to the conversation.
+    tap: Option<TextTap>,
     busy: bool,
     request: Option<RequestId>,
     interrupted: bool,
@@ -142,6 +149,13 @@ impl ChatSession {
             .unwrap_or_else(|e| e.into_inner())
             .push(tx);
         rx
+    }
+
+    /// Also hand this session's reply text to `tap` as it streams, for every
+    /// request it starts from now on. The conversation still records it, so
+    /// the full reply can be seen and followed up as a chat.
+    pub fn set_text_tap(&self, tap: TextTap) {
+        self.turn().tap = Some(tap);
     }
 
     /// The text of the latest assistant turn.
@@ -230,6 +244,10 @@ pub struct LlmChats {
     /// [`on_buffer_options`](Self::on_buffer_options). Looked up per call: this
     /// map is replaced entry by entry, so a clone of one entry would go stale.
     sessions: RwLock<HashMap<BufferId, RawSet>>,
+    /// Buffers whose `ReadOnly` option is on, mirrored by
+    /// [`on_buffer_options`](Self::on_buffer_options): inline output is never
+    /// written into one (LL.13b).
+    read_only: RwLock<std::collections::HashSet<BufferId>>,
     /// The fold values each chat buffer was last re-projected under, so a change
     /// at ANY layer (a global `:set` leaves the session values untouched) is seen.
     folds_seen: RwLock<HashMap<BufferId, (FoldDisplay, FoldDisplay)>>,
@@ -271,6 +289,7 @@ impl LlmChats {
             config: RwLock::new(config),
             registry: RwLock::new(None),
             sessions: RwLock::new(HashMap::new()),
+            read_only: RwLock::new(Default::default()),
             folds_seen: RwLock::new(HashMap::new()),
             next_request: RwLock::new(HashMap::new()),
             menu_scope: RwLock::new(HashMap::new()),
@@ -387,6 +406,17 @@ impl LlmChats {
         buffer: BufferId,
         options: &lattice_config::ResolvedOptions,
     ) -> bool {
+        {
+            let read_only = options
+                .get::<lattice_config::ReadOnly>()
+                .is_some_and(|v| *v);
+            let mut set = self.read_only.write().unwrap_or_else(|e| e.into_inner());
+            if read_only {
+                set.insert(buffer);
+            } else {
+                set.remove(&buffer);
+            }
+        }
         let new = session_set(options);
         let changed = {
             let mut map = self.sessions.write().unwrap_or_else(|e| e.into_inner());
@@ -460,6 +490,14 @@ impl LlmChats {
 
     /// Resolve a buffer's settings as a request from it would see them, with the
     /// project layer as last cached. For the menu, introspection and tests.
+    /// Whether `buffer`'s `ReadOnly` option is on, as last resolved.
+    pub fn is_read_only(&self, buffer: BufferId) -> bool {
+        self.read_only
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(&buffer)
+    }
+
     pub fn resolve_for(&self, buffer: BufferId) -> Result<Resolved, SettingsError> {
         let layers = self.layers_for(buffer, self.session_overrides(buffer));
         resolve(&layers, buffer, &RequestOverrides::default(), Trust::User)
@@ -977,7 +1015,8 @@ impl LlmChats {
                 tools: Vec::new(),
                 params,
             };
-            let sink = ChatSink::new(session.store.clone(), session.key.clone(), &provider_cfg);
+            let mut sink = ChatSink::new(session.store.clone(), session.key.clone(), &provider_cfg);
+            sink.tap = session.turn().tap.clone();
             let target = RequestTarget {
                 buffer: chats.buffer_of(&session).unwrap_or(BufferId(0)),
                 label: session.name.clone(),
@@ -1182,6 +1221,8 @@ struct ChatSink {
     key: SessionKey,
     /// USD per million tokens, both or the cost is not shown.
     pricing: Option<(f64, f64)>,
+    /// The session's [`TextTap`], if it has one.
+    tap: Option<TextTap>,
 }
 
 impl ChatSink {
@@ -1193,12 +1234,16 @@ impl ChatSink {
             store,
             key,
             pricing,
+            tap: None,
         }
     }
 }
 
 impl Sink for ChatSink {
     fn event(&mut self, ev: StreamEvent) -> SinkFlow {
+        if let (StreamEvent::Text(t), Some(tap)) = (&ev, &self.tap) {
+            tap(t);
+        }
         let pricing = self.pricing;
         self.store.mutate(&self.key, |c| match ev {
             StreamEvent::Text(t) => c.extend_text(Role::Assistant, &t),

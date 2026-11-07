@@ -221,3 +221,21 @@ async fn an_append_just_after_the_hosts_own_edit_is_still_adopted() {
     key(&mut editor, Action::Insert("Y".to_string()));
     assert_eq!(text(&editor), "ab\nnew\ncXYd\n");
 }
+
+/// LL.13b: a stream's text reaches the screen on the editor's wake, with no
+/// key. The tick that wake runs adopts the caret the append moved, so the
+/// caret never shows on text it was not on.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_wake_after_an_append_moves_the_caret_without_a_key() {
+    let mut editor = boot("ab\ncd\n");
+    editor.set_cursor_clamped(Position::new(1, 1));
+    key(&mut editor, Action::None);
+    let id = anchor(&editor, 3).await;
+    editor
+        .document
+        .append_to_tracked(id, "new\n".to_string())
+        .await
+        .unwrap();
+    let _ = editor.run_tick_pending();
+    assert_eq!(editor.cursor, Position::new(2, 1), "still on `cd`'s `d`");
+}

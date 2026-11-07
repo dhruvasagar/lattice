@@ -296,8 +296,83 @@ fn unmemoised(c: &mut Criterion) {
     group.finish();
 }
 
+/// LL.13b: a typed key, start to publish, while a stream writes at the inline
+/// sink's pacing (one append a frame, `lattice_ai::llm::sink::FRAME`). The
+/// keystroke ratchet's bar, with sustained streaming beside it:
+///
+/// - `idle` — nothing streaming: the reference.
+/// - `same_buffer` — inline output into the document being typed in: the
+///   actor serializes the stream's writes with the key's, the key is rebased
+///   over any it had not seen, and the caret adoption runs on the next key.
+/// - `other_document` — a stream into another document (a chat beside the
+///   file): contention for the CPU and the runtime only.
+///
+/// Each iteration types a character and deletes it, so the document keeps its
+/// size; the number is the pair.
+fn keystroke_while_streaming(c: &mut Criterion) {
+    use lattice_core::tracked::{Stickiness, TrackedRangeChange, TrackedRangeId};
+    use lattice_host::action::Action;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    const FRAME: std::time::Duration = std::time::Duration::from_millis(16);
+    let mut group = c.benchmark_group("dispatch_publish::keystroke_while_streaming");
+    for variant in ["idle", "same_buffer", "other_document"] {
+        let mut editor = editor_with_doc(2_000);
+        editor.publish_render_state();
+        let target: Option<std::sync::Arc<dyn lattice_runtime::Document>> = match variant {
+            "same_buffer" => Some(editor.document.as_arc()),
+            "other_document" => {
+                let registry: lattice_grammar::CommandRegistryHandle = std::sync::Arc::new(
+                    arc_swap::ArcSwap::from_pointee(lattice_grammar::CommandRegistry::new()),
+                );
+                Some(std::sync::Arc::new(lattice_runtime::spawn_document(
+                    BufferId(9_999),
+                    Document::from_text("chat\n"),
+                    registry,
+                )))
+            }
+            _ => None,
+        };
+        let stop = std::sync::Arc::new(AtomicBool::new(false));
+        let streamer = target.map(|doc| {
+            let stop = stop.clone();
+            let id = TrackedRangeId::next();
+            // Above the viewport's cursor line, so the caret moves with it.
+            let at = 10usize;
+            let _ = lattice_runtime::block_on(doc.update_tracked_ranges(vec![
+                TrackedRangeChange::Track {
+                    id,
+                    bytes: at..at,
+                    stickiness: Stickiness::NeverGrows,
+                },
+            ]));
+            std::thread::spawn(move || {
+                while !stop.load(Ordering::Relaxed) {
+                    let _ =
+                        lattice_runtime::block_on(doc.append_to_tracked(id, "tok ".to_string()));
+                    std::thread::sleep(FRAME);
+                }
+            })
+        });
+        let kind = editor.active_buffer;
+        group.bench_function(variant, |b| {
+            b.iter(|| {
+                let _ = editor.dispatch_fused(Action::Insert("x".to_string()), kind, false, false);
+                let _ = editor.dispatch_fused(Action::DeleteCharBackward, kind, false, false);
+                editor.publish_render_state();
+                black_box(editor.render_state.load_full());
+            });
+        });
+        stop.store(true, Ordering::Relaxed);
+        if let Some(t) = streamer {
+            let _ = t.join();
+        }
+    }
+    group.finish();
+}
+
 criterion_group!(
     benches,
+    keystroke_while_streaming,
     keystroke_publish,
     steady_state,
     publish_with_mode_highlights,

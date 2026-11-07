@@ -58,6 +58,14 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     // prompt, menu-row and confirm handlers and the `<leader>a` layer. Before
     // the menu, which resolves the `a` row's action from the registry.
     let asks: super::operators::LlmAsksHandle = Arc::new(super::operators::LlmAsks::default());
+    // LL.13b: `destination=below`. Its writer runs off the editor thread and
+    // wakes the editor after each write through the inbound bus, so streamed
+    // text and the caret it moves show without a keystroke.
+    let inline: super::sink::LlmInlineHandle =
+        Arc::new(super::sink::LlmInline::new(boot.runtime_handle().clone()));
+    inline.set_effects(boot.inbound::<super::sink::InlineEffects, _>(|e| e.0));
+    boot.register_service::<super::sink::LlmInlineHandle>(inline.clone());
+    asks.set_inline(inline);
     boot.register_service::<super::operators::LlmAsksHandle>(asks.clone());
     let store = boot.buffer_store().clone();
     let ops = super::operators::register(

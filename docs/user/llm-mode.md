@@ -61,9 +61,35 @@ chat as the destination:
 The text and the instruction become the next turn of that chat, with its
 history, and it is shown beside you as a new answer would be. The `d` row
 of `<leader>aA`'s menu sets the same thing. A name that is not an open chat
-is refused. The other destinations (`below`, `echo`, `register`,
-`review`) are not built yet: an ask that names one opens a new chat and
-says so.
+is refused. The destinations `echo`, `register` and `review` are not
+built yet: an ask that names one opens a new chat and says so.
+
+### Answers under the text
+
+`destination=below` writes the answer into the buffer itself, on new lines
+under the text you asked about, as it streams:
+
+```
+:'<,'>llm-ask destination=below write the doc comment for this
+```
+
+Keep working while it arrives. Text you type above it moves it down; text
+you type where it is being written stays after it, so the answer is never
+split by your typing. Your caret stays on the text it was on, and the view
+follows the answer only if your caret is at its end.
+
+- `u` stops it and takes back what was written, all at once if you typed
+  nothing in between, or the latest part otherwise.
+- Deleting the lines it is going under stops it; what was written stays.
+- If the answer fails partway, what arrived stays and ends with an
+  `[interrupted]` line; `u` removes both. If it fails before anything
+  arrives, nothing is written and the echo area says why.
+- One answer at a time at one place: a second ask there is refused until
+  the first finishes.
+
+A read-only buffer, or a view of several files, cannot take an answer: it
+opens in a new chat instead, and the echo area says why. The full answer is
+also kept in a hidden chat, so it can be followed up like any other.
 
 ### From the command line
 

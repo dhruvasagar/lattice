@@ -273,6 +273,15 @@ the anchor, and marks the buffer seen, so the adopt that follows does not hand i
 whichever pane wrote through last. This moves a stored caret for every edit made
 while the pane was away, not only appends, which is what vim does for other windows.
 
+**Adoption off a keystroke (LL.13b).** §4.2 adopted at the start of a key, which is
+enough for a write the user is about to type after. A stream is not that: its text
+reaches the screen on the editor's wake, with no key, and a caret left in the old
+coordinates shows on text it was not on until the user presses something.
+`run_tick_pending`, which every wake and the tail of every key run, adopts too, and
+keeps the caret visible when it moved: a caret at the end of an answer takes the view
+with it, which is design `llm-layer.md` §7's "the view follows only if the caret is
+already at the end". After a key the tick finds nothing new.
+
 ## 10. Writes positioned before an append (LL.13a)
 
 A stream writes from another thread, so an append can reach the document between

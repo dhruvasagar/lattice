@@ -24,6 +24,7 @@ pub mod provider;
 pub mod request;
 pub mod rewrite;
 pub mod settings;
+pub mod sink;
 pub mod transport;
 
 pub use request::{

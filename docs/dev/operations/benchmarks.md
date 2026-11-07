@@ -71,6 +71,23 @@ target rather than just a slower number.
 
 ---
 
+## LL.13b — a typed key while an answer streams (2026-11-07)
+
+`dispatch_publish::keystroke_while_streaming` (`lattice-host/benches/dispatch_publish.rs`), beside
+the keystroke ratchet: a character typed and deleted through `dispatch_fused`, then the publish, in
+a 2 000-line document, while another thread appends at the inline sink's pacing (one write a frame).
+
+| Variant | Time per type + delete + publish |
+|---|---|
+| `idle` (nothing streaming) | 508 µs |
+| `same_buffer` (inline output into the document typed in) | 512 µs |
+| `other_document` (a chat beside it) | 509 µs |
+
+The three overlap within their confidence intervals: a stream costs a key nothing measurable, in
+the buffer it writes into or beside it.
+
+---
+
 ## LL.13a — rebasing a key over appends it had not seen (2026-11-07)
 
 `document_edit_p99_us::rebase_over_appends/{k}` (`lattice-core/benches/document_hotpath.rs`):

@@ -1,0 +1,412 @@
+//! LL.13b: `destination=below`, the answer streaming into the source buffer,
+//! end to end through the real keystroke path against a local mock model.
+//!
+//! The server streams its chunks one at a time, each after a release on the
+//! test's gate, so a test can act between two chunks: type above the answer,
+//! type at its end, delete it, undo it, ask again. Results are awaited by
+//! `settle_woken`, which waits for the editor's wake, so a chunk shown without
+//! a keystroke is what each assertion checks.
+
+#[cfg(test)]
+mod tests {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::{Arc, Mutex, mpsc};
+
+    use crate::app::App;
+    use crate::app::test_helpers::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use lattice_ai::llm::chat::LlmChatsHandle;
+    use lattice_ai::llm::config::LlmConfig;
+    use lattice_ai::llm::sink::{INTERRUPTED_MARKER, LlmInlineHandle};
+    use lattice_mode::modes::ReadOnlyMode;
+
+    const TEXT: &str = "alpha beta\ngamma delta\nepsilon zeta\n";
+
+    /// How the mock's stream ends after its last chunk.
+    #[derive(Clone, Copy)]
+    enum End {
+        Done,
+        /// A provider error event: the reply fails partway.
+        Error,
+    }
+
+    fn delta(content: &str) -> String {
+        let d = serde_json::json!({"choices":[{"index":0,"delta":{"content":content}}]});
+        format!("data: {d}\n\n")
+    }
+
+    fn read_request(s: &mut std::net::TcpStream) {
+        let mut buf = vec![0u8; 65536];
+        let mut got = 0;
+        loop {
+            let Ok(n) = s.read(&mut buf[got..]) else {
+                return;
+            };
+            if n == 0 {
+                return;
+            }
+            got += n;
+            let text = String::from_utf8_lossy(&buf[..got]).to_string();
+            if let Some(head_end) = text.find("\r\n\r\n") {
+                let len = text[..head_end]
+                    .lines()
+                    .find_map(|l| {
+                        l.to_ascii_lowercase()
+                            .strip_prefix("content-length:")
+                            .map(|v| v.trim().parse::<usize>().unwrap_or(0))
+                    })
+                    .unwrap_or(0);
+                if got >= head_end + 4 + len {
+                    return;
+                }
+            }
+        }
+    }
+
+    /// A server streaming `chunks`, the first at once and each later one (and
+    /// the stream's end) after a message on the returned sender. `status`
+    /// other than 200 answers with that status and no stream.
+    fn serve(chunks: &[&str], end: End, status: u16) -> (std::net::SocketAddr, mpsc::Sender<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let chunks: Vec<String> = chunks.iter().map(|c| c.to_string()).collect();
+        let (release, gate) = mpsc::channel::<()>();
+        let gate = Arc::new(Mutex::new(gate));
+        std::thread::spawn(move || {
+            for conn in listener.incoming() {
+                let Ok(mut s) = conn else { continue };
+                let chunks = chunks.clone();
+                let gate = gate.clone();
+                std::thread::spawn(move || {
+                    read_request(&mut s);
+                    if status != 200 {
+                        let body =
+                            r#"{"error":{"message":"server on fire","type":"server_error"}}"#;
+                        let _ = s.write_all(
+                            format!(
+                                "HTTP/1.1 {status} Internal Server Error\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                                body.len()
+                            )
+                            .as_bytes(),
+                        );
+                        return;
+                    }
+                    let _ = s.write_all(
+                        b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n",
+                    );
+                    for (i, c) in chunks.iter().enumerate() {
+                        if i > 0 {
+                            let _ = gate.lock().unwrap().recv();
+                        }
+                        let _ = s.write_all(delta(c).as_bytes());
+                        let _ = s.flush();
+                    }
+                    let tail = match end {
+                        End::Done => {
+                            "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"
+                        }
+                        End::Error => {
+                            "data: {\"error\":{\"message\":\"overloaded\",\"type\":\"overloaded_error\"}}\n\n"
+                        }
+                    };
+                    if !chunks.is_empty() {
+                        let _ = gate.lock().unwrap().recv();
+                    }
+                    let _ = s.write_all(tail.as_bytes());
+                });
+            }
+        });
+        (addr, release)
+    }
+
+    fn app_streaming(chunks: &[&str], end: End, status: u16) -> (App, mpsc::Sender<()>) {
+        let (addr, release) = serve(chunks, end, status);
+        let a = app_with(TEXT, 10);
+        let toml = format!(
+            "[llm.providers.mock]\nkind = \"openai-compatible\"\nbase_url = \"http://{addr}/v1\"\nmodel = \"mock-model\"\n"
+        );
+        let chats: LlmChatsHandle = (*a.editor.services.get::<LlmChatsHandle>().unwrap()).clone();
+        chats.set_config(LlmConfig::from_table(&toml.parse::<toml::Table>().unwrap()));
+        (a, release)
+    }
+
+    fn key(a: &mut App, code: KeyCode) {
+        press(a, KeyEvent::new(code, KeyModifiers::NONE));
+    }
+
+    fn inline(a: &App) -> LlmInlineHandle {
+        (*a.editor.services.get::<LlmInlineHandle>().unwrap()).clone()
+    }
+
+    fn message(a: &App) -> String {
+        a.editor
+            .last_message
+            .as_ref()
+            .map(|m| m.text.clone())
+            .unwrap_or_default()
+    }
+
+    fn text(a: &App) -> String {
+        a.editor.document.snapshot().buffer.as_string()
+    }
+
+    /// `<leader>aaj` on line 1 (the first two lines), answered below.
+    fn ask_below(a: &mut App) {
+        press_chars(a, " aaj");
+        press_chars(a, "destination=below explain");
+        key(a, KeyCode::Enter);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_answer_streams_in_under_the_span() {
+        let (mut a, release) = app_streaming(&["It is ", "a list."], End::Done, 200);
+        ask_below(&mut a);
+        assert!(message(&a).contains("answering below"), "{}", message(&a));
+        assert!(
+            settle_woken(&mut a, |a| text(a).contains("It is ")).await,
+            "the first chunk never showed: {:?}",
+            text(&a)
+        );
+        assert_eq!(text(&a), "alpha beta\ngamma delta\nIt is \nepsilon zeta\n");
+        release.send(()).unwrap();
+        release.send(()).unwrap();
+        assert!(settle_woken(&mut a, |a| inline(a).live_count() == 0).await);
+        assert_eq!(
+            text(&a),
+            "alpha beta\ngamma delta\nIt is a list.\nepsilon zeta\n"
+        );
+        // One `u` takes the whole answer.
+        press_chars(&mut a, "u");
+        assert_eq!(text(&a), TEXT);
+    }
+
+    /// Typing above the answer moves its insertion point; the answer stays
+    /// one piece under the span.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn typing_above_moves_the_insertion_point() {
+        let (mut a, release) = app_streaming(&["one ", "two"], End::Done, 200);
+        ask_below(&mut a);
+        assert!(settle_woken(&mut a, |a| text(a).contains("one ")).await);
+        press_chars(&mut a, "ggITOP ");
+        key(&mut a, KeyCode::Esc);
+        release.send(()).unwrap();
+        release.send(()).unwrap();
+        assert!(settle_woken(&mut a, |a| inline(a).live_count() == 0).await);
+        assert_eq!(
+            text(&a),
+            "TOP alpha beta\ngamma delta\none two\nepsilon zeta\n"
+        );
+    }
+
+    /// Typing at the end of the answer while it streams: the answer stays
+    /// contiguous and the typed text stays after it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn typing_at_the_point_stays_after_the_answer() {
+        let (mut a, release) = app_streaming(&["one ", "two"], End::Done, 200);
+        ask_below(&mut a);
+        assert!(settle_woken(&mut a, |a| text(a).contains("one ")).await);
+        // To the answer's line, then append: the caret is at the insertion point.
+        press_chars(&mut a, "3GA!");
+        release.send(()).unwrap();
+        assert!(settle_woken(&mut a, |a| text(a).contains("two")).await);
+        press_chars(&mut a, "?");
+        key(&mut a, KeyCode::Esc);
+        release.send(()).unwrap();
+        assert!(settle_woken(&mut a, |a| inline(a).live_count() == 0).await);
+        assert_eq!(
+            text(&a),
+            "alpha beta\ngamma delta\none two!?\nepsilon zeta\n"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn deleting_the_insertion_point_stops_the_answer() {
+        let (mut a, release) = app_streaming(&["one ", "two"], End::Done, 200);
+        ask_below(&mut a);
+        assert!(settle_woken(&mut a, |a| text(a).contains("one ")).await);
+        // `gamma delta` and the answer under it, in one delete.
+        press_chars(&mut a, "2Gdj");
+        let _ = release.send(());
+        assert!(
+            settle_woken(&mut a, |a| message(a).contains("deleted")).await,
+            "{}",
+            message(&a)
+        );
+        assert_eq!(inline(&a).live_count(), 0);
+        let _ = release.send(());
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert_eq!(
+            text(&a),
+            "alpha beta\nepsilon zeta\n",
+            "nothing more written"
+        );
+    }
+
+    /// `u` while it streams takes what was written and stops the rest.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn undo_while_streaming_cancels_then_undoes() {
+        let (mut a, release) = app_streaming(&["one ", "two"], End::Done, 200);
+        ask_below(&mut a);
+        assert!(settle_woken(&mut a, |a| text(a).contains("one ")).await);
+        press_chars(&mut a, "u");
+        assert_eq!(text(&a), TEXT);
+        let _ = release.send(());
+        assert!(
+            settle_woken(&mut a, |a| message(a).contains("undo")).await,
+            "{}",
+            message(&a)
+        );
+        let _ = release.send(());
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert_eq!(text(&a), TEXT, "the second chunk never landed");
+    }
+
+    /// A read-only source cannot take the answer: it opens in a chat beside
+    /// it instead, and the echo says why.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_read_only_source_answers_in_a_new_buffer() {
+        let (mut a, release) = app_streaming(&["answer"], End::Done, 200);
+        let buffer = a.editor.document_buffer_id;
+        lattice_mode::ModeActivator::activate_minor_by_id(
+            &mut a.editor,
+            buffer,
+            ReadOnlyMode::mode_id(),
+        );
+        let chats: LlmChatsHandle = (*a.editor.services.get::<LlmChatsHandle>().unwrap()).clone();
+        assert!(
+            settle_woken(&mut a, |_| chats.is_read_only(buffer)).await,
+            "the read-only option never reached the llm layer"
+        );
+        ask_below(&mut a);
+        assert!(message(&a).contains("read-only"), "{}", message(&a));
+        assert_eq!(inline(&a).live_count(), 0);
+        let _ = release.send(());
+        let src = a.editor.buffers.document_handle(buffer).unwrap();
+        assert_eq!(src.text(), TEXT);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_second_answer_at_the_same_point_is_refused() {
+        let (mut a, release) = app_streaming(&["one ", "two"], End::Done, 200);
+        ask_below(&mut a);
+        assert!(settle_woken(&mut a, |a| text(a).contains("one ")).await);
+        press_chars(&mut a, "gg");
+        ask_below(&mut a);
+        assert!(message(&a).contains("already streaming"), "{}", message(&a));
+        assert_eq!(inline(&a).live_count(), 1);
+        release.send(()).unwrap();
+        release.send(()).unwrap();
+        assert!(settle_woken(&mut a, |a| inline(a).live_count() == 0).await);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_failure_partway_leaves_the_text_and_a_marker() {
+        let (mut a, release) = app_streaming(&["half an answer"], End::Error, 200);
+        ask_below(&mut a);
+        assert!(settle_woken(&mut a, |a| text(a).contains("half")).await);
+        release.send(()).unwrap();
+        assert!(settle_woken(&mut a, |a| inline(a).live_count() == 0).await);
+        assert_eq!(
+            text(&a),
+            format!(
+                "alpha beta\ngamma delta\nhalf an answer\n{INTERRUPTED_MARKER}\nepsilon zeta\n"
+            )
+        );
+        assert!(message(&a).contains("interrupted"), "{}", message(&a));
+        press_chars(&mut a, "u");
+        assert_eq!(text(&a), TEXT, "the marker goes with the answer");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_immediate_failure_leaves_nothing_behind() {
+        let (mut a, _release) = app_streaming(&[], End::Done, 500);
+        ask_below(&mut a);
+        assert!(
+            settle_woken(&mut a, |a| inline(a).live_count() == 0
+                && !message(a).contains("answering"))
+            .await,
+            "{}",
+            message(&a)
+        );
+        assert!(message(&a).starts_with("llm:"), "{}", message(&a));
+        assert_eq!(text(&a), TEXT);
+        press_chars(&mut a, "u");
+        assert_eq!(text(&a), TEXT, "no edit to undo");
+    }
+
+    fn screen(a: &App) -> Vec<String> {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        let mut t = Terminal::new(TestBackend::new(40, 12)).unwrap();
+        let snap = a.ad().snapshot.clone();
+        t.draw(|f| {
+            let _ = crate::render::draw_frame(f, a, &snap);
+        })
+        .unwrap();
+        let buf = t.backend().buffer().clone();
+        (0..12u16)
+            .map(|y| {
+                (0..40u16)
+                    .map(|x| buf[(x, y)].symbol().to_string())
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// The keystroke contract for a stream: rows above the answer do not
+    /// change while it streams, and the caret stays on its text.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn only_the_streamed_rows_change_and_the_caret_stays_put() {
+        let (mut a, release) = app_streaming(&["first", " second"], End::Done, 200);
+        ask_below(&mut a);
+        assert!(settle_woken(&mut a, |a| text(a).contains("first")).await);
+        let cursor = a.editor.cursor;
+        let before = screen(&a);
+        release.send(()).unwrap();
+        assert!(settle_woken(&mut a, |a| text(a).contains("second")).await);
+        let after = screen(&a);
+        assert_eq!(a.editor.cursor, cursor, "streaming never moves the caret");
+        let alpha = after.iter().position(|r| r.contains("alpha")).unwrap();
+        // `alpha beta` and `gamma delta`, the rows above the answer.
+        assert_eq!(
+            before[..alpha + 2],
+            after[..alpha + 2],
+            "rows above unchanged"
+        );
+        release.send(()).unwrap();
+        assert!(settle_woken(&mut a, |a| inline(a).live_count() == 0).await);
+    }
+
+    /// The view follows the answer only when the caret is at its end.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_view_follows_only_a_caret_at_the_end() {
+        let long = "\nx".repeat(30);
+        let (mut a, release) = app_streaming(&["start", long.as_str()], End::Done, 200);
+        ask_below(&mut a);
+        assert!(settle_woken(&mut a, |a| text(a).contains("start")).await);
+        press_chars(&mut a, "3GA");
+        release.send(()).unwrap();
+        assert!(settle_woken(&mut a, |a| text(a).matches("\nx").count() >= 30).await);
+        assert!(
+            a.editor.scroll > 0,
+            "the caret at the end took the view with it"
+        );
+        key(&mut a, KeyCode::Esc);
+        release.send(()).unwrap();
+        assert!(settle_woken(&mut a, |a| inline(a).live_count() == 0).await);
+
+        let (mut b, release) = app_streaming(&["start", long.as_str()], End::Done, 200);
+        ask_below(&mut b);
+        assert!(settle_woken(&mut b, |b| text(b).contains("start")).await);
+        press_chars(&mut b, "gg");
+        release.send(()).unwrap();
+        assert!(settle_woken(&mut b, |b| text(b).matches("\nx").count() >= 30).await);
+        assert_eq!(
+            b.editor.scroll, 0,
+            "a caret above stays, and so does the view"
+        );
+        release.send(()).unwrap();
+        assert!(settle_woken(&mut b, |b| inline(b).live_count() == 0).await);
+    }
+}

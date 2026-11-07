@@ -432,7 +432,7 @@ adoption does not double-move a caret the host positioned itself; Insert's undo 
 
 **Bench:** append cost against document size; keystroke latency during appends.
 
-### LL.13 — Inline output 🚧
+### LL.13 — Inline output ✅
 
 Carved in two when the sink's writer exposed a race with the host's keys (decided with
 Dhruva: rebase in the actor, not route writes through the editor).
@@ -447,7 +447,16 @@ chunk after any undo or redo, so `u` while streaming cancels with nothing landin
 `anchored_append_caret.rs` (+3, the race reproduced by bare `dispatch`). Bench:
 `document_edit_p99_us::rebase_over_appends`.
 
-**LL.13b — The `below` destination 📝.**
+**LL.13b — The `below` destination ✅.** `src/llm/sink.rs`: an ask's hidden chat session hands its
+reply text to a writer through a per-turn `TextTap`; the writer appends at most once a frame into a
+tracked range at the end of the span's last line, opening with a newline and holding trailing ones
+back, and wakes the editor after each write. Stops on `Collapsed` / `Undone`; a failure partway ends
+in `[interrupted]`, one before any text writes nothing. Read-only (from `BufferOptionsResolved`, no
+new host query) and composed sources fall back to a new chat with a note; a second answer at one
+point is refused. Host: `run_tick_pending` adopts an owner write, so the caret moves with streamed
+text on the wake. Tests: `lattice-ui-tui/src/app/llm_inline.rs` (11, every Inline row of the design's
+edge table plus the screen contract), `sink.rs` units (2). Bench:
+`dispatch_publish::keystroke_while_streaming`.
 
 **Files:** `src/llm/sink.rs` (document-span sink, one write per frame interval).
 

@@ -27,8 +27,12 @@
 //! - **An oversized source asks first** ([`ASK_CONFIRM_BYTES`]): a yes sends it,
 //!   a no sends nothing.
 //! - **`destination=<buffer>`** continues that chat instead of opening a new
-//!   one. The kinds not built yet (`below`, `echo`, ...) open a new buffer and
-//!   say so rather than refuse.
+//!   one. The kinds not built yet (`echo`, ...) open a new buffer and say so
+//!   rather than refuse.
+//!
+//! LL.13b builds **`destination=below`**: the answer streams into the source
+//! buffer under the span ([`super::sink`]). A read-only or composed source
+//! cannot take it, so the answer opens in a new buffer and the echo says so.
 //!
 //! **`.` does not repeat an ask** (design §11, decided here). `.` repeats the
 //! last change, and an ask changes nothing, as `y` changes nothing; making it
@@ -89,11 +93,19 @@ pub struct AskSource {
 pub struct LlmAsks {
     next: Mutex<u64>,
     pending: Mutex<VecDeque<(u64, AskSource)>>,
+    /// Where `destination=below` answers stream from (LL.13b); unset in a
+    /// harness without one, which then opens a new buffer instead.
+    inline: std::sync::OnceLock<super::sink::LlmInlineHandle>,
 }
 
 pub type LlmAsksHandle = Arc<LlmAsks>;
 
 impl LlmAsks {
+    /// Give `destination=below` its writer. Set once, at install.
+    pub fn set_inline(&self, inline: super::sink::LlmInlineHandle) {
+        let _ = self.inline.set(inline);
+    }
+
     /// Hold `source` and return the token its prompt carries.
     pub fn hold(&self, source: AskSource) -> u64 {
         let token = {
@@ -191,6 +203,28 @@ pub(crate) fn refusal(
         EchoLevel::Error,
         format!("llm: {name} matches llm.exclude (`{glob}`); nothing was sent"),
     ))
+}
+
+/// Why `destination=below` cannot write into `buffer`, if it cannot: the
+/// answer would be text the user cannot edit (a read-only buffer), or there
+/// is no single text to put it in (a composed view of several files).
+fn below_refusal(
+    chats: &LlmChats,
+    store: Option<&BufferStoreHandle>,
+    buffer: BufferId,
+    has_writer: bool,
+) -> Option<&'static str> {
+    if !has_writer {
+        return Some("destination=below is not set up here");
+    }
+    if chats.is_read_only(buffer) {
+        return Some("the buffer is read-only");
+    }
+    let handle = store.and_then(|s| s.handle_for(buffer))?;
+    if handle.display_line_numbers().is_some() {
+        return Some("this view shows several files");
+    }
+    None
 }
 
 /// Capture the span, or say why there is nothing to ask about.
@@ -367,6 +401,7 @@ pub fn ask_effect(
             .and_then(|r| r.values.destination)
     });
     let mut note = None;
+    let mut below = None;
     let target = match destination.as_deref() {
         Some(name) if is_buffer_name(name) => {
             let chat = store
@@ -382,7 +417,14 @@ pub fn ask_effect(
                 }
             }
         }
-        Some(kind @ ("below" | "review" | "register" | "echo")) => {
+        Some("below") => {
+            match below_refusal(chats, store, source.buffer, asks.inline.get().is_some()) {
+                Some(why) => note = Some(format!("llm: {why}; the answer opened in a new buffer")),
+                None => below = asks.inline.get().cloned(),
+            }
+            None
+        }
+        Some(kind @ ("review" | "register" | "echo")) => {
             note = Some(format!(
                 "llm: destination={kind} is not built yet; the answer opened in a new buffer"
             ));
@@ -397,12 +439,23 @@ pub fn ask_effect(
     let block = Block::Source {
         label,
         lang,
-        text: source.text,
+        text: source.text.clone(),
         link: Some(SourceLink {
             buffer: source.buffer,
             line: source.range.start.line,
         }),
     };
+    if let (Some(inline), Some(store)) = (below, store) {
+        return inline.start(
+            chats,
+            store,
+            &source,
+            &hint,
+            block,
+            typed.trim().to_string(),
+            overrides,
+        );
+    }
     let session = target.unwrap_or_else(|| chats.create_for_source(source.buffer, &hint));
     chats.submit_source(&session, block, typed.trim().to_string(), overrides);
     let display = Effect::DisplaySyntheticBuffer {

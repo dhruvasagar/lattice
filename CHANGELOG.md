@@ -3,6 +3,12 @@
 ## Unreleased
 
 ### Added
+- **LLM answers can stream into the buffer, under the text you asked
+  about.** `destination=below` on an ask (`:llm-ask destination=below …`,
+  or the menu's destination row) writes the answer on new lines beneath
+  the selection while you keep typing: your text never splits it, your
+  caret stays put, and `u` stops it and takes it back. A read-only buffer
+  gets the answer in a new chat instead.
 - **Search results can be narrowed.** In `:search` results, and in any other
   multibuffer view, `:multibuffer-keep /pat/` shows only the results whose
   line or file path matches, `:multibuffer-reject /pat/` hides them, and

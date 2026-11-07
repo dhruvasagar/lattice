@@ -19956,6 +19956,17 @@ impl Editor {
 
     pub fn run_tick_pending(&mut self) -> Vec<RendererSignal> {
         let mut signals = Vec::new();
+        // LL.13b: owner-write adoption off a keystroke. A stream writing into
+        // the active buffer wakes the editor after each write; adopting here
+        // moves the caret with the text on that wake, so it never shows on
+        // text it was not on, and a caret at the end of the answer keeps the
+        // view on it. A tick that follows a key finds nothing new: the key
+        // adopted at its start and recorded its own write.
+        let before = self.cursor;
+        self.maybe_adopt_owner_write();
+        if self.cursor != before {
+            self.ensure_cursor_visible();
+        }
         // LA.2: a plugin load changed the mode/language catalog, so a buffer
         // opened from argv — which resolved its language and its major before
         // the plugin existed — gets its second look here. Gated on the event,

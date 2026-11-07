@@ -1,5 +1,6 @@
-//! LL.13b: `destination=below`, the answer streaming into the source buffer,
-//! end to end through the real keystroke path against a local mock model.
+//! LL.13b–14: where an answer goes (`below`, `echo`, a register) and the
+//! requests that carry it (`:llm-requests`, `:llm-stop`, `:llm-last`), end to
+//! end through the real keystroke path against a local mock model.
 //!
 //! The server streams its chunks one at a time, each after a release on the
 //! test's gate, so a test can act between two chunks: type above the answer,
@@ -275,7 +276,9 @@ mod tests {
         );
         let chats: LlmChatsHandle = (*a.editor.services.get::<LlmChatsHandle>().unwrap()).clone();
         assert!(
-            settle_woken(&mut a, |_| chats.is_read_only(buffer)).await,
+            // Internal state with no screen of its own, so nothing wakes for
+            // it: polled, not awaited on the wake.
+            settle(&mut a, |_| chats.is_read_only(buffer)).await,
             "the read-only option never reached the llm layer"
         );
         ask_below(&mut a);
@@ -512,7 +515,7 @@ mod tests {
         let chats: LlmChatsHandle = (*a.editor.services.get::<LlmChatsHandle>().unwrap()).clone();
         let buffer = a.editor.document_buffer_id;
         assert!(
-            settle_woken(&mut a, |_| chats
+            settle(&mut a, |_| chats
                 .resolve_for(buffer)
                 .is_ok_and(|r| !r.values.tools.is_empty()))
             .await,
@@ -540,5 +543,149 @@ mod tests {
         key(&mut a, KeyCode::Enter);
         assert!(message(&a).contains("no answer to show"), "{}", message(&a));
         assert_eq!(a.editor.pane_tree.leaves().len(), 1);
+    }
+
+    fn list_text(a: &App) -> String {
+        a.editor
+            .buffers
+            .by_name("*llm-requests*")
+            .and_then(|b| a.editor.buffers.document_handle(b))
+            .map(|h| h.text())
+            .unwrap_or_default()
+    }
+
+    fn ex(a: &mut App, cmd: &str) {
+        press_chars(a, &format!(":{cmd}"));
+        key(a, KeyCode::Enter);
+    }
+
+    /// LL.14b: the list shows a running request with where it is going, and
+    /// keeps itself current: its end shows without a keystroke.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_requests_list_follows_a_request_to_its_end() {
+        let (mut a, release) = app_streaming(&["one ", "two"], End::Done, 200);
+        ask_below(&mut a);
+        assert!(settle_woken(&mut a, |a| text(a).contains("one ")).await);
+        ex(&mut a, "llm-requests");
+        assert!(
+            settle_woken(&mut a, |a| list_text(a).contains("streaming")).await,
+            "{:?}",
+            list_text(&a)
+        );
+        let list = list_text(&a);
+        assert!(list.contains("mock-model"), "{list}");
+        assert!(list.contains("below "), "names the destination: {list}");
+        release.send(()).unwrap();
+        release.send(()).unwrap();
+        assert!(
+            settle_woken(&mut a, |a| list_text(a).contains("done")).await,
+            "{:?}",
+            list_text(&a)
+        );
+        assert!(list_text(&a).contains("(none)"), "{}", list_text(&a));
+        // Read-only: the list is not text to edit.
+        let before = list_text(&a);
+        press_chars(&mut a, "ggx");
+        assert_eq!(list_text(&a), before);
+    }
+
+    /// `dd` on a row stops that request through its session: the inline
+    /// answer gets its marker, and the row says it stopped.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn dd_in_the_list_stops_the_request() {
+        let (mut a, release) = app_streaming(&["one ", "two"], End::Done, 200);
+        ask_below(&mut a);
+        assert!(settle_woken(&mut a, |a| text(a).contains("one ")).await);
+        let source = a.editor.document_buffer_id;
+        ex(&mut a, "llm-requests");
+        assert!(settle_woken(&mut a, |a| list_text(a).contains("streaming")).await);
+        press_chars(&mut a, "ggjdd");
+        // The stop can land, and its echo replace this one, within the key.
+        assert!(
+            message(&a).contains("stopping request #")
+                || message(&a).contains("answer was stopped"),
+            "{}",
+            message(&a)
+        );
+        assert!(
+            settle_woken(&mut a, |a| list_text(a).contains("stopped")).await,
+            "{:?}",
+            list_text(&a)
+        );
+        let src = a.editor.buffers.document_handle(source).unwrap();
+        assert!(
+            settle_woken(&mut a, |_| src.text().contains(INTERRUPTED_MARKER)).await,
+            "{:?}",
+            src.text()
+        );
+        assert_eq!(
+            src.text(),
+            format!("alpha beta\ngamma delta\none \n{INTERRUPTED_MARKER}\nepsilon zeta\n")
+        );
+        let _ = release.send(());
+        // `dd` on a finished row says so rather than pretending.
+        press_chars(&mut a, "ggjdd");
+        let _ = release.send(());
+        assert!(
+            message(&a).contains("no request on this line")
+                || message(&a).contains("already finished"),
+            "{}",
+            message(&a)
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn llm_stop_stops_this_buffers_one_request() {
+        let (mut a, release) = app_streaming(&["one ", "two"], End::Done, 200);
+        ex(&mut a, "llm-stop");
+        assert_eq!(message(&a), "llm: no request is running");
+        ask_below(&mut a);
+        assert!(settle_woken(&mut a, |a| text(a).contains("one ")).await);
+        ex(&mut a, "llm-stop");
+        assert!(
+            message(&a).contains("stopping request") || message(&a).contains("answer was stopped"),
+            "{}",
+            message(&a)
+        );
+        assert!(settle_woken(&mut a, |a| text(a).contains(INTERRUPTED_MARKER)).await);
+        assert_eq!(a.editor.pane_tree.leaves().len(), 1, "no list opened");
+        let _ = release.send(());
+    }
+
+    /// Two running from here: stopping one would be a guess, so the list
+    /// opens instead and nothing is stopped.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn llm_stop_with_several_running_opens_the_list() {
+        let (mut a, release) = app_streaming(&["one ", "two"], End::Done, 200);
+        ask_to(&mut a, "", "echo");
+        ask_to(&mut a, "", "echo");
+        let chats: LlmChatsHandle = (*a.editor.services.get::<LlmChatsHandle>().unwrap()).clone();
+        let live = |c: &LlmChatsHandle| {
+            c.requests()
+                .snapshot()
+                .iter()
+                .filter(|r| !r.state.is_terminal())
+                .count()
+        };
+        // The registry is not on screen; polled (see the read-only test).
+        assert!(settle(&mut a, |_| live(&chats) == 2).await);
+        ex(&mut a, "llm-stop");
+        assert!(
+            message(&a).contains("2 requests are running"),
+            "{}",
+            message(&a)
+        );
+        assert!(
+            settle_woken(&mut a, |a| list_text(a).matches("streaming").count()
+                + list_text(a).matches("starting").count()
+                == 2)
+            .await,
+            "{:?}",
+            list_text(&a)
+        );
+        assert_eq!(live(&chats), 2, "nothing was stopped");
+        for _ in 0..4 {
+            let _ = release.send(());
+        }
     }
 }

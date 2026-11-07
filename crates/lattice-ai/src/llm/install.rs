@@ -65,6 +65,17 @@ pub fn install(boot: &mut impl SubsystemBoot) {
         Arc::new(super::sink::LlmInline::new(boot.runtime_handle().clone()));
     inline.set_effects(boot.inbound::<super::sink::InlineEffects, _>(|e| e.0));
     boot.register_service::<super::sink::LlmInlineHandle>(inline.clone());
+    // LL.14b: `*llm-requests*` repaints itself on request state changes and
+    // wakes the editor through the same bus.
+    let bus = boot.event_bus().clone();
+    boot.modes_mut()
+        .register(super::modes::requests::LlmRequestsMode::new(
+            chats.clone(),
+            bus,
+            inline.clone(),
+        ))
+        .expect("llm-requests-mode register");
+    super::modes::requests::register_actions(boot.commands_mut());
     asks.set_inline(inline);
     boot.register_service::<super::operators::LlmAsksHandle>(asks.clone());
     let store = boot.buffer_store().clone();

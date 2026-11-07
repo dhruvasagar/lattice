@@ -136,6 +136,12 @@ pub struct ChatSession {
     /// Told when the turn in flight ends: the reply's text, or why there is
     /// none. A rewrite (LL.11) waits here for the text it sends to review.
     turn_waiters: Mutex<Vec<tokio::sync::oneshot::Sender<Result<String, String>>>>,
+    /// The buffer the chat was made from, if any. A hidden ask's requests
+    /// belong to it: `:llm-stop` there stops them (LL.14b).
+    source: Option<BufferId>,
+    /// Where this session's answers go, for `:llm-requests`: `below foo.rs:4`,
+    /// `echo`, a register, a rewrite. A chat's is its own name.
+    destination: Mutex<Option<String>>,
 }
 
 impl ChatSession {
@@ -185,6 +191,22 @@ impl ChatSession {
 
     fn set_label(&self, label: Option<String>) {
         *self.label.lock().unwrap_or_else(|e| e.into_inner()) = label;
+    }
+
+    /// Say where this session's answers go, for `:llm-requests`. Set before
+    /// the request starts: the listing reads it when the request does.
+    pub fn set_destination(&self, destination: String) {
+        *self.destination.lock().unwrap_or_else(|e| e.into_inner()) = Some(destination);
+    }
+
+    /// Where this session's answers go: what [`set_destination`](Self::set_destination)
+    /// said, else the chat itself.
+    pub fn destination(&self) -> String {
+        self.destination
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+            .unwrap_or_else(|| self.name.clone())
     }
 
     /// The settings this chat was created with.
@@ -732,6 +754,8 @@ impl LlmChats {
             warned: Mutex::new(HashSet::new()),
             closed: AtomicBool::new(false),
             turn_waiters: Mutex::new(Vec::new()),
+            source: from,
+            destination: Mutex::new(None),
         });
         {
             let mut reg = self.reg();
@@ -912,6 +936,33 @@ impl LlmChats {
     }
 
     /// Stop the running turn. A queued prompt, if any, is sent next.
+    /// Stop request `id` as `<C-c>` would: through its session, so whatever
+    /// waits on the turn hears "interrupted" (an inline answer marks itself,
+    /// a quiet one says so). A request no session owns is cancelled outright.
+    pub fn stop_request(&self, id: RequestId) {
+        let session = {
+            let reg = self.reg();
+            reg.by_request.get(&id).cloned().or_else(|| {
+                // Started but not yet registered: find it by its turn.
+                reg.by_buffer
+                    .values()
+                    .map(|(_, s)| s)
+                    .chain(reg.unbound.iter())
+                    .find(|s| s.turn().request == Some(id))
+                    .cloned()
+            })
+        };
+        match session {
+            Some(s) => self.interrupt(&s),
+            None => self.requests.cancel(id),
+        }
+    }
+
+    /// The request registry, for listings.
+    pub fn requests(&self) -> &RequestRegistryHandle {
+        &self.requests
+    }
+
     pub fn interrupt(&self, session: &Arc<ChatSession>) {
         let request = {
             let mut turn = session.turn();
@@ -1038,9 +1089,14 @@ impl LlmChats {
             };
             let mut sink = ChatSink::new(session.store.clone(), session.key.clone(), &provider_cfg);
             sink.tap = session.turn().tap.clone();
+            // A shown chat's requests belong to its buffer; a hidden ask's to
+            // the buffer it asked from, where `:llm-stop` finds them.
             let target = RequestTarget {
-                buffer: chats.buffer_of(&session).unwrap_or(BufferId(0)),
-                label: session.name.clone(),
+                buffer: chats
+                    .buffer_of(&session)
+                    .or(session.source)
+                    .unwrap_or(BufferId(0)),
+                label: session.destination(),
             };
             let id = chats.requests.start_with_key(
                 target,

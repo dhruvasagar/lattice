@@ -3,6 +3,10 @@
 ## Unreleased
 
 ### Added
+- **See and stop running LLM requests from anywhere.** `:llm-requests`
+  lists every request with its model and where its answer is going, and
+  updates itself; `dd` stops one. `:llm-stop` stops this buffer's request,
+  or opens the list when several are running.
 - **LLM answers can go to the echo area or a register.**
   `destination=echo` shows the answer's first line when it is complete;
   `destination=register` puts all of it in the register named before

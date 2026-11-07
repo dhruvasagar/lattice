@@ -29,6 +29,7 @@ use lattice_grammar::registry::{CommandRegistry, ExCommandSpec, SurfaceForm};
 use super::chat::{LlmChats, LlmChatsHandle, MenuScope};
 use super::menu::MENU_SOURCE;
 use super::modes::chat::LlmChatMode;
+use super::modes::requests::{LlmRequestsMode, REQUESTS_BUFFER};
 use super::modes::system::LlmSystemMode;
 use super::settings::{RawSet, SettingKey, validate};
 
@@ -278,6 +279,54 @@ pub(crate) fn lines_text(
         .join("\n")
 }
 
+/// Open `*llm-requests*`, focused, so `dd` reaches it.
+fn open_requests() -> Effect {
+    Effect::OpenSyntheticBuffer {
+        name: REQUESTS_BUFFER.to_string(),
+        mode_id: LlmRequestsMode::mode_id().as_str().to_string(),
+        content: None,
+        cursor: None,
+        activate_minor: None,
+    }
+}
+
+/// `:llm-stop` in `buffer`: its one request, else the only one running, else
+/// the list. Never a guess between several (design §5).
+pub fn stop_effect(chats: &LlmChats, buffer: BufferId) -> Effect {
+    let snapshot = chats.requests().snapshot();
+    let live: Vec<_> = snapshot.iter().filter(|r| !r.state.is_terminal()).collect();
+    let here: Vec<_> = live.iter().filter(|r| r.target.buffer == buffer).collect();
+    let one = match (here.as_slice(), live.as_slice()) {
+        ([r], _) => Some(**r),
+        ([], []) => return echo(EchoLevel::Info, "llm: no request is running".to_string()),
+        ([], [r]) => Some(*r),
+        _ => None,
+    };
+    match one {
+        Some(r) => {
+            chats.stop_request(r.id);
+            echo(
+                EchoLevel::Info,
+                format!("llm: stopping request #{} ({})", r.id.0, r.target.label),
+            )
+        }
+        None => Effect::Many(vec![
+            open_requests(),
+            echo(
+                EchoLevel::Info,
+                format!(
+                    "llm: {} requests are running; `dd` on one stops it",
+                    if here.len() > 1 {
+                        here.len()
+                    } else {
+                        live.len()
+                    }
+                ),
+            ),
+        ]),
+    }
+}
+
 pub fn register(registry: &mut CommandRegistry, chats: LlmChatsHandle) {
     let open = chats.clone();
     registry.register_ex_command(
@@ -387,6 +436,35 @@ pub fn register(registry: &mut CommandRegistry, chats: LlmChatsHandle) {
                     ),
                 })
             }),
+            args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+    registry.register_ex_command(
+        "llm-requests",
+        "List every LLM request running and the last few finished, with where each answer \
+         is going. `dd` on a row stops that request.",
+        ExCommandSpec {
+            latency_class: LatencyClass::Reflex,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Arc::new(parse_rest_as_text),
+            apply: Arc::new(|_ctx| Ok(open_requests())),
+            args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+    let stop = chats.clone();
+    registry.register_ex_command(
+        "llm-stop",
+        "Stop this buffer's LLM request, or the only one running. When that would be a guess \
+         (several are running), open `:llm-requests` instead.",
+        ExCommandSpec {
+            latency_class: LatencyClass::Reflex,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Arc::new(parse_rest_as_text),
+            apply: Arc::new(move |ctx| Ok(stop_effect(&stop, ctx.buffer_id))),
             args_schema: vec![],
             surface_form: SurfaceForm::Keyword,
         },

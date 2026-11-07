@@ -92,6 +92,12 @@ impl LlmInline {
         self.live.lock().unwrap_or_else(|e| e.into_inner()).len()
     }
 
+    /// Wake the editor with no effects: something it shows changed off a
+    /// keystroke (the requests list was rewritten).
+    pub fn wake(&self) {
+        self.send(Vec::new());
+    }
+
     fn send(&self, effects: Vec<Effect>) {
         if let Some(bus) = self
             .effects
@@ -178,6 +184,7 @@ impl LlmInline {
             .push((source.buffer, id));
 
         let session = chats.create_for_source(source.buffer, hint);
+        session.set_destination(format!("below {}", block_label(&block, hint)));
         let pending = Arc::new(Pending::default());
         {
             let pending = pending.clone();
@@ -223,6 +230,12 @@ impl LlmInline {
         quiet: Quiet,
     ) -> Effect {
         let session = chats.create_for_source(buffer, hint);
+        session.set_destination(match quiet {
+            Quiet::Echo => format!("echo, from {}", block_label(&block, hint)),
+            Quiet::Register(r) => {
+                format!("{}, from {}", register_name(r), block_label(&block, hint))
+            }
+        });
         let ended = session.wait_turn_end();
         chats.submit_source(&session, block, instruction, overrides);
         let inline = self.clone();
@@ -239,6 +252,14 @@ impl LlmInline {
             }
         };
         echo(EchoLevel::Info, text)
+    }
+}
+
+/// What a source block is called in listings: `foo.rs:4-6`.
+fn block_label<'a>(block: &'a Block, hint: &'a str) -> &'a str {
+    match block {
+        Block::Source { label, .. } => label,
+        _ => hint,
     }
 }
 

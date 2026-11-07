@@ -481,7 +481,16 @@ it is kept; `:llm-last` displays it. A request whose resolved `tools` is non-emp
 effects exist). No bench: the work is one effect per answer, nothing per key or per frame. Tests:
 `lattice-ui-tui/src/app/llm_inline.rs` (+5), `sink.rs` units (+2).
 
-**LL.14b — `:llm-requests`, `:llm-stop` 📝.** **LL.14c — Modeline, hidden-done notice, `:q` warns 📝.**
+**LL.14b — `:llm-requests`, `:llm-stop` ✅.** `src/llm/modes/requests.rs` `llm-requests-mode`
+(major, `ReadOnly` + implies `read-only-mode`): `*llm-requests*` renders the registry snapshot,
+running in start order then finished newest first, and repaints on `RequestStateChanged` (bursts
+coalesced, unchanged text skipped), waking through the inline bus. `dd` (major layer) stops the
+row's request with `LlmChats::stop_request`, which interrupts through the owning session so waiters
+hear "interrupted" (inline marker, quiet echo); an unowned request is cancelled outright. Sessions
+carry `source` and `destination`: a hidden ask's `RequestTarget.buffer` is its source buffer and its
+label says where the answer goes. `:llm-stop` stops this buffer's one request, else the only live
+one, else opens the list. No host or renderer change. No bench: a repaint per state change, nothing
+per key. Tests: `llm_inline.rs` (+4), `requests.rs` units (3). **LL.14c — Modeline, hidden-done notice, `:q` warns 📝.**
 
 
 **Files:** `src/llm/sink.rs` (echo, register), `src/llm/modes/requests.rs`, `src/llm/commands.rs`

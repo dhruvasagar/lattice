@@ -111,6 +111,23 @@ Neither changes the buffer, and a failure only shows in the echo area.
 echo, register, `below` or rewrite request, with its history, ready to
 follow up. The last 32 unshown chats are kept.
 
+### Running requests
+
+A request keeps running when you move on, so you can see and stop any of
+them from anywhere:
+
+- `:llm-requests` lists every request running and the last few that
+  finished, with its model and where its answer is going (`below main.rs:4`,
+  `echo`, `register "a`, a chat, a rewrite). The list updates itself as
+  requests start and finish. `dd` on a row stops that request.
+- `:llm-stop` stops this buffer's request: the chat's, or the one an ask
+  from this buffer started. With none here it stops the only one running.
+  When that would be a guess, because several are running, it opens
+  `:llm-requests` instead.
+
+Stopping works like `<C-c>` in a chat: an answer being written into the
+buffer keeps what arrived and ends with `[interrupted]`.
+
 ### Requests that may use tools
 
 A model calling tools needs somewhere to show the call and ask your

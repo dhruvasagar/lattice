@@ -319,6 +319,7 @@ fn start(
 
     let (label, hint, lang) = label_of(Some(store), &held.source);
     let session = chats.create_for_source(held.source.buffer, &hint);
+    session.set_destination(format!("rewrite {label}"));
     let block = Block::Source {
         label: label.clone(),
         lang,

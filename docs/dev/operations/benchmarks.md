@@ -88,6 +88,34 @@ never the bottleneck.
 
 ---
 
+## LS.3 — listing a directory at a revision, per keystroke (2026-11-03)
+
+`-` from a file at a revision opens oil on its directory *at that
+revision*, and every `<CR>` into a directory re-lists. Bench:
+`crates/lattice-vcs/benches/tree.rs`, against this repository's own tree
+(a root of ~20 entries; `crates/` of ~50).
+
+| Listing | Time |
+|---|---|
+| root at `HEAD`, repository open | 54.8 µs |
+| `crates/` at `HEAD`, repository open | 73.7 µs |
+| root at `HEAD`, `Repository::discover` per call | 319 µs |
+| root of the index (`staged`) | 228 µs |
+
+Read through gix in-process rather than by spawning `git ls-tree`, which
+measured 2.66 ms a call on this box — eight times the in-process cost
+with the open included. magit's source opens the repository per listing
+(the third row) rather than caching a handle: 0.32 ms is ~4% of a
+120 Hz frame for a keystroke that replaces the whole pane anyway, and a
+cached `gix::Repository` is not `Sync`, so holding one would mean a lock
+for a saving nobody can see. Same order as the filesystem listing
+beside it (PC.9: ~55 µs for a one-directory read). The index row walks
+every staged path, so it grows with the repository rather than with the
+directory; revisit if a large monorepo makes `-` from a staged copy
+noticeable.
+
+---
+
 ## SI.12 — mode range highlights on the publish path (2026-10-24)
 
 A live snippet's placeholders are tinted through a mode range-highlight
@@ -624,8 +652,15 @@ incremental edit.
 ⚠️ **Measured on the Apple Silicon box**, like the MG.14 rows below and
 unlike everything further down. Not comparable to the Ryzen numbers.
 
-User docs are embedded deflate-compressed and inflated on first open
-into a `OnceLock` cache (495 KB raw → 197 KB embedded, 2.5×). The
+User docs were embedded deflate-compressed and inflated on first open
+into a `OnceLock` cache (495 KB raw → 197 KB embedded, 2.5×). Since
+2026-11-05 they are zstd-compressed against one shared, build-trained
+dictionary instead (952 KB raw → 316 KB, 3.0×); decode got faster at
+every topic size — see the deflate-vs-dictionary table in
+[`embedded-docs-budget.md`](embedded-docs-budget.md). The rows below
+predate the switch and are due a re-run on the Apple Silicon box,
+which now also records `help_dictionary_prepare_ns` and
+`help_topic_first_open_median_ns`. The
 laziness is the part worth guarding: boot must not decompress anything,
 or every session pays for docs most users never open.
 
@@ -635,7 +670,7 @@ Run: `cargo bench -p lattice-help --bench topics`.
 | Bench | Median | Floor / Target | What it measures |
 |---|---|---|---|
 | `help_registry_boot_ns` | ~17.8 µs (73 topics) → **~39.4 µs (137 topics)** | 18 µs / 50 µs | `builtin_topics()` on the editor-boot path, for every session. Decompresses nothing — one name/summary `String` pair per topic and the map build. If this starts scaling with doc *volume*, laziness has regressed. **See the 2026-08-22 note below: the growth is in topic COUNT, which is expected, and headroom is now thin.** |
-| `help_topic_first_open_ns` | ~66.6 µs | 67 µs / 250 µs | Inflate + cache fill for the largest topic (`modal-editing`, ~26 KB). The one-time cost per topic per session, on an explicit `:help`. |
+| `help_topic_first_open_ns` | ~66.6 µs | 67 µs / 250 µs | Inflate + cache fill for the largest topic (`modal-editing`, ~26 KB, when measured; the bench now picks the largest at run time — `magit-transient`, ~51 KB, as of 2026-11-05). The one-time cost per topic per session, on an explicit `:help`. |
 | `help_topic_cached_open_ns` | ~562 ns → ~597 ns | 570 ns / 2 µs | Every later open of the same topic: a clone of the cached string. |
 | `help_registry_handle_read_ns` (CR.1) | ~608 ns | — / 2 µs | The same cached open, taken through the `ArcSwap` handle the registry now lives behind: `.load()` + lookup + render. **The delta against the row above IS the RCU wrapper** — ~10 ns, inside run-to-run noise. Making the registry runtime-writable so plugins can ship `:help` pages costs the existing read path nothing. |
 
@@ -3333,6 +3368,7 @@ itself never appears next to editor work in a flame graph.
 | `lsp::logging::log_trace_off`         | **10ns**   | ~5ns / <50ns   | Trace toggle off short-circuit -- a HashSet lookup + return. Hot path when trace stays disabled.   |
 | `lsp::logging::log_trace_on`          | **116ns**  | ~80ns / <500ns | Trace toggle on -- includes the ring push. Negligible at editor pace; perceptible at indexer bursts. |
 | `lsp_edit_publish_three_subs`         | **2.4µs**  | ~2µs / <5µs    | UI-thread cost per applied edit: `EventBus::publish` of one `Event::DocumentChanged` with one `AppliedEdit`, three `DocumentChanged` subscribers attached. The *only* LSP work the keystroke thread does after the per-actor fan-in refactor (docs/../architecture/lsp-architecture.md §11). +25% vs prior baseline (1.9µs) -- the new `MessagePushed` + `LspCodeLensRefresh` typed-event subscribers landed in Phase 4.4/4.5 add small downcast costs per publish; still ≪ 5µs gate. |
+| `lsp_edit_publish_typed_fan_in_three_subs` | **922ns** | ~1µs / <5µs | UI-thread cost of the LSP fan-in itself, now that it forwards inside the publish (`fan_in::subscribe` on `EventBus::subscribe_typed_fn`): one `LspDocumentChanged` with one edit, three subscribers each building the URI + `Edit` and doing one unbounded send — what `ServerHandle::record_edit` is. This moved onto the keystroke thread (2026-11-07) so an edit is in the actor's mailbox before any request the editor makes after it; before, a fan-in task did it and could run after that request. |
 | `lsp_edit_propagation_publish_to_recv`| **241ns**  | ~200ns / <600ns| Bus → mpsc receive hop: time from `EventBus::publish` to the per-actor fan-in's `mpsc::recv().await` returning. Excludes the actor's own `record_edit`. |
 | `lsp_didchange_flush_16_edits`        | **8.4µs**  | ~6µs / <25µs   | Actor-side debounce-arm cost: 16 `DocSync::record_edit` calls + `take_flush_payload` + serialise to `textDocument/didChange` JSON. Runs off the UI thread (post-debounce). |
 | `lsp_diagnostics_line_severity_wait_free` | **25ns** | ~20ns / <75ns  | Render-thread `DiagnosticsLayer::line_severity(uri, line)` after the audit's C3 fix. Pre-fix path locked an inner `Mutex` + cloned the full diagnostics list per call (microseconds, ~3000 calls/sec on the render thread = milliseconds wasted). New path: one `ArcSwap::load` + a borrowed-slice filter — wait-free, allocation-free. |
@@ -3355,6 +3391,12 @@ moments that matter:
   attached actors. The §8.2 keystroke-to-glyph ceiling is one frame, 8.3 ms;
   budgeting <50 µs for "tell the LSP layer" leaves >99% of
   the frame for the rest of the path. **1.9 µs ≪ 50 µs.**
+- **Fan-in on the publisher** (`lsp_edit_publish_typed_fan_in_three_subs`):
+  the forward the fan-in task used to do, now done in the
+  publish so edits are ordered ahead of later requests by
+  construction. **922 ns for three servers ≪ 50 µs.** With it
+  the propagation hop below no longer sits on the edit path —
+  the edit is in the actor's mailbox when the publish returns.
 - **Propagation** (`lsp_edit_propagation_publish_to_recv`):
   bus → fan-in receive hop. Sub-microsecond means the actor
   sees the event in the same tick the publish completes;

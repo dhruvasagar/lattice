@@ -268,7 +268,9 @@ impl Mode for MagitFileRevisionMode {
             })
             .await
             .unwrap_or_else(|_| (String::new(), None));
-            crate::buffer_io::replace_buffer_text(&handle, text).await;
+            // Announced, because a diff may be watching this copy: `dd` /
+            // `dv` open it and lay the diff out before `git show` returns.
+            crate::buffer_io::replace_buffer_text_announced(&handle, text, ctx.events()).await;
             if let Some(ph) = ctx.service::<lattice_mode::PendingSyntheticHighlights>() {
                 match spans {
                     // An unrecognised extension or a missing grammar
@@ -295,7 +297,8 @@ impl Mode for MagitFileRevisionMode {
 /// answer, with no error. MG.15 lost every stash chord to the same
 /// producer/parser split.
 ///
-/// `git_ref` is a commit-ish, the literal `staged`, or a `stash@{N}`.
+/// `git_ref` is a commit-ish, the literal `staged`, a `stash@{N}`, or a
+/// conflict stage ([`ConflictStage::token`]).
 pub(crate) const FILE_VIEW: &str = "file";
 
 /// MR.3b: this view's `rest` — `<ref>:<path>`, behind the repository.
@@ -329,13 +332,71 @@ pub(crate) fn parse_buffer_name(name: &str) -> Option<(String, PathBuf)> {
     Some((git_ref.to_string(), PathBuf::from(path)))
 }
 
+/// One side of a merge conflict, as the index holds it while the path is
+/// unmerged: git keeps the common ancestor, our version and their version
+/// as stages 1, 2 and 3, and the working file holds the markers.
+///
+/// They are pseudo-refs beside `staged`, written with brackets because a
+/// bracket cannot appear in a git ref name — so no branch can be mistaken
+/// for one, which `base` or `ours` alone could not promise.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ConflictStage {
+    Base,
+    Ours,
+    Theirs,
+}
+
+impl ConflictStage {
+    pub(crate) const ALL: [Self; 3] = [Self::Base, Self::Ours, Self::Theirs];
+
+    /// The pseudo-ref this stage takes in a blob buffer's name.
+    pub(crate) fn token(self) -> &'static str {
+        match self {
+            Self::Base => "[base]",
+            Self::Ours => "[ours]",
+            Self::Theirs => "[theirs]",
+        }
+    }
+
+    pub(crate) fn from_token(token: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|s| s.token() == token)
+    }
+
+    /// Git's stage number, as `:<n>:<path>` asks for it.
+    pub(crate) fn number(self) -> u8 {
+        match self {
+            Self::Base => 1,
+            Self::Ours => 2,
+            Self::Theirs => 3,
+        }
+    }
+
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Base => "base",
+            Self::Ours => "ours",
+            Self::Theirs => "theirs",
+        }
+    }
+}
+
+/// Whether `git_ref` names a commit — the thing a file's history can be
+/// walked from and a blame can start at. The index (`staged`) and a
+/// conflict's stages are blobs with no commit behind them.
+pub(crate) fn is_commit_ref(git_ref: &str) -> bool {
+    git_ref != "staged" && ConflictStage::from_token(git_ref).is_none()
+}
+
 /// The object git wants for "this path at this ref" — or, for the
 /// `staged` pseudo-ref, `:<path>`, git's own syntax for "stage 0 of the
-/// index" (the staged blob). One producer, because the preview path and
-/// the open path must ask git for the same object.
+/// index" (the staged blob), and `:<n>:<path>` for a conflict's stage.
+/// One producer, because the preview path and the open path must ask git
+/// for the same object.
 fn blob_spec(git_ref: &str, path: &Path) -> String {
     if git_ref == "staged" {
         format!(":{}", path.display())
+    } else if let Some(stage) = ConflictStage::from_token(git_ref) {
+        format!(":{}:{}", stage.number(), path.display())
     } else {
         format!("{git_ref}:{}", path.display())
     }
@@ -351,7 +412,16 @@ fn run_show_file(workdir: &Path, git_ref: &str, path: &Path) -> String {
         .ok()
         .filter(|o| o.status.success())
         .and_then(|o| String::from_utf8(o.stdout).ok())
-        .unwrap_or_else(|| format!("Could not show {spec}\n"))
+        .unwrap_or_else(|| match ConflictStage::from_token(git_ref) {
+            // A missing stage is an ordinary conflict, not a failure:
+            // "deleted by them" has no theirs, "both added" no base.
+            Some(stage) => format!(
+                "{} has no {} version: the file does not exist on that side of the merge.\n",
+                path.display(),
+                stage.label()
+            ),
+            None => format!("Could not show {spec}\n"),
+        })
 }
 
 /// MG.54: the biggest blob worth fetching **synchronously** for a
@@ -440,6 +510,9 @@ mod blob_name {
         for (git_ref, path) in [
             ("a1b2c3d", "src/main.rs"),
             ("staged", "src/main.rs"),
+            ("[base]", "src/main.rs"),
+            ("[ours]", "src/main.rs"),
+            ("[theirs]", "src/main.rs"),
             ("stash@{2}", "src/main.rs"),
             ("HEAD", "a.txt"),
             ("feature/branch-name", "deep/nested/path.rs"),
@@ -605,6 +678,97 @@ mod blob_navigation_round_trip {
         // The earlier revision is the file's first, so there is no
         // further step back.
         assert!(blob_step(&revs, &earlier, BlobStep::Previous).is_none());
+    }
+
+    // ── 3W.1: a conflict's three stages ──────────────────────────
+
+    /// A real `git merge` that stops on `a.txt`: base `one`, ours `ours`,
+    /// theirs `theirs`. When `delete_theirs`, their branch deletes the
+    /// file instead (`UD`, "deleted by them"), so stage 3 does not exist.
+    fn conflicted_repo(delete_theirs: bool) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let p = dir.path();
+        git_ok(p, &["init", "-b", "main"]);
+        git_ok(p, &["config", "user.email", "t@lattice.dev"]);
+        git_ok(p, &["config", "user.name", "lattice-test"]);
+        std::fs::write(p.join("a.txt"), "one\n").unwrap();
+        git_ok(p, &["add", "a.txt"]);
+        git_ok(p, &["commit", "-m", "base"]);
+        git_ok(p, &["checkout", "-b", "other"]);
+        if delete_theirs {
+            git_ok(p, &["rm", "-q", "a.txt"]);
+        } else {
+            std::fs::write(p.join("a.txt"), "theirs\n").unwrap();
+            git_ok(p, &["add", "a.txt"]);
+        }
+        git_ok(p, &["commit", "-m", "theirs"]);
+        git_ok(p, &["checkout", "main"]);
+        std::fs::write(p.join("a.txt"), "ours\n").unwrap();
+        git_ok(p, &["add", "a.txt"]);
+        git_ok(p, &["commit", "-m", "ours"]);
+        let merged = Command::new("git")
+            .args(["merge", "other"])
+            .current_dir(p)
+            .output()
+            .expect("git merge");
+        assert!(
+            !merged.status.success(),
+            "the merge must stop on a conflict"
+        );
+        dir
+    }
+
+    #[test]
+    fn each_conflict_stage_shows_its_own_side() {
+        let dir = conflicted_repo(false);
+        let p = dir.path();
+        let a = Path::new("a.txt");
+        for (stage, want) in [
+            (ConflictStage::Base, "one"),
+            (ConflictStage::Ours, "ours"),
+            (ConflictStage::Theirs, "theirs"),
+        ] {
+            assert_eq!(
+                run_show_file(p, stage.token(), a).trim(),
+                want,
+                "{} must read stage {}",
+                stage.label(),
+                stage.number()
+            );
+        }
+        // The working file holds the markers, which is why the stages
+        // are needed at all.
+        let working = std::fs::read_to_string(p.join("a.txt")).unwrap();
+        assert!(working.contains("<<<<<<<"), "got {working:?}");
+    }
+
+    /// "Deleted by them" has no stage 3. That is an ordinary conflict, so
+    /// the buffer says which side is missing instead of git's error.
+    #[test]
+    fn a_missing_stage_says_which_side_has_no_version() {
+        let dir = conflicted_repo(true);
+        let out = run_show_file(
+            dir.path(),
+            ConflictStage::Theirs.token(),
+            Path::new("a.txt"),
+        );
+        assert!(out.contains("a.txt has no theirs version"), "got {out:?}");
+        assert_eq!(
+            run_show_file(dir.path(), ConflictStage::Ours.token(), Path::new("a.txt")).trim(),
+            "ours"
+        );
+    }
+
+    /// A stage is a blob with no commit behind it, so there is no history
+    /// to walk from it and no blame to start at.
+    #[test]
+    fn a_conflict_stage_is_not_a_commit() {
+        for stage in ConflictStage::ALL {
+            assert!(!is_commit_ref(stage.token()));
+        }
+        assert!(!is_commit_ref("staged"));
+        assert!(is_commit_ref("HEAD"));
+        assert!(is_commit_ref("stash@{0}"));
     }
 
     // ── MG.54: the preview fetch and its guards ──────────────────

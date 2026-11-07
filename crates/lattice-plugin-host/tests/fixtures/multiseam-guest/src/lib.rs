@@ -329,6 +329,12 @@ impl Guest for Component {
         // @example ui.emit-segment: Push new text into a modeline segment the plugin registered
         ui::emit_segment("clock", "\u{25f7} 0:14");
         // @end-example
+        // @example ui.notify: Report the outcome of background work in `*messages*`, from an async seam
+        ui::notify(&lattice::plugin_host::types::UiNotification {
+            level: lattice::plugin_host::types::EchoLevel::Info,
+            message: "multiseam: options registered".to_string(),
+        });
+        // @end-example
         // OR.1: write from the ASYNC seam. The grammar seam's
         // `multiseam-store-read` reads it back out of a different
         // `wasmtime::Store` — one plugin, one store, N instances.

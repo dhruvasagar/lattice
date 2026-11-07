@@ -120,7 +120,24 @@ struct Inner {
     event_publisher: std::option::Option<EventPublisher>,
     /// PMF.16: values the user's configuration gave options, by full name and
     /// source — see [`ConfigRegistry::hold`].
-    held: HashMap<String, std::collections::BTreeMap<HeldSource, String>>,
+    held: HashMap<String, std::collections::BTreeMap<HeldSource, HeldValue>>,
+}
+
+/// A value held for an option that does not exist yet, kept in the shape the
+/// configuration wrote it in.
+///
+/// The shape is kept because only the option can say what it means. A list or
+/// a table written for a plugin's option (`[[org.capture-templates]]`,
+/// `agenda-files = ["~/a", "~/b"]`) is the option's whole value, and flattening
+/// it to text before the plugin declares the option would lose the structure
+/// its schema checks.
+#[derive(Debug, Clone, PartialEq)]
+pub enum HeldValue {
+    /// A scalar, in the text form `:set` takes.
+    Text(String),
+    /// A list or a table, applied whole and checked against the option's
+    /// schema when it registers.
+    Tree(crate::ConfigValue),
 }
 
 /// PMF.16: which part of the user's configuration a held value came from.
@@ -339,6 +356,7 @@ impl ConfigRegistry {
             }
         };
         let held = inner.held.get(&name).cloned();
+        let registered = inner.by_id[idx].clone();
         inner.by_name.insert(name.clone(), idx);
         for a in aliases {
             inner.by_name.insert((*a).to_string(), idx);
@@ -348,15 +366,26 @@ impl ConfigRegistry {
         // it existed (a plugin's option, set from `lattice.toml` or `init.rs`);
         // it starts with their value, not its default. In precedence order.
         for (source, value) in held.into_iter().flatten() {
-            if let Err(err) = self.parse_and_set_command(&format!("{name}={value}")) {
+            let applied = match &value {
+                HeldValue::Text(text) => self
+                    .parse_and_set_command(&format!("{name}={text}"))
+                    .map(|_| ())
+                    .map_err(|err| format!("`{name}`: {err}")),
+                HeldValue::Tree(tree) => match registered.as_deref() {
+                    Some(opt) => self.apply_held_tree(&name, opt, tree),
+                    None => Ok(()),
+                },
+            };
+            if let Err(err) = applied {
                 // User-actionable, and the only trace: the config was read
-                // long before this option appeared.
+                // long before this option appeared. The text carries the
+                // option's name and, for a list or a table, the field that
+                // failed, because `*messages*` shows the line, not the fields.
                 tracing::warn!(
                     option = %name,
-                    %value,
                     source = source.label(),
-                    %err,
-                    "a value your configuration set for this option does not fit it"
+                    "{err} (set in {}, which this option's plugin declares as something else)",
+                    source.label()
                 );
             }
         }
@@ -373,25 +402,90 @@ impl ConfigRegistry {
     /// rather than its default. Holding does not set anything: a caller whose
     /// option is already registered sets it too.
     pub fn hold(&self, name: &str, value: &str, source: HeldSource) {
+        self.hold_value(name, HeldValue::Text(value.to_string()), source);
+    }
+
+    /// [`Self::hold`] for a list or a table: kept whole, and checked against
+    /// the option's schema when the option registers.
+    pub fn hold_tree(&self, name: &str, value: crate::ConfigValue, source: HeldSource) {
+        self.hold_value(name, HeldValue::Tree(value), source);
+    }
+
+    fn hold_value(&self, name: &str, value: HeldValue, source: HeldSource) {
         self.inner
             .lock()
             .expect("ConfigRegistry poisoned")
             .held
             .entry(name.to_string())
             .or_default()
-            .insert(source, value.to_string());
+            .insert(source, value);
+    }
+
+    /// Apply a held list or table to the option it was written for.
+    ///
+    /// A composite option takes it whole, validated first so a failure names
+    /// the field (`[2].target.file: expected string, got integer`). A
+    /// list-of-scalars option that predates schemas (`ui.modeline.left`) takes
+    /// it joined, the way the loader joins an array for a registered one.
+    /// Anything else is a list or a table written for a scalar.
+    fn apply_held_tree(
+        &self,
+        name: &str,
+        opt: &dyn ErasedOption,
+        tree: &crate::ConfigValue,
+    ) -> Result<(), String> {
+        let schema = opt.schema();
+        if schema.is_composite() {
+            crate::schema::validate(&schema, tree).map_err(|err| {
+                format!(
+                    "`{name}{}`: {}",
+                    crate::schema::dot_path(&err.path),
+                    err.message
+                )
+            })?;
+            return opt
+                .set_value(tree)
+                .map_err(|err| format!("`{name}`: {err}"));
+        }
+        if let crate::ConfigValue::List(items) = tree
+            && opt.accepts_list()
+        {
+            let parts: std::option::Option<Vec<String>> = items
+                .iter()
+                .map(|item| match item {
+                    crate::ConfigValue::Str(s) => Some(s.clone()),
+                    crate::ConfigValue::Int(i) => Some(i.to_string()),
+                    crate::ConfigValue::Bool(b) => Some(b.to_string()),
+                    _ => None,
+                })
+                .collect();
+            if let Some(parts) = parts {
+                return self
+                    .parse_and_set_command(&format!("{name}={}", parts.join(",")))
+                    .map(|_| ())
+                    .map_err(|err| format!("`{name}`: {err}"));
+            }
+        }
+        Err(format!(
+            "`{name}`: a list or a table does not fit this option"
+        ))
     }
 
     /// PMF.16: the value the user's configuration holds for `name`, highest
     /// precedence first — what the option will be once it registers. For a
-    /// caller that must decide before then (a plugin's file grant).
+    /// caller that must decide before then (a plugin's file grant). Text only:
+    /// a grant follows a path, and a held list or table names none.
     pub fn held_value(&self, name: &str) -> std::option::Option<String> {
         self.inner
             .lock()
             .expect("ConfigRegistry poisoned")
             .held
             .get(name)
-            .and_then(|by_source| by_source.values().next_back().cloned())
+            .and_then(|by_source| by_source.values().next_back())
+            .and_then(|value| match value {
+                HeldValue::Text(text) => Some(text.clone()),
+                HeldValue::Tree(_) => None,
+            })
     }
 
     /// PMF.16: forget what `source` holds, before it is read again — a line the
@@ -407,12 +501,29 @@ impl ConfigRegistry {
     /// PMF.16: held names no registered option answers to, with the source that
     /// set each — once every plugin has loaded, a misspelt name or a plugin
     /// that did not load. Sorted, for a stable report.
+    ///
+    /// A table held for a plugin that has not loaded is read both ways, since
+    /// nothing can tell which it is until the plugin declares its options: as
+    /// one option's value, and as a namespace of options. So a held name is
+    /// also claimed when a registered option sits under it (the table was a
+    /// namespace) or above it (it was a field of a table option's value).
     pub fn unclaimed_held(&self) -> Vec<(String, HeldSource)> {
         let inner = self.inner.lock().expect("ConfigRegistry poisoned");
+        let claimed = |name: &str| {
+            inner.by_name.contains_key(name)
+                || inner.by_name.keys().any(|registered| {
+                    registered
+                        .strip_prefix(name)
+                        .is_some_and(|rest| rest.starts_with('.'))
+                        || name
+                            .strip_prefix(registered.as_str())
+                            .is_some_and(|rest| rest.starts_with('.'))
+                })
+        };
         let mut out: Vec<(String, HeldSource)> = inner
             .held
             .iter()
-            .filter(|(name, _)| !inner.by_name.contains_key(name.as_str()))
+            .filter(|(name, _)| !claimed(name.as_str()))
             .flat_map(|(name, by_source)| by_source.keys().map(|s| (name.clone(), *s)))
             .collect();
         out.sort();

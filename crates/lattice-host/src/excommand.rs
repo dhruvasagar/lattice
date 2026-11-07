@@ -550,6 +550,10 @@ static ALIAS_TABLE: &[(&str, &str)] = &[
     // vim-canonical commands, and no bare `:zoom`, which a future
     // font/UI scale command in the GPUI peer has the better claim on.
     ("zoom-pane", "ex:zoom-pane"),
+    // `:redr[aw][!]` -- vim's ex form of `<C-l>`. `redr` is vim's own
+    // abbreviation, so it is a vim-canonical short, not a new one.
+    ("redraw", "ex:redraw"),
+    ("redr", "ex:redraw"),
     ("noh", "ex:nohlsearch"),
     ("nohl", "ex:nohlsearch"),
     ("nohlsearch", "ex:nohlsearch"),
@@ -1942,6 +1946,15 @@ mod tests {
         for s in ["noh", "nohl", "nohlsearch"] {
             let inv = parse(s, &r).unwrap();
             assert_eq!(invocation_name(&inv, &r), "ex:nohlsearch", "alias `{s}`");
+        }
+    }
+
+    #[test]
+    fn redraw_aliases_route_to_one_command() {
+        let r = fixture();
+        for s in ["redr", "redraw", "redraw!", "redr!"] {
+            let inv = parse(s, &r).unwrap();
+            assert_eq!(invocation_name(&inv, &r), "ex:redraw", "alias `{s}`");
         }
     }
 

@@ -3794,6 +3794,48 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
         Effect::OpenDashboard => {
             out.renderer_signals.extend(editor.do_open_dashboard());
         }
+        // LS.4: a listing from a registered source, and "do this in a new
+        // pane". Both host-applied so a `Many` that opens and then acts
+        // runs in order, as `OpenSyntheticBuffer` does.
+        Effect::OpenOilSource { source, dir, focus } => {
+            out.renderer_signals
+                .extend(editor.open_oil_from_source(&source, dir, focus));
+        }
+        Effect::InTarget { target, effect } => {
+            out.renderer_signals
+                .extend(editor.prepare_open_target_pane(target));
+            handle_effect(editor, *effect, out);
+        }
+        // 3W.4: host-applied, so a `Many` that opens a synthetic buffer and
+        // then acts on it (magit's `dv`: open the index copy, then
+        // `Diffsplit` against it) runs in order. Both peers applied these,
+        // and a `Many`'s host half runs before any peer arm, so the
+        // `Diffsplit` ran first against whatever pane was active — `dv`
+        // from magit-status diffed nothing.
+        Effect::OpenSyntheticBuffer {
+            name,
+            mode_id,
+            content,
+            cursor,
+            activate_minor,
+        } => {
+            editor.open_synthetic_buffer_seeded(
+                &name,
+                &mode_id,
+                content.as_deref(),
+                cursor,
+                activate_minor.as_deref(),
+            );
+        }
+        // MG.50: open, THEN position against the now-active buffer.
+        Effect::OpenSyntheticBufferAt {
+            name,
+            mode_id,
+            position,
+        } => {
+            editor.open_synthetic_buffer(&name, &mode_id);
+            editor.set_cursor_clamped(position);
+        }
         Effect::RecordJump => {
             // M.10.3 (2026-06-03): record the current cursor +
             // active buffer onto the position-history ring as an
@@ -4396,6 +4438,14 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
             // Cursor lands in the first new pane (vim parity).
             editor.do_diffsplit(path, remote);
         }
+        Effect::DiffResolve {
+            ours,
+            working,
+            theirs,
+        } => {
+            // 3W.3: a git conflict laid out ours | working | theirs.
+            editor.do_diff_resolve(&ours, working, &theirs);
+        }
         Effect::DiffGetCmd { target } => {
             // D.6.d / CR.1: `:diffget [<bufnr>]` — pull the hunk under
             // the cursor from the named (or auto-resolved) buffer side.
@@ -4848,13 +4898,15 @@ impl Editor {
             return;
         };
         let path = path.to_path_buf();
-        if self.diff_subsystem.lookup(buffer_id).is_some() {
+        if self.holds_explicit_diff(buffer_id) {
             self.set_message(
                 EchoLevel::Info,
                 format!("Diff session already open for buffer {}", buffer_id.0),
             );
             return;
         }
+        // Its diff against HEAD steps aside; teardown hands it back.
+        self.yield_head_diff(buffer_id);
         let provider_text: std::sync::Arc<dyn crate::diff::subsystem::BufferTextProvider> =
             std::sync::Arc::new(crate::diff::subsystem::BufferRegistryTextProvider::new(
                 self.buffers.clone(),
@@ -5369,11 +5421,18 @@ impl Editor {
             .diff_subsystem
             .session_participants(session_key)
             .unwrap_or_default();
-        self.diff_subsystem.mode_bridge().note_conflict_state(
+        let queued = self.diff_subsystem.mode_bridge().note_conflict_state(
             session_key,
             &participants,
             has_conflicts,
         );
+        // The activation drains on the next tick. Off the keystroke path
+        // (a recompute landing) nothing else brings one, so the mode, and
+        // `d2o` / `d3o` with it, would wait for the user's next key. Wake
+        // the actor; its re-publish finds no transition and stops there.
+        if queued {
+            self.async_landed.notify_one();
+        }
     }
 
     /// D.3.a.1 / D.4.d.3.a / D.6.g / **D.8.f (2026-05-31)** —
@@ -5871,6 +5930,37 @@ impl Editor {
         // watcher buckets, descriptor, secondary index, and
         // debouncer in one shot.
         self.diff_subsystem.drop_session(primary);
+        // Hand each file's diff against HEAD back, now the explicit
+        // diff no longer holds it.
+        self.reclaim_head_diffs(&watch);
+    }
+
+    /// Step `buffer`'s diff against HEAD (the gutter signs, VCS.2) aside
+    /// for an explicit diff. False when it has none.
+    fn yield_head_diff(&self, buffer: lattice_core::BufferId) -> bool {
+        self.vcs_subscription_guard
+            .as_ref()
+            .is_some_and(|g| g.subsystem().yield_buffer(buffer, &self.diff_subsystem))
+    }
+
+    /// Re-arm the diff against HEAD of every buffer in `buffers` that
+    /// stepped aside and is no longer in a diff.
+    fn reclaim_head_diffs(&self, buffers: &[lattice_core::BufferId]) {
+        if let Some(g) = self.vcs_subscription_guard.as_ref() {
+            for b in buffers {
+                g.subsystem().reclaim(*b, &self.diff_subsystem);
+            }
+        }
+    }
+
+    /// `buffer` is in a diff the user opened: any session but its own diff
+    /// against HEAD, which an explicit diff takes over.
+    fn holds_explicit_diff(&self, buffer: lattice_core::BufferId) -> bool {
+        self.diff_subsystem.lookup_session_for(buffer).is_some()
+            && !self
+                .vcs_subscription_guard
+                .as_ref()
+                .is_some_and(|g| g.subsystem().holds_head_diff(buffer))
     }
 
     /// D.8.e (2026-05-31): `:diffthis` — per-buffer toggle on
@@ -6292,6 +6382,7 @@ impl Editor {
     fn register_pane_group_diff(
         &mut self,
         members: Vec<crate::pane_group::PaneGroupMember>,
+        layout: crate::diff::subsystem::ConflictLayout,
     ) -> Result<(), String> {
         let arity = members.len();
         if !(2..=3).contains(&arity) {
@@ -6307,14 +6398,32 @@ impl Editor {
                 }
             }
         }
-        let primary = members[1].buffer;
-        for m in &members {
-            if self.diff_subsystem.lookup_session_for(m.buffer).is_some() {
-                return Err(format!(
-                    "buffer {} already participates in a diff session",
-                    m.buffer.0
-                ));
-            }
+        // The session is keyed under the side the conflict chords run
+        // from: slot 1 (local) in a merge, slot 0 (the working file) when
+        // resolving. `sync_diff_conflict_activation` looks the session up
+        // by the focused buffer's key, so the wrong key would leave
+        // `diff-conflict-mode` off in the one pane that resolves.
+        let primary = match layout {
+            crate::diff::subsystem::ConflictLayout::Merge => members[1].buffer,
+            crate::diff::subsystem::ConflictLayout::Resolve => members[0].buffer,
+        };
+        // A file's diff against HEAD (the gutter signs) steps aside for the
+        // explicit diff, and is handed back on every failure below.
+        let yielded: Vec<lattice_core::BufferId> = members
+            .iter()
+            .map(|m| m.buffer)
+            .filter(|b| self.yield_head_diff(*b))
+            .collect();
+        if let Some(busy) = members
+            .iter()
+            .find(|m| self.diff_subsystem.lookup_session_for(m.buffer).is_some())
+        {
+            let msg = format!(
+                "buffer {} already participates in a diff session",
+                busy.buffer.0
+            );
+            self.reclaim_head_diffs(&yielded);
+            return Err(msg);
         }
 
         let provider_text: std::sync::Arc<dyn crate::diff::subsystem::BufferTextProvider> =
@@ -6348,6 +6457,7 @@ impl Editor {
             lattice_diff::DiffAlgorithm::Histogram,
             descriptor,
         );
+        session.set_conflict_layout(layout);
 
         let mapper: std::sync::Arc<dyn crate::pane_group::RowMapper> = if arity == 2 {
             std::sync::Arc::new(crate::diff::pane_group::HunkRowMapper::new(
@@ -6363,14 +6473,17 @@ impl Editor {
                 2,
             ))
         };
-        let pane_group_id = self
-            .add_pane_group(members.clone(), mapper)
-            .inspect_err(|_e| {
-                // Roll back the session if pane-group
-                // registration fails — otherwise we'd leave
-                // a session with no UI binding.
+        let pane_group_id = match self.add_pane_group(members.clone(), mapper) {
+            Ok(id) => id,
+            Err(e) => {
+                // Roll back the session if pane-group registration
+                // fails — otherwise we'd leave a session with no UI
+                // binding.
                 self.diff_subsystem.drop_session(primary);
-            })?;
+                self.reclaim_head_diffs(&yielded);
+                return Err(e);
+            }
+        };
         session.bind_pane_group(pane_group_id);
 
         // Filler provider per slot. Side encoding stays the
@@ -6480,11 +6593,7 @@ impl Editor {
         // diff session — defence-in-depth so the user gets
         // a clear error before any split / open work
         // happens.
-        if self
-            .diff_subsystem
-            .lookup_session_for(active_member.buffer)
-            .is_some()
-        {
+        if self.holds_explicit_diff(active_member.buffer) {
             self.set_message(
                 EchoLevel::Error,
                 format!(
@@ -6535,7 +6644,10 @@ impl Editor {
                 let baseline = active_member;
                 let baseline_buf = baseline.buffer;
                 let new_current_buf = new_current.buffer;
-                if let Err(msg) = self.register_pane_group_diff(vec![baseline, new_current]) {
+                if let Err(msg) = self.register_pane_group_diff(
+                    vec![baseline, new_current],
+                    crate::diff::subsystem::ConflictLayout::Merge,
+                ) {
                     self.set_message(EchoLevel::Error, format!("diffsplit: {msg}"));
                     return;
                 }
@@ -6573,7 +6685,10 @@ impl Editor {
                 let base_buf = base.buffer;
                 let local_buf = local.buffer;
                 let remote_buf = remote_member.buffer;
-                if let Err(msg) = self.register_pane_group_diff(vec![base, local, remote_member]) {
+                if let Err(msg) = self.register_pane_group_diff(
+                    vec![base, local, remote_member],
+                    crate::diff::subsystem::ConflictLayout::Merge,
+                ) {
                     self.set_message(EchoLevel::Error, format!("diffsplit: {msg}"));
                     return;
                 }
@@ -6587,6 +6702,92 @@ impl Editor {
                 );
             }
         }
+    }
+
+    /// 3W.3: lay a git conflict out as ours | working | theirs and diff it
+    /// as a `Resolve` session — the working file between git's copies of
+    /// the two sides, the vim-fugitive `:Gdiffsplit!` arrangement.
+    ///
+    /// `ours` and `theirs` name buffers the emitter has already opened (the
+    /// copies have no file, so [`Self::do_diffsplit`]'s path-based opening
+    /// cannot reach them). Ours takes the current pane, the working file
+    /// and theirs open in vsplits to its right, and the cursor ends in the
+    /// working file, the only side resolving edits.
+    ///
+    /// Every failure leaves the layout as it was: a missing copy is refused
+    /// before any split, and a split that cannot open is closed again.
+    pub fn do_diff_resolve(&mut self, ours: &str, working: std::path::PathBuf, theirs: &str) {
+        use lattice_core::ui::pane::SplitOrientation;
+
+        let (Some(ours_id), Some(theirs_id)) =
+            (self.buffers.by_name(ours), self.buffers.by_name(theirs))
+        else {
+            self.set_message(
+                EchoLevel::Error,
+                "conflict: git's copies of the two sides are not open",
+            );
+            return;
+        };
+        if let Some(busy) = [ours_id, theirs_id]
+            .into_iter()
+            .find(|b| self.diff_subsystem.lookup_session_for(*b).is_some())
+        {
+            self.set_message(
+                EchoLevel::Error,
+                format!(
+                    "conflict: buffer {} is already in a diff session; use :diffoff first",
+                    busy.0
+                ),
+            );
+            return;
+        }
+
+        let member_of_active = |this: &Self| {
+            let leaf = this.pane_tree.active();
+            crate::pane_group::PaneGroupMember {
+                pane: leaf.id,
+                buffer: leaf.buffer_id,
+            }
+        };
+
+        self.activate_buffer(ours_id);
+        let ours_member = member_of_active(self);
+
+        let working_pane = self.pane_tree.split_active(SplitOrientation::Vertical);
+        self.pane_tree.set_active(working_pane);
+        match self.do_edit(Some(working), false) {
+            DoEditOutcome::Opened(_) | DoEditOutcome::Activated(_) | DoEditOutcome::Reloaded(_) => {
+            }
+            DoEditOutcome::Failed | DoEditOutcome::Directory(_) | DoEditOutcome::NoFileName => {
+                // `do_edit` has already said why.
+                self.pane_tree.close_active();
+                return;
+            }
+        }
+        let working_member = member_of_active(self);
+
+        let theirs_pane = self.pane_tree.split_active(SplitOrientation::Vertical);
+        self.pane_tree.set_active(theirs_pane);
+        self.activate_buffer(theirs_id);
+        let theirs_member = member_of_active(self);
+
+        if let Err(msg) = self.register_pane_group_diff(
+            vec![working_member, ours_member, theirs_member],
+            crate::diff::subsystem::ConflictLayout::Resolve,
+        ) {
+            // Close theirs, then the working file, leaving ours where the
+            // trigger was.
+            self.pane_tree.close_active();
+            self.pane_tree.set_active(working_pane);
+            self.pane_tree.close_active();
+            self.set_message(EchoLevel::Error, format!("conflict: {msg}"));
+            return;
+        }
+        self.activate_pane(working_pane);
+        self.set_message(
+            EchoLevel::Info,
+            "conflict: ours | working | theirs — d2o ours, d3o theirs, dB both, ]c next",
+        );
     }
 
     /// I4 (Claude Code IDE peer, `openDiff`): drain host-drained programmatic
@@ -7200,7 +7401,10 @@ impl Editor {
             pane: right_pane,
             buffer: right_id,
         };
-        if let Err(msg) = self.register_pane_group_diff(vec![left_member, right_member]) {
+        if let Err(msg) = self.register_pane_group_diff(
+            vec![left_member, right_member],
+            crate::diff::subsystem::ConflictLayout::Merge,
+        ) {
             // Roll BOTH new panes back, refocus the claude pane so the user isn't
             // stranded in a half-open diff, drop the throwaway buffers, and drop
             // `response` → the producer's await rejects.
@@ -12582,16 +12786,22 @@ impl Editor {
                 return Err(CompletionComputeError::NoCompletionAtCursor);
             }
         };
-        let Some(generator) = self.completion_registry.generator_by_name(source_name) else {
+        // A builtin generator, or a value list a plugin published.
+        let pipeline = if let Some(generator) =
+            self.completion_registry.generator_by_name(source_name)
+        {
+            lattice_completion::CompletionPipeline::for_generator(
+                &self.completion_registry,
+                generator.id,
+            )
+        } else if let Some(values) = reg.completion_values(source_name) {
+            lattice_completion::CompletionPipeline::for_values(&self.completion_registry, values)
+        } else {
             return Err(CompletionComputeError::MissingSource(
                 source_name.to_string(),
             ));
         };
-        let generator_id = generator.id;
-        let Some(pipeline) = lattice_completion::CompletionPipeline::for_generator(
-            &self.completion_registry,
-            generator_id,
-        ) else {
+        let Some(pipeline) = pipeline else {
             return Err(CompletionComputeError::PipelineUnconfigured);
         };
         let snap = self.document.snapshot();
@@ -12750,7 +12960,10 @@ impl Editor {
             .args_schema
             .first()
             .and_then(|a| a.completion.as_deref())
-            .is_some_and(|source| self.completion_registry.generator_by_name(source).is_some());
+            .is_some_and(|source| {
+                self.completion_registry.generator_by_name(source).is_some()
+                    || reg.completion_values(source).is_some()
+            });
         drop(reg);
         if !has_completable_arg {
             return false;
@@ -19870,8 +20083,7 @@ impl Editor {
     }
 
     /// WK.10: absorb the effects an OFF-KEYSTROKE drain's renderer tail
-    /// would drop — the popup pair, and opening a synthetic buffer —
-    /// host-side.
+    /// would drop — the popup pair — host-side.
     ///
     /// `apply_effect_host` deliberately routes `OpenPopup` / `DismissPopup`
     /// to `out.effects` for a renderer to drain. Off a keystroke there is no
@@ -19888,12 +20100,10 @@ impl Editor {
     /// them is how the second one got missed; a third off-keystroke drain
     /// calls this and inherits the fix.
     ///
-    /// `OpenSyntheticBuffer` has the same hazard and the same remedy: both
-    /// peers apply it by calling [`Self::open_synthetic_buffer_seeded`],
-    /// so the host can call it with nothing lost. A producer that opens a
-    /// buffer when its work lands — a pull stopped before its merge commit
-    /// opening the commit buffer — was otherwise a no-op until a key went
-    /// through a peer that never received it either.
+    /// `OpenSyntheticBuffer` had the same hazard and was absorbed here too,
+    /// until 3W.4 moved it into `handle_effect` for every path: a `Many`
+    /// that opens a buffer and then acts on it must open it first, and the
+    /// renderer tail runs after the whole `Many`.
     ///
     /// Anything else keeps the old routing — back onto the tail, in case a
     /// peer is in a position to drain it.
@@ -19914,19 +20124,6 @@ impl Editor {
                 lattice_grammar::Effect::DismissPopupNamed { name } => {
                     self.dismiss_popup_named(&name);
                 }
-                lattice_grammar::Effect::OpenSyntheticBuffer {
-                    name,
-                    mode_id,
-                    content,
-                    cursor,
-                    activate_minor,
-                } => self.open_synthetic_buffer_seeded(
-                    &name,
-                    &mode_id,
-                    content.as_deref(),
-                    cursor,
-                    activate_minor.as_deref(),
-                ),
                 other => out.effects.push(other),
             }
         }
@@ -25567,13 +25764,34 @@ impl Editor {
             .filter(|p| matches!(p.buffer, BufferKind::Document))
             .map(|p| p.buffer_id)
             .collect();
-        for buffer_id in visible_doc_buffers {
+        for &buffer_id in &visible_doc_buffers {
             self.cells_matrix_for(buffer_id)
                 .store(std::sync::Arc::new(lattice_cells::CellMatrix::empty()));
             self.display_matrix_for(buffer_id)
                 .store(std::sync::Arc::new(
                     crate::display_matrix::DisplayMatrix::empty(),
                 ));
+        }
+        // And semantic tokens. They are cached against the text version,
+        // which a redraw does not move, so without this wrong semantic
+        // colours survived the key pressed to clear them. Refetch in full:
+        // dropping the `result_id` means no delta, which would be spliced
+        // onto the very tokens being replaced. The old tokens keep
+        // rendering until the new ones land (as for a server `refresh`,
+        // `drain_semantic_tokens_refresh`), so a correct buffer does not
+        // flash.
+        {
+            use crate::per_buffer_cache::PerBufferCacheExt;
+            for &buffer_id in &visible_doc_buffers {
+                if let Some(cache) = self.lsp_semantic_tokens_cache.get_for(buffer_id)
+                    && cache.result_id.is_some()
+                {
+                    let mut full = (*cache).clone();
+                    full.result_id = None;
+                    self.lsp_semantic_tokens_cache.insert_for(buffer_id, full);
+                }
+                self.semantic_tokens_refresh_pending.insert(buffer_id);
+            }
         }
         self.recompute_folds();
         self.pending_redraw = true;
@@ -25628,9 +25846,18 @@ impl Editor {
     /// so `:files` / `:search` from an oil buffer resolve against the
     /// directory it is listing rather than the process working directory. One
     /// chokepoint writes both, which is what stops them drifting apart.
+    ///
+    /// The label is the buffer's source's, so set the source first
+    /// ([`Self::open_oil_listing`] does).
     pub fn set_oil_dir(&mut self, buffer_id: BufferId, dir: std::path::PathBuf) {
         self.set_buffer_scope_dir(buffer_id, dir.clone());
-        self.set_buffer_label(buffer_id, Some(lattice_listing::oil::modeline_label(&dir)));
+        let source = self.oil_source_for(buffer_id);
+        self.set_buffer_label(
+            buffer_id,
+            Some(lattice_listing::oil::source::source_label_for(
+                &*source, &dir,
+            )),
+        );
         self.buffer_locals
             .entry(buffer_id)
             .or_default()
@@ -26110,13 +26337,33 @@ impl Editor {
             .map(|d| d.0.clone())
     }
 
-    /// Find a registered oil buffer whose `OilDir` matches `dir`.
-    /// Used by `do_open_oil`'s dedup path.
+    /// Find a registered filesystem oil buffer whose `OilDir` matches
+    /// `dir`. Used by `do_open_oil`'s dedup path.
     pub fn oil_with_dir(&self, dir: &std::path::Path) -> Option<BufferId> {
-        self.buffers
-            .oil_ids()
-            .into_iter()
-            .find(|&id| self.oil_dir_for(id).as_deref() == Some(dir))
+        self.oil_listing(lattice_listing::oil::FsSource::ID, dir)
+    }
+
+    /// The oil buffer listing `dir` from the source with id `source_id`.
+    /// A directory open from two sources is two buffers: the working tree
+    /// and a revision are different listings of the same path.
+    pub fn oil_listing(&self, source_id: &str, dir: &std::path::Path) -> Option<BufferId> {
+        self.buffers.oil_ids().into_iter().find(|&id| {
+            self.oil_dir_for(id).as_deref() == Some(dir)
+                && self.oil_source_for(id).id() == source_id
+        })
+    }
+
+    /// The source oil buffer `buffer_id` lists from — the filesystem for
+    /// a buffer opened without one.
+    pub fn oil_source_for(
+        &self,
+        buffer_id: BufferId,
+    ) -> std::sync::Arc<dyn lattice_listing::oil::OilSource> {
+        lattice_listing::oil::source_or_fs(
+            self.buffer_locals
+                .get(&buffer_id)
+                .and_then(|l| l.get::<lattice_listing::oil::OilSourceLocal>()),
+        )
     }
 
     /// `:Oil [dir]` -- open an oil buffer rooted at `dir` (or the
@@ -26153,24 +26400,64 @@ impl Editor {
             },
         };
         let dir = normalize_user_path_with_cwd(&dir, self.current_dir.as_deref());
-        if let Some(existing_id) = self.oil_with_dir(&dir) {
+        self.open_oil_listing(
+            std::sync::Arc::new(lattice_listing::oil::FsSource),
+            dir,
+            came_from,
+        )
+    }
+
+    /// LS.4: [`Effect::OpenOilSource`]'s applier — resolve `source_id`
+    /// through the registered providers and open the listing. An id no
+    /// provider claims is an error, never the filesystem: a fallback
+    /// would show the working tree under a label that says otherwise.
+    pub fn open_oil_from_source(
+        &mut self,
+        source_id: &str,
+        dir: std::path::PathBuf,
+        focus: Option<String>,
+    ) -> Vec<RendererSignal> {
+        let source = self
+            .services
+            .get::<lattice_listing::oil::OilSourceRegistryHandle>()
+            .and_then(|registry| registry.load().source(source_id));
+        match source {
+            Some(source) => self.open_oil_listing(source, dir, focus),
+            None => {
+                self.set_message(
+                    EchoLevel::Error,
+                    format!("oil: no listing source `{source_id}`"),
+                );
+                Vec::new()
+            }
+        }
+    }
+
+    /// Open oil on `dir` as `source` lists it, landing on the entry named
+    /// `focus`. The one open path: `:Oil` and `-` from a file come here
+    /// with the filesystem, a provider's `-` with its own source. A
+    /// listing of `dir` already open from the same source is switched to,
+    /// not duplicated.
+    pub fn open_oil_listing(
+        &mut self,
+        source: std::sync::Arc<dyn lattice_listing::oil::OilSource>,
+        dir: std::path::PathBuf,
+        focus: Option<String>,
+    ) -> Vec<RendererSignal> {
+        let came_from = focus;
+        let shown = source.display(&dir);
+        if let Some(existing_id) = self.oil_listing(source.id(), &dir) {
             self.activate_oil(existing_id);
             if let Some(name) = &came_from {
                 self.focus_oil_entry(name);
             }
-            self.set_message(
-                EchoLevel::Info,
-                format!("oil: {} (already open)", dir.display()),
-            );
+            self.set_message(EchoLevel::Info, format!("oil: {shown} (already open)"));
             return Vec::new();
         }
-        let oil = match lattice_listing::oil::OilSnapshot::open(&dir) {
-            Ok(o) => o,
+        let oil = match source.list(&dir) {
+            Ok(entries) => lattice_listing::oil::OilSnapshot::from_entries(entries),
             Err(e) => {
-                self.set_message(
-                    EchoLevel::Error,
-                    format!("oil open error: {}: {e}", dir.display()),
-                );
+                self.set_message(EchoLevel::Error, format!("oil open error: {shown}: {e}"));
                 return Vec::new();
             }
         };
@@ -26186,9 +26473,26 @@ impl Editor {
             crate::buffers::BufferFlags::default(),
             crate::buffer_registry::ListingKind::Oil,
         );
+        let read_only = source.read_only().is_some();
+        self.buffer_locals
+            .entry(new_id)
+            .or_default()
+            .insert(lattice_listing::oil::OilSourceLocal(source));
         self.set_oil_dir(new_id, dir.clone());
         self.write_oil_listing(new_id, oil);
-        let signals = self.activate_major_for_buffer_kind(new_id, BufferKind::Oil);
+        let mut signals = self.activate_major_for_buffer_kind(new_id, BufferKind::Oil);
+        // LS.2: a listing that cannot be written refuses edits the way every
+        // other read-only buffer does. `read-only-mode` carries both halves —
+        // the `ReadOnly` option that stops typing and the invocation runner
+        // that refuses operators — and its runner outranks oil-mode's, so
+        // motions and yanks still work and `dd` says why it did nothing.
+        // `:w` is refused separately, in `do_write`, because oil's write
+        // never reaches the generic read-only gate.
+        if read_only {
+            signals.extend(
+                self.activate_mode_by_id(new_id, lattice_mode::modes::ReadOnlyMode::mode_id()),
+            );
+        }
         self.activate_document(new_id);
         self.cursor = lattice_protocol::Position::ZERO;
         self.scroll = 0;
@@ -26200,7 +26504,7 @@ impl Editor {
         if let Some(name) = &came_from {
             self.focus_oil_entry(name);
         }
-        self.set_message(EchoLevel::Info, format!("oil: {}", dir.display()));
+        self.set_message(EchoLevel::Info, format!("oil: {shown}"));
         signals
     }
 
@@ -26224,12 +26528,14 @@ impl Editor {
         dir: std::path::PathBuf,
         focus: Option<String>,
     ) -> Vec<RendererSignal> {
-        let mut snapshot = self.oil_snapshot_for(view).unwrap_or_default();
-        match snapshot.reload(&dir) {
+        // The buffer's own source: a listing at a revision re-lists at
+        // that revision.
+        match self.oil_source_for(view).list(&dir) {
             Err(e) => {
                 self.set_message(EchoLevel::Error, format!("oil navigate: {e}"));
             }
-            Ok(()) => {
+            Ok(entries) => {
+                let snapshot = lattice_listing::oil::OilSnapshot::from_entries(entries);
                 self.set_oil_dir(view, dir);
                 self.write_oil_listing(view, snapshot);
                 self.cursor = lattice_protocol::Position::ZERO;
@@ -31338,6 +31644,13 @@ impl Editor {
                 );
                 return;
             };
+            // LS.2: `apply` writes to the disk, so a listing from any other
+            // tree must never reach it — even with edits pending.
+            if let Some(why) = self.oil_source_for(oil_id).read_only() {
+                let why = format!("oil: {why}");
+                self.set_message(EchoLevel::Error, why);
+                return;
+            }
             let dir_display = dir.display().to_string();
             // DL.5: the diff reads the user's text from the Document
             // and the baseline from the snapshot local. Both re-read
@@ -44755,6 +45068,8 @@ pub fn effect_mutates_or_yanks(effect: &lattice_grammar::Effect) -> bool {
         | Effect::OpenFileTree { .. }
         | Effect::CloseFileTree
         | Effect::OpenOil { .. }
+        | Effect::OpenOilSource { .. }
+        | Effect::InTarget { .. }
         // LM.2: in-place re-list / toggle — like OpenOil, navigation, not a
         // user edit-mutation or yank.
         | Effect::OilNavigate { .. }
@@ -44823,6 +45138,7 @@ pub fn effect_mutates_or_yanks(effect: &lattice_grammar::Effect) -> bool {
         | Effect::DiffOff { .. }
         | Effect::Diffthis
         | Effect::Diffsplit { .. }
+        | Effect::DiffResolve { .. }
         | Effect::DiffGetCmd { .. }
         | Effect::DiffPutCmd { .. }
         | Effect::DiffAccept
@@ -44919,6 +45235,8 @@ pub fn effect_mutates(effect: &lattice_grammar::Effect) -> bool {
         | Effect::OpenFileTree { .. }
         | Effect::CloseFileTree
         | Effect::OpenOil { .. }
+        | Effect::OpenOilSource { .. }
+        | Effect::InTarget { .. }
         // LM.2: in-place re-list / toggle — like OpenOil, navigation, not a
         // user edit-mutation or yank.
         | Effect::OilNavigate { .. }
@@ -44987,6 +45305,7 @@ pub fn effect_mutates(effect: &lattice_grammar::Effect) -> bool {
         | Effect::DiffOff { .. }
         | Effect::Diffthis
         | Effect::Diffsplit { .. }
+        | Effect::DiffResolve { .. }
         | Effect::DiffGetCmd { .. }
         | Effect::DiffPutCmd { .. }
         | Effect::DiffAccept
@@ -46168,7 +46487,12 @@ impl Editor {
                     services: &self.services,
                     events: &self.event_bus,
                     prompt_value: None,
-                    args: lattice_grammar::Args::None,
+                    // The invocation's own args: `Args::None` for a chord
+                    // press, the typed args for `Effect::InvokeCommand`
+                    // (CD.3d — `:multibuffer-keep /pat/` hands its pattern
+                    // over this way). Hard-coding `None` here dropped them,
+                    // so an action reached by name never saw its arguments.
+                    args: inv.args.clone(),
                     // LM.1: the chord-dispatch path — a mode handler (oil /
                     // file-tree navigation) reads its buffer's locals here to
                     // resolve the entry under the cursor.
@@ -55436,6 +55760,170 @@ mod tests {
         assert!(editor.pane_groups.is_empty());
     }
 
+    // ── 3W.3: a git conflict opened for resolution ─────────────
+
+    const CONFLICTED: &str = "keep\n<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> other\nkeep too\n";
+
+    /// An editor with git's two copies open as named buffers, the way
+    /// magit opens them before emitting `Effect::DiffResolve`.
+    fn editor_with_copies() -> (crate::editor::Editor, TempFilePath) {
+        let working = write_temp(CONFLICTED, "3w3-working");
+        let mut editor = crate::editor::Editor::boot(lattice_core::Document::empty());
+        editor.create_inmemory_document("keep\nours\nkeep too\n", None, Some("ours-copy".into()));
+        editor.create_inmemory_document(
+            "keep\ntheirs\nkeep too\n",
+            None,
+            Some("theirs-copy".into()),
+        );
+        (editor, working)
+    }
+
+    fn text_of(editor: &crate::editor::Editor, id: BufferId) -> String {
+        editor
+            .buffers
+            .document_handle(id)
+            .expect("handle")
+            .snapshot()
+            .buffer
+            .to_rope()
+            .to_string()
+    }
+
+    /// The layout is ours | working | theirs, the session is a `Resolve`
+    /// keyed under the working file, and the cursor is in the working
+    /// file — the one pane where resolving edits.
+    #[tokio::test]
+    async fn diff_resolve_lays_out_ours_working_theirs_and_focuses_working() {
+        let (mut editor, working) = editor_with_copies();
+        let panes_before = editor.pane_tree.leaves().len();
+
+        editor.handle_effect(Effect::DiffResolve {
+            ours: "ours-copy".into(),
+            working: working.0.clone(),
+            theirs: "theirs-copy".into(),
+        });
+
+        let ours = editor.buffers.by_name("ours-copy").unwrap();
+        let theirs = editor.buffers.by_name("theirs-copy").unwrap();
+        let working_buf = editor.document_buffer_id;
+        assert_eq!(
+            text_of(&editor, working_buf),
+            CONFLICTED,
+            "focus is the working file"
+        );
+        assert_eq!(editor.pane_tree.leaves().len(), panes_before + 2);
+        let order: Vec<BufferId> = editor
+            .pane_tree
+            .leaves()
+            .iter()
+            .map(|l| l.buffer_id)
+            .collect();
+        assert_eq!(
+            order,
+            vec![ours, working_buf, theirs],
+            "ours | working | theirs"
+        );
+
+        let session = editor
+            .diff_subsystem
+            .lookup(working_buf)
+            .expect("the session is keyed under the working file");
+        assert_eq!(
+            session.conflict_layout(),
+            crate::diff::subsystem::ConflictLayout::Resolve
+        );
+        let participants = editor
+            .diff_subsystem
+            .session_participants(working_buf)
+            .unwrap();
+        assert_eq!(participants, vec![working_buf, ours, theirs]);
+    }
+
+    /// End to end through the opened session: the real engine's hunks,
+    /// then `d2o` replaces the whole marker block with ours.
+    #[tokio::test]
+    async fn diff_resolve_keep_ours_clears_the_markers() {
+        let (mut editor, working) = editor_with_copies();
+        editor.handle_effect(Effect::DiffResolve {
+            ours: "ours-copy".into(),
+            working: working.0.clone(),
+            theirs: "theirs-copy".into(),
+        });
+        let working_buf = editor.document_buffer_id;
+        let session = editor.diff_subsystem.lookup(working_buf).unwrap();
+        let ropes: Vec<ropey::Rope> = editor
+            .diff_subsystem
+            .session_participants(working_buf)
+            .unwrap()
+            .into_iter()
+            .map(|b| ropey::Rope::from(text_of(&editor, b)))
+            .collect();
+        session.recompute_blocking(&ropes).expect("publishes");
+
+        let effect = editor
+            .diff_subsystem
+            .diff_keep_ours_effect(working_buf, 2)
+            .expect("a conflict under the cursor");
+        // `ApplyEdit` is deferred to a follow-up action (CR.0), which the
+        // dispatch loop runs; run it the same way.
+        let out = editor.handle_effect(effect);
+        for action in out.next_actions {
+            editor.dispatch(action);
+        }
+        assert_eq!(text_of(&editor, working_buf), "keep\nours\nkeep too\n");
+    }
+
+    /// A copy that is not open is refused before any split, so the layout
+    /// is left exactly as it was.
+    #[tokio::test]
+    async fn diff_resolve_without_its_copies_changes_nothing() {
+        let (mut editor, working) = editor_with_copies();
+        let panes_before = editor.pane_tree.leaves().len();
+        editor.handle_effect(Effect::DiffResolve {
+            ours: "ours-copy".into(),
+            working: working.0.clone(),
+            theirs: "never-opened".into(),
+        });
+        assert_eq!(editor.pane_tree.leaves().len(), panes_before);
+        assert!(editor.diff_subsystem.is_empty());
+    }
+
+    /// A `Many` that opens buffers and then names them runs in order, the
+    /// way a chord's effects are applied (`apply_effect_host`). The opens
+    /// were renderer-applied, so they ran after the whole `Many` and the
+    /// layout found neither copy.
+    #[tokio::test]
+    async fn a_many_opens_its_buffers_before_the_effect_that_names_them() {
+        let working = write_temp(CONFLICTED, "3w4-many");
+        let mut editor = crate::editor::Editor::boot(lattice_core::Document::empty());
+        let open = |name: &str, text: &str| Effect::OpenSyntheticBuffer {
+            name: name.into(),
+            mode_id: "plugin-output-mode".into(),
+            content: Some(text.into()),
+            cursor: None,
+            activate_minor: None,
+        };
+        let mut out = DispatchOutcome::default();
+        apply_effect_host(
+            &mut editor,
+            Effect::Many(vec![
+                open("theirs-copy", "keep\ntheirs\nkeep too\n"),
+                open("ours-copy", "keep\nours\nkeep too\n"),
+                Effect::DiffResolve {
+                    ours: "ours-copy".into(),
+                    working: working.0.clone(),
+                    theirs: "theirs-copy".into(),
+                },
+            ]),
+            &mut out,
+        );
+        let participants = editor
+            .diff_subsystem
+            .session_participants(editor.document_buffer_id)
+            .expect("the layout found both copies");
+        assert_eq!(participants.len(), 3);
+    }
+
     // ──────────────────────────────────────────────────────
     // D.6.h (2026-05-31): slice-plan canonical integration
     // test — `:diffput <bufnr>` resolves a three-way Conflict
@@ -56610,6 +57098,60 @@ mod tests {
             "the accepted candidate is spliced into the buffer, got {:?}",
             editor.command_line()
         );
+    }
+
+    /// A plugin's published list reaches `<Tab>` on its command's argument:
+    /// stepping from the command name into the slot, then narrowing.
+    #[test]
+    fn command_line_completes_an_argument_from_a_plugin_value_list() {
+        use lattice_grammar::args::{ArgKind, ArgSpec};
+        let mut editor = Editor::boot(lattice_core::Document::from_text("hello\n"));
+        let mut next = (**editor.registry.load()).clone();
+        let spec = lattice_grammar::ExCommandSpec {
+            latency_class: lattice_grammar::LatencyClass::Display,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: std::sync::Arc::new(|_, _| Ok(lattice_grammar::Args::None)),
+            apply: std::sync::Arc::new(|_| Ok(lattice_grammar::Effect::None)),
+            args_schema: vec![
+                ArgSpec::required("server", ArgKind::String, "a server")
+                    .with_completion("gen:test-values"),
+            ],
+            surface_form: lattice_grammar::SurfaceForm::Keyword,
+        };
+        next.register_plugin_ex_command(7, "test-install", "", spec);
+        next.register_plugin_completion_values(
+            7,
+            "gen:test-values",
+            vec!["gopls".to_string(), "rust-analyzer".to_string()],
+        );
+        editor.registry.store(std::sync::Arc::new(next));
+        let tab = crate::chord::KeyChord::special(crate::chord::SpecialKey::Tab);
+
+        editor.dispatch(Action::EnterCommandLine);
+        cl_type(&mut editor, "test-install");
+        cl_chord(&mut editor, tab);
+        assert_eq!(
+            editor.command_line(),
+            "test-install ",
+            "<Tab> steps into the slot"
+        );
+        let offered: Vec<String> = editor
+            .completion_state
+            .as_ref()
+            .expect("the slot's values open")
+            .candidates
+            .iter()
+            .map(|c| c.raw.text.clone())
+            .collect();
+        assert_eq!(offered, ["gopls", "rust-analyzer"]);
+
+        // The command name is complete and the popup open; narrowing and
+        // <Tab> again inserts the one match.
+        editor.completion_state = None;
+        cl_type(&mut editor, "rust");
+        cl_chord(&mut editor, tab);
+        assert_eq!(editor.command_line(), "test-install rust-analyzer");
     }
 
     #[test]

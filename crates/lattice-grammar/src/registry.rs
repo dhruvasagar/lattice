@@ -1388,6 +1388,20 @@ pub struct CommandRegistry {
     /// Clones with the registry (RCU snapshot), so the stored copy carries the
     /// post-mutation value the dispatcher + completion then read.
     generation: u64,
+    /// Value lists plugins published for `<Tab>` on an argument, by source
+    /// name (`grammar.register-completion-values`). Here rather than in the
+    /// completion registry because this is the registry a plugin load can
+    /// reach: it is RCU'd, and `unregister_plugin` already reverses a plugin's
+    /// entries by provenance.
+    completion_values: HashMap<String, PluginCompletionValues>,
+}
+
+/// A plugin's published value list; see
+/// [`CommandRegistry::completion_values`].
+#[derive(Debug, Clone)]
+struct PluginCompletionValues {
+    plugin_id: u32,
+    values: Arc<[String]>,
 }
 
 #[derive(Clone)]
@@ -1703,10 +1717,54 @@ impl CommandRegistry {
             }
             self.word_forward_motions.remove(id);
         }
-        if !doomed.is_empty() {
+        let values_before = self.completion_values.len();
+        self.completion_values
+            .retain(|_, list| list.plugin_id != plugin_id);
+        if !doomed.is_empty() || self.completion_values.len() != values_before {
             self.generation = self.generation.wrapping_add(1);
         }
         doomed.len()
+    }
+
+    /// Publish a plugin's value list under `source`, for an argument whose
+    /// `completion` names it.
+    ///
+    /// A name another plugin holds is refused: the two lists would otherwise
+    /// replace each other in load order, and `<Tab>` would offer one plugin's
+    /// values for the other's command. The same plugin publishing again
+    /// replaces its own list.
+    pub fn register_plugin_completion_values(
+        &mut self,
+        plugin_id: u32,
+        source: &str,
+        values: Vec<String>,
+    ) {
+        if let Some(held) = self.completion_values.get(source)
+            && held.plugin_id != plugin_id
+        {
+            tracing::warn!(
+                source,
+                plugin_id,
+                holder = held.plugin_id,
+                "completion source name is already held by another plugin; refused"
+            );
+            return;
+        }
+        self.completion_values.insert(
+            source.to_string(),
+            PluginCompletionValues {
+                plugin_id,
+                values: values.into(),
+            },
+        );
+        self.generation = self.generation.wrapping_add(1);
+    }
+
+    /// The value list a plugin published under `source`, if any.
+    pub fn completion_values(&self, source: &str) -> Option<Arc<[String]>> {
+        self.completion_values
+            .get(source)
+            .map(|list| list.values.clone())
     }
 
     /// Metadata for a registered id, or `None` if the id is unknown here
@@ -1974,6 +2032,36 @@ mod tests {
 
         // Idempotent: a second unload of the same plugin removes nothing.
         assert_eq!(r.unregister_plugin(7), 0);
+    }
+
+    #[test]
+    fn a_plugin_value_list_lasts_as_long_as_the_plugin() {
+        let mut registry = CommandRegistry::new();
+        let values = vec!["gopls".to_string(), "rust-analyzer".to_string()];
+        registry.register_plugin_completion_values(7, "gen:servers", values);
+        assert_eq!(
+            registry.completion_values("gen:servers").as_deref(),
+            Some(&["gopls".to_string(), "rust-analyzer".to_string()][..]),
+        );
+
+        // Another plugin cannot take the name; the holder can replace its list.
+        registry.register_plugin_completion_values(8, "gen:servers", vec!["other".to_string()]);
+        assert_eq!(registry.completion_values("gen:servers").unwrap().len(), 2);
+        registry.register_plugin_completion_values(7, "gen:servers", vec!["one".to_string()]);
+        assert_eq!(registry.completion_values("gen:servers").unwrap().len(), 1);
+
+        // Another plugin unloading leaves it; its own unload removes it, even
+        // though the plugin contributed no commands.
+        registry.unregister_plugin(8);
+        assert!(registry.completion_values("gen:servers").is_some());
+        let before = registry.generation();
+        registry.unregister_plugin(7);
+        assert!(registry.completion_values("gen:servers").is_none());
+        assert_ne!(
+            registry.generation(),
+            before,
+            "the removal bumps generation"
+        );
     }
 
     #[test]

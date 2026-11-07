@@ -1224,6 +1224,35 @@
           ]
         },
         {
+          "name": "register-completion-values",
+          "display_name": "register-completion-values",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [
+            {
+              "name": "source",
+              "type": "string"
+            },
+            {
+              "name": "values",
+              "type": "list<string>"
+            }
+          ],
+          "result": null,
+          "signature": "register-completion-values: func(source: string, values: list<string>)",
+          "doc": "Publish a named list of values, for `<Tab>` on an ex-command argument:\nan `arg-spec` whose `completion` is `source` completes from `values`.\nThe host holds the list and matches it natively, so `<Tab>` never calls\nthe guest. It lasts as long as the plugin stays loaded; a plugin whose\nvalues change at runtime is not served by this. Name it after the plugin\n(`gen:<plugin>-<what>`): a source name a builtin or another plugin\nalready holds is refused with a warning.",
+          "examples": [
+            {
+              "id": "lighthouse:grammar.register-completion-values",
+              "caption": "Give an ex-command's argument its `<Tab>` candidates, published once at load",
+              "source": "plugins/lighthouse/src/lib.rs",
+              "language": "rust",
+              "code": "let (registry, _) = registry();\nlattice::plugin_host::grammar::register_completion_values(\n    SERVERS_SOURCE,\n    &registry\n        .names()\n        .into_iter()\n        .map(str::to_string)\n        .collect::<Vec<_>>(),\n);"
+            }
+          ]
+        },
+        {
           "name": "register-ex-command",
           "display_name": "register-ex-command",
           "kind": "freestanding",
@@ -8631,7 +8660,7 @@
             {
               "name": "completion",
               "type": "option<string>",
-              "doc": "A registered COMPLETION source (`gen:files`, ...) — inline\ncandidates as the user types this argument."
+              "doc": "A registered COMPLETION source (`gen:files`, ...) — inline\ncandidates as the user types this argument. A builtin's name, or a\nlist published with `grammar.register-completion-values`."
             },
             {
               "name": "picker",
@@ -10737,6 +10766,31 @@
           ]
         },
         {
+          "name": "notify",
+          "display_name": "notify",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [
+            {
+              "name": "note",
+              "type": "ui-notification"
+            }
+          ],
+          "result": null,
+          "signature": "notify: func(note: ui-notification)",
+          "doc": "Write one line to `*messages*`, attributed to this plugin.\n\nFor work that finishes away from any command, such as a background scan,\nwhere there is no returned effect to carry an `echo`. A grammar action\nalready has that effect, so `notify` from the grammar seam is a warn + drop\nlike `emit-segment`: the keystroke path stays free of it.\n\nA line below the editor's log level is filtered like any other record, so\nuse `info` or above for something the user should see. This is for an\noutcome, not progress: every call is a line someone has to read past.",
+          "examples": [
+            {
+              "id": "multiseam-guest:ui.notify",
+              "caption": "Report the outcome of background work in `*messages*`, from an async seam",
+              "source": "crates/lattice-plugin-host/tests/fixtures/multiseam-guest/src/lib.rs",
+              "language": "rust",
+              "code": "ui::notify(&lattice::plugin_host::types::UiNotification {\n    level: lattice::plugin_host::types::EchoLevel::Info,\n    message: \"multiseam: options registered\".to_string(),\n});"
+            }
+          ]
+        },
+        {
           "name": "register-segment",
           "display_name": "register-segment",
           "kind": "freestanding",
@@ -10776,6 +10830,11 @@
           "name": "ui-zone",
           "from": "types",
           "original": "ui-zone"
+        },
+        {
+          "name": "ui-notification",
+          "from": "types",
+          "original": "ui-notification"
         }
       ]
     }

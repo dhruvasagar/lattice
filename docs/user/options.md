@@ -155,23 +155,27 @@ Dotted names need quoting in TOML (`"lsp.log.display"`).
 Unknown keys produce a startup warning rather than an error —
 the editor still launches.
 
-**A plugin's options go here too**, though the plugin has not
-loaded when this file is read. A key under a namespace nothing
-has registered yet is held, and applied when the plugin declares
-the option (and again if the plugin reloads):
+#### Plugin options
+
+**A plugin's options go here too**, though plugins load after this
+file is read. Each value is held until its plugin declares the
+option, and again if the plugin reloads. Lists and records are
+ordinary TOML:
 
 ```toml
 [org]
-directory = "~/notes"
-roam-directory = "~/notes/roam"
+agenda-files = ["~/notes", "~/work"]
+
+[[org.capture-templates]]
+key = "t"
+target = { file = "~/notes/inbox.org" }
 ```
 
-So `[org]` is not an unknown-option warning at startup. If no
-plugin turns out to declare a held name — usually a typo in the
-plugin's namespace — `*messages*` says so once every plugin has
-loaded. A typo in a namespace that *is* registered
-(`ui.nerd_fontz`) still warns at startup. When `lattice.toml` and
-`init.rs` both set an option, `init.rs` wins: it is read later.
+It is checked when the plugin declares the option: a misfit keeps
+the default, and `*messages*` names the field that failed. A name
+no plugin declares (a typo) is reported once plugins have loaded.
+A project's `.lattice/config.toml` overrides your file, and
+`init.rs` overrides both.
 
 ### Runtime tweaks: `:set`
 

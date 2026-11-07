@@ -141,6 +141,30 @@ async fn every_command_is_registered() {
     }
 }
 
+/// `<Tab>` on `:lsp-install` offers the registry, read from the real component
+/// through the real loader. Unloading is `unregister_plugin`'s, tested beside it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn lsp_install_completes_from_the_registry() {
+    let Some((_base, rig)) = loaded().await else {
+        eprintln!("skipping: lighthouse wasm not built (no wasm32-wasip2 target)");
+        return;
+    };
+    let commands = rig.commands.load();
+    let id = commands.id_by_name("lsp-install").expect("registered");
+    let spec = commands.ex_command_spec(id).expect("an ex-command");
+    let source = spec.args_schema[0]
+        .completion
+        .as_deref()
+        .expect("the server argument names a completion source");
+    let values = commands
+        .completion_values(source)
+        .expect("the plugin published the source its command names");
+    assert!(
+        values.iter().any(|v| v == "rust-analyzer"),
+        "the shipped registry is offered: {values:?}"
+    );
+}
+
 /// The chords of `*lsp-servers*` are in that buffer's mode, and only there.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_row_chords_are_bound_in_the_servers_modes_own_layer() {

@@ -62,7 +62,7 @@ Each world's entry points — the `register-*` functions the host calls on load 
 | [`decorations`](plugin-api/decorations.md) | exports | - | 1 | 0 | The decoration **producer** API (plugin-host.md §5 `decorations`, PH7.9), mirroring `Mode::gutter_decorations` + `GutterDecoration` (lattice-mode). |
 | [`error-parser`](plugin-api/error-parser.md) | types | - | 0 | 2 | CM.6: plugin-contributed compilation-output parsers. |
 | [`events`](plugin-api/events.md) | imports | - | 3 | 1 | The event/hook **subscription** API (plugin-host.md §5 `events`, PH7.8). |
-| [`grammar`](plugin-api/grammar.md) | imports | - | 5 | 0 | The grammar-**extension** API (plugin-host.md §4.1, PH7.7). |
+| [`grammar`](plugin-api/grammar.md) | imports | - | 6 | 0 | The grammar-**extension** API (plugin-host.md §4.1, PH7.7). |
 | [`grammar-callbacks`](plugin-api/grammar-callbacks.md) | exports | - | 6 | 0 | The behavior callbacks a grammar plugin **exports**; the host calls one by `callback` id on dispatch (the PH7.3d callback-id trampoline). |
 | [`help`](plugin-api/help.md) | imports | - | 1 | 0 | CR.3: plugin-contributed `:help` pages. |
 | [`host-services`](plugin-api/host-services.md) | imports | fs | 32 | 5 | Guest→host services (plugin-host.md §5). |
@@ -83,4 +83,4 @@ Each world's entry points — the `register-*` functions the host calls on load 
 | [`transient-source`](plugin-api/transient-source.md) | exports | - | 2 | 0 | TR.2b: plugin-contributed transient menus. |
 | [`tree-sitter`](plugin-api/tree-sitter.md) | imports | - | 25 | 6 | Structural queries for plugins (plugin-treesitter-seam.md). |
 | [`types`](plugin-api/types.md) | types | - | 0 | 154 | Shared boundary records/variants — the owned, WIT-serializable mirrors of the native grammar + picker/completion types (plugin-host.md §4). |
-| [`ui`](plugin-api/ui.md) | imports | - | 3 | 0 | The UI-contribution surface (design.md §9.4 `ui`): guest→host emits **data only**, never draw calls (§7, paramount #1). |
+| [`ui`](plugin-api/ui.md) | imports | - | 4 | 0 | The UI-contribution surface (design.md §9.4 `ui`): guest→host emits **data only**, never draw calls (§7, paramount #1). |

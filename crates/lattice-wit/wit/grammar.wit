@@ -40,6 +40,14 @@ interface grammar {
         parse-callback: u32,
         apply-callback: u32,
     );
+    /// Publish a named list of values, for `<Tab>` on an ex-command argument:
+    /// an `arg-spec` whose `completion` is `source` completes from `values`.
+    /// The host holds the list and matches it natively, so `<Tab>` never calls
+    /// the guest. It lasts as long as the plugin stays loaded; a plugin whose
+    /// values change at runtime is not served by this. Name it after the plugin
+    /// (`gen:<plugin>-<what>`): a source name a builtin or another plugin
+    /// already holds is refused with a warning.
+    register-completion-values: func(source: string, values: list<string>);
 }
 
 /// The behavior callbacks a grammar plugin **exports**; the host calls one by

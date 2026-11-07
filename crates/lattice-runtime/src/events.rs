@@ -672,6 +672,45 @@ impl EventBus {
         id
     }
 
+    /// Subscribe to a typed event with a closure that runs **in the
+    /// publisher's call**, before [`Self::publish_typed`] returns.
+    /// `f` returns `false` to unsubscribe itself (pruned like a
+    /// closed channel).
+    ///
+    /// For a subscriber whose effect must be ordered against what the
+    /// publisher does next. [`Self::subscribe_typed`] hands the event
+    /// to a channel, and whatever task drains it runs whenever it is
+    /// scheduled — after the publisher may already have acted on the
+    /// assumption the event was handled. The LSP edit fan-in is the
+    /// case: an edit forwarded through a channel could reach the
+    /// server after a request the editor made straight after the
+    /// edit.
+    ///
+    /// `f` runs on the publisher's thread, which is often the editor
+    /// thread, with the bus lock released. It must not block — no
+    /// I/O, no lock that thread could be waiting on, nothing
+    /// proportional to more than the event. A non-blocking channel
+    /// send is the intended shape.
+    pub fn subscribe_typed_fn<T, F>(&self, f: F) -> SubscriptionId
+    where
+        T: TypedEvent,
+        F: Fn(&T) -> bool + Send + Sync + 'static,
+    {
+        let id = SubscriptionId::next();
+        let forward: ForwardFn = Arc::new(move |payload| match payload.downcast_ref::<T>() {
+            Some(typed) => f(typed),
+            // Unreachable in practice: the bucket is keyed on TypeId.
+            None => true,
+        });
+        let mut inner = self.inner.lock().expect("EventBus poisoned");
+        inner
+            .typed_subs
+            .entry(TypeId::of::<T>())
+            .or_default()
+            .push(TypedSubscription { id, forward });
+        id
+    }
+
     /// M.5.3.a: publish a typed event. Boxes the event into
     /// `Arc<dyn Any + Send + Sync>` once, then walks the
     /// `TypeId`-keyed subscriber bucket. Each subscriber's
@@ -1454,6 +1493,39 @@ mod tests {
         // Subscriber is registered but its channel is dead.
         bus.publish_typed(TypedTestEvent { n: 1 });
         // After the publish, the dead subscriber is pruned.
+        assert_eq!(bus.typed_subscription_count(), 0);
+    }
+
+    /// The point of `subscribe_typed_fn`: the subscriber has run by the
+    /// time `publish_typed` returns, with no task to schedule.
+    #[test]
+    fn typed_fn_subscriber_runs_before_publish_returns() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        let bus = EventBus::new();
+        let seen = Arc::new(AtomicU32::new(0));
+        let sink = seen.clone();
+        bus.subscribe_typed_fn::<TypedTestEvent, _>(move |e| {
+            sink.store(e.n, Ordering::SeqCst);
+            true
+        });
+        bus.publish_typed(TypedTestEvent { n: 9 });
+        assert_eq!(seen.load(Ordering::SeqCst), 9);
+    }
+
+    #[test]
+    fn typed_fn_subscriber_returning_false_is_pruned() {
+        let bus = EventBus::new();
+        bus.subscribe_typed_fn::<TypedTestEvent, _>(|_| false);
+        assert_eq!(bus.typed_subscription_count(), 1);
+        bus.publish_typed(TypedTestEvent { n: 1 });
+        assert_eq!(bus.typed_subscription_count(), 0);
+    }
+
+    #[test]
+    fn typed_fn_subscriber_can_be_unsubscribed() {
+        let bus = EventBus::new();
+        let id = bus.subscribe_typed_fn::<TypedTestEvent, _>(|_| true);
+        bus.unsubscribe(id);
         assert_eq!(bus.typed_subscription_count(), 0);
     }
 }

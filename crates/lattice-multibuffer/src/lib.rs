@@ -47,6 +47,7 @@
 // feature-gated `providers::search` so the off-keystroke wake exists in
 // every build and every provider crate can publish it.
 pub mod events;
+pub mod filter;
 pub mod install;
 pub mod mode;
 pub mod motions;
@@ -311,6 +312,12 @@ struct MultibufferInner {
     // Bumped in `set_headerline` so `MultibufferStatusProvider::version()`
     // advances and the cells worker rebuilds the sticky row.
     headerline_version: AtomicU64,
+    // MF.1: the active filters as the headerline shows them (`keep /a/ ·
+    // 12 of 40 shown`), or `None`. Kept apart from `headerline` because
+    // the provider owns that and rewrites it on every batch; a filter
+    // note folded into it would be lost the first time the scan ticked.
+    // Written under the state lock, read lock-free by the status row.
+    filter_note: ArcSwap<Option<String>>,
     // M.4 (2026-06-01): event-bus subscription bookkeeping for
     // the auto-recompose forwarder. `SubscriptionId`s registered
     // by `attach_event_subscriptions` are unsubscribed on Drop.
@@ -498,6 +505,11 @@ struct MultibufferState {
     /// by every recompose path so excerpt mutations don't
     /// clobber the user's selection.
     selections: Arc<SelectionSet>,
+    /// MF.1: the active `:multibuffer-keep` / `:multibuffer-reject`
+    /// filters and the unfiltered excerpt list behind them. `None` while
+    /// nothing is filtered — `excerpts` is then the whole list, and every
+    /// path below pays nothing for the feature. See [`filter`].
+    filter: Option<filter::FilterState>,
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -780,6 +792,7 @@ impl MultibufferDocumentHandle {
                     excerpts,
                     source_syntax: HashMap::new(),
                     selections: Arc::new(SelectionSet::default()),
+                    filter: None,
                 }),
                 composed_doc: std::sync::Mutex::new(composed_doc),
                 source_forward_tx,
@@ -787,6 +800,7 @@ impl MultibufferDocumentHandle {
                 row_translation: ArcSwap::from_pointee(row_translation),
                 headerline: ArcSwap::from_pointee(HeaderlineStatus::Idle),
                 headerline_version: AtomicU64::new(0),
+                filter_note: ArcSwap::from_pointee(None),
                 subscriptions: std::sync::Mutex::new(SubscriptionBookkeeping::default()),
                 registry,
                 lang_registry: std::sync::OnceLock::new(),
@@ -1102,6 +1116,15 @@ impl MultibufferDocumentHandle {
 
         state.excerpts[idx].start_line = new_start as u32;
         state.excerpts[idx].end_line = new_end as u32;
+        // MF.1: mirror onto the unfiltered list, so clearing the filters
+        // brings this excerpt back at the size you made it.
+        let (id, start, end) = (state.excerpts[idx].id, new_start as u32, new_end as u32);
+        if let Some(f) = state.filter.as_mut()
+            && let Some(ex) = f.all.iter_mut().find(|e| e.id == id)
+        {
+            ex.start_line = start;
+            ex.end_line = end;
+        }
 
         let snapshot = compose_snapshot(
             self.inner.id,
@@ -1131,6 +1154,7 @@ impl MultibufferDocumentHandle {
         // so we can compose + translate ONLY the batch, not the
         // accumulated total.
         let mut added: Vec<Excerpt> = Vec::with_capacity(excerpts.len());
+        let filtered = state.filter.is_some();
         for ex in excerpts {
             if !state.sources.contains_key(&ex.source) {
                 // Silently drop — the provider is responsible
@@ -1139,8 +1163,26 @@ impl MultibufferDocumentHandle {
                 // this in its scan task.
                 continue;
             }
+            // MF.1: a filtered view still RECEIVES every excerpt (so
+            // clearing brings it back) but shows only what the filters
+            // admit — the stream after a `:multibuffer-keep` is narrowed
+            // the same as what was there before it.
+            let MultibufferState {
+                filter, sources, ..
+            } = &mut *state;
+            if let Some(f) = filter.as_mut() {
+                let admitted = f.admits(&ex, sources);
+                f.all.push(ex.clone());
+                if !admitted {
+                    continue;
+                }
+            }
             state.excerpts.push(ex.clone());
             added.push(ex);
+        }
+        if filtered {
+            // The "N of M shown" count moved even if nothing was admitted.
+            self.refresh_filter_note(&state);
         }
         if added.is_empty() {
             // Every excerpt was dropped (unknown source). Nothing
@@ -1240,7 +1282,24 @@ impl MultibufferDocumentHandle {
             .filter_map(|(id, src)| fingerprint_source(src).map(|fp| (*id, fp)))
             .collect();
         state.sources = sources;
-        state.excerpts = excerpts;
+        // MF.1: a refresh replaces what the filters run OVER, not the
+        // filters — `gr` on a narrowed view comes back narrowed.
+        if let Some(mut f) = state.filter.take() {
+            f.all = excerpts;
+            state.excerpts = f.visible(&state.sources);
+            state.filter = Some(f);
+            self.refresh_filter_note(&state);
+        } else {
+            state.excerpts = excerpts;
+        }
+        self.republish_whole(state);
+    }
+
+    /// Rebuild the composed document, snapshot and row translation from
+    /// `state`'s current excerpts, then publish. The whole-view path —
+    /// `replace_excerpts`, and a filter change (MF.1), which alters
+    /// which excerpts are shown without touching a source.
+    pub(crate) fn republish_whole(&self, state: std::sync::MutexGuard<'_, MultibufferState>) {
         // M.11 (2026-06-02): same rebuild as `append_excerpts` —
         // keep composed_doc in sync with the new excerpt set so
         // user edits land on a rope reflecting current content.
@@ -1768,7 +1827,14 @@ fn slide_anchors_for_source(
         if row_delta == 0 {
             continue;
         }
-        for excerpt in state.excerpts.iter_mut() {
+        let MultibufferState {
+            excerpts, filter, ..
+        } = &mut *state;
+        // MF.1: the hidden excerpts slide too — they are still anchored
+        // to their source, and clearing the filters must show them at
+        // the rows they have now, not the rows they had when hidden.
+        let hidden = filter.iter_mut().flat_map(|f| f.all.iter_mut());
+        for excerpt in excerpts.iter_mut().chain(hidden) {
             if excerpt.source != source {
                 continue;
             }
@@ -3466,15 +3532,23 @@ const STATUS_QUERY_FALLBACK_FG: u32 = 0xf9e2af;
 ///   InProgress — `in_progress_fg` (neutral grey), theme bg
 ///   Complete   — `complete_fg` (green), green `◆` prefix, theme bg
 ///   Failed     — `failed_fg` (red), red `■` prefix, theme bg
+///
+/// MF.1: `filter_note` (the view's active filters) follows the status,
+/// in the status's colour; on an Idle view it is the whole row, in the
+/// neutral colour. A filtered view always says so.
 fn render_multibuffer_status(
     status: &HeaderlineStatus,
+    filter_note: Option<&str>,
     in_progress_fg: u32,
     complete_fg: u32,
     failed_fg: u32,
     query_fg: u32,
 ) -> Option<HeaderlineRow> {
-    let (text, emphasis): (String, Option<&str>) = match status {
-        HeaderlineStatus::Idle => return None,
+    let (mut text, emphasis): (String, Option<&str>) = match status {
+        HeaderlineStatus::Idle => match filter_note {
+            Some(_) => (" ".to_string(), None),
+            None => return None,
+        },
         HeaderlineStatus::InProgress {
             label,
             count: None,
@@ -3490,11 +3564,17 @@ fn render_multibuffer_status(
         }
         HeaderlineStatus::Failed { reason } => (format!(" ■ {reason} "), None),
     };
+    if let Some(note) = filter_note {
+        if !text.trim().is_empty() {
+            text.push_str("· ");
+        }
+        text.push_str(note);
+        text.push(' ');
+    }
     let fg: u32 = match status {
-        HeaderlineStatus::InProgress { .. } => in_progress_fg,
+        HeaderlineStatus::InProgress { .. } | HeaderlineStatus::Idle => in_progress_fg,
         HeaderlineStatus::Complete { .. } => complete_fg,
         HeaderlineStatus::Failed { .. } => failed_fg,
-        HeaderlineStatus::Idle => unreachable!(),
     };
     // Char-index range of the emphasised term within `text` (first
     // occurrence). Only the query cells get `query_fg`; everything else
@@ -3624,8 +3704,10 @@ impl Headerline for MultibufferStatusProvider {
 
     fn render(&self) -> Option<HeaderlineRow> {
         let (in_progress_fg, complete_fg, failed_fg, query_fg) = self.status_fgs();
+        let note = self.multibuffer.inner.filter_note.load();
         render_multibuffer_status(
             &self.multibuffer.inner.headerline.load(),
+            (**note).as_deref(),
             in_progress_fg,
             complete_fg,
             failed_fg,

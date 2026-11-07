@@ -93,6 +93,8 @@ pub fn effect_is_host_complete(effect: &Effect) -> bool {
         | Effect::OpenFileTree { .. }
         | Effect::CloseFileTree
         | Effect::OpenOil { .. }
+        | Effect::OpenOilSource { .. }
+        | Effect::InTarget { .. }
         | Effect::DescribeOption { .. }
         | Effect::DescribeElement { .. }
         | Effect::ListOptions
@@ -153,6 +155,7 @@ pub fn effect_is_host_complete(effect: &Effect) -> bool {
         | Effect::DiffOff { .. }
         | Effect::Diffthis
         | Effect::Diffsplit { .. }
+        | Effect::DiffResolve { .. }
         | Effect::DiffGetCmd { .. }
         | Effect::DiffPutCmd { .. }
         | Effect::DiffAccept

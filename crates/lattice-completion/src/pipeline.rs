@@ -159,6 +159,20 @@ impl CompletionPipeline {
         generator: crate::registry::GeneratorId,
     ) -> Option<Self> {
         let g = registry.generator(generator)?;
+        Self::with_generator(registry, g.inner.clone())
+    }
+
+    /// A pipeline over a fixed list of values, for a list a plugin published
+    /// (`CommandRegistry::completion_values`). Same matcher, rankers and
+    /// annotators as any other slot.
+    pub fn for_values(registry: &CompletionRegistry, values: Arc<[String]>) -> Option<Self> {
+        Self::with_generator(registry, Arc::new(ValuesGenerator { values }))
+    }
+
+    fn with_generator(
+        registry: &CompletionRegistry,
+        generator: Arc<dyn CandidateGenerator>,
+    ) -> Option<Self> {
         let m = registry.matcher(registry.default_matcher?)?;
         // Slice `3c.unify.ranker-stack`: registry now holds an
         // ordered list of default rankers. At least one is required
@@ -185,11 +199,35 @@ impl CompletionPipeline {
             .map(|a| a.inner.clone())
             .collect();
         Some(Self {
-            generators: vec![g.inner.clone()],
+            generators: vec![generator],
             matcher: m.inner.clone(),
             rankers,
             annotators,
         })
+    }
+}
+
+/// See [`CompletionPipeline::for_values`].
+struct ValuesGenerator {
+    values: Arc<[String]>,
+}
+
+impl CandidateGenerator for ValuesGenerator {
+    fn generate(&self, _ctx: &GenerateContext<'_>) -> Vec<RawCandidate> {
+        self.values
+            .iter()
+            .map(|value| RawCandidate {
+                insert_text: None,
+                text: value.clone(),
+                display: value.clone(),
+                kind: crate::candidate::CandidateKind::Plain,
+                data: crate::candidate::CandidateData::Plain,
+                source: None,
+                accept_action: None,
+                annotations: Vec::new(),
+                display_spans: Vec::new(),
+            })
+            .collect()
     }
 }
 

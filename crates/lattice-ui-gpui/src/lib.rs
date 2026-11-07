@@ -1512,9 +1512,13 @@ impl GpuiApp {
             | Effect::DiffOpen
             // DB.2: host-applied via handle_effect; peer no-op.
             | Effect::OpenDashboard
+            // LS.4: host-applied via handle_effect; peer no-op.
+            | Effect::OpenOilSource { .. }
+            | Effect::InTarget { .. }
             | Effect::DiffOff { .. }
             | Effect::Diffthis
             | Effect::Diffsplit { .. }
+            | Effect::DiffResolve { .. }
             | Effect::DiffGetCmd { .. }
             | Effect::DiffPutCmd { .. }
             | Effect::DiffAccept
@@ -1662,38 +1666,9 @@ impl GpuiApp {
             Effect::ExportPluginApi { format } => {
                 self.mutate_editor(move |e| e.do_export_plugin_api(format.as_deref()));
             }
-            Effect::OpenSyntheticBuffer {
-                name,
-                mode_id,
-                content,
-                cursor,
-                activate_minor,
-            } => {
-                // OC.7a: parity with the TUI arm. `None` throughout is the
-                // pre-OC.7a call, so native emitters are unaffected.
-                self.mutate_editor(move |e| {
-                    e.open_synthetic_buffer_seeded(
-                        &name,
-                        &mode_id,
-                        content.as_deref(),
-                        cursor,
-                        activate_minor.as_deref(),
-                    )
-                });
-            }
-            // MG.50: peer of `OpenBufferAt` for synthetic buffers — open
-            // then position, in one arm, so the caret lands on the buffer
-            // that was just opened rather than on whatever preceded it.
-            Effect::OpenSyntheticBufferAt {
-                name,
-                mode_id,
-                position,
-            } => {
-                self.mutate_editor(move |e| {
-                    e.open_synthetic_buffer(&name, &mode_id);
-                    e.set_cursor_clamped(position);
-                });
-            }
+            // 3W.4: host-applied in `handle_effect`, so a `Many` that opens
+            // a synthetic buffer and then acts on it runs in order.
+            Effect::OpenSyntheticBuffer { .. } | Effect::OpenSyntheticBufferAt { .. } => {}
             Effect::OpenLspTraceLog { server_id } => {
                 self.mutate_editor(move |e| e.do_open_lsp_trace_log(server_id.as_deref()));
             }

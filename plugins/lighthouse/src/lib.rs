@@ -122,6 +122,9 @@ const ROW_REFRESH: u32 = 5;
 /// The minor mode that owns `*lsp-servers*`'s chords.
 const SERVERS_MODE: &str = "lighthouse-servers-mode";
 
+/// The value list behind `:lsp-install <Tab>`: every server the registry names.
+const SERVERS_SOURCE: &str = "gen:lighthouse-servers";
+
 /// The row chords: `(chord, action, callback, doc)`. One table, read by both
 /// the action registration and the mode's keymap, so a chord cannot be bound
 /// to an action that was never registered.
@@ -583,6 +586,15 @@ fn no_arg_spec() -> ExCommandSpec {
     }
 }
 
+/// `:lsp-install` alone completes from the registry. Uninstall and update act
+/// on what is installed, which a list fixed at load cannot describe, and
+/// offering a server they would then refuse is worse than offering nothing.
+fn install_arg_spec() -> ExCommandSpec {
+    let mut spec = server_arg_spec("Install server: ");
+    spec.args_schema[0].completion = Some(SERVERS_SOURCE.to_string());
+    spec
+}
+
 fn server_arg_spec(prompt: &str) -> ExCommandSpec {
     ExCommandSpec {
         // The command itself only publishes a request; the download is a host
@@ -694,6 +706,20 @@ fn kinds(kinds: &[EventKind]) -> EventFilter {
 
 impl Guest for Component {
     fn register_grammar() {
+        // Read here, once: the host holds the names and answers `<Tab>` without
+        // calling back. A server added to the overlay needs a plugin reload to
+        // be offered, though `:lsp-install` accepts it at once.
+        // @example grammar.register-completion-values: Give an ex-command's argument its `<Tab>` candidates, published once at load
+        let (registry, _) = registry();
+        lattice::plugin_host::grammar::register_completion_values(
+            SERVERS_SOURCE,
+            &registry
+                .names()
+                .into_iter()
+                .map(str::to_string)
+                .collect::<Vec<_>>(),
+        );
+        // @end-example
         lattice::plugin_host::grammar::register_ex_command(
             "lsp-install",
             "Install a language server from lighthouse's registry into the \
@@ -701,7 +727,7 @@ impl Guest for Component {
              at once; the download, its SHA-256 check and the unpack are \
              reported live in `*lsp-install:<server>*`, and so is any failure. \
              Running it again for an installed server reinstalls it.",
-            &server_arg_spec("Install server: "),
+            &install_arg_spec(),
             CB_PARSE,
             CB_INSTALL,
         );

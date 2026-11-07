@@ -133,6 +133,9 @@ Prefix motions and operators with a number: `3j` (down 3), `d5w` (delete 5 words
 | `<CR>` | Jump to source location |
 | `]e` `[e` | Next / previous match |
 | `gr` | Refresh (re-run the same search) |
+| `:multibuffer-keep /pat/` | Show only results matching `pat` (Vim's `:Cfilter`) |
+| `:multibuffer-reject /pat/` | Hide results matching `pat` (`:Cfilter!`) |
+| `:multibuffer-clear-filters` | Show every result again |
 
 ## Diff mode
 

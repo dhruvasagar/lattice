@@ -1111,6 +1111,7 @@ impl App {
             | Effect::DiffOff { .. }
             | Effect::Diffthis
             | Effect::Diffsplit { .. }
+            | Effect::DiffResolve { .. }
             | Effect::DiffGetCmd { .. }
             | Effect::DiffPutCmd { .. }
             | Effect::DiffAccept
@@ -1317,37 +1318,9 @@ impl App {
             Effect::PrevDiagnostic => self.do_prev_diagnostic(),
             Effect::OpenLspLog { server_id } => self.do_open_lsp_log(server_id.as_deref()),
             Effect::OpenAiLog { session } => self.do_open_ai_log(session.as_deref()),
-            Effect::OpenSyntheticBuffer {
-                name,
-                mode_id,
-                content,
-                cursor,
-                activate_minor,
-            } => {
-                // OC.7a: the seeded form. `None` throughout is the
-                // pre-OC.7a call, so native emitters are unaffected.
-                self.open_synthetic_buffer_seeded(
-                    &name,
-                    &mode_id,
-                    content.as_deref(),
-                    cursor,
-                    activate_minor.as_deref(),
-                )
-            }
-            // MG.50: the synthetic peer of `OpenBufferAt`, and the same
-            // two writes in the same order — open, THEN position against
-            // the now-active buffer. Splitting them into two effects
-            // would place the caret against whatever was active before.
-            Effect::OpenSyntheticBufferAt {
-                name,
-                mode_id,
-                position,
-            } => {
-                self.open_synthetic_buffer(&name, &mode_id);
-                self.mutate_editor_with(move |e| {
-                    e.set_cursor_clamped(position);
-                });
-            }
+            // 3W.4: host-applied in `handle_effect`, so a `Many` that opens
+            // a synthetic buffer and then acts on it runs in order.
+            Effect::OpenSyntheticBuffer { .. } | Effect::OpenSyntheticBufferAt { .. } => {}
             // PI.2b: dump the plugin-API catalog into a savable buffer.
             Effect::ExportPluginApi { format } => {
                 self.mutate_editor(move |e| e.do_export_plugin_api(format.as_deref()))
@@ -1356,6 +1329,8 @@ impl App {
             // DB.2: host-applied via handle_effect (like DiffOpen); the
             // peer has nothing to do.
             Effect::OpenDashboard => {}
+            // LS.4: host-applied in `handle_effect`, like the dashboard.
+            Effect::OpenOilSource { .. } | Effect::InTarget { .. } => {}
             Effect::ToggleLspTrace { server_id } => self.do_toggle_lsp_trace(&server_id),
             Effect::OpenLspTraceLog { server_id } => {
                 self.do_open_lsp_trace_log(server_id.as_deref())
@@ -1658,6 +1633,7 @@ fn effect_mutates_or_yanks(effect: &Effect) -> bool {
         | Effect::DiffOff { .. }
         | Effect::Diffthis
         | Effect::Diffsplit { .. }
+        | Effect::DiffResolve { .. }
         | Effect::DiffGetCmd { .. }
         | Effect::DiffPutCmd { .. }
         | Effect::DiffAccept
@@ -1678,6 +1654,8 @@ fn effect_mutates_or_yanks(effect: &Effect) -> bool {
         | Effect::AppAction(_)
         | Effect::RecordJump
         | Effect::OpenDashboard
+        | Effect::OpenOilSource { .. }
+        | Effect::InTarget { .. }
         | Effect::ChangeDir(_)
         | Effect::PrintWorkingDir
         | Effect::PrintProjectRoot => false,
@@ -1822,6 +1800,7 @@ fn effect_mutates(effect: &Effect) -> bool {
         | Effect::DiffOff { .. }
         | Effect::Diffthis
         | Effect::Diffsplit { .. }
+        | Effect::DiffResolve { .. }
         | Effect::DiffGetCmd { .. }
         | Effect::DiffPutCmd { .. }
         | Effect::DiffAccept
@@ -1842,6 +1821,8 @@ fn effect_mutates(effect: &Effect) -> bool {
         | Effect::AppAction(_)
         | Effect::RecordJump
         | Effect::OpenDashboard
+        | Effect::OpenOilSource { .. }
+        | Effect::InTarget { .. }
         | Effect::ChangeDir(_)
         | Effect::PrintWorkingDir
         | Effect::PrintProjectRoot => false,
@@ -1965,23 +1946,33 @@ mod tests {
     /// than drop it (which is how four features shipped dead). This is the
     /// other half — the peer picking the queue up beside the tick's signals,
     /// through the same arms a keystroke's effects go through.
+    ///
+    /// The effect queued here has to be one the TUI's arms still own.
+    /// `OpenSyntheticBuffer` used to be, and this test queued it; since
+    /// `9475063d` the host's `handle_effect` opens synthetic buffers itself
+    /// (so a `Many` that opens one and then acts on it runs in order), and
+    /// the TUI's arm is a deliberate no-op. A queued copy of one has already
+    /// been opened by the time it is queued, so it was testing a state
+    /// production no longer produces. `OpenBuffer` is still renderer-owned
+    /// (`do_edit`), as the host's peer-conformance scenario uses too.
     #[test]
     fn a_queued_renderer_effect_is_applied_on_the_next_drain() {
+        let dir = crate::app::test_helpers::fresh_path_workspace("queued-effect");
+        let path = dir.join("queued.txt");
+        std::fs::write(&path, "from an off-renderer path\n").expect("temp file writes");
+
         let mut a = app_with("scratch\n", 10);
-        a.editor
-            .pending_renderer_effects
-            .push(Effect::OpenSyntheticBuffer {
-                name: "*queued-by-a-picker*".to_string(),
-                mode_id: "help-mode".to_string(),
-                content: Some("from an off-renderer path\n".to_string()),
-                cursor: None,
-                activate_minor: None,
-            });
+        a.editor.pending_renderer_effects.push(Effect::OpenBuffer {
+            path: Some(path.clone()),
+            force: false,
+        });
 
         a.drain_async_pending();
 
-        assert!(
-            a.editor.buffers.by_name("*queued-by-a-picker*").is_some(),
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(
+            a.editor.document.text(),
+            "from an off-renderer path\n",
             "the queued effect reached the TUI's own arms"
         );
         assert!(
@@ -3019,6 +3010,27 @@ mod tests {
         );
         let msg = a.editor.last_message.as_ref().expect("info echo");
         assert!(msg.text.contains("redraw"), "user-visible echo: {msg:?}");
+    }
+
+    /// `:redraw` typed on the `:` line reaches the same redraw `<C-l>`
+    /// does. The ex-command hands back its effect through the ex-command
+    /// drain rather than a chord's dispatch, so this goes through the real
+    /// command line: a parse-only test would pass on a drain that dropped
+    /// the effect's follow-up action on the floor.
+    #[test]
+    fn redraw_ex_command_redraws_like_ctrl_l() {
+        for cmd in ["redraw", "redraw!", "redr"] {
+            let mut a = app_with("fn main() {}\n", 10);
+            a.editor.pending_redraw = false;
+            a.editor.last_message = None;
+            crate::app::test_helpers::submit_ex(&mut a, cmd);
+            assert!(
+                a.editor.pending_redraw,
+                "`:{cmd}` must clear the terminal next frame, as `<C-l>` does"
+            );
+            let msg = a.editor.last_message.as_ref().expect("info echo");
+            assert!(msg.text.contains("redraw"), "`:{cmd}` echo: {msg:?}");
+        }
     }
 
     #[test]

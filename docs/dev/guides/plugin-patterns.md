@@ -528,6 +528,83 @@ let _ = lattice::plugin_host::config::register_structured_option(
 );
 ```
 
+### Setting a structured option from `init.rs`
+
+A user's config sets another plugin's structured option with
+`config.set-option-value`, building the value from ordinary Rust. Mirror the
+option's shape (`:describe-option org.capture-templates` shows it) with
+`#[derive(ConfigShape)]`. Field names are snake_case and match the option's
+kebab-case fields (`clock_in` is `clock-in`), and `Option` marks a field the
+shape lets you leave out:
+
+```rust
+#[derive(lattice_plugin_sdk::ConfigShape)]
+struct Target {
+    file: String,
+    headline: Option<String>,
+}
+
+#[derive(lattice_plugin_sdk::ConfigShape)]
+struct Template {
+    key: String,
+    description: Option<String>,
+    target: Target,
+    body: Option<String>,
+}
+
+fn register_options() {
+    let templates = vec![Template {
+        key: "t".into(),
+        description: Some("todo".into()),
+        target: Target { file: "~/notes/inbox.org".into(), headline: None },
+        body: Some("* TODO %?".into()),
+    }];
+    config_shape::set_option_value("org.capture-templates", &templates);
+    config_shape::set_option_value("org.agenda-files", &vec!["~/notes".to_string()]);
+}
+```
+
+`config_shape` is a small file the config adds once. It converts the derive's
+value into the arena the WIT carries; the SDK cannot, because those types are
+generated from the config's own `wit/`:
+
+```rust
+// src/config_shape.rs, with `mod config_shape;` in src/lib.rs.
+use lattice_plugin_sdk::shape::{self, ConfigShape, Value, flatten_value};
+
+use crate::lattice::plugin_host::config;
+
+/// `false` when lattice refused the value. One for a plugin that has not
+/// loaded yet is held, and checked when the plugin declares the option.
+pub fn set_option_value<T: ConfigShape>(name: &str, value: &T) -> bool {
+    config::set_option_value(name, &to_wit(&value.to_value()))
+}
+
+fn to_wit(value: &Value) -> config::ConfigValue {
+    let (nodes, root) = flatten_value(value);
+    config::ConfigValue {
+        nodes: nodes.iter().map(node_to_wit).collect(),
+        root,
+    }
+}
+
+fn node_to_wit(node: &shape::ValueNode) -> config::ValueNode {
+    match node {
+        shape::ValueNode::Bool(b) => config::ValueNode::Bool(*b),
+        shape::ValueNode::Int(i) => config::ValueNode::Int(*i),
+        shape::ValueNode::Str(s) => config::ValueNode::String(s.clone()),
+        shape::ValueNode::List(children) => config::ValueNode::List(children.clone()),
+        shape::ValueNode::Record(fields) => config::ValueNode::Record(fields.clone()),
+    }
+}
+```
+
+Like `config.set-option`, a value for a plugin that has not loaded yet is held
+until the plugin declares the option, so `register-options` is the place for
+it. A value that does not fit the declared shape, a misspelt field included, is
+reported in `*messages*` with the field that failed, and the option keeps its
+default.
+
 ## A picker
 
 **Target:** a world exporting `register-picker-sources` and `picker-source`.

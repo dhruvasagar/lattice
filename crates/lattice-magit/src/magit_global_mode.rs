@@ -1758,8 +1758,8 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
     // be blamed in reverse") reached from the same reasoning rather
     // than copied.
     //
-    // `staged` is refused with it: the index is not a commit, so there
-    // is no range to walk forward from. Same exclusion `gj`/`gk` make,
+    // `staged` and a conflict's stages are refused with it: the index is
+    // not a commit, so there is no range to walk forward from. Same exclusion `gj`/`gk` make,
     // for the same reason.
     contributions.push(ActionHandlerContribution {
         action_name: "action:magit-global-file-blame-reverse",
@@ -1772,7 +1772,7 @@ fn global_action_handler_contributions() -> Vec<ActionHandlerContribution> {
             let parsed = store
                 .name_for(buffer_id)
                 .and_then(|n| crate::magit_file_revision_mode::parse_buffer_name(&n))
-                .filter(|(git_ref, _)| git_ref != "staged");
+                .filter(|(git_ref, _)| crate::magit_file_revision_mode::is_commit_ref(git_ref));
             Some(match parsed {
                 // MG.26b: the blob buffer this was opened from IS the
                 // content reverse blame wants to annotate, so the mode

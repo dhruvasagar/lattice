@@ -67,6 +67,11 @@ struct MockState {
     /// History of every response the actor sent (e.g. to a
     /// server-initiated request).
     received_responses: Vec<Response>,
+    /// Method of every request AND notification, in the order the
+    /// actor put them on the wire. The two lists above lose that
+    /// order, and it is the thing a request-overtakes-didChange test
+    /// has to see.
+    arrival_order: Vec<String>,
     /// Server-advertised capabilities; configurable per test.
     server_capabilities: ServerCapabilities,
 }
@@ -105,6 +110,11 @@ impl MockController {
 
     pub async fn notifications(&self) -> Vec<Notification> {
         self.state.lock().await.received_notifications.clone()
+    }
+
+    /// Request + notification methods in wire-arrival order.
+    pub async fn arrival_order(&self) -> Vec<String> {
+        self.state.lock().await.arrival_order.clone()
     }
 
     pub async fn responses(&self) -> Vec<Response> {
@@ -175,6 +185,7 @@ impl MockServer {
             received_requests: Vec::new(),
             received_notifications: Vec::new(),
             received_responses: Vec::new(),
+            arrival_order: Vec::new(),
             server_capabilities: caps,
         }));
         let (push_tx, push_rx) = tokio::sync::mpsc::unbounded_channel::<Message>();
@@ -260,13 +271,21 @@ async fn run_mock<R, W>(
                 match res {
                     Ok(Some(Message::Request(req))) => {
                         let resp = build_response(&req, &state).await;
-                        state.lock().await.received_requests.push(req);
+                        {
+                            let mut s = state.lock().await;
+                            s.arrival_order.push(req.method.clone());
+                            s.received_requests.push(req);
+                        }
                         if writer.write_message(&Message::Response(resp)).await.is_err() {
                             return;
                         }
                     }
                     Ok(Some(Message::Notification(n))) => {
-                        state.lock().await.received_notifications.push(n);
+                        {
+                            let mut s = state.lock().await;
+                            s.arrival_order.push(n.method.clone());
+                            s.received_notifications.push(n);
+                        }
                     }
                     Ok(Some(Message::Response(r))) => {
                         // The actor responded to one of OUR

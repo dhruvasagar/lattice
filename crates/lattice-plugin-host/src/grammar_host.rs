@@ -104,6 +104,9 @@ pub enum RecordedContribution {
         /// `apply-ex-command` callback id.
         apply_callback: u32,
     },
+    /// A named value list for `<Tab>` on an argument. No callback: the host
+    /// holds the values and the guest is not called again.
+    CompletionValues { name: String, values: Vec<String> },
 }
 
 impl RecordedContribution {
@@ -114,7 +117,8 @@ impl RecordedContribution {
             | RecordedContribution::Operator { name, .. }
             | RecordedContribution::TextObject { name, .. }
             | RecordedContribution::Action { name, .. }
-            | RecordedContribution::ExCommand { name, .. } => name,
+            | RecordedContribution::ExCommand { name, .. }
+            | RecordedContribution::CompletionValues { name, .. } => name,
         }
     }
 }
@@ -200,6 +204,12 @@ impl GrammarContributions {
             parse_callback,
             apply_callback,
         });
+    }
+
+    /// Record a value list (`grammar.register-completion-values`).
+    pub fn record_completion_values(&mut self, name: String, values: Vec<String>) {
+        self.recorded
+            .push(RecordedContribution::CompletionValues { name, values });
     }
 
     /// How many contributions were recorded.

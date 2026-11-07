@@ -2171,7 +2171,8 @@ owned strings at registration (`Box::leak`, bounded by loaded-source count
 - `prompt`: `string`
 - `default`: [`arg-default`](#variant-arg-default)
 - `completion`: `option<string>` — A registered COMPLETION source (`gen:files`, ...) — inline
-  candidates as the user types this argument.
+  candidates as the user types this argument. A builtin's name, or a
+  list published with `grammar.register-completion-values`.
 - `picker`: `option<string>` — YR.6: a registered PICKER source offered for this argument.
 
   Two fields because they name two registries, which is a

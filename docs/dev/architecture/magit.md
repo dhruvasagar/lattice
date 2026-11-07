@@ -101,6 +101,7 @@ can host serious, production-grade functionality.
 │    refs/heads/*). Fires RepositoryEvent on event bus.        │
 │    Auto-registers DiffSession(GitBaseline(HEAD, path)) on    │
 │    DocumentOpened — gutter signs appear immediately.         │
+│    Steps aside while an explicit diff holds the buffer.      │
 │    Option git.auto-head-diff (default true).                 │
 │    CORE — stays in host (same category as LSP/diff).         │
 └────────────────────────┬─────────────────────────────────────┘
@@ -114,6 +115,17 @@ can host serious, production-grade functionality.
 │    Zero lattice-* dependencies. Leaf crate.                  │
 └──────────────────────────────────────────────────────────────┘
 ```
+
+**The HEAD diff yields to an explicit one.** A buffer is in at most one
+diff session, and the HEAD session holds every tracked file from the
+moment it opens. So an explicit diff (`:diffsplit`, `:diff`, magit's `dv`,
+a conflict opened for resolution) takes the buffer over: the subsystem
+drops its session and keeps what it needs to re-arm it (workdir and
+path), and the explicit diff's teardown hands the buffer back. A file
+the explicit diff itself opens is recorded as stepped aside without ever
+registering, since registering would replace that session's descriptor.
+Before this, every explicit diff of a tracked file was refused as
+"already in a diff session".
 
 ### 3.1 Why `lattice-vcs` and `lattice-magit` are separate crates
 
@@ -188,8 +200,8 @@ branch status line, not a per-commit list:
 
 | Section | Content | Data source |
 |---|---|---|
-| Staged changes | Files with changes in the index — paths + status only. Diffs loaded on demand via `=`. | `WorkingTree::statuses(repo)` filtered to `Modified`/`Added`/`Conflicted` (staged) |
-| Unstaged changes | Files with working-tree changes — paths + status only. Diffs loaded on demand via `=`. | `WorkingTree::statuses(repo)` filtered to `Modified`/`Deleted`/`Unmerged`/`Conflicted` (unstaged) |
+| Staged changes | Files with changes in the index — paths + status only. Diffs loaded on demand via `=`. | `PathChange::staged` of `WorkingTree::statuses(repo)` |
+| Unstaged changes | Files with working-tree changes, and every conflicted path — paths + status only. Diffs loaded on demand via `=`. | `PathChange::unstaged` of `WorkingTree::statuses(repo)`, which also carries `Unmerged(kind)` |
 | Untracked files | Untracked files, listed | `WorkingTree::statuses(repo)` filtered to `Untracked` |
 | Stashes | List of stashes with messages | `Stash::list(repo)` via gix |
 | Unmerged into &lt;upstream&gt; | Commits this branch has that its upstream does not — the unpushed list. Named for the tracked ref (`origin/main`). | `git log @{upstream}..HEAD` (CLI) |
@@ -213,9 +225,35 @@ The unpushed list is **not** capped the way recent commits are: "how
 much have I not pushed" is a number the reader wants exactly right, and
 truncating it would make the header's own count a lie.
 
-A `Conflicted` path appears in BOTH the Staged and Unstaged sections
-simultaneously — real double-listing, not a bug (see §7.2's `entry_key`
-note on why this matters for expansion state).
+A conflicted path is listed **once**, under Unstaged changes, labelled in
+git's own words: `both modified`, `added by us`, `deleted by them` and the
+rest of `UnmergedKind`. An unmerged path has no index-vs-HEAD axis to list
+under Staged; `PathChange` carries it as a whole-path state on the unstaged
+side. A path *can* still appear in both sections, when it is partly staged
+and further modified (see §7.2's `entry_key` note on why that matters for
+expansion state).
+
+**Diffing a conflicted file opens it for resolution** (3W.4). `dd` and `dv`
+on a conflicted row, or inside its `diff --cc`, open the vim-fugitive
+`:Gdiffsplit!` view rather than git's combined diff: ours | working |
+theirs, git's two copies (stages 2 and 3, opened as
+`magit-file-revision-mode` buffers under the `[ours]` / `[theirs]`
+pseudo-refs) either side of the working file, diffed as a `Resolve`
+session (`diff-extraction.md` §4) so `d2o` / `d3o` / `dB` resolve a
+marker block in place. Which copies exist is read off the row's label, not
+asked of git again:
+
+| Label | Opens |
+|---|---|
+| `both modified`, `both added` | ours \| working \| theirs |
+| `added by us`, `deleted by them` | working against ours, two panes |
+| `added by them`, `deleted by us` | working against theirs, two panes |
+| `both deleted` | an echo: there is nothing to diff |
+
+The one-sided cases are two panes because the missing side *is* the
+conflict (one branch has the file, the other deleted it), not a gap to
+fill with an empty pane. `=` keeps showing the combined diff inline: it
+is the overview, the resolution view is the work.
 
 **Section rendering:** Each section has a header line (bold, with section name
 and item count) followed by its body. Sections are fold regions anchored at the
@@ -347,6 +385,22 @@ in the buffer's name and parses in the same `spawn_blocking` that ran
 touches the actor thread. An unrecognised extension or a missing
 grammar leaves the buffer plain — what it was before — rather than
 failing it.
+
+**`-` explores the revision (LS.4b).** `-` in a blob buffer lists the
+file's directory *as that revision has it*, on the file — vim-fugitive's
+`:Gedit <rev>:<dir>/`. Inside that listing `<CR>` on a directory and
+`-` stay at the revision, `<CR>` on a file opens this same blob buffer
+for it, and `<C-s>` / `<C-v>` / `<C-t>` open in a split, vsplit or tab.
+Commits, stashes and `staged` (the index) all list; a conflict stage has
+no tree behind it, so `-` from `[ours]` / `[theirs]` / `[base]` lists the
+working directory on disk instead, where the conflict is being resolved.
+The listing is oil, read-only: oil owns the chord, the listing and the
+walk, and magit supplies the two things only it knows through oil's
+source seam (`directory-listing-mode.md` §11) — `MagitOilOrigins`
+answers "where is this buffer" by name, `GitTreeSource` lists a tree
+through `lattice_vcs::Tree` (in-process gix; 0.32 ms a listing,
+`benchmarks.md` LS.3). magit binds no `-` itself: its majors sit under
+`oil-global-mode`, which would shadow it.
 
 **This is not MG.22's parser wrinkle**, which stays open. There a
 *minor* wants to supply a **diff** parser for content whose language is
@@ -917,7 +971,7 @@ pub struct StatusBufferState {
 ```
 
 Keyed by `entry_key()`, which includes `staged` for `File` entries — a
-`Conflicted` path appears in BOTH the Staged and Unstaged sections at once
+partly-staged path appears in BOTH the Staged and Unstaged sections at once
 (§4.1), as two distinct buffer rows that can be independently expanded;
 collapsing that distinction into a path-only key would let expanding one
 row's diff make `toggle_expand` treat the *other* row as already-expanded
@@ -2084,8 +2138,8 @@ preserved.
 | `x` | Discard file at cursor (file-level, not hunk) | `magit-discard` | `x` is vim's delete character. No-op on read-only. `x` is easier to type than `X` (no shift); the read-only buffer makes the override safe. |
 | `=` | Toggle inline diff at cursor (file entries only) | `magit-toggle-diff` | `=` is vim's format/indent operator. Fugitive convention. |
 | `d` | Open the file at cursor's diff in a dedicated `magit-diff-mode` buffer, scoped to the section's baseline (§6.3) | `magit-diff-file` | `d` is vim's delete-operator prefix (`dd`, `dw`, ...) but has no meaning standalone; no-op on read-only, so safe to override. |
-| `cc` | Commit — open `*magit:commit*` | `magit-commit` | `cc` = change-line (suppressed in read-only). Fugitive convention. |
-| `ca` | Amend previous commit | `magit-commit-amend` | `ca` = change-around (suppressed in read-only). |
+| `cc` | Commit — open the repository's commit buffer | `magit-global-commit` (`C-c g c`'s own action) | `cc` = change-line (suppressed in read-only). Fugitive convention. |
+| `ca` | Amend previous commit | `magit-global-amend` | `ca` = change-around (suppressed in read-only). |
 | `p` | Attempt `git add -p` — shows an error explaining it's unsupported (genuinely interactive over stdin; running it would hang the actor waiting on a child also waiting on stdin) | `magit-stage-patch` | `p` is vim's paste. No-op on read-only. Fugitive convention. |
 | `<CR>` | Context-aware open/visit at cursor | `magit-visit` | See §12.3. |
 

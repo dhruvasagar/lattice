@@ -29,6 +29,8 @@ editor stays responsive even on a large tree.
 | `gr`               | (in results) Re-run the scan with the same query                 |
 | `]e` / `[e`        | Move between matches (excerpt motions — see [`multibuffer-mode`](help:multibuffer-mode)) |
 | `:multibuffer-expand [n]` | Show `n` lines of context around the match under the cursor |
+| `:multibuffer-keep /pat/` / `:multibuffer-reject /pat/` | Keep / hide the results whose line or file path matches `pat` — see [filtering](help:multibuffer-mode#filtering) |
+| `:multibuffer-clear-filters` | Show every result again                                      |
 
 ---
 
@@ -94,7 +96,16 @@ buffer** (see [`modal-editing`](help:modal-editing)); `g/` searches the
   [position history](help:modal-editing).
 - **`gr`** re-runs the scan with the view's current query (after
   you've edited files and want fresh results). It clears the view,
-  resets the headerline, and streams again.
+  resets the headerline, and streams again — with any filters still
+  applied.
+- **Narrowing** — `:multibuffer-reject /tests\//` drops every hit under
+  a `tests/` directory; `:multibuffer-keep /pat/` keeps only the hits
+  whose line or path matches. Filters stack, apply to results still
+  streaming in, and never edit a file; `:multibuffer-clear-filters`
+  brings everything back. See
+  [filtering](help:multibuffer-mode#filtering). Don't reach for
+  `:v/pat/d` here: the results are editable, so it deletes the lines
+  from your files.
 - **Editing** — the results buffer is editable like any multibuffer:
   changes to an excerpt propagate to the source file, and `:w` saves
   through. Expand context first (`:multibuffer-expand`) if you want

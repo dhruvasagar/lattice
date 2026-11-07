@@ -25,6 +25,11 @@ Toggling it off means highlighting falls back to tree-sitter alone. Nothing else
 changes — the server stays running, and every other feature keeps
 working.
 
+If semantic colours ever look wrong — on characters they plainly do not
+belong to — `<C-l>` (or `:redraw`) asks the server for this buffer's
+tokens again, in full. The old colours stay until the new ones arrive, so
+a buffer that was right does not flicker.
+
 That is the point of splitting the umbrella into gates. A server that is
 excellent at completion and slow at semanticTokens can be kept, with
 the slow part switched off for the buffers where it hurts.

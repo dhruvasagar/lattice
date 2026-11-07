@@ -47,14 +47,17 @@ ignore = { workspace = true, optional = true }
 # Workspace already uses fancy-regex for lookaround/backref
 # support in other call sites; same dep here so the regex
 # dialect is uniform across the editor.
-fancy-regex = { workspace = true, optional = true }
+#
+# MF.1: no longer optional — `:multibuffer-keep` / `-reject` patterns
+# are matched with it in every view, search or not, in `:g`'s dialect.
+fancy-regex = { workspace = true }
 
 [features]
 # M.6 (2026-06-01): each in-tree provider ships behind its own
 # cargo feature so opt-out builds disable per provider. Default
 # enables the providers we ship.
 default = ["search", "scan-view"]
-search = ["dep:ignore", "dep:fancy-regex"]
+search = ["dep:ignore"]
 # OM.A1 (2026-08-25): `providers::scan_view` walks the project with the same
 # .gitignore respect `search` uses, so it shares the `ignore` dep. No regex —
 # the row predicate lives entirely in the guest.

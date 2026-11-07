@@ -465,6 +465,12 @@ fn walk_table(
                 if apply_tree_if_composite(registry, source, out, &dotted, value) {
                     continue;
                 }
+                // A plugin that has not loaded: `[org.agenda]` may be one
+                // option's value or a namespace of options, and only the plugin
+                // can say which. Held whole here, and walked below as a
+                // namespace; whichever the plugin declares claims it
+                // (`ConfigRegistry::unclaimed_held`).
+                hold_tree_if_awaited(registry, source, out, &dotted, value, false);
                 if structural_prefixes.iter().any(|p| *p == dotted) {
                     record_namespace_children(source, out, &dotted, sub);
                 } else {
@@ -530,6 +536,14 @@ fn apply_scalar(
     // join-into-a-delimited-string is for the list-of-scalars options that
     // predate schemas and still spell their value as text.
     if apply_tree_if_composite(registry, source, out, dotted, value) {
+        return;
+    }
+    // A list for a plugin that has not loaded is its option's whole value —
+    // `[[org.capture-templates]]`, `agenda-files = ["~/a", "~/b"]`. Held
+    // whole, and checked against the option's schema when it registers.
+    if matches!(value, toml::Value::Array(_))
+        && hold_tree_if_awaited(registry, source, out, dotted, value, true)
+    {
         return;
     }
     if let toml::Value::Array(items) = value {
@@ -631,9 +645,9 @@ fn apply_assignment(
     // plugin gets the value back. An unknown name in a namespace that IS
     // registered is not a plugin waiting to load but a typo, and is reported
     // below as before.
-    if let Some((namespace, _)) = dotted.split_once('.') {
+    if dotted.contains('.') {
         let known = registry.lookup(dotted).is_some();
-        let awaited = !known && !registry.namespace_in_use(namespace);
+        let awaited = awaits_plugin(registry, dotted);
         if known || awaited {
             registry.hold(dotted, value, crate::registry::HeldSource::ConfigFile);
         }
@@ -717,6 +731,52 @@ fn apply_tree_if_composite(
             body: format!("`{dotted}`: {err}"),
             option: Some(dotted.to_string()),
         });
+        return true;
+    }
+    // Held as well as set, as a scalar is (`apply_assignment`): a plugin's
+    // options go when it reloads, and this brings the value back with them.
+    if dotted.contains('.') {
+        registry.hold_tree(dotted, tree, crate::registry::HeldSource::ConfigFile);
+    }
+    true
+}
+
+/// PMF.16: is `dotted` an option of a plugin that has not loaded — unknown, in
+/// a namespace nothing has registered under? Then the value waits for it. An
+/// unknown name in a namespace that IS registered is a typo, not a plugin.
+fn awaits_plugin(registry: &ConfigRegistry, dotted: &str) -> bool {
+    let Some((namespace, _)) = dotted.split_once('.') else {
+        return false;
+    };
+    registry.lookup(dotted).is_none() && !registry.namespace_in_use(namespace)
+}
+
+/// Hold a list or a table for a plugin that has not loaded. `true` when it
+/// was this function's to handle: held, or refused with the path of a value
+/// TOML can write and an option cannot hold (a float or a date inside it).
+///
+/// `report` is off for a table, which is also walked as a namespace: a
+/// namespace of scalars may hold a float, and is held leaf by leaf instead.
+fn hold_tree_if_awaited(
+    registry: &ConfigRegistry,
+    source: &Path,
+    out: &mut LoadOutcome,
+    dotted: &str,
+    value: &toml::Value,
+    report: bool,
+) -> bool {
+    if !awaits_plugin(registry, dotted) {
+        return false;
+    }
+    match toml_to_config_value(value) {
+        Ok(tree) => registry.hold_tree(dotted, tree, crate::registry::HeldSource::ConfigFile),
+        Err(_) if !report => {}
+        Err(err) => out.messages.push(LoadMessage {
+            level: LoadMessageLevel::Warning,
+            source: source.to_path_buf(),
+            body: format!("`{dotted}{}`: {}", err.path, err.message),
+            option: Some(dotted.to_string()),
+        }),
     }
     true
 }
@@ -1563,6 +1623,165 @@ mod tests {
         assert!(r.unregister("org.directory"));
         register_plugin_string(&r, "org.directory", "~/org");
         assert_eq!(string_of(&r, "org.directory").as_deref(), Some("~/notes"));
+    }
+
+    /// What a plugin's structured option is registered as: a `ConfigValue`
+    /// with the schema it declared (`config_host.rs`).
+    fn register_plugin_structured(r: &ConfigRegistry, name: &str, schema: crate::ConfigSchema) {
+        r.try_register(ConfigOption::<ConfigValue>::structured(
+            name.to_string(),
+            schema,
+            ConfigValue::List(Vec::new()),
+            "doc".to_string(),
+        ))
+        .unwrap();
+    }
+
+    fn template_schema() -> crate::ConfigSchema {
+        use crate::{ConfigSchema, SchemaField};
+        ConfigSchema::list(ConfigSchema::record([
+            SchemaField::new("key", ConfigSchema::string(), ""),
+            SchemaField::new(
+                "target",
+                ConfigSchema::record([SchemaField::new("file", ConfigSchema::string(), "")]),
+                "",
+            ),
+        ]))
+    }
+
+    fn value_of(r: &ConfigRegistry, name: &str) -> ConfigValue {
+        r.lookup(name).unwrap().get_value()
+    }
+
+    /// The list a plugin's option is given in `lattice.toml` waits for the
+    /// plugin, whole: it used to be refused at boot as "not applicable to
+    /// scalar options" and dropped, so org's capture templates could only be
+    /// set from `init.rs`.
+    #[test]
+    fn a_plugins_list_of_tables_waits_for_the_plugin() {
+        let r = registry_with_options();
+        let p = write_temp(
+            "held-list-of-tables",
+            "[[org.capture-templates]]\n\
+             key = \"t\"\n\
+             target = { file = \"~/org/refile.org\" }\n\
+             \n\
+             [org]\n\
+             agenda-files = [\"~/a\", \"~/b\"]\n",
+        );
+        let out = load_file(&r, &p, &[]);
+        assert!(
+            out.messages.is_empty(),
+            "held, not refused: {:?}",
+            out.messages
+        );
+
+        register_plugin_structured(&r, "org.capture-templates", template_schema());
+        register_plugin_structured(
+            &r,
+            "org.agenda-files",
+            crate::ConfigSchema::list(crate::ConfigSchema::string()),
+        );
+        let template = ConfigValue::record([
+            ("key".to_string(), ConfigValue::Str("t".into())),
+            (
+                "target".to_string(),
+                ConfigValue::record([(
+                    "file".to_string(),
+                    ConfigValue::Str("~/org/refile.org".into()),
+                )]),
+            ),
+        ]);
+        assert_eq!(
+            value_of(&r, "org.capture-templates"),
+            ConfigValue::List(vec![template.clone()])
+        );
+        assert_eq!(
+            value_of(&r, "org.agenda-files"),
+            ConfigValue::List(vec![
+                ConfigValue::Str("~/a".into()),
+                ConfigValue::Str("~/b".into())
+            ])
+        );
+        assert!(r.unclaimed_held().is_empty(), "{:?}", r.unclaimed_held());
+
+        // org reloads: the value comes back with the option.
+        assert!(r.unregister("org.capture-templates"));
+        register_plugin_structured(&r, "org.capture-templates", template_schema());
+        assert_eq!(
+            value_of(&r, "org.capture-templates"),
+            ConfigValue::List(vec![template])
+        );
+    }
+
+    /// A held list that does not fit the schema the plugin declares leaves the
+    /// option at its default, and never blocks the registration. The report
+    /// is a `warn!` (it reaches `*messages*`) naming the field.
+    #[test]
+    fn a_held_list_that_does_not_fit_leaves_the_default() {
+        let r = registry_with_options();
+        let p = write_temp(
+            "held-list-misfit",
+            "[[org.capture-templates]]\nkey = \"t\"\ntarget = { file = 3 }\n",
+        );
+        assert!(load_file(&r, &p, &[]).messages.is_empty());
+        register_plugin_structured(&r, "org.capture-templates", template_schema());
+        assert_eq!(
+            value_of(&r, "org.capture-templates"),
+            ConfigValue::List(Vec::new())
+        );
+    }
+
+    /// A table written for a plugin that has not loaded is read both ways —
+    /// one option's value, or a namespace of options — and whichever the
+    /// plugin declares claims it, so neither reading is reported unclaimed.
+    #[test]
+    fn a_plugins_table_is_claimed_as_a_namespace_or_as_a_value() {
+        let r = registry_with_options();
+        let p = write_temp("held-table", "[org.agenda]\nspan = \"day\"\nratio = 1.5\n");
+        let out = load_file(&r, &p, &[]);
+        assert!(
+            out.messages.is_empty(),
+            "a float in a namespace is fine: {:?}",
+            out.messages
+        );
+
+        // As a namespace: `org.agenda.span` is a scalar option.
+        register_plugin_string(&r, "org.agenda.span", "week");
+        register_plugin_string(&r, "org.agenda.ratio", "1");
+        assert_eq!(string_of(&r, "org.agenda.span").as_deref(), Some("day"));
+        assert!(r.unclaimed_held().is_empty(), "{:?}", r.unclaimed_held());
+
+        // As a value: `[org.view]` is the whole of a record option.
+        let r = registry_with_options();
+        let p = write_temp("held-record", "[org.view]\nname = \"today\"\n");
+        assert!(load_file(&r, &p, &[]).messages.is_empty());
+        r.try_register(ConfigOption::<ConfigValue>::structured(
+            "org.view",
+            crate::ConfigSchema::record([crate::SchemaField::new(
+                "name",
+                crate::ConfigSchema::string(),
+                "",
+            )]),
+            ConfigValue::record([("name".to_string(), ConfigValue::Str(String::new()))]),
+            "doc",
+        ))
+        .unwrap();
+        assert_eq!(
+            value_of(&r, "org.view"),
+            ConfigValue::record([("name".to_string(), ConfigValue::Str("today".into()))])
+        );
+        assert!(r.unclaimed_held().is_empty(), "{:?}", r.unclaimed_held());
+    }
+
+    /// A list for an option whose namespace IS registered is not a plugin
+    /// waiting to load, so it keeps the existing warning.
+    #[test]
+    fn a_list_for_a_registered_scalar_still_warns() {
+        let r = registry_with_options();
+        let p = write_temp("held-list-scalar", "[ui]\nseparator = [\"a\"]\n");
+        let out = load_file(&r, &p, &[]);
+        assert_eq!(out.messages.len(), 1, "{:?}", out.messages);
     }
 
     #[test]

@@ -1047,37 +1047,10 @@ fn status_action_handlers_rest(contributions: &mut Vec<ActionHandlerContribution
         };
     }
 
-    // ── commit (cc) ───────────────────────────────────
-    {
-        handler!("action:magit-commit", move |ctx: &ActionContext<'_>| {
-            // The same body as `C-c g c`: the compose buffer is named for,
-            // and records, the status buffer's repository. A fixed
-            // `*magit:commit*` carried no repository, so the commit
-            // buffer resolved against the editor's cwd — an empty staged
-            // diff, and a `C-c C-c` with nothing to commit.
-            let _ = status_state(ctx)?;
-            Some(crate::magit_global_mode::open_repo_view_from_action(
-                ctx,
-                "commit",
-                "magit-commit-mode",
-            ))
-        });
-    }
-
-    // ── commit amend (ca) ─────────────────────────────
-    {
-        handler!("action:magit-commit-amend", move |ctx: &ActionContext<
-            '_,
-        >| {
-            // Shares `C-c g a`'s body, for the same reason as `cc`.
-            let _ = status_state(ctx)?;
-            Some(crate::magit_global_mode::open_repo_view_from_action(
-                ctx,
-                "amend",
-                "magit-commit-mode",
-            ))
-        });
-    }
+    // `cc` / `ca` bind `C-c g c` / `C-c g a`'s own actions
+    // (`action:magit-global-commit` / `-amend`): one operation, one id.
+    // They had status-only twins wrapping the same body, which is a
+    // second name for a key to be bound to and a second place to drift.
 
     // ── stage patch (p) ───────────────────────────────
     // `git add -p` is genuinely interactive — it reads its own
@@ -1130,6 +1103,23 @@ fn status_action_handlers_rest(contributions: &mut Vec<ActionHandlerContribution
             let StatusLine::File { path, staged, .. } = classify_line(&g, ctx.cursor.line)? else {
                 return None;
             };
+            // 3W.4: a conflicted file opens for resolution instead of as
+            // git's combined diff. Only an unstaged row can be one: git
+            // lists an unmerged path on that axis alone.
+            if !staged {
+                let snap = g.store.handle_for(g.buffer_id)?.snapshot();
+                let lines: Vec<String> = (0..snap.buffer.content_line_count())
+                    .filter_map(|l| snap.buffer.line(l))
+                    .collect();
+                if let Some(kind) =
+                    crate::conflict_diff::conflict_of(lines.iter().map(String::as_str), &path)
+                {
+                    let label = crate::repo_scope::label_of_buffer(&g.store, g.buffer_id);
+                    return Some(crate::conflict_diff::conflict_diff_effect(
+                        &label, &g.workdir, &path, kind,
+                    ));
+                }
+            }
             // MR.3b: the scope and the path are this view's `rest`;
             // the repository in front of them comes from the buffer this
             // fired in, which is the status buffer of the repo being

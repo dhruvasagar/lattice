@@ -605,6 +605,13 @@ impl Editor {
             arc_swap::ArcSwap::from_pointee(lattice_mode::BufferScopeSourceRegistry::new()),
         );
         boot.register_service::<lattice_mode::BufferScopeSourceRegistryHandle>(scope_sources);
+        // LS.4: where `-` goes from a buffer that is not a file — magit's
+        // file at a revision is in its directory at that revision. Phase B
+        // for the same reason: providers register from their `install`.
+        let oil_sources: lattice_listing::oil::OilSourceRegistryHandle = Arc::new(
+            arc_swap::ArcSwap::from_pointee(lattice_listing::oil::OilSourceRegistry::new()),
+        );
+        boot.register_service::<lattice_listing::oil::OilSourceRegistryHandle>(oil_sources);
         // PR.2: the project resolver — "which project does this buffer
         // belong to", the one answer terminal / compilation / search /
         // the file picker all root from.
@@ -1788,16 +1795,7 @@ impl Editor {
         let vcs_subsystem = std::sync::Arc::new(crate::vcs::VcsSubsystem::new());
         let vcs_subscription_guard = {
             let _enter = runtime_handle.enter();
-            let resolver: std::sync::Arc<dyn crate::diff::subsystem::DocumentBufferResolver> =
-                std::sync::Arc::new(crate::diff::subsystem::BufferRegistryDocumentResolver::new(
-                    buffers.clone(),
-                ));
-            vcs_subsystem.bind(
-                event_bus.clone(),
-                diff_subsystem.clone(),
-                config.clone(),
-                resolver,
-            )
+            vcs_subsystem.bind(event_bus.clone(), diff_subsystem.clone(), config.clone())
         };
 
         // M.7: pre-create shared fold registry so `FoldOverlayServiceImpl`

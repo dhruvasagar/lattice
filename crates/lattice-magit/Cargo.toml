@@ -36,6 +36,10 @@ lattice-picker = { path = "../lattice-picker" }
 lattice-completion = { path = "../lattice-completion" }
 lattice-cells = { path = "../lattice-cells" }
 lattice-syntax = { path = "../lattice-syntax" }
+# LS.4b: `-` from a file at a revision lists its directory at that
+# revision — magit supplies the source and the provider through oil's
+# `OilSource` seam.
+lattice-listing = { path = "../lattice-listing" }
 tokio = { workspace = true, features = ["sync", "rt", "macros"] }
 tracing = { workspace = true }
 ropey = { workspace = true }

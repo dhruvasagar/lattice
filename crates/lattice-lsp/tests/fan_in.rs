@@ -74,7 +74,7 @@ async fn end_to_end_publish_emits_did_change_with_correct_payload() {
     .await;
 
     let bus = Arc::new(EventBus::new());
-    let _sub = fan_in::spawn(server.handle.clone(), bus.clone());
+    let _sub = fan_in::subscribe(server.handle.clone(), bus.clone());
 
     // Open a document directly on the actor (the supervisor's
     // open path does this in production; fan-in only handles
@@ -131,7 +131,7 @@ async fn open_doc_precedes_first_edit_on_the_wire() {
     .await;
 
     let bus = Arc::new(EventBus::new());
-    let _sub = fan_in::spawn(server.handle.clone(), bus.clone());
+    let _sub = fan_in::subscribe(server.handle.clone(), bus.clone());
 
     let path = PathBuf::from("/tmp/x.rs");
     let uri = lattice_lsp::actor::uri_from_path(std::path::Path::new("/tmp/x.rs"));
@@ -176,7 +176,7 @@ async fn edit_for_unknown_uri_is_warn_and_skip_not_panic() {
     .await;
 
     let bus = Arc::new(EventBus::new());
-    let _sub = fan_in::spawn(server.handle.clone(), bus.clone());
+    let _sub = fan_in::subscribe(server.handle.clone(), bus.clone());
 
     // Do NOT open the URI -- the actor has no mirror for it.
     // Publishing edits should warn and skip; the actor must
@@ -211,7 +211,7 @@ async fn event_with_no_path_is_ignored() {
     ))
     .await;
     let bus = Arc::new(EventBus::new());
-    let _sub = fan_in::spawn(server.handle.clone(), bus.clone());
+    let _sub = fan_in::subscribe(server.handle.clone(), bus.clone());
 
     bus.publish_typed(lattice_lsp::LspDocumentChanged {
         id: DocumentId::new(1),
@@ -236,7 +236,7 @@ async fn many_publishes_during_debounce_coalesce_into_one_did_change() {
     ))
     .await;
     let bus = Arc::new(EventBus::new());
-    let _sub = fan_in::spawn(server.handle.clone(), bus.clone());
+    let _sub = fan_in::subscribe(server.handle.clone(), bus.clone());
 
     let uri = lattice_lsp::actor::uri_from_path(std::path::Path::new("/tmp/x.rs"));
     let path = PathBuf::from("/tmp/x.rs");
@@ -277,7 +277,7 @@ async fn shutdown_unsubscribes_fan_in() {
     ))
     .await;
     let bus = Arc::new(EventBus::new());
-    let sub = fan_in::spawn(server.handle.clone(), bus.clone());
+    let sub = fan_in::subscribe(server.handle.clone(), bus.clone());
 
     // Drain a sentinel sub so we know exactly when the bus
     // re-walks its DocumentChanged bucket and prunes dead
@@ -303,5 +303,47 @@ async fn shutdown_unsubscribes_fan_in() {
     assert!(
         !notes.iter().any(|n| n.method == "textDocument/didChange"),
         "after unsubscribe, fan-in must not feed didChange to the actor"
+    );
+}
+
+/// An edit published on the bus reaches the server before a request the
+/// editor makes straight after it, with nothing awaited in between — the
+/// shape of a keystroke followed by that tick's semantic-token request.
+///
+/// The fan-in used to forward through a channel drained by its own task.
+/// On a single-threaded runtime (the editor's own config) that task cannot
+/// have run before the request's send, so the request went first and was
+/// answered for the old text. It now forwards in the publish call.
+#[tokio::test]
+async fn an_edit_reaches_the_server_before_a_request_made_right_after_it() {
+    let server = MockServer::start_with_capabilities(caps_with(
+        TextDocumentSyncKind::INCREMENTAL,
+        PositionEncodingKind::UTF8,
+    ))
+    .await;
+    let bus = Arc::new(EventBus::new());
+    let _sub = fan_in::subscribe(server.handle.clone(), bus.clone());
+    let path = PathBuf::from("/tmp/x.rs");
+    let uri = lattice_lsp::actor::uri_from_path(std::path::Path::new("/tmp/x.rs"));
+    server
+        .handle
+        .open_doc(uri.clone(), "rust", "fn main() {}")
+        .unwrap();
+
+    bus.publish_typed(doc_changed_event(path, vec![applied_insert(0, "a")]));
+    let reply = server.handle.request::<_, serde_json::Value>(
+        "textDocument/semanticTokens/full",
+        serde_json::json!({ "textDocument": { "uri": uri.as_str() } }),
+    );
+    let _ = reply.await;
+
+    let order = server.mock.arrival_order().await;
+    let change = order.iter().position(|m| m == "textDocument/didChange");
+    let request = order
+        .iter()
+        .position(|m| m == "textDocument/semanticTokens/full");
+    assert!(
+        matches!((change, request), (Some(c), Some(r)) if c < r),
+        "the published edit must precede the request; got {order:?}"
     );
 }

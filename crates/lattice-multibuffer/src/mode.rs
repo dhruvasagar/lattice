@@ -169,6 +169,27 @@ impl Mode for MultibufferMode {
         Keymap::from_entries(multibuffer_keymap_entries())
     }
 
+    /// MF.1: the filter commands' bodies. Global, because they read the
+    /// view from the context — see [`filter_handler`].
+    fn action_handlers(&self) -> Vec<lattice_mode::ActionHandlerContribution> {
+        use crate::filter::FilterKind;
+        use lattice_mode::ActionHandlerContribution;
+        vec![
+            ActionHandlerContribution {
+                action_name: KEEP_ACTION,
+                handler: filter_handler(FilterKind::Keep),
+            },
+            ActionHandlerContribution {
+                action_name: REJECT_ACTION,
+                handler: filter_handler(FilterKind::Reject),
+            },
+            ActionHandlerContribution {
+                action_name: CLEAR_FILTERS_ACTION,
+                handler: clear_filters_handler(),
+            },
+        ]
+    }
+
     fn on_activate(&self, ctx: ModeContext) -> LifecycleFuture<'_, MultibufferModeGuard> {
         Box::pin(async move {
             // lattice-host converts lattice_core::BufferId → lattice_protocol::ids::BufferId
@@ -450,4 +471,190 @@ pub fn register_multibuffer_ex_commands(registry: &mut lattice_grammar::CommandR
             surface_form: SurfaceForm::Keyword,
         },
     );
+
+    register_filter_commands(registry);
+}
+
+/// MF.1: `action:multibuffer-keep` / `-reject` / `-clear-filters`.
+pub const KEEP_ACTION: &str = "action:multibuffer-keep";
+pub const REJECT_ACTION: &str = "action:multibuffer-reject";
+pub const CLEAR_FILTERS_ACTION: &str = "action:multibuffer-clear-filters";
+
+/// MF.1: `:multibuffer-keep /pat/`, `:multibuffer-reject /pat/`,
+/// `:multibuffer-clear-filters`, and the actions they run.
+///
+/// The ex-command validates the pattern — so a typo is reported on the
+/// `:` line, before anything changes — and hands it to the action as
+/// `Effect::InvokeCommand`. The action's body is
+/// [`MultibufferMode::action_handlers`]: a filter needs the view, which
+/// only a handler (with the service registry) can reach. Neither half is
+/// the host's.
+fn register_filter_commands(registry: &mut lattice_grammar::CommandRegistry) {
+    use lattice_grammar::args::{ArgKind, ArgSpec, ArgValue, Args};
+    use lattice_grammar::command::LatencyClass;
+    use lattice_grammar::effect::Effect;
+    use lattice_grammar::error::CommandError;
+    use lattice_grammar::registry::{ActionSpec, ExCommandSpec, SurfaceForm};
+
+    fn parse_pattern(s: &str, _bang: bool) -> Result<Args, CommandError> {
+        let pattern = crate::filter::parse_filter_pattern(s).map_err(CommandError::BadArgs)?;
+        // Compile once here only to refuse a bad pattern up front; the
+        // handler compiles its own (an `Args` carries text, not a regex).
+        crate::filter::ExcerptFilter::new(crate::filter::FilterKind::Keep, &pattern, None)
+            .map_err(|e| CommandError::BadArgs(format!("bad pattern /{pattern}/: {e}")))?;
+        Ok(Args::List(vec![ArgValue::String(pattern)]))
+    }
+
+    let pattern_arg = || {
+        vec![ArgSpec::required(
+            "pattern",
+            ArgKind::String,
+            "regex, as for :g; /pat/ or bare",
+        )]
+    };
+
+    for (name, action, doc, action_doc) in [
+        (
+            "multibuffer-keep",
+            KEEP_ACTION,
+            "Show only the excerpts whose text or file path matches /pat/. Filters stack; \
+             the view's sources are never edited.",
+            "multibuffer-mode: keep the excerpts matching the pattern argument.",
+        ),
+        (
+            "multibuffer-reject",
+            REJECT_ACTION,
+            "Hide the excerpts whose text or file path matches /pat/. Filters stack; \
+             the view's sources are never edited.",
+            "multibuffer-mode: hide the excerpts matching the pattern argument.",
+        ),
+    ] {
+        registry.register_action(
+            action,
+            action_doc,
+            ActionSpec {
+                // A dead body: `MultibufferMode`'s handler is what runs.
+                // This exists so the name resolves.
+                apply: Arc::new(|_| Ok(Effect::None)),
+                args_schema: pattern_arg(),
+            },
+        );
+        registry.register_ex_command(
+            name,
+            doc,
+            ExCommandSpec {
+                latency_class: LatencyClass::Reflex,
+                accepts_bang: false,
+                accepts_range: false,
+                parse_args: Arc::new(parse_pattern),
+                apply: Arc::new(move |ctx| {
+                    Ok(Effect::InvokeCommand {
+                        id: action.to_string(),
+                        args: ctx.args.clone(),
+                    })
+                }),
+                args_schema: pattern_arg(),
+                surface_form: SurfaceForm::Keyword,
+            },
+        );
+    }
+
+    registry.register_action(
+        CLEAR_FILTERS_ACTION,
+        "multibuffer-mode: drop every filter and show every excerpt again.",
+        ActionSpec {
+            apply: Arc::new(|_| Ok(Effect::None)),
+            args_schema: vec![],
+        },
+    );
+    registry.register_ex_command(
+        "multibuffer-clear-filters",
+        "Drop every :multibuffer-keep / :multibuffer-reject filter and show every excerpt again.",
+        ExCommandSpec {
+            latency_class: LatencyClass::Reflex,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Arc::new(|_, _| Ok(Args::None)),
+            apply: Arc::new(|_| {
+                Ok(Effect::InvokeCommand {
+                    id: CLEAR_FILTERS_ACTION.to_string(),
+                    args: Args::None,
+                })
+            }),
+            args_schema: Vec::new(),
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+}
+
+/// MF.1: the view the action fired in, or why there is none.
+fn filtered_view(
+    ctx: &ActionContext<'_>,
+) -> Result<Arc<crate::MultibufferDocumentHandle>, &'static str> {
+    let registry = ctx
+        .services
+        .get::<MultibufferRegistryHandle>()
+        .ok_or("multibuffer: no view registry")?;
+    let view_id = lattice_core::BufferId(ctx.buffer_id.0 as u32);
+    registry
+        .handle(view_id)
+        .ok_or("not a multibuffer view — filters apply to search results, scan views, problems")
+}
+
+fn echo(level: lattice_grammar::EchoLevel, text: impl Into<String>) -> Option<Effect> {
+    Some(Effect::Echo {
+        level,
+        text: text.into(),
+    })
+}
+
+/// MF.1: the handler for `:multibuffer-keep` / `:multibuffer-reject`.
+///
+/// Global (buffer-agnostic) and stateless: it reads the active buffer
+/// from the context, so one registration serves every view, including
+/// ones opened after boot.
+fn filter_handler(kind: crate::filter::FilterKind) -> ActionHandler {
+    use lattice_grammar::EchoLevel;
+    Arc::new(move |ctx: &ActionContext<'_>| -> Option<Effect> {
+        let view = match filtered_view(ctx) {
+            Ok(view) => view,
+            Err(why) => return echo(EchoLevel::Warn, why),
+        };
+        let Some(pattern) = ctx.arg_str(0) else {
+            return echo(EchoLevel::Warn, "a pattern is required: /pat/");
+        };
+        // Paths match relative to the working directory, fixed now.
+        let base = ctx
+            .services
+            .get::<crate::filter::CwdHandle>()
+            .and_then(|cwd| cwd.lock().ok().and_then(|d| d.clone()));
+        let filter = match crate::filter::ExcerptFilter::new(kind, pattern, base) {
+            Ok(f) => f,
+            Err(e) => return echo(EchoLevel::Warn, format!("bad pattern /{pattern}/: {e}")),
+        };
+        let out = view.push_filter(filter);
+        // To the first result: the row the cursor was on may be gone,
+        // and the top of a freshly narrowed list is where you read from.
+        Some(Effect::Many(vec![
+            Effect::CursorMove(lattice_protocol::position::Position::ZERO),
+            Effect::Echo {
+                level: EchoLevel::Info,
+                text: format!("{} of {} shown", out.visible, out.total),
+            },
+        ]))
+    })
+}
+
+fn clear_filters_handler() -> ActionHandler {
+    use lattice_grammar::EchoLevel;
+    Arc::new(|ctx: &ActionContext<'_>| -> Option<Effect> {
+        let view = match filtered_view(ctx) {
+            Ok(view) => view,
+            Err(why) => return echo(EchoLevel::Warn, why),
+        };
+        match view.clear_filters() {
+            Some(out) => echo(EchoLevel::Info, format!("all {} shown", out.total)),
+            None => echo(EchoLevel::Info, "no filters to clear"),
+        }
+    })
 }

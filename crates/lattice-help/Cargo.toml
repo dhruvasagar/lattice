@@ -19,7 +19,7 @@ lattice-core = { path = "../lattice-core" }
 lattice-protocol = { path = "../lattice-protocol" }
 lattice-syntax = { path = "../lattice-syntax" }
 lattice-completion = { path = "../lattice-completion" }
-miniz_oxide = { workspace = true }
+zstd = { workspace = true }
 # CR.1: `HelpTopicRegistryHandle = Arc<ArcSwap<HelpTopicRegistry>>` — the
 # copy-on-write RCU handle a plugin's `:help` pages register through. Same
 # idiom as the command / picker / compilation-parser registries.
@@ -29,13 +29,16 @@ arc-swap = { workspace = true }
 lattice-mode = { path = "../lattice-mode" }
 
 [build-dependencies]
-miniz_oxide = { workspace = true }
+# `zdict_builder` trains the shared dictionary; only the build script
+# needs it, so the runtime edge above stays decode-and-compress only.
+zstd = { workspace = true, features = ["zdict_builder"] }
 
 [dev-dependencies]
 criterion = { workspace = true }
 
 # HD.5: the cost of the compressed-embed scheme — boot must not
 # decompress, first open must stay imperceptible, cached opens free.
+# The shared-dictionary scheme adds the one-time dictionary setup.
 [[bench]]
 name = "topics"
 harness = false

@@ -289,7 +289,7 @@ impl LspSupervisor {
             .map(|(k, h)| (k.clone(), h.clone()))
             .collect();
         for (key, handle) in pending {
-            let id = crate::fan_in::spawn(handle, bus.clone());
+            let id = crate::fan_in::subscribe(handle, bus.clone());
             self.fan_in_subs.insert(key, id);
         }
     }
@@ -544,7 +544,7 @@ impl LspSupervisor {
                     // SubscriptionId is unsubscribed on shutdown
                     // so the bus doesn't keep dead senders.
                     if let Some(bus) = self.event_bus.clone() {
-                        let sub = crate::fan_in::spawn(h.clone(), bus);
+                        let sub = crate::fan_in::subscribe(h.clone(), bus);
                         self.fan_in_subs.insert(key.clone(), sub);
                     }
                     h
@@ -611,7 +611,7 @@ impl LspSupervisor {
             tokio::spawn(pump_diagnostics(layer, rx));
             // Spawn the per-actor edit fan-in if the bus is wired.
             if let Some(bus) = self.event_bus.clone() {
-                let sub = crate::fan_in::spawn(handle.clone(), bus);
+                let sub = crate::fan_in::subscribe(handle.clone(), bus);
                 self.fan_in_subs.insert(key.clone(), sub);
             }
         }
@@ -877,7 +877,7 @@ impl LspSupervisor {
             tokio::spawn(pump_diagnostics(self.diagnostics.clone(), rx));
             self.actors.insert(key.clone(), new_handle.clone());
             if let Some(bus) = self.event_bus.clone() {
-                let sub = crate::fan_in::spawn(new_handle.clone(), bus);
+                let sub = crate::fan_in::subscribe(new_handle.clone(), bus);
                 self.fan_in_subs.insert(key.clone(), sub);
             }
 
@@ -1749,7 +1749,7 @@ async fn handle_actor_exit(
         tokio::spawn(pump_diagnostics(state.diagnostics.clone(), rx));
         state.actors.insert(key.clone(), new_handle.clone());
         if let Some(bus) = state.event_bus.clone() {
-            let sub = crate::fan_in::spawn(new_handle.clone(), bus);
+            let sub = crate::fan_in::subscribe(new_handle.clone(), bus);
             state.fan_in_subs.insert(key.clone(), sub);
         }
         let uris_for_key: Vec<Uri> = state

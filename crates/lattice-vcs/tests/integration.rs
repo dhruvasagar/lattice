@@ -10,7 +10,7 @@ use std::process::Command;
 
 use lattice_vcs::{
     Bisect, BisectStep, Branch, Commit, GitBlob, Index, PathChange, PathStatus, Reference, Remote,
-    Repository, Stash, Submodule, SubmoduleState, WorkingTree,
+    Repository, Stash, Submodule, SubmoduleState, Tree, TreeEntry, WorkingTree,
 };
 
 /// Create a temporary directory, initialise a git repo in it, and
@@ -1612,4 +1612,131 @@ fn staging_an_untracked_file_leaves_nothing_unstaged() {
         git(&repo, &["status", "--porcelain=v1"]).trim(),
         "A  fresh.txt"
     );
+}
+
+// ─── Tree: a directory at a revision, and in the index ──────────────
+
+/// Names as `git ls-tree --name-only`, directories first — the order
+/// `Tree` promises, built from git's own answer.
+fn ls_tree(repo: &Repository, rev: &str, dir: &str) -> Vec<TreeEntry> {
+    let spec = if dir.is_empty() {
+        rev.to_string()
+    } else {
+        format!("{rev}:{dir}")
+    };
+    let mut out: Vec<TreeEntry> = git(repo, &["ls-tree", &spec])
+        .lines()
+        .map(|line| {
+            let (meta, name) = line.split_once('\t').expect("ls-tree row");
+            TreeEntry {
+                name: name.to_string(),
+                is_dir: meta.split(' ').nth(1) == Some("tree"),
+            }
+        })
+        .collect();
+    out.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then_with(|| a.name.cmp(&b.name)));
+    out
+}
+
+fn tree_fixture() -> (tempfile::TempDir, Repository) {
+    let (dir, repo) = init_temp_repo();
+    write_file(dir.path(), "b.txt", "b\n");
+    write_file(dir.path(), "a.txt", "a\n");
+    write_file(dir.path(), "src/main.rs", "fn main() {}\n");
+    write_file(dir.path(), "src/lib/mod.rs", "\n");
+    git_add(&repo, ".");
+    git_commit(&repo, "first");
+    // The second commit drops a file and adds one, so the two revisions
+    // list differently and a listing of the wrong one is caught.
+    std::fs::remove_file(dir.path().join("b.txt")).unwrap();
+    write_file(dir.path(), "src/new.rs", "\n");
+    git_add(&repo, ".");
+    git_commit(&repo, "second");
+    (dir, repo)
+}
+
+#[test]
+fn tree_lists_a_directory_as_each_revision_has_it() {
+    let (_dir, repo) = tree_fixture();
+    for (rev, dir) in [
+        ("HEAD", ""),
+        ("HEAD~1", ""),
+        ("HEAD", "src"),
+        ("HEAD~1", "src"),
+    ] {
+        assert_eq!(
+            Tree::list(&repo, rev, Path::new(dir)).unwrap(),
+            ls_tree(&repo, rev, dir),
+            "{rev}:{dir}"
+        );
+    }
+    let old = Tree::list(&repo, "HEAD~1", Path::new("")).unwrap();
+    assert!(old.iter().any(|e| e.name == "b.txt"));
+    assert_eq!(
+        old[0],
+        TreeEntry {
+            name: "src".into(),
+            is_dir: true
+        }
+    );
+}
+
+#[test]
+fn tree_refuses_a_file_and_a_path_the_revision_lacks() {
+    let (_dir, repo) = tree_fixture();
+    assert!(Tree::list(&repo, "HEAD", Path::new("a.txt")).is_err());
+    assert!(Tree::list(&repo, "HEAD", Path::new("nowhere")).is_err());
+    assert!(Tree::list(&repo, "no-such-branch", Path::new("")).is_err());
+}
+
+#[test]
+fn tree_lists_a_stash_like_any_commit() {
+    let (dir, repo) = tree_fixture();
+    write_file(dir.path(), "src/stashed.rs", "\n");
+    git_add(&repo, "src/stashed.rs");
+    git(&repo, &["stash", "push", "-q", "-m", "wip"]);
+    let names: Vec<String> = Tree::list(&repo, "stash@{0}", Path::new("src"))
+        .unwrap()
+        .into_iter()
+        .map(|e| e.name)
+        .collect();
+    assert!(names.contains(&"stashed.rs".to_string()), "{names:?}");
+}
+
+#[test]
+fn the_index_lists_what_is_staged_not_what_is_committed() {
+    let (dir, repo) = tree_fixture();
+    write_file(dir.path(), "src/deep/staged.rs", "\n");
+    git_add(&repo, "src/deep/staged.rs");
+    write_file(dir.path(), "src/untracked.rs", "\n");
+
+    let src = Tree::list_index(&repo, Path::new("src")).unwrap();
+    assert_eq!(
+        src,
+        vec![
+            TreeEntry {
+                name: "deep".into(),
+                is_dir: true
+            },
+            TreeEntry {
+                name: "lib".into(),
+                is_dir: true
+            },
+            TreeEntry {
+                name: "main.rs".into(),
+                is_dir: false
+            },
+            TreeEntry {
+                name: "new.rs".into(),
+                is_dir: false
+            },
+        ],
+        "an untracked file is not in the index"
+    );
+    assert_eq!(
+        Tree::list_index(&repo, Path::new("")).unwrap(),
+        ls_tree(&repo, "HEAD", ""),
+        "the root is unchanged by staging below it"
+    );
+    assert!(Tree::list_index(&repo, Path::new("nowhere")).is_err());
 }

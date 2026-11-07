@@ -1,5 +1,101 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- **Search results can be narrowed.** In `:search` results, and in any other
+  multibuffer view, `:multibuffer-keep /pat/` shows only the results whose
+  line or file path matches, `:multibuffer-reject /pat/` hides them, and
+  `:multibuffer-clear-filters` brings everything back. These are vim's
+  `:Cfilter` and `:Cfilter!`. Filters stack, apply to results still
+  streaming in, and survive `gr`, and the header says which are active. They
+  never edit a file, unlike `:v/pat/d`, which in an editable results view
+  deletes the lines from your files.
+
+### Fixed
+- **Semantic colours no longer land on the wrong characters.** A request to
+  the language server made right after a keystroke reached it before the
+  edit did, so the server answered for the text as it was. Semantic tokens
+  were the visible case: keyword colours appeared inside comments and
+  stayed. Edits now reach the server before anything asked after them,
+  which also keeps hover, completion and code actions in step with what you
+  typed.
+- **`<C-l>` refreshes semantic colours.** `<C-l>` and `:redraw` now ask the
+  language server for the visible buffers' semantic tokens again, in full.
+  Before, they redrew syntax and decorations but kept the server's colours,
+  so if those were wrong they stayed wrong until the next edit.
+
+## 0.9.14 — 2026-11-06
+
+### Added
+- **`:lsp-install <Tab>` lists the servers lighthouse can install.** Plugins
+  can now give an ex-command argument its completions, with the new
+  `grammar.register-completion-values` call (plugin API crates 0.4.1).
+- **Plugins can write to `*messages*` from background work.** The new
+  `ui.notify` call (plugin API crates 0.4.1) reports an outcome when there is
+  no command to echo it, such as a scan finishing. Both calls are new
+  functions in the same `@0.4.0` interface, so existing plugins keep loading
+  unchanged; a plugin that uses them moves its pin to `0.4.1`.
+- **Diffing a conflicted file in magit opens it for resolution.** `dd` or
+  `dv` on a conflicted row shows ours | working | theirs, as vim-fugitive's
+  `:Gdiffsplit!` does, and `d2o`, `d3o` or `dB` in the working file takes a
+  side, or both, in place of the conflict markers. A file only one side
+  changed or deleted opens as a two-pane diff against the side that has it.
+- **`-` from a file at a revision lists its directory at that revision.** In
+  a magit file view (a file opened from a commit, a stash or the index), `-`
+  opens oil on the file's directory as that revision has it, as vim-fugitive
+  does. `<CR>` on a directory and `-` stay at the revision, `<CR>` on a file
+  opens that file at the revision, and `<C-s>`/`<C-v>`/`<C-t>` open it in a
+  split, vsplit or tab. The listing is read-only. `-` at the top of any oil
+  listing now says so instead of doing nothing.
+- **`:redraw` redraws the screen, as `<C-l>` does.** `:redr[aw][!]` runs the
+  same redraw as the key, so the vim spelling works from the command line.
+
+### Changed
+- **magit's `cc` and `ca` in the status buffer are `C-c g c` and `C-c g a`.**
+  They ran the same code under their own action names, `magit-commit` and
+  `magit-commit-amend`. Those names are gone, so a binding to either now
+  names `magit-global-commit` or `magit-global-amend`.
+- **The built-in `:help` pages take less space in the binary.** They are now
+  compressed together against one shared dictionary instead of each on its
+  own, which leaves room for the docs to keep growing. `:help` opens as
+  quickly as before.
+
+### Fixed
+- **The split divider keeps its own colour.** In the terminal, the divider
+  between side-by-side panes picked up the dimming and syntax styling of the
+  left pane's text underneath it. It now looks the same whatever that pane
+  shows and whichever pane has focus.
+- **`]c` and `[c` jump to hunks in the pane you are in.** In a side-by-side
+  diff they always moved by the right-hand pane's line numbers, so from the
+  left pane they landed on the wrong lines wherever the two sides' lengths
+  differed.
+- **A diff's signs and conflict keys appear as soon as it is computed.** A
+  side-by-side diff could leave its gutter signs, line colours and the
+  `d2o` / `d3o` conflict keys waiting for the next key press.
+- **`:diffsplit`, `:diff` and magit's `dv` work on files in a git
+  repository.** Each refused such a file as "already has an active diff
+  session", because the file's gutter signs against HEAD held it. The diff
+  you open now takes over, and the signs come back after `:diffoff`.
+- **Gutter signs appear on every file you open in a repository.** A file
+  opened once other buffers existed could get none.
+- **`dv` in magit status works on a file's row.** It only worked inside an
+  expanded diff, and on the row itself did nothing.
+- **A plugin's lists and tables can go in `lattice.toml`.** Only single values
+  were kept for a plugin that had not loaded yet. A list or a table, such as
+  org's `[[org.capture-templates]]` or `agenda-files = ["~/a", "~/b"]`, was
+  reported as "not applicable to scalar options" at startup and ignored. It is
+  now kept until the plugin declares the option, and checked against what the
+  plugin expects: a mismatch is reported in `*messages*` with the field that
+  failed (`org.capture-templates[2].target.file: expected string`) and leaves
+  the default. `init.rs` can likewise set such an option with
+  `set_option_value` before the plugin loads, rather than from its
+  `pre-plugin-loaded` handler.
+- **magit's `dv` diffs the file against its committed version.** It set up
+  the diff before opening the version it compares against, so the working
+  file was diffed against whichever pane was active, usually the magit
+  buffer `dv` was pressed in.
+
 ## 0.9.13 — 2026-10-29
 
 ### Fixed

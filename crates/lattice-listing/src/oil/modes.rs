@@ -112,19 +112,14 @@ impl Mode for OilMode {
             let view = lattice_core::BufferId(ctx.buffer_id.0 as u32);
             let target = dir.join(&name);
             Some(if is_dir {
+                // Re-listed in place, so it stays in this buffer's source.
                 Effect::OilNavigate {
                     view,
                     dir: target,
                     focus: None,
                 }
             } else {
-                Effect::OpenBufferAt {
-                    path: Some(target),
-                    position: lattice_protocol::Position::ZERO,
-                    force: false,
-                    content: None,
-                    activate_minor: None,
-                }
+                oil_source(ctx).open_entry(&target, false, None)
             })
         });
         vec![
@@ -133,9 +128,7 @@ impl Mode for OilMode {
                 handler: follow,
             },
             // `<C-s>` / `<C-v>` / `<C-t>`: open the entry in a split / vsplit /
-            // tab. A file opens directly; a directory path resolves to
-            // `DoEditOutcome::Directory` in the new pane, which opens oil there
-            // (`handle_do_edit_outcome`), so the same effect serves both.
+            // tab — what that means is the source's (`OilSource::open_entry`).
             oil_open_in_target("action:oil-follow-split", OpenTarget::Split),
             oil_open_in_target("action:oil-follow-vsplit", OpenTarget::VSplit),
             oil_open_in_target("action:oil-follow-tab", OpenTarget::Tab),
@@ -147,14 +140,23 @@ impl Mode for OilMode {
 }
 
 /// `-` in an oil buffer: re-list to the parent, landing the cursor on the
-/// directory stepped out of (oil.nvim's round-trip). `None` at the
-/// filesystem root, or on a buffer with no oil state.
+/// directory stepped out of (oil.nvim's round-trip). At the top of the
+/// source's tree it says so; `None` on a buffer with no oil state.
 ///
 /// The body is oil's; the chord is `oil-global-mode`'s, which calls this
 /// for buffers carrying an [`OilDir`].
 pub(crate) fn oil_parent_directory(ctx: &ActionContext<'_>) -> Option<Effect> {
     let dir = ctx.buffer_local::<OilDir>()?.0.clone();
-    let parent = dir.parent()?.to_path_buf();
+    let source = oil_source(ctx);
+    // LS.4: the top of a tree says so. A revision's tree tops out at the
+    // repository root, well above `/`, and a `-` that silently did
+    // nothing there would read as a broken key.
+    let Some(parent) = source.parent(&dir) else {
+        return Some(Effect::Echo {
+            level: lattice_grammar::EchoLevel::Info,
+            text: format!("oil: {} is the top", source.display(&dir)),
+        });
+    };
     let view = lattice_core::BufferId(ctx.buffer_id.0 as u32);
     let focus = dir.file_name().map(|n| n.to_string_lossy().into_owned());
     Some(Effect::OilNavigate {
@@ -162,6 +164,12 @@ pub(crate) fn oil_parent_directory(ctx: &ActionContext<'_>) -> Option<Effect> {
         dir: parent,
         focus,
     })
+}
+
+/// The source this oil buffer lists from — the filesystem unless the
+/// buffer was opened from another one.
+fn oil_source(ctx: &ActionContext<'_>) -> Arc<dyn super::OilSource> {
+    super::source_or_fs(ctx.buffer_local::<super::OilSourceLocal>())
 }
 
 /// LM.3: resolve the oil entry under the cursor — `(oil dir, entry name,
@@ -182,12 +190,8 @@ fn oil_entry_at(ctx: &ActionContext<'_>) -> Option<(PathBuf, String, bool)> {
 /// cursor in `target`. Shared body for the three chords.
 fn oil_open_in_target(action_name: &'static str, target: OpenTarget) -> ActionHandlerContribution {
     let handler: ActionHandler = Arc::new(move |ctx: &ActionContext<'_>| -> Option<Effect> {
-        let (dir, name, _is_dir) = oil_entry_at(ctx)?;
-        Some(Effect::OpenInTarget {
-            path: Some(dir.join(&name)),
-            position: lattice_protocol::Position::ZERO,
-            target,
-        })
+        let (dir, name, is_dir) = oil_entry_at(ctx)?;
+        Some(oil_source(ctx).open_entry(&dir.join(&name), is_dir, Some(target)))
     });
     ActionHandlerContribution {
         action_name,

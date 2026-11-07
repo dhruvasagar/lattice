@@ -1077,6 +1077,37 @@ pub enum Effect {
         /// Directory to list.
         dir: Option<PathBuf>,
     },
+    /// LS.4: open oil on `dir` as a registered listing source lists it —
+    /// a directory at a git revision, say — landing on the entry `focus`.
+    ///
+    /// `source` is an id a registered `OilSourceProvider` resolves
+    /// (`lattice_listing::oil::OilSourceRegistry`); an id nobody claims is
+    /// echoed as an error rather than falling back to the filesystem,
+    /// which would show the working tree under a label that says
+    /// otherwise. Host-applied, so a `Many` can act on the listing after
+    /// opening it. Host/peer-only — no WIT mirror.
+    OpenOilSource {
+        /// The source's id.
+        source: String,
+        /// Directory to list, absolute.
+        dir: PathBuf,
+        /// Entry to put the cursor on; `None` = first row.
+        focus: Option<String>,
+    },
+    /// LS.4: apply `effect` in a new split, vsplit or tab — the pane
+    /// `target` names is made and focused first.
+    ///
+    /// [`Effect::OpenInTarget`] does this for a path; this is the same
+    /// for anything else that opens a buffer, so a listing whose entries
+    /// are not files (a revision's tree opens a file *at the revision*,
+    /// a synthetic buffer) still honours `<C-s>` / `<C-v>` / `<C-t>`.
+    /// Host-applied. Host/peer-only — no WIT mirror.
+    InTarget {
+        /// Where.
+        target: lattice_core::ui::pane::OpenTarget,
+        /// What to do there.
+        effect: Box<Effect>,
+    },
     /// `:describe-option NAME` -- render the option's metadata in
     /// a help view.
     DescribeOption {
@@ -1581,6 +1612,22 @@ pub enum Effect {
         path: std::path::PathBuf,
         /// The "other side" for a three-way merge; `None` = two-way.
         remote: Option<std::path::PathBuf>,
+    },
+    /// Open a git conflict for resolution: ours | working | theirs.
+    ///
+    /// The working file sits between git's read-only copies of the two
+    /// sides and is diffed against both as a `Resolve` session, so
+    /// `d2o` / `d3o` / `dB` take from a copy into the working file. Unlike
+    /// [`Self::Diffsplit`] the copies are buffers, not files: `ours` and
+    /// `theirs` name buffers the emitter has already opened. The cursor
+    /// lands in the working file.
+    DiffResolve {
+        /// The buffer holding our side (git's stage 2).
+        ours: String,
+        /// The conflicted file, markers and all.
+        working: std::path::PathBuf,
+        /// The buffer holding their side (git's stage 3).
+        theirs: String,
     },
     /// `:diffget [<bufnr>]` -- pull the hunk under the cursor
     /// from the named (or auto-resolved) buffer side. D.6.d.

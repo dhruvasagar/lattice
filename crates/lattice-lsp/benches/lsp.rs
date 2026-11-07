@@ -305,6 +305,58 @@ fn lsp_edit_publish_three_subs(c: &mut Criterion) {
     });
 }
 
+/// (a') The fan-in's own editor-thread cost, now that it forwards inside
+/// the publish (`fan_in::subscribe`, `EventBus::subscribe_typed_fn`).
+/// Three typed subscribers -- three attached servers -- each doing what
+/// the fan-in closure does per applied edit: build the URI, build the
+/// `Edit`, one unbounded send (`ServerHandle::record_edit` is exactly
+/// that send). Before the change this work ran on a fan-in task and the
+/// keystroke thread paid only the channel hand-off; it moved onto the
+/// publisher so the edit is queued ahead of every later request.
+fn lsp_edit_publish_typed_fan_in_three_subs(c: &mut Criterion) {
+    let bus = EventBus::new();
+    let _keepalive: Vec<_> = (0..3)
+        .map(|_| {
+            let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<(lsp_types::Uri, Edit)>();
+            bus.subscribe_typed_fn::<lattice_lsp::LspDocumentChanged, _>(move |event| {
+                let Some(path) = event.path.as_deref() else {
+                    return true;
+                };
+                let uri = lattice_lsp::actor::uri_from_path(path);
+                for ae in &event.edits {
+                    let edit = Edit {
+                        range: ae.original_range,
+                        kind: EditKind::Replace {
+                            text: ae.inserted_text.clone(),
+                        },
+                    };
+                    if tx.send((uri.clone(), edit)).is_err() {
+                        return false;
+                    }
+                }
+                true
+            });
+            rx
+        })
+        .collect();
+    let Event::DocumentChanged { path, edits, .. } = make_document_changed_event(1) else {
+        unreachable!()
+    };
+    let event = lattice_lsp::LspDocumentChanged {
+        id: DocumentId::new(1),
+        path,
+        version: 17,
+        edits,
+    };
+    c.bench_function("lsp_edit_publish_typed_fan_in_three_subs", |b| {
+        b.iter(|| {
+            bus.publish_typed(black_box(event.clone()));
+        });
+    });
+    // The receivers fill without bound over the run; that is what the
+    // actor drains in production, and dropping them here ends the bench.
+}
+
 /// (b) End-to-end edit-propagation latency. Publishes one
 /// `DocumentChanged` event and awaits its arrival on a single
 /// subscriber's mpsc -- mirrors the bus -> fan-in hop. Excludes
@@ -518,6 +570,7 @@ criterion_group!(
     logging_log_trace_off,
     logging_log_trace_on,
     lsp_edit_publish_three_subs,
+    lsp_edit_publish_typed_fan_in_three_subs,
     lsp_edit_propagation_publish_to_recv,
     lsp_didchange_flush_16_edits,
     diagnostics_layer_line_severity_wait_free,

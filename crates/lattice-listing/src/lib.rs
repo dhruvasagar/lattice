@@ -3,7 +3,10 @@
 //!
 //! - [`oil`] — a flat, **editable** listing of one directory
 //!   (oil.nvim-style). `:w` diffs the rope against a snapshot and
-//!   executes the renames / deletes / creates it implies.
+//!   executes the renames / deletes / creates it implies. The entries
+//!   come from an [`oil::OilSource`] — the disk by default, or a tree
+//!   another subsystem supplies (magit's directory at a revision, which
+//!   is read-only).
 //! - [`file_tree`] — a hierarchical, **read-only** tree with
 //!   expand/collapse.
 //!

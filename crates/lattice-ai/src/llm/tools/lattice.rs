@@ -232,7 +232,11 @@ impl LatticeTools {
         // Lexically first, so `..` cannot climb out through a path that does
         // not exist; then through symlinks, so a link cannot either.
         let lexical = normalize(&joined);
-        let path = std::fs::canonicalize(&lexical).unwrap_or(lexical);
+        let Some(path) = through_links(&lexical) else {
+            return Err(ToolError::Refused(format!(
+                "`{input}` goes through a link whose target does not exist"
+            )));
+        };
         if !path.starts_with(&root) {
             return Err(ToolError::Refused(format!(
                 "`{input}` is outside the project ({})",
@@ -788,6 +792,31 @@ fn read_error(shown: &str, e: &str) -> String {
     }
 }
 
+/// `path` with every symlink in it followed, including those in the
+/// directories above a file that does not exist yet: a new file under
+/// `link/` lands wherever `link` points, so that is where it must be checked.
+/// `None` for a link whose target is missing, which a write would create
+/// wherever the link points.
+fn through_links(path: &Path) -> Option<PathBuf> {
+    let mut missing = Vec::new();
+    let mut at = path;
+    loop {
+        if let Ok(real) = std::fs::canonicalize(at) {
+            return Some(missing.iter().rev().fold(real, |p, name| p.join(name)));
+        }
+        if std::fs::symlink_metadata(at).is_ok() {
+            return None;
+        }
+        match (at.parent(), at.file_name()) {
+            (Some(parent), Some(name)) => {
+                missing.push(name.to_owned());
+                at = parent;
+            }
+            _ => return Some(path.to_path_buf()),
+        }
+    }
+}
+
 /// `..` and `.` removed without touching the disk.
 fn normalize(path: &Path) -> PathBuf {
     let mut out = PathBuf::new();
@@ -968,6 +997,28 @@ mod tests {
             "{}",
             &shown[shown.len() - 120..]
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_new_file_under_a_linked_directory_resolves_through_the_link() {
+        let base = std::env::temp_dir().join(format!("lattice-links-{}", std::process::id()));
+        let (project, outside) = (base.join("project"), base.join("outside"));
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        let outside = std::fs::canonicalize(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, project.join("link")).unwrap();
+        std::os::unix::fs::symlink(outside.join("gone"), project.join("dangling")).unwrap();
+
+        let resolved = through_links(&project.join("link/new/x.txt")).unwrap();
+        assert_eq!(resolved, outside.join("new/x.txt"));
+        assert_eq!(through_links(&project.join("dangling")), None);
+        let real_project = std::fs::canonicalize(&project).unwrap();
+        assert_eq!(
+            through_links(&project.join("fresh.txt")).unwrap(),
+            real_project.join("fresh.txt")
+        );
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]

@@ -125,6 +125,12 @@
   (`:set messages.filter=info,rmcp=debug` to see it).
 
 ### Fixed
+- **An LLM chat's file tools cannot leave the project through a linked
+  directory.** A new file under a symlinked directory was checked where it
+  was typed, not where the link points, so `link/new.txt` with `link`
+  pointing outside the project got written. Links in the directories above a
+  new file are now followed before the check, and a link to a missing target
+  is refused.
 - **A malformed config file no longer echoes its offending line.** The
   parse error for `lattice.toml` (and `.lattice/llm.toml`) quoted the line it
   failed on, so an unquoted `api_key = sk-…` put the key in `*messages*` and

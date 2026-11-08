@@ -414,9 +414,12 @@ pub struct ProjectLayer {
 
 impl ProjectLayer {
     pub fn parse(source: &str, text: &str) -> Result<Self, String> {
-        let table: toml::Table = text
-            .parse()
-            .map_err(|e| format!("{source} is not valid TOML: {e}"))?;
+        let table: toml::Table = text.parse().map_err(|e| {
+            format!(
+                "{source} is not valid TOML: {}",
+                lattice_config::loader::describe_toml_error(text, &e)
+            )
+        })?;
         let mut entries = Vec::new();
         flatten("", &table, &mut entries);
         Ok(Self {

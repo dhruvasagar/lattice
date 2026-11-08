@@ -403,12 +403,10 @@ pub fn load_file(
     let table: toml::Table = match text.parse() {
         Ok(t) => t,
         Err(e) => {
-            // toml::de::Error already includes line/col in its
-            // Display; pass the body through verbatim.
             out.messages.push(LoadMessage {
                 level: LoadMessageLevel::Error,
                 source: path.to_path_buf(),
-                body: format!("parse failed: {e}"),
+                body: format!("parse failed: {}", describe_toml_error(&text, &e)),
                 // A syntax error loses every option in the file, so this
                 // diagnostic belongs to none of them.
                 option: None,
@@ -422,6 +420,21 @@ pub fn load_file(
     out.raw_tree = table.clone();
     walk_table(registry, path, &mut out, structural_prefixes, &[], &table);
     out
+}
+
+/// A TOML syntax error as `line L, column C: message`, without the source
+/// line. `toml`'s own `Display` quotes the offending line, and a config file
+/// holds API keys and tokens: a malformed `api_key = sk-...` would put the key
+/// in `*messages*` and the log. The position is enough to find it.
+pub fn describe_toml_error(text: &str, e: &toml::de::Error) -> String {
+    let message = e.message().trim().replace('\n', "; ");
+    let Some(span) = e.span() else {
+        return message;
+    };
+    let before = &text[..span.start.min(text.len())];
+    let line = before.matches('\n').count() + 1;
+    let column = before.rsplit('\n').next().map_or(0, |l| l.chars().count()) + 1;
+    format!("line {line}, column {column}: {message}")
 }
 
 /// Recursive walker. `prefix` is the dotted path leading to
@@ -1861,5 +1874,14 @@ mod tests {
             r.unclaimed_held(),
             [("other.thing".to_string(), HeldSource::Init)]
         );
+    }
+
+    #[test]
+    fn a_parse_error_names_the_place_but_not_the_line() {
+        let text = "[llm.providers.x]\napi_key = sk-secret-123\n";
+        let e = text.parse::<toml::Table>().expect_err("malformed");
+        let said = describe_toml_error(text, &e);
+        assert!(!said.contains("sk-secret-123"), "{said}");
+        assert!(said.starts_with("line 2, column "), "{said}");
     }
 }

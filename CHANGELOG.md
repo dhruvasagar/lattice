@@ -125,6 +125,10 @@
   (`:set messages.filter=info,rmcp=debug` to see it).
 
 ### Fixed
+- **A malformed config file no longer echoes its offending line.** The
+  parse error for `lattice.toml` (and `.lattice/llm.toml`) quoted the line it
+  failed on, so an unquoted `api_key = sk-…` put the key in `*messages*` and
+  the log. It now names the line and column only.
 - **An allowed tool call no longer reads `[denied]` in the transcript.**
   After you answered an LLM chat's question, a clean-up step marked it denied
   as well. The tool always ran; only the record was wrong.

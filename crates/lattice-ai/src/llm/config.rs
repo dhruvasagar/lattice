@@ -166,7 +166,11 @@ impl LlmConfig {
         match text.parse::<toml::Table>() {
             Ok(table) => Self::from_table(&table),
             Err(e) => Self {
-                warnings: vec![format!("llm: {} is not valid TOML: {e}", path.display())],
+                warnings: vec![format!(
+                    "llm: {} is not valid TOML: {}",
+                    path.display(),
+                    lattice_config::loader::describe_toml_error(&text, &e)
+                )],
                 ..Self::default()
             },
         }

@@ -60,6 +60,10 @@ use crate::snapshot::{DocumentSnapshot, PublishedSnapshot};
 /// `Shutdown` is here so tests can deterministically drain the
 /// actor; in production graceful shutdown happens by dropping the
 /// last handle (mailbox closes; `recv()` returns `None`).
+// `Dispatch` (~436 B, mostly `DispatchEnv`) is sent once per grammar
+// keystroke. Boxing it would add a heap allocation to every one of them to
+// save a memcpy into the mailbox slot — the wrong trade on paramount #1.
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum ActorMsg {
     ApplyEdit {
         edit: Edit,

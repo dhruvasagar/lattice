@@ -39,6 +39,20 @@ use crate::{
     Excerpt, MultibufferDocumentHandle, MultibufferExcerptHeaderProvider, MultibufferStatusProvider,
 };
 
+/// How a multibuffer view presents itself: its buffer name, its listing
+/// flags, and how its rows group for folding.
+///
+/// `fold_grouping` (AF.1) is chosen here rather than by a setter on the
+/// returned handle because `MultibufferMode::on_activate` reads it while
+/// activating the mode, before the caller has the `BufferId` back.
+#[derive(Debug, Clone)]
+pub struct MultibufferViewConfig {
+    /// `None` for an anonymous `*multibuffer:N*` name.
+    pub name: Option<String>,
+    pub flags: BufferFlags,
+    pub fold_grouping: crate::FoldGrouping,
+}
+
 /// Atomic insert + activate-major for a multibuffer view. Returns
 /// the freshly-allocated view `BufferId`. After this call:
 ///
@@ -69,18 +83,17 @@ pub fn create_multibuffer_view(
     activator: &mut dyn ModeActivator,
     sources: HashMap<BufferId, Arc<dyn Document>>,
     excerpts: Vec<Excerpt>,
-    name: Option<String>,
-    flags: BufferFlags,
+    config: MultibufferViewConfig,
     registry: lattice_grammar::CommandRegistryHandle,
     // K.4.7 (2026-06-07): when `Some`, wired into the handle so
     // `add_source` creates a `SyntaxHandle` per source file.
     lang_registry: Option<Arc<LangRegistry>>,
-    // AF.1: how this view's rows group for folding. A PARAMETER rather than a
-    // setter on the returned handle because `MultibufferMode::on_activate`
-    // reads it while activating the mode below — by the time the caller has a
-    // BufferId back, the fold source has already been chosen.
-    fold_grouping: crate::FoldGrouping,
 ) -> BufferId {
+    let MultibufferViewConfig {
+        name,
+        flags,
+        fold_grouping,
+    } = config;
     let services = activator.services();
 
     let buffer_store = match services.get::<BufferStoreHandle>() {

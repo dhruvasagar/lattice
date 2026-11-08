@@ -2348,9 +2348,11 @@ impl Editor {
                     Some(lattice_protocol::chord::ChordPattern::Literal(
                         lattice_protocol::chord::KeyChord::char('n'),
                     )),
-                    &builtins,
-                    &syntax_textobject_ids,
-                    &syntax_motion_ids,
+                    crate::keymap_normal::OperatorVocabulary::new(
+                        &builtins,
+                        &syntax_textobject_ids,
+                        &syntax_motion_ids,
+                    ),
                     false,
                 );
                 // SI.10: `gS{motion|text-object}` wraps that span in a
@@ -2377,9 +2379,11 @@ impl Editor {
                     Some(lattice_protocol::chord::ChordPattern::Literal(
                         lattice_protocol::chord::KeyChord::char('S'),
                     )),
-                    &builtins,
-                    &syntax_textobject_ids,
-                    &syntax_motion_ids,
+                    crate::keymap_normal::OperatorVocabulary::new(
+                        &builtins,
+                        &syntax_textobject_ids,
+                        &syntax_motion_ids,
+                    ),
                     false,
                 );
                 // K.3.2 (2026-06-02): emacs-style <C-h> map at
@@ -2468,9 +2472,11 @@ impl Editor {
                     Some(lattice_protocol::chord::ChordPattern::Literal(
                         lattice_protocol::chord::KeyChord::char('s'),
                     )),
-                    &builtins,
-                    &syntax_textobject_ids,
-                    &syntax_motion_ids,
+                    crate::keymap_normal::OperatorVocabulary::new(
+                        &builtins,
+                        &syntax_textobject_ids,
+                        &syntax_motion_ids,
+                    ),
                     true, // post_motion_char
                 );
 

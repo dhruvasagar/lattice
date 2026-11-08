@@ -90,9 +90,12 @@ use crate::render_state::RenderState;
 /// worker tick. Behind a `std::sync::Mutex`; the hot path
 /// holds the lock only long enough to clone out `Arc`
 /// references.
+/// One buffer's registered providers, keyed by provider id.
+type ProvidersById = HashMap<ProviderId, Arc<dyn VirtualRowProvider>>;
+
 #[derive(Debug, Default)]
 pub struct VirtualRowProviderRegistry {
-    by_buffer: Mutex<HashMap<BufferId, HashMap<ProviderId, Arc<dyn VirtualRowProvider>>>>,
+    by_buffer: Mutex<HashMap<BufferId, ProvidersById>>,
 }
 
 impl VirtualRowProviderRegistry {

@@ -493,12 +493,7 @@ pub struct Editor {
     /// producer-fed cache (compilation is the only producer today); the
     /// outer `Arc` lets the publish clone be O(1) and the inner
     /// per-buffer `Arc<Vec<..>>` lets the renderer read wait-free.
-    pub compilation_severity: std::sync::Arc<
-        std::collections::HashMap<
-            lattice_core::BufferId,
-            std::sync::Arc<Vec<(u32, lattice_mode::GutterSeverityLevel)>>,
-        >,
-    >,
+    pub compilation_severity: crate::render_state::CompilationSeverityMap,
     /// CM.3c (2026-07-22): per-buffer compilation location-line
     /// index for theme-based highlighting. Twin of
     /// `compilation_severity` above. Written by the

@@ -48,11 +48,13 @@ fn boot_with_results() -> (Editor, BufferId, Arc<dyn lattice_runtime::Document>)
         &mut editor,
         sources,
         excerpts,
-        Some("*search:TODO*".into()),
-        BufferFlags::default(),
+        lattice_multibuffer::MultibufferViewConfig {
+            name: Some("*search:TODO*".into()),
+            flags: BufferFlags::default(),
+            fold_grouping: lattice_multibuffer::FoldGrouping::SourceFile,
+        },
         registry_for_view,
         None,
-        lattice_multibuffer::FoldGrouping::SourceFile,
     );
     editor.activate_document(view);
     (editor, view, parser)

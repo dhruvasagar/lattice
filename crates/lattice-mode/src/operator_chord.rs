@@ -21,6 +21,18 @@
 
 use std::sync::Arc;
 
+/// The plugin an operator chord belongs to: its id, which the bindings are
+/// stamped with (`SourceLayer::Plugin(id)`), and its manifest name, so the
+/// stamp reads `plugin:comment` rather than `plugin:1`, a number the reader
+/// would have to resolve by hand.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PluginOrigin<'a> {
+    /// The plugin's id, as stamped in `SourceLayer::Plugin(id)`.
+    pub id: u32,
+    /// The plugin's manifest name.
+    pub name: &'a str,
+}
+
 /// Wires a plugin operator's chord into the universal operator-pending layer.
 pub trait OperatorChordWirer: Send + Sync {
     /// Bind `chord` to `op`, with the full operator-pending surface.
@@ -42,10 +54,7 @@ pub trait OperatorChordWirer: Send + Sync {
         // `SourceLayer::Plugin(id)`. Without it `:describe-key gc` names the
         // host file that happened to create the binding, which is a
         // provenance lie about a plugin's own chord.
-        plugin_id: u32,
-        // CM.4: the manifest name, so the stamp reads `plugin:comment` rather
-        // than `plugin:1` — a number the reader then has to resolve by hand.
-        plugin_name: &str,
+        origin: PluginOrigin<'_>,
         post_motion_char: bool,
     ) -> Result<(), String>;
 

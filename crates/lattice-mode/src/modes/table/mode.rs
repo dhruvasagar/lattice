@@ -308,6 +308,9 @@ fn rewrite(ctx: &ActionContext, table: &Table, rendered: Vec<String>, cell: Cell
     }
 }
 
+/// The `apply` body of an [`ActionSpec`].
+type TableAction = Arc<dyn Fn(&ActionContext) -> GrammarResult<Effect> + Send + Sync>;
+
 /// A body that needs a table under the caret, sharing one decline policy.
 ///
 /// `shared` says whether the chord is one a lower layer also binds. It
@@ -317,7 +320,7 @@ fn rewrite(ctx: &ActionContext, table: &Table, rendered: Vec<String>, cell: Cell
 fn in_table(
     shared: bool,
     f: impl Fn(&ActionContext, Located) -> Option<Effect> + Send + Sync + 'static,
-) -> Arc<dyn Fn(&ActionContext) -> GrammarResult<Effect> + Send + Sync> {
+) -> TableAction {
     let declined = if shared {
         Effect::Declined
     } else {

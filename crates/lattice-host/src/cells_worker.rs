@@ -837,23 +837,26 @@ pub fn recompute_pane(
             // in chunked mode (H.3).
             let mut dm = build_display_matrix(
                 snapshot.as_ref(),
-                pane.syntax_handle.as_deref(),
-                &pane.excerpt_syntax,
-                &pane.extra_spans,
-                &pane.extra_refine,
-                pane.semantic_tokens
-                    .as_deref()
-                    .map(|c| c.tokens.as_slice())
-                    .unwrap_or(&[]),
+                DisplayMatrixInputs {
+                    syntax_handle: pane.syntax_handle.as_deref(),
+                    excerpt_syntax: &pane.excerpt_syntax,
+                    extra_spans: &pane.extra_spans,
+                    extra_refine: &pane.extra_refine,
+                    semantic_tokens: pane
+                        .semantic_tokens
+                        .as_deref()
+                        .map(|c| c.tokens.as_slice())
+                        .unwrap_or(&[]),
+                    inlay_hints: &pane.inlay_hints,
+                    folds: &pane.folds,
+                    foldenable: pane.foldenable,
+                    viewport_height: pane.viewport_height,
+                    scroll: pane.scroll,
+                    version: pane.version,
+                    reveal_line: pane.conceal_reveal_line,
+                },
                 ct,
-                &pane.inlay_hints,
-                &pane.folds,
-                pane.foldenable,
-                pane.viewport_height,
-                pane.scroll,
-                pane.version,
                 whitespace,
-                pane.conceal_reveal_line,
             );
             dm.wrap_width = effective_wrap;
             (dm, WorkerDecision::Recomputed)
@@ -1999,7 +2002,15 @@ fn refine_at_byte(
         .map(|r| r.kind)
 }
 
-#[allow(clippy::type_complexity)]
+/// One built display row: `(text, runs, col_map, conceals, col_count)`.
+type DisplayRowParts = (
+    Box<str>,
+    Vec<crate::display_matrix::DisplayRun>,
+    Vec<(u32, u32)>,
+    Vec<lattice_cells::ConcealRange>,
+    u32,
+);
+
 fn build_display_row(
     text: &str,
     line_spans: &[lattice_syntax::StyledSpan],
@@ -2007,13 +2018,7 @@ fn build_display_row(
     ws: &WhitespaceConfig,
     line_refine: &[lattice_cells::RefineSpan],
     conceal_rules: &[lattice_syntax::conceal::ConcealRule],
-) -> (
-    Box<str>,
-    Vec<crate::display_matrix::DisplayRun>,
-    Vec<(u32, u32)>,
-    Vec<lattice_cells::ConcealRange>,
-    u32,
-) {
+) -> DisplayRowParts {
     build_display_row_with_mods(
         text,
         line_spans,
@@ -2044,13 +2049,7 @@ fn build_display_row_with_mods(
     // pay nothing at all.
     conceal_rules: &[lattice_syntax::conceal::ConcealRule],
     line_mods: &[(usize, usize, u16)],
-) -> (
-    Box<str>,
-    Vec<crate::display_matrix::DisplayRun>,
-    Vec<(u32, u32)>,
-    Vec<lattice_cells::ConcealRange>,
-    u32,
-) {
+) -> DisplayRowParts {
     use crate::display_matrix::DisplayRun;
     use lattice_cells::cell_flags;
 
@@ -2528,30 +2527,50 @@ pub(crate) fn conceal_version_for(syntax_handle: Option<&lattice_syntax::SyntaxH
     lattice_syntax::conceal::rules_version(&conceal_rules_for(syntax_handle))
 }
 
-fn build_display_matrix(
-    snapshot: &lattice_runtime::DocumentSnapshot,
-    syntax_handle: Option<&lattice_syntax::SyntaxHandle>,
-    excerpt_syntax: &[crate::render_state::ExcerptSyntax],
-    extra_spans: &[Vec<lattice_syntax::StyledSpan>],
+/// The per-pane inputs of a full display-matrix build, borrowed: exactly the
+/// `pane.*` fields the build reads, so the render hot path passes references
+/// and nothing is cloned or allocated to carry them.
+struct DisplayMatrixInputs<'a> {
+    syntax_handle: Option<&'a lattice_syntax::SyntaxHandle>,
+    excerpt_syntax: &'a [crate::render_state::ExcerptSyntax],
+    extra_spans: &'a [Vec<lattice_syntax::StyledSpan>],
     // DR.3: per-line intra-line refinement; empty for every buffer
     // that publishes none.
-    extra_refine: &[Vec<lattice_cells::RefineSpan>],
+    extra_refine: &'a [Vec<lattice_cells::RefineSpan>],
     // GD.6b: the buffer's LSP semantic tokens, layered over the grammar
     // spans; empty for a buffer with none.
-    semantic_tokens: &[lattice_lsp::cache::DecodedSemanticToken],
-    ct: CellTheme<'_>,
-    inlay_hints: &[crate::render_state::InlayHintRow],
-    folds: &[lattice_core::Fold],
+    semantic_tokens: &'a [lattice_lsp::cache::DecodedSemanticToken],
+    inlay_hints: &'a [crate::render_state::InlayHintRow],
+    folds: &'a [lattice_core::Fold],
     foldenable: bool,
     viewport_height: u32,
     scroll: u32,
     version: MatrixVersion,
-    whitespace: &WhitespaceConfig,
-    // H.4: Insert/Replace on THIS pane's buffer renders raw.
     // CL.1: the one line whose conceals are suppressed.
     reveal_line: Option<u32>,
+}
+
+fn build_display_matrix(
+    snapshot: &lattice_runtime::DocumentSnapshot,
+    inputs: DisplayMatrixInputs<'_>,
+    ct: CellTheme<'_>,
+    whitespace: &WhitespaceConfig,
 ) -> crate::display_matrix::DisplayMatrix {
     use crate::display_matrix::{DisplayChunk, DisplayMatrix};
+    let DisplayMatrixInputs {
+        syntax_handle,
+        excerpt_syntax,
+        extra_spans,
+        extra_refine,
+        semantic_tokens,
+        inlay_hints,
+        folds,
+        foldenable,
+        viewport_height,
+        scroll,
+        version,
+        reveal_line,
+    } = inputs;
     // CV.2: the row range, in **content** space. This is where the
     // phantom trailing row was born: ropey's raw `line_count()` counts
     // the empty line after a file's terminating `\n`, and building a
@@ -3277,7 +3296,7 @@ fn display_matrix_to_cell_matrix(
     if dm.chunks.is_empty() {
         return CellMatrix::empty();
     }
-    let chunks: Vec<Arc<CellChunk>> = dm
+    let mut chunks: Vec<Arc<CellChunk>> = dm
         .chunks
         .iter()
         .map(|dc| {
@@ -3289,9 +3308,12 @@ fn display_matrix_to_cell_matrix(
             Arc::new(CellChunk::new(dc.start_source_line, rows, dc.version))
         })
         .collect();
-    let mut cm = if dm.is_whole_doc() {
-        // Whole-doc mode is exactly one chunk (guaranteed non-empty here).
-        CellMatrix::whole_doc(chunks.into_iter().next().unwrap(), dm.source_line_count)
+    // Whole-doc mode is exactly one chunk (non-empty, checked above).
+    let mut cm = if dm.is_whole_doc()
+        && chunks.len() == 1
+        && let Some(only) = chunks.pop()
+    {
+        CellMatrix::whole_doc(only, dm.source_line_count)
     } else {
         CellMatrix::chunked(chunks, dm.chunk_size, dm.source_line_count, dm.version)
     };
@@ -5396,20 +5418,22 @@ mod tests {
         ];
         let dm = build_display_matrix(
             snap.as_ref(),
-            None,
-            &[],
-            &extra,
-            &[],
-            &[],
+            DisplayMatrixInputs {
+                syntax_handle: None,
+                excerpt_syntax: &[],
+                extra_spans: &extra,
+                extra_refine: &[],
+                semantic_tokens: &[],
+                inlay_hints: &[],
+                folds: &[],
+                foldenable: true,
+                viewport_height: 5,
+                scroll: 0,
+                version: v(1),
+                reveal_line: None,
+            },
             ct,
-            &[],
-            &[],
-            true,
-            5,
-            0,
-            v(1),
             &ws,
-            None,
         );
         let row0 = dm.row_at_source_line(0).expect("line 0 row");
         let first = row0.runs.first().expect("at least one run on line 0");
@@ -5735,20 +5759,22 @@ mod tests {
         );
         let dm = build_display_matrix(
             snap.as_ref(),
-            None,
-            &[],
-            &[],
-            &[],
-            &[],
+            DisplayMatrixInputs {
+                syntax_handle: None,
+                excerpt_syntax: &[],
+                extra_spans: &[],
+                extra_refine: &[],
+                semantic_tokens: &[],
+                inlay_hints: &inlays,
+                folds: &[],
+                foldenable: true,
+                viewport_height: 5,
+                scroll: 0,
+                version: v(1),
+                reveal_line: None,
+            },
             ct,
-            &inlays,
-            &[],
-            true,
-            5,
-            0,
-            v(1),
             &ws,
-            None,
         );
         let projected = display_matrix_to_cell_matrix(&dm, ct);
 

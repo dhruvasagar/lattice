@@ -18,6 +18,17 @@ use lattice_vcs::{PathStatus, Repository, Stash, WorkingTree};
 use crate::headerline::{self, Field};
 use crate::sections::{Section, SectionEntry, SectionIndex, SectionKind};
 
+/// A formatted status buffer: `(text, per-line spans, headerline fields,
+/// expansion key -> line count, per-line refinement)`. The refinement is
+/// DR.3's intra-line diff, line-aligned with the spans.
+pub type FormattedStatus = (
+    String,
+    Vec<Vec<StyledSpan>>,
+    Vec<Field>,
+    HashMap<String, usize>,
+    Vec<Vec<lattice_cells::RefineSpan>>,
+);
+
 /// Build the status buffer text (+ styled spans + MG.14 header
 /// fields) from live git data. Blocking — call on `spawn_blocking`.
 ///
@@ -35,14 +46,7 @@ pub fn build_and_format(
     // expansions highlight through. Without it a refresh rebuilt every
     // open diff with the flat classifier and the syntax layer vanished.
     lang_registry: Option<&std::sync::Arc<lattice_syntax::LangRegistry>>,
-) -> (
-    String,
-    Vec<Vec<StyledSpan>>,
-    Vec<Field>,
-    HashMap<String, usize>,
-    // DR.3: intra-line refinement, line-aligned with the spans above.
-    Vec<Vec<lattice_cells::RefineSpan>>,
-) {
+) -> FormattedStatus {
     let repo = match Repository::discover(workdir) {
         Ok(r) => r,
         Err(e) => {

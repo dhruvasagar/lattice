@@ -227,6 +227,14 @@ pub fn choose_indent_source(fresh: bool) -> IndentSource {
     }
 }
 
+/// The semantic-tokens legend a decode is interpreted against: the
+/// server's token-type and token-modifier name tables, borrowed.
+#[derive(Clone, Copy)]
+pub struct SemanticLegend<'a> {
+    pub token_types: &'a [lattice_lsp::lsp_types::SemanticTokenType],
+    pub token_modifiers: &'a [lattice_lsp::lsp_types::SemanticTokenModifier],
+}
+
 /// Result of [`Editor::dispatch`]. Carries the renderer-side
 /// side-effects the caller must surface after the host-side state
 /// mutation completes.
@@ -495,6 +503,17 @@ impl HeadingHeights {
             })
             .map_or(0.0, |(_, scale)| (scale - 1.0).max(0.0))
     }
+}
+
+/// §12 paint gate: the identity-preserving (`cached_or_build`) render
+/// sub-states [`Editor::compute_paint_revision`] folds by pointer — a
+/// reused `Arc` means "unchanged". Borrowed, so grouping them costs nothing.
+struct IdentitySubStates<'a> {
+    panes: &'a std::sync::Arc<crate::render_state::PanesRenderState>,
+    modes: &'a std::sync::Arc<crate::render_state::ModesRenderState>,
+    buffer_locals: &'a std::sync::Arc<crate::render_state::BufferLocalsRenderState>,
+    buffers: &'a std::sync::Arc<crate::render_state::BuffersRenderState>,
+    tabs: &'a std::sync::Arc<crate::render_state::TabsRenderState>,
 }
 
 /// CG.13: run a picker source's future until it completes or `cancel` flips,
@@ -1154,11 +1173,13 @@ impl Editor {
         // content pointer; it's then moved into the literal below.
         let modeline_snapshot = self.modeline.snapshot();
         let paint_revision = self.compute_paint_revision(
-            &panes_arc,
-            &modes_arc,
-            &buffer_locals_arc,
-            &buffers_arc,
-            &tabs_arc,
+            IdentitySubStates {
+                panes: &panes_arc,
+                modes: &modes_arc,
+                buffer_locals: &buffer_locals_arc,
+                buffers: &buffers_arc,
+                tabs: &tabs_arc,
+            },
             &modeline_snapshot,
             static_overlay_version_val,
         );
@@ -1905,15 +1926,18 @@ impl Editor {
     /// must be added here.
     fn compute_paint_revision(
         &self,
-        panes: &std::sync::Arc<crate::render_state::PanesRenderState>,
-        modes: &std::sync::Arc<crate::render_state::ModesRenderState>,
-        buffer_locals: &std::sync::Arc<crate::render_state::BufferLocalsRenderState>,
-        buffers: &std::sync::Arc<crate::render_state::BuffersRenderState>,
-        tabs: &std::sync::Arc<crate::render_state::TabsRenderState>,
+        sub_states: IdentitySubStates<'_>,
         modeline: &lattice_mode::ModelineSnapshot,
         static_overlay_version: u64,
     ) -> u64 {
         use std::hash::{Hash, Hasher};
+        let IdentitySubStates {
+            panes,
+            modes,
+            buffer_locals,
+            buffers,
+            tabs,
+        } = sub_states;
         let mut h = std::collections::hash_map::DefaultHasher::new();
         // Identity-preserving sub-states: pointer identity == change.
         (std::sync::Arc::as_ptr(panes) as usize).hash(&mut h);
@@ -12032,10 +12056,12 @@ impl Editor {
                         let lr = Some(self.lang_registry.clone());
                         let view_id = lattice_multibuffer::providers::narrow::create_narrow_view(
                             self,
-                            source_id,
-                            source_handle,
-                            start,
-                            end,
+                            lattice_multibuffer::providers::narrow::NarrowRegion {
+                                source_id,
+                                source_handle,
+                                start_line: start,
+                                end_line: end,
+                            },
                             &label,
                             registry,
                             lr,
@@ -12091,10 +12117,12 @@ impl Editor {
                         let lr = Some(self.lang_registry.clone());
                         let view_id = lattice_multibuffer::providers::narrow::create_narrow_view(
                             self,
-                            source_id,
-                            source_handle,
-                            start,
-                            end,
+                            lattice_multibuffer::providers::narrow::NarrowRegion {
+                                source_id,
+                                source_handle,
+                                start_line: start,
+                                end_line: end,
+                            },
                             &label,
                             registry,
                             lr,
@@ -15009,8 +15037,7 @@ impl Editor {
         previous_result_id: &str,
         new_result_id: Option<String>,
         edits: &[lattice_lsp::lsp_types::SemanticTokensEdit],
-        token_types: &[lattice_lsp::lsp_types::SemanticTokenType],
-        token_modifiers: &[lattice_lsp::lsp_types::SemanticTokenModifier],
+        legend: SemanticLegend<'_>,
     ) {
         use crate::per_buffer_cache::PerBufferCacheExt;
         let Some(cur) = cache_slot.get_for(buffer_id) else {
@@ -15025,8 +15052,11 @@ impl Editor {
             cache_slot.remove_for(buffer_id);
             return;
         }
-        let decoded =
-            lattice_lsp::cache::decode_semantic_tokens(&raw_data, token_types, token_modifiers);
+        let decoded = lattice_lsp::cache::decode_semantic_tokens(
+            &raw_data,
+            legend.token_types,
+            legend.token_modifiers,
+        );
         cache_slot.insert_for(
             buffer_id,
             lattice_lsp::cache::LspSemanticTokensCache {
@@ -16557,10 +16587,12 @@ impl Editor {
                     ranges,
                 });
                 self.lsp_selection_chain_index = match pending_step {
-                    lattice_lsp::cache::SelectionRangeStep::Expand => {
-                        let chain = self.lsp_selection_chain.as_ref().unwrap();
-                        if chain.ranges.len() > 1 { 1 } else { 0 }
-                    }
+                    // The chain was stored just above; step to its second
+                    // range when it has one.
+                    lattice_lsp::cache::SelectionRangeStep::Expand => self
+                        .lsp_selection_chain
+                        .as_ref()
+                        .map_or(0, |chain| usize::from(chain.ranges.len() > 1)),
                     lattice_lsp::cache::SelectionRangeStep::Shrink => 0,
                 };
                 self.apply_selection_chain_step();
@@ -18099,8 +18131,10 @@ impl Editor {
                             &prev_id,
                             d.result_id,
                             &d.edits,
-                            &token_types,
-                            &token_modifiers,
+                            SemanticLegend {
+                                token_types: &token_types,
+                                token_modifiers: &token_modifiers,
+                            },
                         );
                         async_landed.notify_one();
                     }
@@ -20652,7 +20686,7 @@ impl Editor {
             }
             CodeActionOutcome::Resolved(action) => {
                 let handle = self.pending_code_action_handle.take();
-                self.apply_resolved_code_action(handle, action)
+                self.apply_resolved_code_action(handle, *action)
             }
             CodeActionOutcome::Items(items) => {
                 if items.is_empty() {
@@ -20761,7 +20795,9 @@ impl Editor {
                 Ok(r) => r,
                 Err(_) => action,
             };
-            let _ = tx.send(lattice_lsp::cache::CodeActionOutcome::Resolved(resolved));
+            let _ = tx.send(lattice_lsp::cache::CodeActionOutcome::Resolved(Box::new(
+                resolved,
+            )));
             async_landed.notify_one();
         });
     }
@@ -26348,24 +26384,23 @@ impl Editor {
             return false;
         }
 
-        if let Some(range) = cut {
-            if let Err(err) =
+        if let Some(range) = cut
+            && let Err(err) =
                 self.apply_targeted_edit(source, lattice_protocol::edit::Edit::delete(range))
-            {
-                // `warn!`, not `debug!`: the text is now in two places and the
-                // user is the only one who can resolve that. One-shot and
-                // user-actionable is exactly the `info`/`warn` case.
-                tracing::warn!(
-                    path = %path.display(),
-                    ?err,
-                    "write-to-file: the text was written but could not be removed from the source; \
-                     it now exists in both places"
-                );
-                self.set_message(
-                    EchoLevel::Warn,
-                    "write-to-file: written, but the original could not be removed".to_string(),
-                );
-            }
+        {
+            // `warn!`, not `debug!`: the text is now in two places and the
+            // user is the only one who can resolve that. One-shot and
+            // user-actionable is exactly the `info`/`warn` case.
+            tracing::warn!(
+                path = %path.display(),
+                ?err,
+                "write-to-file: the text was written but could not be removed from the source; \
+                 it now exists in both places"
+            );
+            self.set_message(
+                EchoLevel::Warn,
+                "write-to-file: written, but the original could not be removed".to_string(),
+            );
         }
 
         // OC.9. LAST, and after the cut rather than beside the insert: the
@@ -31140,6 +31175,7 @@ impl Editor {
     /// - Activate the new buffer in the active pane (T4
     ///   may honor `terminal.display`).
     /// - On spawn failure: echo an error; no buffer created.
+    ///
     /// `cwd` overrides PR.3's project-root default for this spawn only — PC.2.
     /// `None` is the ordinary `:terminal`, unchanged.
     pub fn do_terminal_spawn(
@@ -31149,17 +31185,17 @@ impl Editor {
         cwd: Option<std::path::PathBuf>,
     ) {
         // Resolve program + args.
-        let (program, args) = match cmd_line.as_deref().map(str::trim) {
-            Some(s) if !s.is_empty() => {
-                // Naive whitespace split. T4 swaps in
-                // shell-words parsing if users want quoted
-                // args.
-                let mut parts = s.split_whitespace().map(|p| p.to_string());
-                let program = parts.next().unwrap();
-                let args: Vec<String> = parts.collect();
-                (program, args)
-            }
-            _ => {
+        // Naive whitespace split. T4 swaps in shell-words parsing if users
+        // want quoted args. A blank command line has no first word and opens
+        // the user's shell.
+        let mut parts = cmd_line
+            .as_deref()
+            .unwrap_or_default()
+            .split_whitespace()
+            .map(str::to_string);
+        let (program, args) = match parts.next() {
+            Some(program) => (program, parts.collect::<Vec<String>>()),
+            None => {
                 let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
                 (shell, Vec::new())
             }
@@ -31280,7 +31316,7 @@ impl Editor {
                 hidden: false,
                 ephemeral: false,
             },
-            data: crate::buffer_registry::BufferData::Terminal(entry),
+            data: crate::buffer_registry::BufferData::Terminal(Box::new(entry)),
             name: Some(label),
         });
 
@@ -39598,9 +39634,7 @@ impl Editor {
         let glyphs = crate::editor_boot::diagnostic_glyphs_from(&self.config);
         let current = registry.load();
         let unchanged = |id: lattice_mode::SignId, want: char| {
-            current
-                .get(id)
-                .is_some_and(|d| d.text.chars().next() == Some(want))
+            current.get(id).is_some_and(|d| d.text.starts_with(want))
         };
         let ids = self.builtin_sign_ids;
         if unchanged(ids.diagnostic_error, glyphs.error)
@@ -41183,10 +41217,7 @@ impl Editor {
         let local_count = local_set.map(|s| s.len()).unwrap_or(0);
         lines.push(String::new());
         lines.push(format!("## Buffer-local options ({local_count} overrides)"));
-        if local_count == 0 {
-            lines.push("(no buffer-local overrides)".into());
-        } else {
-            let local_set = local_set.unwrap();
+        if let Some(local_set) = local_set.filter(|_| local_count > 0) {
             // Collect canonical names from OPTION_DECLS so we can display them.
             // Deduplicate by TypeId (last-pushed wins, matching resolver semantics).
             let mut seen = std::collections::HashMap::new();
@@ -41210,6 +41241,8 @@ impl Editor {
                     .unwrap_or_else(|| "?".into());
                 lines.push(format!("- {name}={value_str}"));
             }
+        } else {
+            lines.push("(no buffer-local overrides)".into());
         }
         // Active modes on the document buffer. Each mode name is a
         // clickable `[name](mode:name)` link.
@@ -44630,12 +44663,6 @@ impl Editor {
         self.set_active_picker(p);
     }
 
-    /// 5.5.F.6: shared row formatter for the customize views.
-    /// Renders one option's metadata in the `:options`-listing-
-    /// compatible shape. Wraps the option name in a
-    /// `[NAME](customize-edit:NAME)` link so `<CR>` on the row
-    /// prefills the cmdline with `:set NAME=current` for inline
-
     /// Runtime-registered options that have no compile-time declaration —
     /// i.e. plugin options (`ConfigRegistry::register_with_typeid`), grouped
     /// by their dotted namespace.
@@ -44696,6 +44723,11 @@ impl Editor {
         lines.push(String::new());
     }
 
+    /// 5.5.F.6: shared row formatter for the customize views.
+    /// Renders one option's metadata in the `:options`-listing-
+    /// compatible shape. Wraps the option name in a
+    /// `[NAME](customize-edit:NAME)` link so `<CR>` on the row
+    /// prefills the cmdline with `:set NAME=current` for inline
     /// editing (M.9.2).
     fn append_customize_row(
         &self,
@@ -45256,8 +45288,6 @@ fn plugin_api_capability_token(c: lattice_plugin_api::Capability) -> &'static st
         Capability::None => "none",
     }
 }
-
-/// PI.2b: the markdown export — the whole catalog as a savable document.
 
 /// PI.2b: the JSON export — hand-built (no serde dep on `lattice-plugin-api`),
 /// so string fields are escaped explicitly by [`json_escape`].
@@ -46277,9 +46307,9 @@ pub fn flatten_workspace_edit(
                     let raw_edits: Vec<lattice_lsp::lsp_types::TextEdit> = te_doc
                         .edits
                         .into_iter()
-                        .filter_map(|e| match e {
-                            lattice_lsp::lsp_types::OneOf::Left(te) => Some(te),
-                            lattice_lsp::lsp_types::OneOf::Right(ate) => Some(ate.text_edit),
+                        .map(|e| match e {
+                            lattice_lsp::lsp_types::OneOf::Left(te) => te,
+                            lattice_lsp::lsp_types::OneOf::Right(ate) => ate.text_edit,
                         })
                         .collect();
                     if !raw_edits.is_empty() {
@@ -58177,7 +58207,7 @@ mod tests {
         use crate::display_matrix::{DisplayChunk, DisplayLine, DisplayMatrix, DisplayRun};
         let url = format!("{}.md", "x".repeat(60));
         let text = format!("see [a]({url})");
-        let mut editor = Editor::boot(lattice_core::Document::from_text(&format!("{text}\n")));
+        let mut editor = Editor::boot(lattice_core::Document::from_text(format!("{text}\n")));
         editor.option_cache.wrap_lines = false;
         editor.pane_tree.active_mut().viewport_width = 40;
         editor.viewport_height = 10;
@@ -61043,11 +61073,11 @@ mod tests {
     fn editor_with_highlights_service() -> Editor {
         let mut registry = lattice_mode::ServiceRegistry::new();
         registry.register(lattice_mode::PendingSyntheticHighlights::new());
-        let ed = Editor {
+
+        Editor {
             services: std::sync::Arc::new(registry),
             ..Default::default()
-        };
-        ed
+        }
     }
 
     /// A log streams faster than the editor ticks: several appends are

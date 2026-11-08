@@ -257,13 +257,12 @@ fn opening_the_command_line_does_not_empty_the_strip() {
     // The document pane's inputs must still resolve from ITS view, not the
     // command line's. `build_cells_panes` is private, so assert through the
     // same values it now passes: the pane's stashed cursor and scroll.
-    let leaf = editor
+    let leaf = *editor
         .pane_tree
         .leaves()
         .iter()
         .find(|l| l.buffer_id == buffer)
-        .expect("the document pane is still open behind the prompt")
-        .clone();
+        .expect("the document pane is still open behind the prompt");
     assert_eq!(
         leaf.cursor.line, 120,
         "the pane's stashed cursor survives the focus change"

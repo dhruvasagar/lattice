@@ -2510,8 +2510,10 @@ mod tests {
             "r1",
             Some("r2".into()),
             &edits,
-            &token_types,
-            &token_modifiers,
+            lattice_host::dispatch::SemanticLegend {
+                token_types: &token_types,
+                token_modifiers: &token_modifiers,
+            },
         );
         let cache = {
             use lattice_host::per_buffer_cache::PerBufferCacheExt;
@@ -2557,8 +2559,10 @@ mod tests {
             "r1",
             Some("r2".into()),
             &[],
-            &[],
-            &[],
+            lattice_host::dispatch::SemanticLegend {
+                token_types: &[],
+                token_modifiers: &[],
+            },
         );
         let evicted = {
             use lattice_host::per_buffer_cache::PerBufferCacheExt;
@@ -4075,12 +4079,9 @@ mod tests {
             insert_text_format: lattice_lsp::lsp_types::InsertTextFormat::PLAIN_TEXT,
             replace_range: None,
             server_id: "test-server".to_string(),
-            original_item: {
-                let ci = lattice_lsp::lsp_types::CompletionItem {
-                    label: label.into(),
-                    ..Default::default()
-                };
-                ci
+            original_item: lattice_lsp::lsp_types::CompletionItem {
+                label: label.into(),
+                ..Default::default()
             },
             resolved: false,
         };

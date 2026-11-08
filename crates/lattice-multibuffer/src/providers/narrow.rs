@@ -114,6 +114,15 @@ impl Mode for NarrowMode {
 // create_narrow_view — the shared sink
 // ─────────────────────────────────────────────────────────────────
 
+/// What a narrow view shows: lines `start_line..=end_line` (0-based) of the
+/// source buffer `source_id`, through its existing document handle.
+pub struct NarrowRegion {
+    pub source_id: BufferId,
+    pub source_handle: Arc<dyn Document>,
+    pub start_line: u32,
+    pub end_line: u32,
+}
+
 /// Allocate a one-excerpt multibuffer view over
 /// `[start_line, end_line]` (inclusive, 0-based) of `source_id` and
 /// activate [`NarrowMode`] on it. Returns the new view's
@@ -129,14 +138,17 @@ impl Mode for NarrowMode {
 /// through here.
 pub fn create_narrow_view(
     activator: &mut dyn ModeActivator,
-    source_id: BufferId,
-    source_handle: Arc<dyn Document>,
-    start_line: u32,
-    end_line: u32,
+    region: NarrowRegion,
     label: &str,
     registry: CommandRegistryHandle,
     lang_registry: Option<Arc<LangRegistry>>,
 ) -> BufferId {
+    let NarrowRegion {
+        source_id,
+        source_handle,
+        start_line,
+        end_line,
+    } = region;
     let mut sources: HashMap<BufferId, Arc<dyn Document>> = HashMap::new();
     sources.insert(source_id, source_handle);
     let excerpt = Excerpt::new(source_id, start_line, end_line);
@@ -151,11 +163,13 @@ pub fn create_narrow_view(
         activator,
         sources,
         vec![excerpt],
-        Some(name),
-        BufferFlags::default(),
+        crate::MultibufferViewConfig {
+            name: Some(name),
+            flags: BufferFlags::default(),
+            fold_grouping: crate::FoldGrouping::SourceFile,
+        },
         registry,
         lang_registry,
-        crate::FoldGrouping::SourceFile,
     );
 
     // Set the sticky headerline. Narrow is instantaneous — no

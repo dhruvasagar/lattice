@@ -64,7 +64,7 @@ pub use crate::motions::{MultibufferMotionIds, register_multibuffer_motions};
 pub use crate::registry::{
     InMemoryMultibufferRegistry, MultibufferRegistry, MultibufferRegistryHandle,
 };
-pub use crate::view::create_multibuffer_view;
+pub use crate::view::{MultibufferViewConfig, create_multibuffer_view};
 
 use std::collections::HashMap;
 use std::path::PathBuf;

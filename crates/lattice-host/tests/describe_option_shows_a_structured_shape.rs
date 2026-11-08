@@ -57,7 +57,7 @@ fn a_reader_can_see_every_field_it_may_write() {
     let text = described();
     for field in ["key", "target", "file", "headline", "disposition", "body"] {
         assert!(
-            text.contains(&format!("{field}")),
+            text.contains(field),
             "`{field}` is missing from the shape:\n{text}"
         );
     }

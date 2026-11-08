@@ -198,6 +198,15 @@ impl std::fmt::Debug for Syntax {
     }
 }
 
+/// Why [`Syntax::try_apply_intermediate`] declined; the caller full-reparses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IntermediateRejected {
+    /// No cached tree at `from_version`, or no edits to apply (cases 1–3).
+    NoBaseline,
+    /// The edits' byte delta disagrees with the source-length delta (case 4).
+    LengthMismatch,
+}
+
 impl Syntax {
     /// Build a `Syntax` for the given language using a fresh standard
     /// registry. Convenient when the caller doesn't already hold a
@@ -410,7 +419,7 @@ impl Syntax {
     /// is valid for the worker to publish as an intermediate
     /// snapshot (byte ranges shifted via `tree.edit` to track the
     /// edits; tree shape is pre-parse for the changed regions).
-    /// Returns `Err(())` if any of:
+    /// Returns `Err(IntermediateRejected)` if any of:
     ///
     /// 1. **No cached tree** -- first reparse / worker recovered
     ///    from prior cancellation; nothing to seed with.
@@ -439,12 +448,12 @@ impl Syntax {
         text_version: u64,
         from_version: u64,
         edits: &[EditDelta],
-    ) -> Result<(), ()> {
+    ) -> Result<(), IntermediateRejected> {
         let cached_at_baseline = self.inner.tree.is_some()
             && self.inner.text_version == from_version
             && !edits.is_empty();
         if !cached_at_baseline {
-            return Err(());
+            return Err(IntermediateRejected::NoBaseline);
         }
         let prior_len = self.inner.source.len() as i64;
         let new_len = source.len() as i64;
@@ -453,7 +462,7 @@ impl Syntax {
             .map(|d| (d.new_end_byte as i64) - (d.old_end_byte as i64))
             .sum();
         if prior_len + edit_delta_sum != new_len {
-            return Err(());
+            return Err(IntermediateRejected::LengthMismatch);
         }
         // All guards passed. Apply each edit to the cached tree
         // in order. tree-sitter mutates `Tree` in place via

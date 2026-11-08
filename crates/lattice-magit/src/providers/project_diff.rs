@@ -800,9 +800,12 @@ pub struct ProjectDiffDeletionRows {
     id: lattice_cells::ProviderId,
     view: MultibufferDocumentHandle,
     /// Removed text per source, keyed by the post-image line it sat above.
-    removed: std::sync::Mutex<HashMap<BufferId, Vec<(u32, Vec<String>)>>>,
+    removed: std::sync::Mutex<RemovedBySource>,
     version: std::sync::atomic::AtomicU64,
 }
+
+/// Per source: `(post-image line, removed lines above it)`.
+type RemovedBySource = HashMap<BufferId, Vec<(u32, Vec<String>)>>;
 
 /// Namespace for the deletion-row provider, distinct from the
 /// multibuffer's own header / status / fold provider ids.
@@ -1153,13 +1156,11 @@ pub fn open_project_diff(
             activator,
             HashMap::new(),
             Vec::new(),
-            Some(VIEW_NAME.to_string()),
-            BufferFlags::default(),
+            lattice_multibuffer::MultibufferViewConfig { name: Some(VIEW_NAME.to_string()), flags: BufferFlags::default(), fold_grouping: // AF.1: hunks are titled with their LINE NUMBER, so titles are
+            // neither unique nor a grouping key; the source path is. Default.
+            lattice_multibuffer::FoldGrouping::SourceFile },
             (*registry).clone(),
             lang_registry,
-            // AF.1: hunks are titled with their LINE NUMBER, so titles are
-            // neither unique nor a grouping key; the source path is. Default.
-            lattice_multibuffer::FoldGrouping::SourceFile,
         ),
     };
 
@@ -1278,11 +1279,13 @@ pub fn open_project_diff(
         view,
         workdir,
         comparison,
-        mb_registry,
-        events,
-        synthetic_highlights,
-        deletion_rows,
-        service,
+        ScanSinks {
+            mb_registry,
+            events,
+            synthetic_highlights,
+            deletion_rows,
+            service,
+        },
         ticket,
     );
 
@@ -1293,6 +1296,16 @@ pub fn open_project_diff(
             comparison.label()
         )),
     }
+}
+
+/// Everything a project-diff scan writes its results into. Each optional
+/// sink degrades to "not published" in a harness that did not wire it.
+struct ScanSinks {
+    mb_registry: Arc<MultibufferRegistryHandle>,
+    events: Option<Arc<EventBus>>,
+    synthetic_highlights: Option<lattice_mode::PendingSyntheticHighlightsHandle>,
+    deletion_rows: Option<Arc<ProjectDiffDeletionRows>>,
+    service: Option<ProjectDiffServiceHandle>,
 }
 
 /// Run the scan off-thread and stream its batches into `view`.
@@ -1322,14 +1335,17 @@ fn spawn_project_diff_scan(
     view: BufferId,
     workdir: PathBuf,
     comparison: ProjectDiffComparison,
-    mb_registry: Arc<MultibufferRegistryHandle>,
-    events: Option<Arc<EventBus>>,
-    synthetic_highlights: Option<lattice_mode::PendingSyntheticHighlightsHandle>,
-    deletion_rows: Option<Arc<ProjectDiffDeletionRows>>,
-    service: Option<ProjectDiffServiceHandle>,
+    sinks: ScanSinks,
     // CG.11: this scan's run of the view's key; `None` when unkeyed.
     ticket: Option<lattice_mode::TaskTicket>,
 ) {
+    let ScanSinks {
+        mb_registry,
+        events,
+        synthetic_highlights,
+        deletion_rows,
+        service,
+    } = sinks;
     let token = ticket
         .as_ref()
         .map(|t| t.token().clone())
@@ -2117,11 +2133,13 @@ mod tests {
                 view,
                 dir.path().to_path_buf(),
                 ProjectDiffComparison::WorkingTree,
-                mb_registry.clone(),
-                None,
-                None,
-                None,
-                None,
+                ScanSinks {
+                    mb_registry: mb_registry.clone(),
+                    events: None,
+                    synthetic_highlights: None,
+                    deletion_rows: None,
+                    service: None,
+                },
                 Some(ticket),
             );
         }

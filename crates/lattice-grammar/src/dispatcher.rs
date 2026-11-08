@@ -95,8 +95,7 @@ pub fn execute_with_env(
         CommandKind::Operator => execute_operator(
             registry,
             document,
-            buffer_id,
-            cursor,
+            Site { buffer_id, cursor },
             &invocation,
             entry,
             cancel,
@@ -303,10 +302,10 @@ fn execute_motion(
     // short to hold, and vim records the aim rather than the landing, which
     // `CurswantEffect` on the spec cannot express. Written only on SUCCESS,
     // matching the host's rule that a failed motion leaves the goal alone.
-    if let Some(slot) = env.curswant_out {
-        if let Ok(mut g) = slot.lock() {
-            *g = result.curswant;
-        }
+    if let Some(slot) = env.curswant_out
+        && let Ok(mut g) = slot.lock()
+    {
+        *g = result.curswant;
     }
     // Motions emit a cursor-only jump — the modal engine's caller
     // takes the new position and updates state. We surface the
@@ -393,16 +392,24 @@ fn execute_text_object(
     Ok(Effect::SelectionChange(selections))
 }
 
+/// Where an operator dispatch happens: the buffer and the caret in it.
+/// Two `Copy` words passed by value — no allocation on the keystroke path.
+#[derive(Clone, Copy)]
+struct Site {
+    buffer_id: BufferId,
+    cursor: Position,
+}
+
 fn execute_operator(
     registry: &CommandRegistry,
     document: &mut Document,
-    buffer_id: BufferId,
-    cursor: Position,
+    site: Site,
     invocation: &CommandInvocation,
     entry: &CommandEntry,
     cancel: &CancellationToken,
     env: crate::registry::GrammarEnv<'_>,
 ) -> GrammarResult<Effect> {
+    let Site { buffer_id, cursor } = site;
     let operator = require_operator(entry)?;
 
     // Blockwise visual is dispatched per-row -- but only for
@@ -442,16 +449,9 @@ fn execute_operator(
             };
             (range, false, None, origin)
         }
-        (None, Some(target)) => resolve_target(
-            registry,
-            document,
-            buffer_id,
-            cursor,
-            target,
-            motion_count,
-            cancel,
-            env,
-        )?,
+        (None, Some(target)) => {
+            resolve_target(registry, document, site, target, motion_count, cancel, env)?
+        }
         (None, None) => return Err(CommandError::MissingTarget),
     };
 
@@ -787,8 +787,7 @@ fn flatten_effect(e: Effect, out: &mut Vec<Effect>) {
 fn resolve_target(
     registry: &CommandRegistry,
     document: &Document,
-    buffer_id: BufferId,
-    cursor: Position,
+    site: Site,
     target: &Target,
     count: crate::command::Count,
     cancel: &CancellationToken,
@@ -799,6 +798,7 @@ fn resolve_target(
     Option<crate::registry::MotionNotice>,
     Position,
 )> {
+    let Site { buffer_id, cursor } = site;
     match target {
         Target::Motion(motion_id, args) => {
             let entry = registry
@@ -1424,8 +1424,8 @@ mod os2_tests {
             env,
         )
         .unwrap();
-        let out = seen.lock().unwrap().expect("probe action ran");
-        out
+
+        seen.lock().unwrap().expect("probe action ran")
     }
 
     /// Normal mode: no region. A guest must be able to tell "act on the

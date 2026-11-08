@@ -397,16 +397,14 @@ pub fn open_scan_view(
             activator,
             HashMap::new(),
             Vec::new(),
-            Some(identity.buffer_name.clone()),
-            BufferFlags::default(),
-            (*registry).clone(),
-            lang_registry,
-            // AF.1: the agenda groups by DATE and SECTION, and its rows
+            crate::MultibufferViewConfig { name: Some(identity.buffer_name.clone()), flags: BufferFlags::default(), fold_grouping: // AF.1: the agenda groups by DATE and SECTION, and its rows
             // interleave across files on purpose (OM.A2) — so a file is the
             // one thing that is not a contiguous run here. Folding by source
             // file would make `home.org`'s fold swallow every `work.org` row
             // sitting between its earliest and latest entry.
-            crate::FoldGrouping::HeaderRuns,
+            crate::FoldGrouping::HeaderRuns },
+            (*registry).clone(),
+            lang_registry,
         ),
     };
 
@@ -1044,7 +1042,7 @@ fn claims_any(path: &Path, extensions: &[String]) -> bool {
         return false;
     };
     let lowered = ext.to_ascii_lowercase();
-    extensions.iter().any(|e| *e == lowered)
+    extensions.contains(&lowered)
 }
 
 /// Read a batch of files, dropping the ones that cannot be read.

@@ -593,8 +593,7 @@ mod tests {
             _: &str,
             _: Option<char>,
             _: lattice_mode::ModeId,
-            _: u32,
-            _: &str,
+            _: lattice_mode::PluginOrigin<'_>,
             _: bool,
         ) -> Result<(), String> {
             Ok(())
@@ -684,8 +683,7 @@ mod tests {
                 _: &str,
                 _: Option<char>,
                 _: lattice_mode::ModeId,
-                _: u32,
-                _: &str,
+                _: lattice_mode::PluginOrigin<'_>,
                 _: bool,
             ) -> Result<(), String> {
                 Ok(())

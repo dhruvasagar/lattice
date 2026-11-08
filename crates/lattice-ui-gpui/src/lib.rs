@@ -1316,7 +1316,7 @@ impl GpuiApp {
     /// dispatched through the same entry a key takes, so undo, registers
     /// and macros see nothing new ([`edit_menu_actions`]).
     pub fn edit_menu(&mut self, item: EditMenuItem) {
-        let builtins = self.render_state.load().translator.builtins.clone();
+        let builtins = self.render_state.load().translator.builtins;
         for action in edit_menu_actions(item, self.ad().modal, &builtins) {
             self.dispatch_action(action);
         }

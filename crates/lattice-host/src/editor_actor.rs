@@ -83,6 +83,13 @@ impl std::fmt::Display for ActorGone {
 
 impl std::error::Error for ActorGone {}
 
+/// Type-erased read closure for [`EditorCommand::Read`]; the result is
+/// downcast back to `R` by [`EditorActorHandle::with_editor`].
+pub type ReadClosure = Box<dyn FnOnce(&Editor) -> Box<dyn std::any::Any + Send> + Send>;
+
+/// Type-erased mutate closure for [`EditorCommand::MutateWithReply`].
+pub type MutateClosure = Box<dyn FnOnce(&mut Editor) -> Box<dyn std::any::Any + Send> + Send>;
+
 /// Renderer-to-editor mailbox payload. Each variant corresponds
 /// to a way the renderer (or another task) drives the editor's
 /// state.
@@ -133,7 +140,7 @@ pub enum EditorCommand {
     /// helper on `App` / `GpuiApp` that previously did
     /// `self.editor.X(...)` for a read.
     Read {
-        closure: Box<dyn FnOnce(&Editor) -> Box<dyn std::any::Any + Send> + Send>,
+        closure: ReadClosure,
         reply: oneshot::Sender<Box<dyn std::any::Any + Send>>,
     },
     /// Read-and-mutate RPC (3c.final.E.swap): like `MutateAndReply`
@@ -142,7 +149,7 @@ pub enum EditorCommand {
     /// `Result<_, _>` still work. Same `Box<dyn Any>` erasure
     /// pattern as [`Self::Read`].
     MutateWithReply {
-        closure: Box<dyn FnOnce(&mut Editor) -> Box<dyn std::any::Any + Send> + Send>,
+        closure: MutateClosure,
         reply: oneshot::Sender<Box<dyn std::any::Any + Send>>,
     },
     /// Apply a renderer-emitted `Effect` directly (bypasses
@@ -298,8 +305,12 @@ impl EditorActorHandle {
     /// In production this should never happen during normal
     /// operation; in tests the failure mode is "test forgot to
     /// keep the handle alive."
-    pub fn send(&self, cmd: EditorCommand) -> Result<(), mpsc::error::SendError<EditorCommand>> {
-        self.cmd_tx.send(cmd)
+    ///
+    /// The rejected command is dropped rather than handed back in a
+    /// `SendError`: no caller recovers it, and carrying it made every
+    /// `send_action` result ~200 bytes on the keystroke path.
+    pub fn send(&self, cmd: EditorCommand) -> Result<(), ActorGone> {
+        self.cmd_tx.send(cmd).map_err(|_| ActorGone)
     }
 
     /// Convenience: send an `Apply(action)` command. Fire-and-
@@ -308,7 +319,7 @@ impl EditorActorHandle {
     /// immediately; the dispatched action runs on the actor
     /// thread and publishes RenderState when done (the existing
     /// `paint_request` Notify wakes the GPUI peer's next paint).
-    pub fn send_action(&self, action: Action) -> Result<(), mpsc::error::SendError<EditorCommand>> {
+    pub fn send_action(&self, action: Action) -> Result<(), ActorGone> {
         self.send(EditorCommand::Apply(action))
     }
 
@@ -326,8 +337,7 @@ impl EditorActorHandle {
         self.send(EditorCommand::ApplyAndReply {
             action,
             reply: reply_tx,
-        })
-        .map_err(|_| ActorGone)?;
+        })?;
         safe_blocking_recv(reply_rx).map_err(|_| ActorGone)
     }
 
@@ -346,8 +356,7 @@ impl EditorActorHandle {
         self.send(EditorCommand::MutateAndReply {
             closure,
             reply: reply_tx,
-        })
-        .map_err(|_| ActorGone)?;
+        })?;
         // Slice 3c.fixup.actor-sync-rpc: runtime-flavor-aware wait.
         safe_blocking_recv(reply_rx).map_err(|_| ActorGone)
     }
@@ -359,7 +368,6 @@ impl EditorActorHandle {
         closure: Box<dyn FnOnce(&mut Editor) + Send>,
     ) -> Result<(), ActorGone> {
         self.send(EditorCommand::Mutate(closure))
-            .map_err(|_| ActorGone)
     }
 
     /// Read-side RPC (3c.final.E.swap): synchronously run a
@@ -374,8 +382,7 @@ impl EditorActorHandle {
         F: FnOnce(&Editor) -> R + Send + 'static,
     {
         let (tx, rx) = oneshot::channel::<Box<dyn std::any::Any + Send>>();
-        let closure: Box<dyn FnOnce(&Editor) -> Box<dyn std::any::Any + Send> + Send> =
-            Box::new(move |e| Box::new(f(e)));
+        let closure: ReadClosure = Box::new(move |e| Box::new(f(e)));
         self.send(EditorCommand::Read { closure, reply: tx })
             .expect("editor actor alive");
         // Slice 3c.fixup.actor-sync-rpc: runtime-flavor-aware wait.
@@ -392,8 +399,7 @@ impl EditorActorHandle {
         F: FnOnce(&mut Editor) -> R + Send + 'static,
     {
         let (tx, rx) = oneshot::channel::<Box<dyn std::any::Any + Send>>();
-        let closure: Box<dyn FnOnce(&mut Editor) -> Box<dyn std::any::Any + Send> + Send> =
-            Box::new(move |e| Box::new(f(e)));
+        let closure: MutateClosure = Box::new(move |e| Box::new(f(e)));
         self.send(EditorCommand::MutateWithReply { closure, reply: tx })
             .expect("editor actor alive");
         // Slice 3c.fixup.actor-sync-rpc: runtime-flavor-aware wait.
@@ -415,40 +421,34 @@ impl EditorActorHandle {
     pub fn set_cursor(
         &self,
         cursor: lattice_protocol::position::Position,
-    ) -> Result<(), mpsc::error::SendError<EditorCommand>> {
+    ) -> Result<(), ActorGone> {
         self.send(EditorCommand::SetCursor(cursor))
     }
 
     /// Replace `cursor.line` and republish.
-    pub fn set_cursor_line(&self, line: u32) -> Result<(), mpsc::error::SendError<EditorCommand>> {
+    pub fn set_cursor_line(&self, line: u32) -> Result<(), ActorGone> {
         self.send(EditorCommand::SetCursorLine(line))
     }
 
     /// Replace `cursor.byte` and republish.
-    pub fn set_cursor_byte(&self, byte: u32) -> Result<(), mpsc::error::SendError<EditorCommand>> {
+    pub fn set_cursor_byte(&self, byte: u32) -> Result<(), ActorGone> {
         self.send(EditorCommand::SetCursorByte(byte))
     }
 
     /// Replace `scroll` and republish.
-    pub fn set_scroll(&self, scroll: u32) -> Result<(), mpsc::error::SendError<EditorCommand>> {
+    pub fn set_scroll(&self, scroll: u32) -> Result<(), ActorGone> {
         self.send(EditorCommand::SetScroll(scroll))
     }
 
     /// Replace `modal` and republish.
-    pub fn set_modal(
-        &self,
-        modal: lattice_grammar::ModalState,
-    ) -> Result<(), mpsc::error::SendError<EditorCommand>> {
+    pub fn set_modal(&self, modal: lattice_grammar::ModalState) -> Result<(), ActorGone> {
         self.send(EditorCommand::SetModal(modal))
     }
 
     /// Resize the active pane's viewport. Runs the same body as
     /// the App-side wrapper: clamp to >= 1, run
     /// `ensure_cursor_visible`, publish.
-    pub fn set_viewport_height(
-        &self,
-        height: u32,
-    ) -> Result<(), mpsc::error::SendError<EditorCommand>> {
+    pub fn set_viewport_height(&self, height: u32) -> Result<(), ActorGone> {
         self.send(EditorCommand::SetViewportHeight(height))
     }
 
@@ -457,12 +457,7 @@ impl EditorActorHandle {
     /// fires one of these per leaf. The active leaf's height is
     /// auto-mirrored into `Editor::viewport_height` for cursor
     /// clamp + highlights worker.
-    pub fn set_pane_viewport(
-        &self,
-        idx: usize,
-        height: u32,
-        width: u32,
-    ) -> Result<(), mpsc::error::SendError<EditorCommand>> {
+    pub fn set_pane_viewport(&self, idx: usize, height: u32, width: u32) -> Result<(), ActorGone> {
         self.send(EditorCommand::SetPaneViewport { idx, height, width })
     }
 

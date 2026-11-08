@@ -227,9 +227,7 @@ mod tests {
             &[z, n.clone()],
             b.delete,
             Some(n),
-            &b,
-            &so,
-            &sm,
+            crate::keymap_normal::OperatorVocabulary::new(&b, &so, &sm),
             false,
         );
 

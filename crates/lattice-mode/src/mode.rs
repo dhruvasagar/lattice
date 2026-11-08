@@ -950,10 +950,7 @@ pub trait DynMode: Send + Sync + 'static {
     /// output is the typed Guard erased to `Box<dyn Any + Send>`.
     /// The dispatcher stashes this box keyed by
     /// `(BufferId, ModeId)`; deactivation drops it.
-    fn on_activate_dyn<'a>(
-        &'a self,
-        ctx: ModeContext,
-    ) -> Pin<Box<dyn Future<Output = Result<Box<dyn Any + Send>, ModeActivationError>> + Send + 'a>>;
+    fn on_activate_dyn<'a>(&'a self, ctx: ModeContext) -> LifecycleFuture<'a, Box<dyn Any + Send>>;
 }
 
 impl<M: Mode> DynMode for M {
@@ -1024,11 +1021,7 @@ impl<M: Mode> DynMode for M {
         <M as Mode>::editable_tail(self, buffer)
     }
 
-    fn on_activate_dyn<'a>(
-        &'a self,
-        ctx: ModeContext,
-    ) -> Pin<Box<dyn Future<Output = Result<Box<dyn Any + Send>, ModeActivationError>> + Send + 'a>>
-    {
+    fn on_activate_dyn<'a>(&'a self, ctx: ModeContext) -> LifecycleFuture<'a, Box<dyn Any + Send>> {
         let fut = <M as Mode>::on_activate(self, ctx);
         Box::pin(async move {
             let guard = fut.await?;

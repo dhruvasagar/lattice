@@ -330,13 +330,15 @@ pub fn spawn(
         Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
     crate::mcp::status::spawn_status_publisher(
         event_bus.clone(),
-        state.clone(),
-        signals.conn_count.clone(),
-        // The project the agent runs for — the workspace basename, static
-        // for the server's lifetime.
-        crate::mcp::status::project_name(&config.workspace_folders),
-        review.count_handle(),
-        mention.clone(),
+        crate::mcp::status::StatusSources {
+            state: state.clone(),
+            conn_count: signals.conn_count.clone(),
+            // The project the agent runs for — the workspace basename, static
+            // for the server's lifetime.
+            project: crate::mcp::status::project_name(&config.workspace_folders),
+            review_count: review.count_handle(),
+            mention: mention.clone(),
+        },
         ide_buffers.clone(),
         signals.changed.clone(),
         rt,

@@ -381,13 +381,11 @@ pub fn create_references_view(
         activator,
         sources,
         excerpts,
-        Some("*references*".to_string()),
-        BufferFlags::default(),
+        lattice_multibuffer::MultibufferViewConfig { name: Some("*references*".to_string()), flags: BufferFlags::default(), fold_grouping: // AF.1: references arrive grouped by file and each carries its path as
+        // a header, so a file is a contiguous run — the default.
+        lattice_multibuffer::FoldGrouping::SourceFile },
         registry,
         lang_registry,
-        // AF.1: references arrive grouped by file and each carries its path as
-        // a header, so a file is a contiguous run — the default.
-        lattice_multibuffer::FoldGrouping::SourceFile,
     );
 
     if let Some(svc) = activator.services().get::<LspReferencesServiceHandle>() {

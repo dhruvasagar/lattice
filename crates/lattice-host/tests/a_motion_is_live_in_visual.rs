@@ -253,7 +253,7 @@ fn the_same_motions_compose_with_an_operator() {
 /// lost by naming the action here.
 #[test]
 fn a_derived_visual_motion_extends_the_selection() {
-    let mut editor = Editor::boot(CoreDocument::from_text(&"line\n".repeat(60)));
+    let mut editor = Editor::boot(CoreDocument::from_text("line\n".repeat(60)));
     let mut partial = Vec::new();
     editor.cursor.line = 0;
     let _ = editor.dispatch_chord(KeyChord::char('v'), &mut partial);

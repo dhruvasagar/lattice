@@ -117,10 +117,12 @@ fn narrow_renders_only_the_requested_range() {
 
     let view_id = create_narrow_view(
         &mut activator,
-        source_id,
-        source_handle,
-        2,
-        5,
+        lattice_multibuffer::providers::narrow::NarrowRegion {
+            source_id: source_id,
+            source_handle: source_handle,
+            start_line: 2,
+            end_line: 5,
+        },
         "src.rs",
         Arc::new(arc_swap::ArcSwap::from_pointee(CommandRegistry::new())),
         None,
@@ -147,10 +149,12 @@ fn narrow_activates_narrow_mode() {
 
     let view_id = create_narrow_view(
         &mut activator,
-        source_id,
-        source_handle,
-        0,
-        3,
+        lattice_multibuffer::providers::narrow::NarrowRegion {
+            source_id: source_id,
+            source_handle: source_handle,
+            start_line: 0,
+            end_line: 3,
+        },
         "",
         Arc::new(arc_swap::ArcSwap::from_pointee(CommandRegistry::new())),
         None,
@@ -173,10 +177,12 @@ fn narrow_headerline_shows_the_range() {
 
     let view_id = create_narrow_view(
         &mut activator,
-        source_id,
-        source_handle,
-        2,
-        5,
+        lattice_multibuffer::providers::narrow::NarrowRegion {
+            source_id: source_id,
+            source_handle: source_handle,
+            start_line: 2,
+            end_line: 5,
+        },
         "src.rs",
         Arc::new(arc_swap::ArcSwap::from_pointee(CommandRegistry::new())),
         None,
@@ -202,10 +208,12 @@ fn empty_label_headerline_omits_label() {
 
     let view_id = create_narrow_view(
         &mut activator,
-        source_id,
-        source_handle,
-        0,
-        0,
+        lattice_multibuffer::providers::narrow::NarrowRegion {
+            source_id: source_id,
+            source_handle: source_handle,
+            start_line: 0,
+            end_line: 0,
+        },
         "",
         Arc::new(arc_swap::ArcSwap::from_pointee(CommandRegistry::new())),
         None,

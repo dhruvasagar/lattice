@@ -268,7 +268,7 @@ pub trait ScannedExcerptSource: Send + Sync + std::fmt::Debug {
             return false;
         };
         let lowered = ext.to_ascii_lowercase();
-        self.extensions().iter().any(|e| *e == lowered)
+        self.extensions().contains(&lowered)
     }
 }
 

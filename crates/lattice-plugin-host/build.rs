@@ -16,7 +16,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-fn main() {
+fn main() -> Result<(), String> {
     let manifest_dir = PathBuf::from(
         std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is set by cargo"),
     );
@@ -32,37 +32,37 @@ fn main() {
         &fixtures.join("trampoline-guest"),
         "trampoline-guest",
         "TRAMPOLINE_GUEST_WASM",
-    );
+    )?;
     build_guest(
         &fixtures.join("picker-guest"),
         "picker-guest",
         "PICKER_GUEST_WASM",
-    );
+    )?;
     build_guest(
         &fixtures.join("view-guest"),
         "view-guest",
         "VIEW_GUEST_WASM",
-    );
+    )?;
     build_guest(
         &fixtures.join("completion-guest"),
         "completion-guest",
         "COMPLETION_GUEST_WASM",
-    );
+    )?;
     build_guest(
         &fixtures.join("grammar-guest"),
         "grammar-guest",
         "GRAMMAR_GUEST_WASM",
-    );
+    )?;
     build_guest(
         &fixtures.join("events-guest"),
         "events-guest",
         "EVENTS_GUEST_WASM",
-    );
+    )?;
     build_guest(
         &fixtures.join("decorations-guest"),
         "decorations-guest",
         "DECORATIONS_GUEST_WASM",
-    );
+    )?;
     // TC.2: the sticky-context producer fixture. Walks the handed
     // `tree-snapshot`, so it is what proves a `borrow<>` survives an async
     // guest suspension (the repo's first).
@@ -70,13 +70,13 @@ fn main() {
         &fixtures.join("context-guest"),
         "context-guest",
         "CONTEXT_GUEST_WASM",
-    );
+    )?;
     // TC.4: the theme element-registration fixture.
     build_guest(
         &fixtures.join("theme-guest"),
         "theme-guest",
         "THEME_GUEST_WASM",
-    );
+    )?;
     // SG.3a: the sign-declaration fixture. Redefines one of its signs, which is
     // what pins "a reload keeps the id" through the real boundary rather than
     // only in the host-side unit test.
@@ -84,21 +84,21 @@ fn main() {
         &fixtures.join("sign-guest"),
         "sign-guest",
         "SIGN_GUEST_WASM",
-    );
+    )?;
     // TR.2b: the keyed-menu fixture. Builds its rows from the passed `ctx`, so
     // it exercises the live-guest half of the seam rather than a static menu.
     build_guest(
         &fixtures.join("transient-guest"),
         "transient-guest",
         "TRANSIENT_GUEST_WASM",
-    );
+    )?;
     // CR.3: the help topic-registration fixture. Its markdown is
     // `include_str!`'d into the component, which is the seam's premise.
     build_guest(
         &fixtures.join("help-guest"),
         "help-guest",
         "HELP_GUEST_WASM",
-    );
+    )?;
     // LG.3c: the language fixture. Its build.rs compiles a grammar to wasm
     // and `include_bytes!`s it in, which is both the seam's premise and the
     // workflow LG.4 expects of a real plugin.
@@ -106,48 +106,48 @@ fn main() {
         &fixtures.join("language-guest"),
         "language-guest",
         "LANGUAGE_GUEST_WASM",
-    );
+    )?;
     // CR.4: the dashboard section fixture. Renders from the passed `ctx`, so
     // it exercises the live-guest half of the seam rather than static rows.
     build_guest(
         &fixtures.join("dashboard-guest"),
         "dashboard-guest",
         "DASHBOARD_GUEST_WASM",
-    );
+    )?;
     build_guest(
         &fixtures.join("config-guest"),
         "config-guest",
         "CONFIG_GUEST_WASM",
-    );
+    )?;
     build_guest(
         &fixtures.join("modes-guest"),
         "modes-guest",
         "MODES_GUEST_WASM",
-    );
+    )?;
     build_guest(
         &fixtures.join("keymap-guest"),
         "keymap-guest",
         "KEYMAP_GUEST_WASM",
-    );
+    )?;
     build_guest(
         &fixtures.join("emacs-keys-guest"),
         "emacs-keys-guest",
         "EMACS_KEYS_GUEST_WASM",
-    );
+    )?;
     // PM.7: the `require` seam's fixture — declares one plugin of each source
     // kind plus an unsafe name the host must reject.
     build_guest(
         &fixtures.join("plugin-manager-guest"),
         "plugin-manager-guest",
         "PLUGIN_MANAGER_GUEST_WASM",
-    );
+    )?;
     // CM.6: the error-parser fixture — a two-line bespoke diagnostic format,
     // so the multi-line pending state the seam exists for is exercised.
     build_guest(
         &fixtures.join("error-parser-guest"),
         "error-parser-guest",
         "ERROR_PARSER_GUEST_WASM",
-    );
+    )?;
     // AP.1 spike: a single component providing grammar + modes + config, loaded
     // once per seam by `tests/multiseam.rs` to prove multi-seam plugins work.
     // IM.6b: the inline-media producer fixture.
@@ -155,25 +155,25 @@ fn main() {
         &fixtures.join("media-guest"),
         "media-guest",
         "MEDIA_GUEST_WASM",
-    );
+    )?;
     // OM.A1: the agenda-row producer fixture.
     build_guest(
         &fixtures.join("agenda-guest"),
         "agenda-guest",
         "AGENDA_GUEST_WASM",
-    );
+    )?;
     build_guest(
         &fixtures.join("multiseam-guest"),
         "multiseam-guest",
         "MULTISEAM_GUEST_WASM",
-    );
+    )?;
     // CI.5: the init.rs-shape fixture — subscribes to plugin-loaded and calls
     // enable-mode from its handler (the with-eval-after-load pattern).
     build_guest(
         &fixtures.join("init-guest"),
         "init-guest",
         "INIT_GUEST_WASM",
-    );
+    )?;
     // OA.14d: the load-time-option fixture — declares an option from `config`
     // and reads it back from `theme`, which is org's shape and the one
     // `plugin-loaded` is too late for.
@@ -181,7 +181,7 @@ fn main() {
         &fixtures.join("preload-guest"),
         "preload-guest",
         "PRELOAD_GUEST_WASM",
-    );
+    )?;
     // PO.5: the `logging` (Layer 2) fixture — a base `plugin`-world guest whose
     // `activate` calls the imported `logging.log`; `tests/logging_source.rs`
     // asserts the lines reach the tracer.
@@ -189,7 +189,7 @@ fn main() {
         &fixtures.join("logging-guest"),
         "logging-guest",
         "LOGGING_GUEST_WASM",
-    );
+    )?;
     // PR.6: the project-seam fixture — calls `root-for-buffer` /
     // `root-for-path` from `activate` and reports each answer through
     // `logging.log`, which the host test reads back out of the tracer.
@@ -197,7 +197,7 @@ fn main() {
         &fixtures.join("project-guest"),
         "project-guest",
         "PROJECT_GUEST_WASM",
-    );
+    )?;
     // AP.1: the first bundled plugin — a multi-seam component (grammar + modes +
     // config). Built here so the loader integration test (loaded by known path,
     // like the mode/config drains) and the eventual bundling (AP.4) have the
@@ -210,7 +210,7 @@ fn main() {
             .join("auto-pair"),
         "auto-pair",
         "AUTO_PAIR_WASM",
-    );
+    )?;
     // TC.5: the second bundled plugin — sticky scope headers. Multi-seam
     // (context + config + theme) from one component, the `auto-pair` shape.
     build_guest(
@@ -221,7 +221,7 @@ fn main() {
             .join("treesitter-context"),
         "treesitter-context",
         "TREESITTER_CONTEXT_WASM",
-    );
+    )?;
     // PC.4: the third bundled plugin — a `project.el`-style command layer.
     // Grammar + events from one component, the `auto-pair` shape. Built here so
     // the loader integration test has the artifact without a prior
@@ -234,7 +234,7 @@ fn main() {
             .join("project"),
         "project",
         "PROJECT_PLUGIN_WASM",
-    );
+    )?;
     // LH.1: the language-server manager. Grammar + events from one
     // component. Built here so `tests/lighthouse_install.rs` can drive a real
     // install through it without a prior `cargo xtask build-core-plugins`.
@@ -246,7 +246,7 @@ fn main() {
             .join("lighthouse"),
         "lighthouse",
         "LIGHTHOUSE_PLUGIN_WASM",
-    );
+    )?;
     // AD.3: the fourth bundled plugin, `gc` comment toggling. No test loads it
     // yet; it is built here so CI COMPILES it. Before this it was compiled
     // only by the release workflow (`cargo xtask build-core-plugins`), so a
@@ -262,14 +262,15 @@ fn main() {
             .join("comment"),
         "comment",
         "COMMENT_PLUGIN_WASM",
-    );
+    )?;
+    Ok(())
 }
 
 /// Build one standalone `wasm32-wasip2` guest crate at `guest_dir` to a
 /// component and export its path via `env_var` (empty + a `warning` on any
 /// failure, so the dependent test/bench skips gracefully). `name` is the crate
 /// name; the artifact is `<name-with-underscores>.wasm`.
-fn build_guest(guest_dir: &Path, name: &str, env_var: &str) {
+fn build_guest(guest_dir: &Path, name: &str, env_var: &str) -> Result<(), String> {
     // A guest crate that isn't in the tree must be skipped BEFORE any
     // `rerun-if-changed` is emitted. Kept as a guard even though no caller
     // currently points at a missing directory: `fuzzy-finder` was removed
@@ -289,7 +290,7 @@ fn build_guest(guest_dir: &Path, name: &str, env_var: &str) {
     // compiles and skips gracefully — same contract as a failed build below.
     if !guest_dir.join("Cargo.toml").exists() {
         println!("cargo:rustc-env={env_var}=");
-        return;
+        return Ok(());
     }
 
     // Rebuild the guest whenever its source or manifest changes (the shared
@@ -374,14 +375,14 @@ fn build_guest(guest_dir: &Path, name: &str, env_var: &str) {
             // So: ask whether the target is installed, and only forgive the
             // failure when it is not.
             if wasm_target_installed() {
-                panic!(
+                return Err(format!(
                     "the `{name}` test fixture failed to build.\n\n\
                      This is a compile error in `{}`, not a missing toolchain — \
                      `wasm32-wasip2` IS installed. Tests that load this guest \
                      would otherwise skip and the suite would report green.\n\n\
                      Last stderr: {tail}",
                     guest_dir.display()
-                );
+                ));
             }
             println!(
                 "cargo:warning={name} fixture guest not built: the `wasm32-wasip2` target is \
@@ -399,19 +400,20 @@ fn build_guest(guest_dir: &Path, name: &str, env_var: &str) {
             println!("cargo:rustc-env={env_var}=");
         }
     }
+    Ok(())
 }
 
 /// Is `wasm32-wasip2`'s standard library present?
 ///
 /// What separates "this contributor cannot build guests" from "this guest is
-/// broken" — see the panic in [`build_guest`]. `--print target-libdir` succeeds
+/// broken" — see the error in [`build_guest`]. `--print target-libdir` succeeds
 /// only when the target's std is actually installed, which is the thing a guest
 /// build needs; `rustup target list` would also match a target that is merely
 /// *known*.
 ///
 /// Answered once and cached: this runs per fixture and there are a dozen.
 /// Unknown (rustc itself unrunnable) is reported as NOT installed, so a broken
-/// environment degrades to skipping rather than to a panic blaming the fixture.
+/// environment degrades to skipping rather than to an error blaming the fixture.
 fn wasm_target_installed() -> bool {
     use std::sync::OnceLock;
     static INSTALLED: OnceLock<bool> = OnceLock::new();

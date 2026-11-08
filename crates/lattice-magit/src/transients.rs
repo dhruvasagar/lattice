@@ -1358,13 +1358,16 @@ fn action_or_placeholder(
 fn variable_item(
     ids: &MagitActionIds,
     workdir: &std::path::Path,
-    key_chord: &str,
-    label: &str,
+    row: &ConfigRow,
     description: &str,
-    config_key: &str,
-    action: &str,
     placeholder_name: &str,
 ) -> TransientItem {
+    let ConfigRow {
+        key: key_chord,
+        label,
+        config_key,
+        action,
+    } = *row;
     let Some(cid) = ids.get(action) else {
         return action_or_placeholder(None, key_chord, label, description, placeholder_name);
     };
@@ -1470,11 +1473,8 @@ fn config_group(
                 variable_item(
                     ids,
                     workdir,
-                    r.key,
-                    r.label,
+                    r,
                     "Change this setting for the repository",
-                    r.config_key,
-                    r.action,
                     "config_op",
                 )
             })

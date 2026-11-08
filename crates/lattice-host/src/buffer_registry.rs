@@ -158,14 +158,14 @@ impl BufferEntry {
 
     pub fn terminal(&self) -> Option<&TerminalBuffer> {
         match &self.data {
-            BufferData::Terminal(t) => Some(t),
+            BufferData::Terminal(t) => Some(&**t),
             _ => None,
         }
     }
 
     pub fn terminal_mut(&mut self) -> Option<&mut TerminalBuffer> {
         match &mut self.data {
-            BufferData::Terminal(t) => Some(t),
+            BufferData::Terminal(t) => Some(&mut **t),
             _ => None,
         }
     }
@@ -224,7 +224,10 @@ pub enum BufferData {
     /// needs no owner-write bypass: edits go through the ordinary
     /// document path.
     Oil(DocumentEntry),
-    Terminal(TerminalBuffer),
+    /// Boxed: a `TerminalBuffer` is several times the size of every other
+    /// variant and is built once per `:terminal`, so the indirection costs
+    /// one allocation per spawn and shrinks every registry entry.
+    Terminal(Box<TerminalBuffer>),
     /// The editor's `*messages*` audit transcript. Storage is
     /// identical to [`BufferData::Document`] (same
     /// [`DocumentEntry`]); the discriminator exists so `:ls`,

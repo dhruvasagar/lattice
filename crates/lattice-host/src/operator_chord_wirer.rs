@@ -53,8 +53,7 @@ impl lattice_mode::OperatorChordWirer for HostOperatorChordWirer {
         chord: &str,
         doubled: Option<char>,
         mode: lattice_mode::ModeId,
-        plugin_id: u32,
-        plugin_name: &str,
+        origin: lattice_mode::PluginOrigin<'_>,
         post_motion_char: bool,
     ) -> Result<(), String> {
         // A chord that does not parse is a manifest error, reported rather than
@@ -77,14 +76,16 @@ impl lattice_mode::OperatorChordWirer for HostOperatorChordWirer {
             // CM.4: stamped as the PLUGIN's, not this file's. `:describe-key
             // gc` answers "where did this come from", and the honest answer is
             // the plugin that declared the chord.
-            lattice_grammar::SourceLocation::plugin_named(plugin_id, plugin_name),
+            lattice_grammar::SourceLocation::plugin_named(origin.id, origin.name),
             &self.keymap,
             &prefix,
             op,
             doubled.map(|c| ChordPattern::Literal(lattice_protocol::chord::KeyChord::char(c))),
-            &self.builtins,
-            &self.syntax_textobjects,
-            &self.syntax_motions,
+            crate::keymap_normal::OperatorVocabulary::new(
+                &self.builtins,
+                &self.syntax_textobjects,
+                &self.syntax_motions,
+            ),
             post_motion_char,
         );
         Ok(())
@@ -107,9 +108,11 @@ impl lattice_mode::OperatorChordWirer for HostOperatorChordWirer {
             &prefix,
             op,
             doubled.map(ChordPattern::Literal),
-            &self.builtins,
-            &self.syntax_textobjects,
-            &self.syntax_motions,
+            crate::keymap_normal::OperatorVocabulary::new(
+                &self.builtins,
+                &self.syntax_textobjects,
+                &self.syntax_motions,
+            ),
             post_motion_char,
         );
     }

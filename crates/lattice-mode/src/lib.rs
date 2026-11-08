@@ -279,7 +279,7 @@ pub use crate::modes::{
     HoverMode, MessagesMode, PathCompletionMode, TextMode, VersionMode, VersionReport,
     VersionSection, register_foundation_modes, register_help_mode_actions, set_version_report,
 };
-pub use crate::operator_chord::{OperatorChordWirer, OperatorChordWirerHandle};
+pub use crate::operator_chord::{OperatorChordWirer, OperatorChordWirerHandle, PluginOrigin};
 // TB.1: `table-mode` — the shared pipe-table minor. Re-exported beside the
 // other shared minors so boot reaches it by the same path.
 pub use crate::modes::table::mode::{TableMode, register_table_actions, register_table_mode};

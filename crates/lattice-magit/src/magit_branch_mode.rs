@@ -300,9 +300,16 @@ impl Mode for MagitBranchMode {
             // CG.7c: the first load is this view's first refresh — it paints
             // only if no refresh that started after it has painted since.
             let stamp = crate::buffer_state::RefreshStamp::begin(buffer_id);
-            let (text, header) = tokio::task::spawn_blocking(move || build_branch_list(&wd))
-                .await
-                .unwrap();
+            // A join error means the listing task panicked: open the view
+            // empty (`gr` retries) rather than failing the activation.
+            let (text, header) =
+                match tokio::task::spawn_blocking(move || build_branch_list(&wd)).await {
+                    Ok(listed) => listed,
+                    Err(e) => {
+                        tracing::warn!(target: "lattice_magit", "branch list task failed: {e}");
+                        return Ok(guard);
+                    }
+                };
             if stamp.is_latest() {
                 headerline::publish(&hl, header);
                 let spans = crate::highlight::branch_styled_spans(&text);

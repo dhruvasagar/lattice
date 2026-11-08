@@ -564,8 +564,11 @@ pub struct ConversationStore {
     /// PU-B.2: the oneshot carries the chosen [`PermissionOption::option_id`]
     /// (wire order, any arity) — the menu resolves by the option the agent
     /// actually offered, and the protocol adapter maps it back to its own type.
-    pending_permissions: Arc<Mutex<HashMap<String, (SessionKey, oneshot::Sender<String>)>>>,
+    pending_permissions: Arc<Mutex<PendingPermissions>>,
 }
+
+/// Tool-call id -> the session it belongs to and the responder awaiting a choice.
+type PendingPermissions = HashMap<String, (SessionKey, oneshot::Sender<String>)>;
 
 impl ConversationStore {
     /// Build a store whose mutations publish `ConversationUpdated` via `publish`.

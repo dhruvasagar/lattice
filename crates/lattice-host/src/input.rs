@@ -385,16 +385,7 @@ pub fn translate(ctx: TranslateContext<'_>, chord: KeyChord) -> Action {
             ctx.partial_chord,
             ctx.active_minor_modes,
         ),
-        ModalState::Normal => translate_normal(
-            chord,
-            ctx.builtins,
-            ctx.pending_count,
-            ctx.op_count,
-            ctx.recording_macro,
-            ctx.keymap,
-            ctx.partial_chord,
-            ctx.active_minor_modes,
-        ),
+        ModalState::Normal => translate_normal(chord, &ctx),
         // MB.1: the `:` line is a buffer-backed readline surface. Keys
         // route through the universal Insert dispatcher onto the focused
         // `*command-line*` buffer; `command-line-mode`'s Insert-layer
@@ -632,16 +623,7 @@ fn translate_picker(chord: KeyChord) -> Action {
     }
 }
 
-fn translate_normal(
-    chord: KeyChord,
-    builtins: &Builtins,
-    pending_count: u32,
-    op_count: u32,
-    recording_macro: bool,
-    keymap: &KeymapHandle,
-    partial_chord: &[KeyChord],
-    active_minor_modes: &[lattice_mode::ModeId],
-) -> Action {
+fn translate_normal(chord: KeyChord, ctx: &TranslateContext<'_>) -> Action {
     // Slice 8.g.iv: every Normal-mode action flows through
     // `attach_count` so motion / operator counts are baked into
     // the resolved `CommandInvocation` before the action leaves
@@ -652,14 +634,14 @@ fn translate_normal(
     // active fold model.
     let action = compute_normal_action(
         chord,
-        builtins,
-        pending_count,
-        recording_macro,
-        keymap,
-        partial_chord,
-        active_minor_modes,
+        ctx.builtins,
+        ctx.pending_count,
+        ctx.recording_macro,
+        ctx.keymap,
+        ctx.partial_chord,
+        ctx.active_minor_modes,
     );
-    crate::keymap_normal::attach_count(action, pending_count, op_count)
+    crate::keymap_normal::attach_count(action, ctx.pending_count, ctx.op_count)
 }
 
 fn compute_normal_action(

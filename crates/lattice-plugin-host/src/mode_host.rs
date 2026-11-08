@@ -362,6 +362,19 @@ pub(crate) fn bind_mode_keymap(
     bound
 }
 
+/// The registries a mode plugin's declarations land in.
+pub struct ModeTargets<'a> {
+    /// Where each declared mode registers.
+    pub modes: &'a mut ModeRegistry,
+    /// Resolves the command names a mode's keymap binds.
+    pub commands: &'a CommandRegistry,
+    /// Where each mode's keymap is bound, in the mode's own layer.
+    pub keymap: &'a KeymapHandle,
+    /// MO.1: resolves declared option overrides; `None` skips them with a
+    /// warning naming the mode.
+    pub config: Option<&'a ConfigRegistry>,
+}
+
 impl PluginHost {
     /// Instantiate a `modes-plugin` component under its capability grant, run its
     /// `register-modes` export to declare modes, register each into `registry`,
@@ -381,11 +394,14 @@ impl PluginHost {
         manifest: &PluginManifest,
         tier: TrustTier,
         budget: PluginBudget,
-        registry: &mut ModeRegistry,
-        commands: &CommandRegistry,
-        keymap: &KeymapHandle,
-        config: Option<&ConfigRegistry>,
+        targets: ModeTargets<'_>,
     ) -> Result<(PluginId, Vec<ModeId>), PluginHostError> {
+        let ModeTargets {
+            modes: registry,
+            commands,
+            keymap,
+            config,
+        } = targets;
         let (wasi, outcome, _data_dir) = self.build_plugin_wasi(manifest, tier);
         for denied in &outcome.denied {
             tracing::warn!(

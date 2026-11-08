@@ -202,26 +202,40 @@ pub fn project_name(workspace_folders: &[String]) -> String {
         .unwrap_or_default()
 }
 
+/// What the status segment is built from — each read fresh on every wake.
+pub struct StatusSources {
+    /// Running / port.
+    pub state: Arc<ArcSwap<ServerState>>,
+    /// Open agent connections.
+    pub conn_count: Arc<AtomicUsize>,
+    /// D-fix follow-up: the project the agent runs for (static per server —
+    /// the workspace basename), shown in the segment. Empty ⇒ omitted.
+    pub project: String,
+    /// D-fix.6 follow-up: the shared pending-review count (from
+    /// `ReviewState`); drives the `◆ review` badge.
+    pub review_count: Arc<AtomicUsize>,
+    /// D-fix.6 follow-up: the transient `@sent` echo (from `MentionState`).
+    pub mention: MentionHandle,
+}
+
 /// Spawn the status publisher task. Wakes on `changed` (start/stop, a
 /// connection open/close, or a buffer (un)registering), rebuilds the content,
 /// and republishes it to each registered buffer **only when it differs** from
 /// what that buffer last showed; a removed buffer is cleared (empty content).
 pub fn spawn_status_publisher(
     bus: Arc<EventBus>,
-    state: Arc<ArcSwap<ServerState>>,
-    conn_count: Arc<AtomicUsize>,
-    // D-fix follow-up: the project the agent runs for (static per server —
-    // the workspace basename), shown in the segment. Empty ⇒ omitted.
-    project: String,
-    // D-fix.6 follow-up: the shared pending-review count (from `ReviewState`);
-    // drives the `◆ review` badge.
-    review_count: Arc<AtomicUsize>,
-    // D-fix.6 follow-up: the transient `@sent` echo (from `MentionState`).
-    mention: MentionHandle,
+    sources: StatusSources,
     ide_buffers: IdeBuffers,
     changed: Arc<Notify>,
     rt: &tokio::runtime::Handle,
 ) {
+    let StatusSources {
+        state,
+        conn_count,
+        project,
+        review_count,
+        mention,
+    } = sources;
     rt.spawn(async move {
         let id = ElementId::new(STATUS_ELEMENT);
         let mut last: HashMap<BufferId, ElementContent> = HashMap::new();
@@ -393,11 +407,13 @@ mod tests {
         let mention = MentionState::new(Arc::new(Notify::new()));
         spawn_status_publisher(
             bus.clone(),
-            server_state,
-            conn_count,
-            "lattice".to_string(),
-            review_count,
-            mention,
+            StatusSources {
+                state: server_state,
+                conn_count,
+                project: "lattice".to_string(),
+                review_count,
+                mention,
+            },
             ide_buffers,
             changed,
             &tokio::runtime::Handle::current(),

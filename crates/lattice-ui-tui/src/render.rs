@@ -574,8 +574,9 @@ pub fn draw_frame(frame: &mut Frame, app: &App, snap: &DocumentSnapshot) -> Opti
     // strip path never ran. Now it follows the exact same
     // `!picker_is_minibuffer` gate every other picker surface uses.
     let picker_state = app.picker_state();
-    if picker_state.state.is_some() && !picker_is_minibuffer {
-        let p = picker_state.state.as_deref().unwrap();
+    if let Some(p) = picker_state.state.as_deref()
+        && !picker_is_minibuffer
+    {
         if p.transient.is_some() {
             draw_transient_overlay(frame, body, app);
         } else {

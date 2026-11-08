@@ -497,9 +497,7 @@ impl Mode for CompilationMode {
             // CM.3c: the off-thread severity-gutter producer. Optional —
             // absent in a stripped test harness without full boot wiring; the
             // drain then just streams text and never publishes marks.
-            let gutter_bus: Option<
-                InboundBus<(lattice_core::BufferId, Vec<(u32, ErrorSeverity)>)>,
-            > = ctx
+            let gutter_bus = ctx
                 .service::<CompilationGutterBusHandle>()
                 .map(|h| (**h).clone());
 

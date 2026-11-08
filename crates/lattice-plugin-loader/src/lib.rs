@@ -3977,8 +3977,10 @@ impl PluginLoader {
                     &c.chord,
                     c.doubled,
                     mode_id,
-                    id.0,
-                    &manifest.id,
+                    lattice_mode::PluginOrigin {
+                        id: id.0,
+                        name: &manifest.id,
+                    },
                     false,
                 ) {
                     tracing::warn!(
@@ -4060,15 +4062,17 @@ impl PluginLoader {
                 manifest,
                 tier,
                 PluginBudget::default(),
-                &mut next,
-                &commands_snapshot,
-                keymap,
-                // MO.1: resolves each declared option override's name + value
-                // against the registry `:set` writes to. Absent in a loader
-                // built without config (the minimal harnesses) — the overrides
-                // are then skipped with a warning naming the mode, the same
-                // logged-skip every other unwired handle takes.
-                self.env.config_registry.as_deref(),
+                lattice_plugin_host::mode_host::ModeTargets {
+                    modes: &mut next,
+                    commands: &commands_snapshot,
+                    keymap,
+                    // MO.1: resolves each declared option override's name + value
+                    // against the registry `:set` writes to. Absent in a loader
+                    // built without config (the minimal harnesses) — the overrides
+                    // are then skipped with a warning naming the mode, the same
+                    // logged-skip every other unwired handle takes.
+                    config: self.env.config_registry.as_deref(),
+                },
             )
             .await?;
         mode_registry.store(Arc::new(next));
@@ -4280,29 +4284,6 @@ impl PluginLoader {
         Ok(id)
     }
 
-    /// Drain the decorations seam (PL8.E): spawn the producer actor, wrap the
-    /// plugin's [`WasmDecorationSource`] as a native
-    /// [`AsyncGutterDecorationSource`], and RCU-register it into the
-    /// runtime-mutable [`GutterDecorationSourceRegistryHandle`] the host's
-    /// per-tick refresh drives.
-    ///
-    /// The decoration producer is the one hot-path-sensitive seam: it must NEVER
-    /// run at paint time (a per-frame WASM call would violate paramount #1). The
-    /// host caches its output per buffer and the renderer reads only the cache;
-    /// the async `gutter_decorations` runs on the spawned actor (off the
-    /// keystroke path), mirroring the picker / completion actor seams — driven on
-    /// the runtime, recorded on `record` for unload. A missing service degrades
-    /// the seam to a logged skip (`NotWired`); a spawn trap maps to
-    /// TC.2 — drain the context seam: spawn the producer actor, register the
-    /// `WasmContextSource` into the context registry by copy-on-write RCU, and
-    /// spawn the actor's `run` loop on the runtime. Records the actor task +
-    /// source id on `record` for teardown. Mirror of [`Self::drain_decorations`]
-    /// — a context source, like a decoration source, carries no id/doc metadata,
-
-    /// TC.4 — drain the theme seam: instantiate the component, drive its
-    /// `register-theme-elements` export once, and record the namespaced element
-    /// names for teardown. No actor and no registry RCU: elements are declared
-    /// synchronously into the shared registry, like config options.
     /// PM.7b: run a config guest's `register-plugins` export and record the
     /// plugins it declared.
     ///
@@ -4351,6 +4332,10 @@ impl PluginLoader {
         Ok(id)
     }
 
+    /// TC.4 — drain the theme seam: instantiate the component, drive its
+    /// `register-theme-elements` export once, and record the namespaced element
+    /// names for teardown. No actor and no registry RCU: elements are declared
+    /// synchronously into the shared registry, like config options.
     async fn drain_theme(
         &self,
         component: &lattice_plugin_host::Component,
@@ -4663,6 +4648,12 @@ impl PluginLoader {
         );
         Ok(id)
     }
+
+    /// TC.2 — drain the context seam: spawn the producer actor, register the
+    /// `WasmContextSource` into the context registry by copy-on-write RCU, and
+    /// spawn the actor's `run` loop on the runtime. Records the actor task +
+    /// source id on `record` for teardown. Mirror of [`Self::drain_decorations`]
+    /// — a context source, like a decoration source, carries no id/doc metadata,
     /// so there is no `connect` spec round-trip.
     async fn drain_context(
         &self,
@@ -4898,6 +4889,19 @@ impl PluginLoader {
         Ok(id)
     }
 
+    /// Drain the decorations seam (PL8.E): spawn the producer actor, wrap the
+    /// plugin's [`WasmDecorationSource`] as a native
+    /// [`AsyncGutterDecorationSource`], and RCU-register it into the
+    /// runtime-mutable [`GutterDecorationSourceRegistryHandle`] the host's
+    /// per-tick refresh drives.
+    ///
+    /// The decoration producer is the one hot-path-sensitive seam: it must NEVER
+    /// run at paint time (a per-frame WASM call would violate paramount #1). The
+    /// host caches its output per buffer and the renderer reads only the cache;
+    /// the async `gutter_decorations` runs on the spawned actor (off the
+    /// keystroke path), mirroring the picker / completion actor seams — driven on
+    /// the runtime, recorded on `record` for unload. A missing service degrades
+    /// the seam to a logged skip (`NotWired`); a spawn trap maps to
     /// `PluginLoaderError::Host` and skips only this plugin.
     async fn drain_decorations(
         &self,

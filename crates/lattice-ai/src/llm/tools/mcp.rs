@@ -72,8 +72,10 @@ pub struct McpServerConfig {
     pub allow: BTreeSet<String>,
 }
 
-/// How lattice reaches a server.
-#[derive(Debug, Clone, PartialEq)]
+/// How lattice reaches a server. `Debug` shows what [`label`](Self::label)
+/// does and the names of env vars and headers, never their values: those
+/// carry tokens.
+#[derive(Clone, PartialEq)]
 pub enum McpTransport {
     /// A child process speaking MCP on stdin/stdout.
     Stdio {
@@ -90,6 +92,24 @@ pub enum McpTransport {
         /// Sent with every request; values may name variables.
         headers: BTreeMap<String, String>,
     },
+}
+
+impl std::fmt::Debug for McpTransport {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Stdio { env, cwd, .. } => f
+                .debug_struct("Stdio")
+                .field("label", &self.label())
+                .field("env", &env.keys().collect::<Vec<_>>())
+                .field("cwd", cwd)
+                .finish_non_exhaustive(),
+            Self::Http { headers, .. } => f
+                .debug_struct("Http")
+                .field("label", &self.label())
+                .field("headers", &headers.keys().collect::<Vec<_>>())
+                .finish_non_exhaustive(),
+        }
+    }
 }
 
 impl McpTransport {
@@ -1097,5 +1117,27 @@ mod tests {
     fn the_client_info_maps() {
         let v = serde_json::to_value(client_config()).unwrap();
         assert_eq!(v["clientInfo"]["name"], "lattice");
+    }
+
+    #[test]
+    fn debug_names_env_and_headers_but_never_their_values() {
+        let stdio = McpTransport::Stdio {
+            command: "srv".into(),
+            args: vec![],
+            env: BTreeMap::from([("GITHUB_TOKEN".into(), "ghp_secret".into())]),
+            cwd: None,
+        };
+        let http = McpTransport::Http {
+            url: "https://u:pw@x.test/mcp?key=q".into(),
+            headers: BTreeMap::from([("Authorization".into(), "Bearer tok_secret".into())]),
+        };
+        let shown = format!("{stdio:?} {http:?}");
+        for secret in ["ghp_secret", "tok_secret", "pw@", "key=q"] {
+            assert!(!shown.contains(secret), "{shown}");
+        }
+        assert!(
+            shown.contains("GITHUB_TOKEN") && shown.contains("Authorization"),
+            "{shown}"
+        );
     }
 }

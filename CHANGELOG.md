@@ -125,6 +125,9 @@
   (`:set messages.filter=info,rmcp=debug` to see it).
 
 ### Fixed
+- **Debug output never shows a secret.** A built LLM request and an
+  `[llm.mcp.<name>]` server's settings printed their header and env values
+  (API keys, tokens) when formatted for debugging. They now print names only.
 - **A command that starts something in the background no longer hangs.**
   An LLM chat's `run_command` of `server &` (or a picker command that did
   the same) waited for ever once the shell had exited, holding a thread,

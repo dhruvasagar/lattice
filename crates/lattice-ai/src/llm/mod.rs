@@ -72,12 +72,27 @@ impl std::fmt::Debug for ApiKey {
 }
 
 /// A fully-built HTTP request, as plain data. The transport (LL.4) executes it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// `Debug` names the headers but not their values, which hold the API key.
+#[derive(Clone, PartialEq, Eq)]
 pub struct HttpRequest {
     pub method: String,
     pub url: String,
     pub headers: Vec<(String, String)>,
     pub body: Vec<u8>,
+}
+
+impl std::fmt::Debug for HttpRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HttpRequest")
+            .field("method", &self.method)
+            .field("url", &self.url)
+            .field(
+                "headers",
+                &self.headers.iter().map(|(k, _)| k).collect::<Vec<_>>(),
+            )
+            .field("body_len", &self.body.len())
+            .finish()
+    }
 }
 
 impl HttpRequest {

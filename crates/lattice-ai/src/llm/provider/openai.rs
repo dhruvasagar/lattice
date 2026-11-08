@@ -394,6 +394,7 @@ mod tests {
             })
         );
         assert!(!String::from_utf8_lossy(&http.body).contains("sk-secret-123"));
+        assert!(!format!("{http:?}").contains("sk-secret-123"));
     }
 
     #[test]

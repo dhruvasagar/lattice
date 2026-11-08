@@ -187,6 +187,12 @@ fn text_to_org(out: &mut String, text: &str, level: usize) {
         }
         let body = line.trim_start();
         let indent = &line[..line.len() - body.len()];
+        // `#+INCLUDE:`, `#+SETUPFILE:` and peers are directives org acts on
+        // when the file is opened or exported; a reply's line must stay text.
+        if body.starts_with("#+") {
+            out.push_str(&format!("{indent}{ZWSP}{}\n", inline(body)));
+            continue;
+        }
         if let Some(rest) = body.strip_prefix("* ").or_else(|| body.strip_prefix("+ ")) {
             out.push_str(&format!("{indent}- {}\n", inline(rest)));
             continue;
@@ -224,8 +230,28 @@ fn closes(line: &str, open: &Fence) -> bool {
     body.chars().count() >= open.len && body.chars().all(|c| c == open.ch)
 }
 
+/// Org's escape for markup outside a block: a zero-width space breaks the
+/// token without changing what a reader sees.
+const ZWSP: char = '\u{200B}';
+
+/// Link schemes a reply may turn into a live org link. `elisp:`, `shell:`
+/// and the like run code when followed, so a reply naming one stays text.
+fn safe_link(url: &str) -> bool {
+    if url.contains(['[', ']']) {
+        return false;
+    }
+    match url.split_once(':') {
+        None => true,
+        Some((scheme, _)) => ["http", "https", "mailto", "ftp"]
+            .iter()
+            .any(|s| scheme.eq_ignore_ascii_case(s)),
+    }
+}
+
 /// Inline markdown as org: `` `code` `` to `~code~`, `**bold**` to `*bold*`,
-/// `[text](url)` to `[[url][text]]`. Anything unmatched is left as written.
+/// `[text](url)` to `[[url][text]]` for a [`safe_link`]. A `[[` the reply wrote
+/// itself is broken with a zero-width space, so it never becomes a link.
+/// Anything unmatched is left as written.
 fn inline(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut rest = s;
@@ -254,6 +280,7 @@ fn inline(s: &str) -> String {
             && let Some(mid) = rest.find("](")
             && let Some(end) = rest[mid + 2..].find(')')
             && !rest[1..mid].contains(['[', ']'])
+            && safe_link(&rest[mid + 2..mid + 2 + end])
         {
             let (text, url) = (&rest[1..mid], &rest[mid + 2..mid + 2 + end]);
             out.push_str(&format!("[[{url}][{text}]]"));
@@ -262,6 +289,9 @@ fn inline(s: &str) -> String {
         }
         out.push(ch);
         rest = &rest[ch.len_utf8()..];
+        if ch == '[' && rest.starts_with('[') {
+            out.push(ZWSP);
+        }
     }
     out
 }
@@ -318,5 +348,21 @@ mod tests {
             "a ` lone tick, [no link]"
         );
         assert_eq!(inline("世界 `ü`"), "世界 ~ü~");
+    }
+
+    #[test]
+    fn a_reply_cannot_write_live_org_directives_or_links() {
+        let org = org_of("#+INCLUDE: \"~/.ssh/id_rsa\"\n  #+SETUPFILE: x");
+        assert!(
+            !org.lines().any(|l| l.trim_start().starts_with("#+")),
+            "{org}"
+        );
+        assert_eq!(
+            inline("[run](elisp:(delete-file \"x\"))"),
+            "[run](elisp:(delete-file \"x\"))"
+        );
+        assert_eq!(inline("[x](a][elisp:y)"), "[x](a][elisp:y)");
+        assert!(!inline("[[shell:rm -rf ~][go]]").contains("[["));
+        assert_eq!(inline("[docs](./notes.org)"), "[[./notes.org][docs]]");
     }
 }

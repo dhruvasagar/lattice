@@ -125,6 +125,11 @@
   (`:set messages.filter=info,rmcp=debug` to see it).
 
 ### Fixed
+- **An org export keeps a reply's org syntax as text.** A reply line such
+  as `#+INCLUDE:` or `#+SETUPFILE:`, or a link to `elisp:` or `shell:`, was
+  copied into the `.org` file live, for org to act on when you opened or
+  exported it. They are now escaped; ordinary web and file links still
+  convert.
 - **`llm.exclude` sees through links.** A file was checked by the name it
   was opened or attached under, so a symlink `notes.txt` pointing at `.env`
   could be sent. The file it really is is now checked as well.

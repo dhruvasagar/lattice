@@ -61,7 +61,7 @@ Inputs the design is silent on that are most likely to bite. Each has a test in 
 LL.1 ─┬─ LL.5 ─ LL.6 ─┬─ LL.7 ─ LL.8
 LL.2 ─┘               ├─ LL.10 ─ LL.11
 LL.3 ─ LL.4 ─ LL.5    ├─ LL.14 ─ LL.15
-LL.9 ─ LL.10          ├─ LL.16 ─ LL.17 ─ LL.18 ─ LL.22 ─ LL.23 ─ LL.24
+LL.9 ─ LL.10          ├─ LL.16 ─ LL.17 ─ LL.18 ─ LL.22 ─ LL.24
 LL.12 ─ LL.13         ├─ LL.19 ─ LL.20
                       └─ LL.21
 ```
@@ -735,13 +735,14 @@ rest of the catalogue for itself, as with VS Code. **Follow-ups found, not LL.22
 display, shares no code with this slice); `:'<,'>claude<Tab>` does not complete after a range
 prefix.
 
-### LL.23 — Lattice's tools in-process 📝
+### LL.23 — Lattice's tools in-process ❌
 
-**Files:** `src/llm/tools/mcp.rs` (`Connection` as a `ToolSource`), `src/llm/tools/lattice.rs` (moves onto
-`LatticeServer` with the full catalogue).
-
-**Tests:** the LL.16–LL.18 suites pass unchanged, which is the proof nothing above the broker changed; the
-WebSocket connection still sees only the Claude Code catalogue.
+**Dropped (Dhruva, 2026-11-08):** the move has no concrete merit. `LatticeTools`' per-call context (the
+chat's origin, trusted edits, review open/close driving `AwaitingReview`, `describe` for the permission
+prompt) would need protocol extensions only lattice consumes, and every call would pay a serialization
+round trip, while no external client wants the full catalogue and LL.24 exercises the client path anyway.
+`LatticeTools` stays a direct `ToolSource`; LL.24 builds `Connection` for external servers. Design
+`llm-layer.md` §6 records it.
 
 ### LL.24 — External servers 📝
 

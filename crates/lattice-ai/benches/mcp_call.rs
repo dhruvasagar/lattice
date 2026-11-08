@@ -1,7 +1,7 @@
 //! LL.22 -- one MCP tool call through rmcp.
 //!
-//! The Claude Code connection now runs on rmcp, and LL.23 serves the same
-//! `LatticeServer` in-process. This measures what rmcp adds to a call: a
+//! The Claude Code connection now runs on rmcp. This measures what rmcp adds
+//! to a call: a
 //! newline-delimited `tools/call` written to an in-memory pipe, decoded,
 //! handled on its own task, encoded, and read back. The tool is
 //! `getWorkspaceFolders`, which does no work of its own, so the number is the

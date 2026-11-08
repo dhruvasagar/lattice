@@ -28,8 +28,8 @@ pub mod error;
 // BC.3b: the crate-owned `install(boot)` entry point — one Phase-B line in
 // `editor_boot`, all wiring here.
 pub mod install;
-// LL.22: the MCP server itself, an rmcp `ServerHandler` (the Claude Code
-// catalogue today; LL.23 serves it in-process too).
+// LL.22: the MCP server itself, an rmcp `ServerHandler` serving the Claude
+// Code catalogue.
 pub mod lattice_server;
 pub mod lockfile;
 pub mod modes;

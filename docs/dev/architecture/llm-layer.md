@@ -351,15 +351,21 @@ user saw listed).
 
 ## 6. Tools and MCP
 
-**The loop has one way to reach any tool: an MCP client connection.** Lattice's own tools
-are an MCP server like any other, reached in-process. Nothing in the loop knows which
-server is lattice's.
+**The loop has one way to reach any tool: the `ToolBroker`.** Behind it sit tool sources:
+lattice's own tools (`LatticeTools`, called directly) and one MCP client connection per
+external server. Tool descriptors use MCP's shape (name, description, JSON Schema input,
+content result), so the broker treats the two alike, and nothing in the loop knows which is
+which.
 
-**That is the end state, and it lands last.** The harness is the priority, so the loop first
-talks to a `ToolBroker` holding lattice's tools directly, and MCP arrives behind that same
-interface once everything else works. Tool descriptors use MCP's shape from the start (name,
-description, JSON Schema input, content result), so nothing above the broker changes when
-it does. Until then external servers are unavailable and the Claude Code server is untouched.
+**Lattice's own tools are not served to the loop over MCP.** The plan was once to move them
+onto `LatticeServer` and reach them through an in-process MCP connection (LL.23, dropped
+2026-11-08). Their per-call context does not fit the protocol: which chat a review belongs
+to, whether the chat trusts edits, the review opening and closing (it drives
+`AwaitingReview`), and the one-line `describe` the permission prompt shows. Carrying those
+would take protocol extensions whose only consumer is lattice itself, and a serialization
+round trip (about 58 µs) on every call, for no gain: no external client wants the full
+catalogue, and the client path is exercised by every external server anyway. Revisit if an
+external MCP client ever should drive lattice's full tool set.
 
 	[llm.mcp.github]
 	command = "github-mcp-server"	# stdio; or url = "https://…" for streamable HTTP
@@ -611,14 +617,12 @@ carves off the HTTP dependency, as `acp` and `mcp` do theirs.
   projection and folds.
 - **`tools`** — `ToolBroker`: holds a session's tool sources, namespaces their tools, applies
   §6's trust table and the profile's selection, and is all the loop sees. Lattice's tools sit
-  behind it directly until `mcp` lands.
+  behind it directly (§6).
 - **`mcp`** (last) — built on `rmcp`, the official Rust SDK, for client and server:
-  - `Connection`: one MCP client session over any transport: in-process duplex, stdio
-    child, streamable HTTP. A tool source for the broker.
-  - `LatticeServer`: one `ServerHandler` over `EditorAccess`, with a per-connection
-    catalogue. In-process it offers the full set, including exec. Over the existing
-    loopback WebSocket it offers exactly today's Claude Code catalogue, so connecting
-    `claude` gains nothing it does not have now.
+  - `Connection`: one MCP client session to an external server, over a stdio child or
+    streamable HTTP. A tool source for the broker.
+  - `LatticeServer`: one `ServerHandler` serving the Claude Code catalogue over the
+    loopback WebSocket, so connecting `claude` gains nothing it did not have before.
 
   The hand-written `dispatch.rs` and `protocol.rs` were replaced by this in LL.22; `server.rs`
   keeps the listener, lockfile and auth (see `ide-protocol.md` §4 for what changed on the

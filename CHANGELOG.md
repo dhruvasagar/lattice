@@ -105,6 +105,9 @@
   `.env`, `*.pem`, `*.key` and SSH keys.
 
 ### Fixed
+- **`/ide` connects to lattice again.** Current `claude` asks for the `mcp`
+  WebSocket subprotocol and drops a connection whose handshake does not
+  name it ("Failed to connect to Lattice"); lattice now answers with it.
 - **`<CR>` in the agent permission menu chooses the highlighted option.**
   Enter in any help-style buffer was turned into "follow link" before any
   mode's keys were consulted, so an agent's permission request could be

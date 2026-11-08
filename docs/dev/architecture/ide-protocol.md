@@ -98,7 +98,8 @@ discovery env injected and activates `claude-code-mode` on it.
 ## 4. Wire contract (must match VS Code's, for CLI compatibility)
 
 - **Transport:** WebSocket on `127.0.0.1`, dynamic port 10000–65535. JSON-RPC 2.0;
-  MCP protocol version `"2024-11-05"`.
+  MCP protocol version `"2024-11-05"`. `claude` asks for the `mcp` subprotocol and
+  drops a handshake that does not echo it, so the server echoes it when asked.
 - **Discovery:** lockfile `~/.claude/ide/<port>.lock` (VS Code schema — pid,
   workspace folders, auth token, transport, ide name) **and** env vars
   `CLAUDE_CODE_SSE_PORT=<port>` + `ENABLE_IDE_INTEGRATION=true` injected into the

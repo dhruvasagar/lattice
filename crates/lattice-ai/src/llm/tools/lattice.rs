@@ -529,7 +529,7 @@ impl LatticeTools {
         let review = self.review.as_ref().ok_or_else(|| {
             ToolError::Refused("edits need a diff review, which is not available here".into())
         })?;
-        let accepted = if ctx.trusted {
+        let accepted = if ctx.trusted && !in_git_dir(at) {
             proposed.clone()
         } else {
             // Queued behind another review: what it was proposed against may
@@ -793,6 +793,18 @@ fn read_error(shown: &str, e: &str) -> String {
     }
 }
 
+/// Whether `at` is inside a `.git` directory: hooks and `core.fsmonitor`
+/// there run code later, and nothing under `.git` shows in `git status` or
+/// `git diff`, so no later look at the changes would catch it. An edit there
+/// is reviewed even in a trusted chat.
+fn in_git_dir(at: &Resolved) -> bool {
+    at.path
+        .strip_prefix(&at.root)
+        .unwrap_or(&at.path)
+        .components()
+        .any(|c| c.as_os_str() == ".git")
+}
+
 /// `path` with every symlink in it followed, including those in the
 /// directories above a file that does not exist yet: a new file under
 /// `link/` lands wherever `link` points, so that is where it must be checked.
@@ -1020,6 +1032,19 @@ mod tests {
             real_project.join("fresh.txt")
         );
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn anything_under_a_git_dir_is_in_it() {
+        let at = |p: &str| Resolved {
+            path: PathBuf::from("/p").join(p),
+            root: PathBuf::from("/p"),
+        };
+        assert!(in_git_dir(&at(".git/hooks/pre-commit")));
+        assert!(in_git_dir(&at(".git/config")));
+        assert!(in_git_dir(&at("vendor/sub/.git/hooks/post-checkout")));
+        assert!(!in_git_dir(&at(".gitignore")));
+        assert!(!in_git_dir(&at("src/git/mod.rs")));
     }
 
     #[test]

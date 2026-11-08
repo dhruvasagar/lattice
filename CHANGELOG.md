@@ -115,6 +115,10 @@
   `.env`, `*.pem`, `*.key` and SSH keys.
 
 ### Changed
+- **A trusted LLM chat still asks before editing under `.git`.** `<C-t>`
+  applies edits without a diff, except inside a `.git` directory: a hook or
+  `core.fsmonitor` there runs code later, and `git status` never shows it.
+  Those edits open a diff as an untrusted chat's do.
 - **"Allow for this chat" on a command covers that command only.** An LLM
   chat's `run_command` question now offers "Allow this command for this
   chat": the same command runs again without asking, and any other command

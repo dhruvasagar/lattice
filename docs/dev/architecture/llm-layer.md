@@ -485,7 +485,10 @@ diff-only variant: a verdict that would reach nobody must not stay on screen ask
 **`<C-t>` in a chat trusts its edits**: they apply without a diff, and the headerline says
 `edits trusted` for as long as it lasts. Trust belongs to the chat on screen: never saved,
 never copied to another session, and dropped when the chat closes. The stale-target refusal
-still applies, so trust skips the question, never the check.
+still applies, so trust skips the question, never the check. An edit inside a `.git`
+directory is reviewed even when trusted: hooks and `core.fsmonitor` there run code later,
+and nothing under `.git` appears in `git status` or `git diff`, so no later look at the
+work would catch it. Other files that run later (`build.rs`, a Makefile) do show there.
 
 Rejected for edits: writing the disk under an open buffer (the buffer would show text the
 file no longer holds, and `:w` would silently undo the model's change); a whole-buffer

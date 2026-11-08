@@ -210,6 +210,34 @@ mod tests {
         );
     }
 
+    /// A trusted chat's edit under `.git` (a hook runs later, and `git
+    /// status` never shows it) still opens a review.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_trusted_chat_still_reviews_an_edit_under_git() {
+        let (mut a, log, p) = app(vec![(
+            "write_file",
+            json!({"path": ".git/hooks/pre-commit", "content": "#!/bin/sh\n"}),
+        )]);
+        let chat = open_chat(&mut a).await;
+        ctrl(&mut a, 't');
+        let session = chats(&a).for_buffer(chat).unwrap();
+        assert!(session.trusted());
+        chats(&a).submit(&session, "add a hook".to_string());
+        assert!(
+            settle_woken(&mut a, |a| diffs_open(a) == 1).await,
+            "no review: {:?}",
+            log.lock().unwrap().len()
+        );
+        assert_eq!(
+            p.read(".git/hooks/pre-commit"),
+            "",
+            "nothing before the verdict"
+        );
+        submit_ex(&mut a, "diff-reject");
+        second_request(&mut a, &log).await;
+        assert_eq!(p.read(".git/hooks/pre-commit"), "");
+    }
+
     /// The file changed on disk while the diff was open: accepting would
     /// overwrite that change, so nothing is written and the model is told to
     /// read again.

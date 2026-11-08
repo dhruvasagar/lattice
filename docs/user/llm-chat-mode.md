@@ -239,7 +239,9 @@ in the same line, and `:llm-requests` shows `awaiting review` meanwhile.
 
 **`<C-t>`** in the chat trusts its edits: they apply without a diff,
 and the headerline says `edits trusted` until you press `<C-t>` again or
-close the chat. It is never saved and never carried to another chat.
+close the chat. It is never saved and never carried to another chat. An
+edit under `.git` still opens a diff: a hook there runs later, and `git
+status` would never show it.
 Closing a chat closes any diff it still has open.
 
 `lattice.exec` lets it run commands:
@@ -264,7 +266,8 @@ its output and error streams, with a note saying where it was cut.
 
 "Allow this command for this chat" covers that exact command, run in the
 same place, until the chat closes: the same `cargo test` runs again
-without asking, but any other command asks. It is never saved. `<C-t>` trusts edits only: commands still ask. A project's
+without asking, but any other command asks. It is never saved. `<C-t>`
+trusts edits only: commands still ask. A project's
 `.lattice/llm.toml` cannot turn `lattice.exec` on; only your own config,
 a profile, or `:setlocal` in the chat can.
 

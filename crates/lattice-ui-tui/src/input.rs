@@ -1497,32 +1497,30 @@ mod tests {
     }
 
     #[test]
-    fn help_active_routes_enter_to_follow_link() {
+    fn help_enter_is_mode_owned_not_intercepted_by_translate() {
+        // `<CR>` follow-link is `help-mode`'s keymap binding now
+        // (`action:help-follow-link` → `Effect::FollowHelpLink`), like `<Esc>`
+        // above. A kind gate here ran before every keymap, so a popup whose
+        // own major bound `<CR>` (`ai-permission-mode`) never received it.
+        // The end-to-end follow is pinned in `app::help`'s key-driven tests.
         let (_, b) = fixture();
-        assert!(matches!(
+        assert!(!matches!(
             translate(ctx_help_active(ModalState::Normal, &b), key(KeyCode::Enter)),
             Action::FollowLink
         ));
     }
 
-    fn ctx_dashboard_active<'a>(modal: ModalState, b: &'a Builtins) -> TranslateContext<'a> {
-        TranslateContext {
-            active_buffer: BufferKind::Dashboard,
-            ..ctx_help_active(modal, b)
-        }
-    }
-
     #[test]
-    fn dashboard_active_routes_enter_to_follow_link() {
-        // The launch dashboard's clickable links: `<CR>` on a link follows
-        // it (dashboard.md §9.2). Without this gate the dashboard links are
-        // dead — Enter falls through to plain Normal-mode.
+    fn dashboard_enter_is_mode_owned_not_intercepted_by_translate() {
+        // The dashboard runs `help-mode` as a minor, so its `<CR>` follows
+        // links through the same mode binding (dashboard.md §9.2).
         let (_, b) = fixture();
-        assert!(matches!(
-            translate(
-                ctx_dashboard_active(ModalState::Normal, &b),
-                key(KeyCode::Enter)
-            ),
+        let ctx = TranslateContext {
+            active_buffer: BufferKind::Dashboard,
+            ..ctx_help_active(ModalState::Normal, &b)
+        };
+        assert!(!matches!(
+            translate(ctx, key(KeyCode::Enter)),
             Action::FollowLink
         ));
     }

@@ -109,6 +109,7 @@ pub fn effect_is_host_complete(effect: &Effect) -> bool {
         | Effect::DismissPopupNamed { .. }
         | Effect::OpenPopup { .. }
         | Effect::OpenHelpTopic { .. }
+        | Effect::FollowHelpLink
         | Effect::ListDiagnostics
         | Effect::ListErrors
         | Effect::NextDiagnostic

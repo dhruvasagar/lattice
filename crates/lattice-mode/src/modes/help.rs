@@ -132,18 +132,31 @@ impl Mode for HelpMode {
     }
 }
 
-/// The `<Esc>` → `action:help-dismiss` entry. Interned once; `Keymap::from_entries`
-/// resolves the `cmd` name against the command registry at boot.
+/// `<Esc>` → `action:help-dismiss` and `<CR>` → `action:help-follow-link`.
+/// Interned once; `Keymap::from_entries` resolves the `cmd` names against the
+/// command registry at boot.
+///
+/// `<CR>` was the host input layer's last gate on the buffer kind: it turned
+/// Enter in any `Help` / `Dashboard` buffer into a follow-link before any
+/// keymap was asked, so a popup whose own major bound `<CR>` never got it.
+/// Here it is an ordinary mode binding, shadowed by a mode that binds the key.
 fn help_mode_keymap_entries() -> &'static [KeymapEntry] {
     use std::sync::OnceLock;
     static ENTRIES: OnceLock<Vec<KeymapEntry>> = OnceLock::new();
     ENTRIES
         .get_or_init(|| {
-            vec![keymap_entry! {
-                mode: Normal, chord: "<Esc>",
-                doc: "help: close the popup / split pane",
-                cmd: "action:help-dismiss"
-            }]
+            vec![
+                keymap_entry! {
+                    mode: Normal, chord: "<Esc>",
+                    doc: "help: close the popup / split pane",
+                    cmd: "action:help-dismiss"
+                },
+                keymap_entry! {
+                    mode: Normal, chord: "<CR>",
+                    doc: "help: follow the link under the cursor",
+                    cmd: "action:help-follow-link"
+                },
+            ]
         })
         .as_slice()
 }
@@ -163,6 +176,16 @@ pub fn register_help_mode_actions(registry: &mut lattice_grammar::CommandRegistr
         "help: close the popup or split pane (mode-owned).",
         ActionSpec {
             apply: Arc::new(|_| Ok(Effect::DismissPopup)),
+            args_schema: vec![],
+        },
+    );
+    // The links are host state (each help buffer's link table), so the body
+    // is an effect the host applies; the chord and the decision stay here.
+    registry.register_action(
+        "action:help-follow-link",
+        "help: follow the link under the cursor (mode-owned).",
+        ActionSpec {
+            apply: Arc::new(|_| Ok(Effect::FollowHelpLink)),
             args_schema: vec![],
         },
     );

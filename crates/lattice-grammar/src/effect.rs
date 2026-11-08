@@ -1240,6 +1240,17 @@ pub enum Effect {
         topic: Option<String>,
     },
 
+    /// Follow the help link under the cursor: a topic, a command, a chord, an
+    /// ex line or a file the help buffer (or the dashboard) links to.
+    ///
+    /// `help-mode`'s `<CR>`. It was an input-layer gate on the buffer KIND
+    /// (`Help` / `Dashboard`) that ran before any keymap, so a popup whose
+    /// major mode bound `<CR>` itself (`ai-permission-mode`'s option select)
+    /// never received it. Owned by the mode, the chord is shadowed by a
+    /// mode that binds it, like any other. The links live host-side, so the
+    /// host applies it; host-only at the plugin boundary.
+    FollowHelpLink,
+
     /// `:diagnostics` -- render every workspace diagnostic in a
     /// help-style buffer with clickable per-entry source links
     /// (Phase 4.1.d.iv). The host queries its

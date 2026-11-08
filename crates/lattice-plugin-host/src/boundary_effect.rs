@@ -958,6 +958,15 @@ fn effect_to_wit(e: &NativeEffect) -> Result<WitEffect, String> {
                 "Effect::ListErrors is host-only (`:clist` opens a host-owned picker)".to_string(),
             );
         }
+        // Host-only by intent: it follows a link in the host's per-buffer
+        // help link table, which a plugin has no view of. A plugin opens
+        // help by topic (`OpenHelpTopic`).
+        NativeEffect::FollowHelpLink => {
+            return Err(
+                "Effect::FollowHelpLink is host-only (it reads the host's help link table)"
+                    .to_string(),
+            );
+        }
         NativeEffect::OpenAiLog { session } => WitEffect::OpenAiLog(session.clone()),
         NativeEffect::OpenSyntheticBuffer { name, mode_id, .. } => {
             WitEffect::OpenSyntheticBuffer(WitOpenSyntheticBufferPayload {

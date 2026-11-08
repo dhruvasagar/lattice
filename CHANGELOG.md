@@ -79,6 +79,12 @@
   `.env`, `*.pem`, `*.key` and SSH keys.
 
 ### Fixed
+- **`<CR>` in the agent permission menu chooses the highlighted option.**
+  Enter in any help-style buffer was turned into "follow link" before any
+  mode's keys were consulted, so an agent's permission request could be
+  deferred (`<Esc>`) but never answered from the menu.
+  Following links with `<CR>` in help and on the dashboard is now an
+  ordinary `help-mode` binding, which a popup's own `<CR>` overrides.
 - **A caret no longer slides sideways when text above it is rewritten.**
   When text above the caret was rewritten without changing the number of
   lines, as a chat transcript update can do above the prompt, the caret

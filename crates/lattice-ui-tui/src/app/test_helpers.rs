@@ -88,10 +88,16 @@ pub(super) fn press(app: &mut App, event: crossterm::event::KeyEvent) {
         // fail on a broken major-mode binding because they could not
         // reach one; that is the blind spot MG.13 exists to close, and
         // it lived here rather than in the modes.
+        //
+        // And it MUST be read for `active_buffer_id()`, as production's
+        // `publish_render_state` does: a focused popup's keys resolve against
+        // the popup's modes, not the document behind it
+        // (`popup_keys_go_to_the_popup.rs`). Reading `document_buffer_id`
+        // here made a popup's own chords unreachable from these tests.
         active_minor_modes: &app
             .editor
             .active_modes
-            .get(&app.editor.document_buffer_id)
+            .get(&app.editor.active_buffer_id())
             .map(|am| am.keymap_gated_ids())
             .unwrap_or_default(),
     };

@@ -284,44 +284,12 @@ pub fn translate(ctx: TranslateContext<'_>, chord: KeyChord) -> Action {
         return translate_command_chord_capture(chord);
     }
 
-    // Buffer-local bindings for read-only buffers (Help / FileTree;
-    // DESIGN.md §5.9 buffer-local keymap layer): a small fixed set
-    // of bindings unique to those kinds (dismiss + follow-link)
-    // intercept first, then everything else flows through
-    // `translate_normal` so the chord grammar (`gg`, `<C-d>`,
-    // `<C-o>` / `<C-i>`, motions, viewport jumps) works identically
-    // to the document path. The cursor that those motions move is
-    // decided at apply time by `App::active_buffer`, not here.
-    // LM.4: FileTree left this shared gate — `file-tree-mode` owns `<CR>` /
-    // `-` / `<C-s>` / `<C-v>` / `<C-t>` through its `MajorMode` keymap +
-    // `action_handlers` now. Help is following the same path: `<Esc>` is now
-    // owned by `help-mode`'s keymap (`action:help-dismiss` → `Effect::DismissPopup`,
-    // which the host applies as close-split-pane / dismiss-popup / restore), so
-    // it is NOT intercepted here. `-` left too: `oil-global-mode` owns it in
-    // every buffer, Help included. Only `<CR>` follow-link stays on this gate
-    // for now (`q` does NOT dismiss — it falls through to macro-record
-    // start). The other Help close paths are `:bd` and the State-A auto-dismiss
-    // in App::apply.
-    if matches!(ctx.active_buffer, BufferKind::Help)
-        && matches!(ctx.modal, ModalState::Normal)
-        && ctx.partial_chord.is_empty()
-        && matches!(chord.key, KeyKind::Special(SpecialKey::Enter))
-    {
-        return Action::FollowLink;
-    }
-
-    // Dashboard is a read-only, link-bearing help-style buffer: `<CR>`
-    // follows the link under the cursor (dashboard.md §9.2), routed to the
-    // same `do_help_follow_link` dispatcher via the `Action::FollowLink` arm.
-    // Only link-follow is special here; every other key keeps its plain
-    // Normal-mode meaning.
-    if matches!(ctx.active_buffer, BufferKind::Dashboard)
-        && matches!(ctx.modal, ModalState::Normal)
-        && ctx.partial_chord.is_empty()
-        && matches!(chord.key, KeyKind::Special(SpecialKey::Enter))
-    {
-        return Action::FollowLink;
-    }
+    // No buffer KIND intercepts keys here any more. Help's last one, `<CR>`
+    // follow-link, moved into `help-mode`'s keymap (`action:help-follow-link`
+    // → `Effect::FollowHelpLink`), which the dashboard also runs; `<Esc>`
+    // moved before it, file-tree and oil before that (LM.3 / LM.4). A gate
+    // on the kind ran before every keymap, so a popup whose own major bound
+    // `<CR>` (`ai-permission-mode`) could never receive it.
 
     // LM.3: the `BufferKind::Oil` gate (Enter → FollowLink, `-` →
     // OilNavigateUp) is gone — `oil-mode` owns `<CR>` / `-` / `<C-s>` /

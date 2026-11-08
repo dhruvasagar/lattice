@@ -1072,6 +1072,8 @@ impl App {
             | Effect::ShowDiagnosticsPopup { .. }
             // L7: LSP nav requests are host-applied (`editor.lsp_request`).
             | Effect::Lsp(_)
+            // help-mode's `<CR>`: host-applied (`do_help_follow_link`).
+            | Effect::FollowHelpLink
             | Effect::EchoMarks
             | Effect::EchoRegisters
             | Effect::Yank { .. }
@@ -1517,6 +1519,7 @@ fn effect_mutates_or_yanks(effect: &Effect) -> bool {
         Effect::ShowDiagnosticsPopup { .. } => false,
         // L7: an LSP nav request neither mutates nor yanks.
         Effect::Lsp(_) => false,
+        Effect::FollowHelpLink => false,
         // Confirm dialog opens a transient — not a mutation/yank.
         Effect::Confirm { .. } => false,
         // Opening a named transient menu neither mutates nor yanks.
@@ -1684,6 +1687,7 @@ fn effect_mutates(effect: &Effect) -> bool {
         Effect::ShowDiagnosticsPopup { .. } => false,
         // L7: an LSP nav request is not a buffer mutation.
         Effect::Lsp(_) => false,
+        Effect::FollowHelpLink => false,
         // Confirm dialog opens a transient — not a buffer mutation.
         Effect::Confirm { .. } => false,
         // Opening a named transient menu is not a buffer mutation.

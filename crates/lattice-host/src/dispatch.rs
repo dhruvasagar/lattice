@@ -4012,6 +4012,9 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
             // [`lattice_runtime::MessagePushed`].
             editor.set_message(echo_level_from_grammar(level), text);
         }
+        // `help-mode`'s `<CR>` (and the dashboard's, which runs help-mode):
+        // the link table is host state, so the host follows it.
+        Effect::FollowHelpLink => editor.do_help_follow_link(out),
         Effect::Lsp(req) => {
             // L7 (lsp-architecture.md §16): a mode-owned nav chord
             // (`K` / `gd` / `gD` / `gy` / `gI` / `gr` / `gx`). The owning
@@ -45404,6 +45407,7 @@ pub fn effect_mutates_or_yanks(effect: &lattice_grammar::Effect) -> bool {
         | Effect::KillBuffer
         | Effect::OpenPopup { .. }
         | Effect::OpenHelpTopic { .. }
+        | Effect::FollowHelpLink
         | Effect::ListDiagnostics
         | Effect::ListErrors
         | Effect::NextDiagnostic
@@ -45572,6 +45576,7 @@ pub fn effect_mutates(effect: &lattice_grammar::Effect) -> bool {
         | Effect::KillBuffer
         | Effect::OpenPopup { .. }
         | Effect::OpenHelpTopic { .. }
+        | Effect::FollowHelpLink
         | Effect::ListDiagnostics
         | Effect::ListErrors
         | Effect::NextDiagnostic

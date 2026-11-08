@@ -122,9 +122,9 @@ fn dashboard_help_topic_links_resolve_to_registered_topics() {
 // link must resolve to the correct behaviour. Covers the follow-guard
 // (Dashboard grouped with Help) + the link scheme (`exec:` runs a command,
 // `help:` opens a topic) — the three bugs that made every dashboard link a
-// silent no-op. The input-gate half (`<CR>` → Action::FollowLink for the
-// Dashboard buffer) is pinned in `lattice-ui-tui/src/input.rs`
-// (`dashboard_active_routes_enter_to_follow_link`).
+// silent no-op. The key half (`<CR>` is `help-mode`'s binding, which the
+// dashboard runs as a minor) is pinned in `lattice-ui-tui/src/app/help.rs`
+// (`enter_on_the_dashboard_follows_the_link_through_help_modes_keymap`).
 mod link_following {
     use lattice_grammar::Effect;
     use lattice_help::HelpLinkTarget;

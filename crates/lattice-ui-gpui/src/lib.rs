@@ -1492,6 +1492,8 @@ impl GpuiApp {
             | Effect::ShowDiagnosticsPopup { .. }
             // L7: LSP nav requests are host-applied (`editor.lsp_request`).
             | Effect::Lsp(_)
+            // help-mode's `<CR>`: host-applied (`do_help_follow_link`).
+            | Effect::FollowHelpLink
             | Effect::EchoRegisters
             | Effect::EchoMarks
             | Effect::ListBuffers

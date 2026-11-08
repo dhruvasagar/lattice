@@ -159,6 +159,27 @@ mod tests {
         assert!(results(&log)[0].contains("later"), "{:?}", results(&log));
     }
 
+    /// After one question is answered, the next opens on its own: answering
+    /// closes the menu for the auto-open, not only on screen.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_next_question_opens_on_its_own_after_an_answer() {
+        let (mut a, log, _dir) = app(vec![run("echo one"), run("echo two")], "lattice.exec");
+        send(&mut a, "both").await;
+        answer(&mut a, 1).await;
+        assert!(
+            settle_woken(&mut a, |a| popup(a).is_some_and(|t| t.contains("echo two"))).await,
+            "the second question never opened: {:?}",
+            popup(&a)
+        );
+        answer(&mut a, 1).await;
+        second_request(&mut a, &log).await;
+        let said = results(&log);
+        assert!(
+            said[0].contains("one") && said[1].contains("two"),
+            "{said:?}"
+        );
+    }
+
     /// "Allow for this chat" covers the same tool's later calls in it.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn allowing_for_the_chat_asks_once() {

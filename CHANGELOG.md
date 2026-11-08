@@ -125,6 +125,10 @@
   (`:set messages.filter=info,rmcp=debug` to see it).
 
 ### Fixed
+- **The next permission question opens on its own.** After you answered
+  one question from an agent or an LLM chat, later ones waited, unshown,
+  until you pressed a key or ran `:ai-permission`. Closing a popup now
+  finishes closing its mode, so the menu knows it is free.
 - **Debug output never shows a secret.** A built LLM request and an
   `[llm.mcp.<name>]` server's settings printed their header and env values
   (API keys, tokens) when formatted for debugging. They now print names only.

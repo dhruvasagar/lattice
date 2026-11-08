@@ -9064,6 +9064,12 @@ impl Editor {
         };
         self.buffers.remove(prev);
         self.active_modes.remove(&prev);
+        // And the guards its modes stashed, as `:bd` does: a popup mode's
+        // cleanup runs when the popup closes, not when the editor exits.
+        // `ai-permission-mode`'s guard is what tells its auto-open the menu
+        // closed; left in the store, every later question waited for a key.
+        self.mode_guards
+            .purge_buffer(lattice_protocol::ids::BufferId::new(prev.0 as u64));
         self.buffer_locals.remove(&prev);
         self.resolved_options.remove(&prev);
         self.on_disk_fingerprints.remove(&prev);

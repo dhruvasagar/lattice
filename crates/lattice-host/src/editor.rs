@@ -217,6 +217,19 @@ pub enum ProgrammaticAccept {
     ReturnText(tokio::sync::oneshot::Sender<String>),
 }
 
+/// The per-pane refinement cache: the `HunkIndex` it was built from (held,
+/// so pointer identity cannot be reused by a later session) and the
+/// refinement by absolute line.
+pub type DiffRefineCache = std::sync::Mutex<
+    std::collections::HashMap<
+        lattice_core::BufferId,
+        (
+            std::sync::Arc<lattice_diff::HunkIndex>,
+            std::sync::Arc<[Vec<lattice_cells::RefineSpan>]>,
+        ),
+    >,
+>;
+
 /// I4 (openDiff) D-fix.1: the pane/buffer bookkeeping needed to tear a
 /// programmatic side-by-side diff down cleanly — close the two transient diff
 /// panes and return focus to the pane the `openDiff` was launched from (the
@@ -2076,6 +2089,11 @@ pub struct Editor {
     /// lockstep with `programmatic_diff_accept_paths`.
     pub programmatic_diff_panes:
         std::collections::HashMap<lattice_core::BufferId, ProgrammaticDiffPanes>,
+    /// Intra-line refinement for each side-by-side diff pane, by absolute
+    /// line, built once per published `HunkIndex` and reused by every
+    /// publish until the hunks change. See
+    /// [`Editor::diff_refinement_for`](crate::editor::Editor).
+    pub diff_refine_cache: DiffRefineCache,
     /// D-fix.5: per diff-participant buffer, the last `HunkIndex`
     /// revision its folds were recomputed against. `refresh_diff_folds`
     /// (run each tick on the diff-publish wake) consults this to skip

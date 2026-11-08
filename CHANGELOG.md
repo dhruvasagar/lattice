@@ -125,6 +125,15 @@
   (`:set messages.filter=info,rmcp=debug` to see it).
 
 ### Fixed
+- **A proposed edit from Claude Code shows what changed, and what to do
+  about it.** The review diff now marks the changed words inside a line,
+  added on the right and removed on the left. Before, a one-word edit
+  showed as two near-identical lines with the same faint tint, so it
+  looked as if Claude had just opened the file. Each pane also has a
+  header (`README.md as it is`, and `proposed: :diff-accept keeps,
+  :diff-reject discards`), and the echo area says that Claude is waiting
+  for one of the two. The same word marks apply to any side-by-side diff
+  (`:diffsplit`).
 - **`<Tab>` completes after a range on the `:` line.** `:'<,'>cl<Tab>`
   (what Visual mode's `:` gives you), `:%sor<Tab>` and `:5,$wr<Tab>`
   complete the command as they would without the range, and keep the

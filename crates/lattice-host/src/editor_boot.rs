@@ -2665,6 +2665,7 @@ impl Editor {
             pending_programmatic_diff_rx: Some(programmatic_diff_rx),
             programmatic_diff_accept_paths: std::collections::HashMap::new(),
             programmatic_diff_panes: std::collections::HashMap::new(),
+            diff_refine_cache: std::sync::Mutex::default(),
             // D-fix.5: empty until the first diff-fold refresh observes a
             // session's published revision.
             diff_fold_seen_revisions: std::collections::HashMap::new(),

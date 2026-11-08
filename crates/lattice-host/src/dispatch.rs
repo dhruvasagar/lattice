@@ -5433,6 +5433,81 @@ impl Editor {
         std::sync::Arc::new(map)
     }
 
+    /// Intra-line refinement for `buffer_id` when it is a pane of a live
+    /// diff session: the proposed (primary) side marks the bytes that were
+    /// added, the baseline side the bytes that were removed, indexed by
+    /// absolute line as the cells build reads it. `None` for a buffer in no
+    /// session. The second value is the hunk revision, for the cells
+    /// version.
+    ///
+    /// Built once per published `HunkIndex` and cached (keyed on that
+    /// `Arc`, held, so a later session cannot alias it), because a pane's
+    /// cells input is built on every publish and the dense vector is as
+    /// long as the last refined line.
+    pub(crate) fn diff_refinement_for(
+        &self,
+        buffer_id: BufferId,
+    ) -> Option<(std::sync::Arc<[Vec<lattice_cells::RefineSpan>]>, u64)> {
+        use lattice_cells::{RefineKind, RefineSpan};
+        let mut cache = self
+            .diff_refine_cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let found = self
+            .diff_subsystem
+            .iter_sessions()
+            .into_iter()
+            .find_map(|session| {
+                let primary = session.buffer_id();
+                if primary == buffer_id {
+                    return Some((session.current_hunks(), RefineKind::Added));
+                }
+                let desc = self.diff_subsystem.lookup_descriptor(primary)?;
+                (desc.watch.first() == Some(&buffer_id) && buffer_id != primary)
+                    .then(|| (session.current_hunks(), RefineKind::Removed))
+            });
+        let Some((hunks, kind)) = found else {
+            cache.remove(&buffer_id);
+            return None;
+        };
+        let revision = hunks.revision;
+        if let Some((built_from, refine)) = cache.get(&buffer_id)
+            && std::sync::Arc::ptr_eq(built_from, &hunks)
+        {
+            return Some((refine.clone(), revision));
+        }
+        let mut by_line: Vec<Vec<RefineSpan>> = Vec::new();
+        for hunk in &hunks.hunks {
+            let (slot, lines) = match kind {
+                RefineKind::Added => (1, &hunk.refine.added),
+                RefineKind::Removed => (0, &hunk.refine.removed),
+            };
+            let Some(range) = hunk.ranges.get(slot) else {
+                continue;
+            };
+            for (i, ranges) in lines.iter().enumerate() {
+                if ranges.is_empty() {
+                    continue;
+                }
+                let line = range.start as usize + i;
+                if by_line.len() <= line {
+                    by_line.resize_with(line + 1, Vec::new);
+                }
+                by_line[line] = ranges
+                    .iter()
+                    .map(|r| RefineSpan {
+                        start: r.start,
+                        end: r.end,
+                        kind,
+                    })
+                    .collect();
+            }
+        }
+        let refine: std::sync::Arc<[Vec<RefineSpan>]> = std::sync::Arc::from(by_line);
+        cache.insert(buffer_id, (hunks, refine.clone()));
+        Some((refine, revision))
+    }
+
     /// ML.3b: refresh the `diff` modeline element's content from the
     /// active document's session sign map. `Scope::Global`, so the
     /// renderer paints it on the active pane only (modeline.md §7); the
@@ -5796,8 +5871,11 @@ impl Editor {
             let buf = self.pane_tree.active().buffer_id;
             self.activate_buffer(buf);
         }
-        // Drop the throwaway baseline/proposed buffers from the registry.
+        // Drop the throwaway baseline/proposed buffers from the registry,
+        // with the review headerline on the proposed side.
         for buf in &info.diff_buffers {
+            self.virtual_row_providers
+                .unregister(*buf, REVIEW_HEADERLINE_PROVIDER_ID);
             self.buffers.remove(*buf);
         }
     }
@@ -7434,6 +7512,7 @@ impl Editor {
         };
         // A returned-text diff's right side carries no path, so `:w` in it
         // cannot write the file; it is named instead.
+        let saves = matches!(on_accept, lattice_diff::OnAccept::Save);
         let (accept, right_path, right_name) = match on_accept {
             lattice_diff::OnAccept::Save => (
                 crate::editor::ProgrammaticAccept::Save(new_file_path.clone()),
@@ -7575,7 +7654,31 @@ impl Editor {
             drop(response);
         }
 
-        self.set_message(EchoLevel::Info, format!("openDiff: {tab_name}"));
+        // Say what this is and what ends it. Two panes that look like the
+        // file read as "it opened the file", and nothing else on screen told
+        // the user that a reply is waiting on `:diff-accept` / `:diff-reject`.
+        // The headerline stays on the proposed pane until the review ends;
+        // the echo says it once.
+        // Both panes get one, so the rows stay aligned side by side: the
+        // baseline says what it is, the proposed side what to do. Short
+        // enough for a third of a terminal; the echo has the full sentence.
+        let file = display_file_name(&old_file_path);
+        for (buffer, text) in [
+            (left_id, format!("{file} as it is")),
+            (right_id, review_headerline(saves)),
+        ] {
+            self.virtual_row_providers.register(
+                buffer,
+                std::sync::Arc::new(lattice_cells::HeaderlineProvider::new(
+                    REVIEW_HEADERLINE_PROVIDER_ID,
+                    std::sync::Arc::new(ReviewHeaderline(text)),
+                )),
+            );
+        }
+        self.set_message(
+            EchoLevel::Info,
+            review_prompt(&tab_name, &new_file_path, saves),
+        );
         signals
     }
 
@@ -18801,15 +18904,25 @@ impl Editor {
 
         // DR.3: intra-line refinement, from the same drain that set the
         // spans above. Empty for every buffer without it, so the row
-        // build is byte-identical.
-        let extra_refine_vec: Vec<Vec<lattice_cells::RefineSpan>> = self
-            .buffer_locals
-            .get(&buffer_id)
-            .and_then(|l| l.get::<crate::modes::ExtraRefinement>())
-            .map(|e| e.0.clone())
-            .unwrap_or_default();
-        let extra_refine: Arc<[Vec<lattice_cells::RefineSpan>]> =
-            Arc::from(extra_refine_vec.into_boxed_slice());
+        // build is byte-identical. A side-by-side diff pane takes its
+        // side of the session's hunks instead (DR.4 computed both sides;
+        // until now neither pane drew either), and its revision joins the
+        // version so a recompute that lands after the edit repaints.
+        let (extra_refine, refine_ver): (Arc<[Vec<lattice_cells::RefineSpan>]>, u64) =
+            match self.diff_refinement_for(buffer_id) {
+                Some(found) => found,
+                None => (
+                    Arc::from(
+                        self.buffer_locals
+                            .get(&buffer_id)
+                            .and_then(|l| l.get::<crate::modes::ExtraRefinement>())
+                            .map(|e| e.0.clone())
+                            .unwrap_or_default()
+                            .into_boxed_slice(),
+                    ),
+                    0,
+                ),
+            };
 
         // Folds. Active buffer: live mutable slot
         // (`Editor::folds`). Non-active: per-buffer entry on
@@ -18892,6 +19005,9 @@ impl Editor {
                     // invalidate the matrix cache even when no other
                     // axis moved. Constant 0 when absent.
                     .wrapping_add(extra_spans_ver)
+                    // A diff pane's refinement moves with its hunks, which
+                    // can recompute after the text settled. 0 otherwise.
+                    .wrapping_add(refine_ver)
             },
             inlay_hints: inlay_version,
             folds: if foldenable { folds_hash } else { !folds_hash },
@@ -45838,6 +45954,58 @@ fn format_spec_modifiers(m: &lattice_theme::ModifierSet) -> Vec<String> {
 /// (with same-as-last dedup); over-cap entries drain from the front.
 const COMMAND_HISTORY_CAP: usize = 100;
 
+/// The headerline a review diff carries on its proposed pane.
+const REVIEW_HEADERLINE_PROVIDER_ID: lattice_cells::ProviderId = 0x7265_7669_6577_686c; // "reviewhl"
+
+/// What a review diff is and the two commands that end it, in the words
+/// the user acts on: the producer's label (`✻ [Claude Code] README.md`),
+/// then what Accept does with the right side.
+fn review_prompt(tab_name: &str, path: &std::path::Path, saves: bool) -> String {
+    let accept = if saves {
+        format!("writes it to {}", display_file_name(path))
+    } else {
+        "applies it".to_string()
+    };
+    format!(
+        "{tab_name}: proposed change, waiting for you \u{b7} :diff-accept {accept} \u{b7} :diff-reject discards it"
+    )
+}
+
+/// The proposed pane's headerline: the two commands, most important first,
+/// so a narrow pane cuts the least useful words.
+fn review_headerline(saves: bool) -> String {
+    let accept = if saves { "keeps" } else { "applies" };
+    format!("proposed: :diff-accept {accept}, :diff-reject discards")
+}
+
+fn display_file_name(path: &std::path::Path) -> String {
+    path.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.display().to_string())
+}
+
+/// A fixed one-line headerline: the review prompt, for as long as the
+/// diff is open. Its text never changes, so its version never moves.
+struct ReviewHeaderline(String);
+
+impl lattice_cells::Headerline for ReviewHeaderline {
+    fn version(&self) -> u64 {
+        1
+    }
+
+    fn render(&self) -> Option<lattice_cells::HeaderlineRow> {
+        let cells: Vec<lattice_cells::Cell> = self
+            .0
+            .chars()
+            .map(|ch| lattice_cells::Cell::with_codepoint(ch as u32))
+            .collect();
+        Some(lattice_cells::HeaderlineRow {
+            cells: cells.into(),
+            bg: None,
+        })
+    }
+}
+
 /// 5.5.G.23.cmdline: longest common prefix across a candidate set.
 /// Compares the `text` field byte-by-byte and stops at the first
 /// divergence. Empty input -> empty string. Single-candidate input
@@ -50669,6 +50837,102 @@ mod tests {
         );
         assert!(text_rx.await.is_err(), "no text on a reject");
         assert!(editor.programmatic_diff_accept_paths.is_empty());
+    }
+
+    /// Open a review diff of `old` → `new`; the (baseline, proposed) ids.
+    fn open_review(editor: &mut Editor, name: &str, old: &str, new: &str) -> (BufferId, BufferId) {
+        let path = std::env::temp_dir().join(name);
+        std::fs::write(&path, old).expect("write baseline");
+        editor.config.init_from_linkme();
+        // The verdict is not under test; a dropped receiver makes the
+        // teardown's send a no-op.
+        let (tx, _rx) = tokio::sync::oneshot::channel::<crate::diff::subsystem::DiffOutcome>();
+        editor.open_programmatic_diff(lattice_diff::ProgrammaticDiffRequest {
+            old_file_path: path.clone(),
+            new_file_path: path,
+            new_contents: new.to_string(),
+            tab_name: "✻ [Claude Code] f".to_string(),
+            origin_session: 0,
+            baseline: lattice_diff::DiffBaseline::Disk,
+            on_accept: lattice_diff::OnAccept::Save,
+            response: tx,
+        });
+        let proposed = editor.active_pane_buffer_id();
+        let baseline = editor.pane_tree.leaves()[1].buffer_id;
+        (baseline, proposed)
+    }
+
+    /// A review diff marks the words that changed, on each side: the
+    /// proposed pane what was added, the baseline what was removed. A
+    /// one-word change otherwise reads as two copies of the same line.
+    #[tokio::test]
+    async fn a_review_diff_marks_the_changed_words_on_each_side() {
+        use lattice_cells::RefineKind;
+        let mut editor = Editor::default();
+        let (baseline, proposed) = open_review(
+            &mut editor,
+            "lattice-review-refine.txt",
+            "keep\nalpha beta delta\nkeep\n",
+            "keep\nalpha gamma delta\nkeep\n",
+        );
+        let (added, _) = editor
+            .diff_refinement_for(proposed)
+            .expect("proposed refines");
+        let (removed, _) = editor
+            .diff_refinement_for(baseline)
+            .expect("baseline refines");
+        let spans = |r: &[Vec<lattice_cells::RefineSpan>], line: usize| {
+            r.get(line)
+                .map(|v| {
+                    v.iter()
+                        .map(|s| (s.start, s.end, s.kind))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default()
+        };
+        assert_eq!(spans(&added, 1), [(6, 11, RefineKind::Added)], "`gamma`");
+        assert_eq!(spans(&removed, 1), [(6, 10, RefineKind::Removed)], "`beta`");
+        assert!(spans(&added, 0).is_empty() && spans(&added, 2).is_empty());
+        // Cached against the published hunks: a second publish reuses it.
+        let (again, _) = editor.diff_refinement_for(proposed).expect("still refines");
+        assert!(std::sync::Arc::ptr_eq(&added, &again));
+        // A buffer in no diff has none, and leaves nothing cached.
+        let outside = editor.pane_tree.leaves()[0].buffer_id;
+        assert!(editor.diff_refinement_for(outside).is_none());
+    }
+
+    /// A review diff says what it is and what ends it: a headerline on
+    /// each pane (both, so the sides stay row-aligned) and an echo naming
+    /// both commands. Ending the review takes the headerlines with it.
+    #[tokio::test]
+    async fn a_review_diff_says_what_ends_it() {
+        let mut editor = Editor::default();
+        let (baseline, proposed) =
+            open_review(&mut editor, "lattice-review-prompt.txt", "a\n", "b\n");
+        let has_header = |e: &Editor, b: BufferId| {
+            e.virtual_row_providers
+                .snapshot(b)
+                .iter()
+                .any(|p| p.id() == REVIEW_HEADERLINE_PROVIDER_ID)
+        };
+        assert!(has_header(&editor, baseline) && has_header(&editor, proposed));
+        let echo = editor
+            .last_message
+            .as_ref()
+            .map(|m| m.text.clone())
+            .unwrap_or_default();
+        for needle in [
+            ":diff-accept",
+            ":diff-reject",
+            "✻ [Claude Code] f",
+            "waiting for you",
+        ] {
+            assert!(echo.contains(needle), "{needle} in {echo:?}");
+        }
+        assert!(review_headerline(true).contains(":diff-accept keeps"));
+        assert!(review_headerline(false).contains(":diff-accept applies"));
+        editor.do_diff_reject();
+        assert!(!has_header(&editor, baseline) && !has_header(&editor, proposed));
     }
 
     #[tokio::test]

@@ -105,6 +105,9 @@
   `.env`, `*.pem`, `*.key` and SSH keys.
 
 ### Fixed
+- **`:claude-send` works from Visual mode.** `:'<,'>claude-send` (or any
+  line range) mentions those lines of the current file instead of
+  failing with "E481: No range allowed".
 - **`/ide` connects to lattice again.** Current `claude` asks for the `mcp`
   WebSocket subprotocol and drops a connection whose handshake does not
   name it ("Failed to connect to Lattice"); lattice now answers with it.

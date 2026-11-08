@@ -108,13 +108,19 @@ pub fn did_change_active_editor_frame(path: Option<&Path>) -> String {
 pub fn at_mentioned_frame(selections: &SelectionSet, path: Option<&Path>) -> String {
     let sel = selections.primary();
     let (start, end) = ordered(sel.anchor, sel.head);
+    at_mentioned_lines_frame(path, start.line, end.line)
+}
+
+/// The `at_mentioned` frame for lines `start..=end` (0-based), as a ranged
+/// `:'<,'>claude-send` names them.
+pub fn at_mentioned_lines_frame(path: Option<&Path>, start: u32, end: u32) -> String {
     json!({
         "jsonrpc": "2.0",
         "method": "at_mentioned",
         "params": {
             "filePath": path.map(display),
-            "lineStart": start.line,
-            "lineEnd": end.line,
+            "lineStart": start,
+            "lineEnd": end,
         }
     })
     .to_string()

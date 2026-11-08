@@ -125,6 +125,10 @@
   (`:set messages.filter=info,rmcp=debug` to see it).
 
 ### Fixed
+- **The Claude Code lock file is readable by you alone.** `~/.claude/ide/<port>.lock`
+  holds the token that lets a client drive the editor, and was written with
+  the default permissions, so other users on the machine could read it. It is
+  now owner-only (`0600`), including when an old lock file is reused.
 - **An LLM chat's file tools cannot leave the project through a linked
   directory.** A new file under a symlinked directory was checked where it
   was typed, not where the link points, so `link/new.txt` with `link`

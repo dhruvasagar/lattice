@@ -59,13 +59,34 @@ impl Lockfile {
         fs::create_dir_all(dir)?;
         let path = dir.join(format!("{port}.lock"));
         let json = serde_json::to_vec_pretty(contents)?;
-        fs::write(&path, json)?;
+        write_private(&path, &json)?;
         Ok(Self { path })
     }
 
     /// Path of the written lockfile.
     pub fn path(&self) -> &Path {
         &self.path
+    }
+}
+
+/// Write `bytes` readable by the owner only: the lockfile carries the
+/// `authToken` that lets a client drive the editor. A stale file left by an
+/// earlier run keeps whatever mode it had, so the mode is set again.
+fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write as _;
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
+        options.mode(0o600);
+        let mut file = options.open(path)?;
+        file.set_permissions(fs::Permissions::from_mode(0o600))?;
+        file.write_all(bytes)
+    }
+    #[cfg(not(unix))]
+    {
+        options.open(path)?.write_all(bytes)
     }
 }
 
@@ -118,6 +139,23 @@ mod tests {
         assert!(text.contains("\"authToken\""));
         assert!(text.contains("\"workspaceFolders\""));
 
+        drop(lock);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn only_the_owner_can_read_the_token() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = unique_dir("mode");
+        std::fs::create_dir_all(&dir).unwrap();
+        // A stale lock from an earlier run, world-readable.
+        let stale = dir.join("34567.lock");
+        std::fs::write(&stale, b"{}").unwrap();
+        std::fs::set_permissions(&stale, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let lock = Lockfile::write(&dir, 34567, &sample("token")).expect("write");
+        let mode = std::fs::metadata(lock.path()).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600, "mode {mode:o}");
         drop(lock);
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -71,6 +71,24 @@ target rather than just a slower number.
 
 ---
 
+## LL.19 — forking a chat (2026-11-08)
+
+`gb` finds the turn under the cursor by laying the transcript out once (the same pass `gf`
+makes), then `fork_at` copies the turns before the question. Both run on the editor thread,
+once per chord. `llm_fork` forks at the middle question of a chat of N exchanges, each with
+reasoning, a tool call and a fenced answer (bench profile):
+
+| Bench | 20 | 200 | 1000 |
+|---|---|---|---|
+| `llm_fork/turn_at_line` | 7.6 µs | 70 µs | 348 µs |
+| `llm_fork/fork_at` | 0.92 µs | 15 µs | 75 µs |
+
+Linear in the transcript, about 0.35 µs per exchange to lay out. A thousand-exchange chat
+forks in under half a millisecond, a twentieth of a 120 Hz frame, and only when `gb` is
+pressed: nothing here runs per keystroke.
+
+---
+
 ## LL.18 — the permission popup's per-tick scan (2026-11-08)
 
 The `*ai-permission*` popup opens on its own when a request is waiting, so its tick asks every

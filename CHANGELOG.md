@@ -3,6 +3,14 @@
 ## Unreleased
 
 ### Added
+- **Fork an LLM chat, or retry its last question.** `gb` on a past
+  question in a chat (or `:llm-fork`) opens a new chat with everything
+  before it and the question in the prompt, ready to edit; the original is
+  left as it was. `:llm-retry` sends the last question again in place of
+  its answer, with the current settings, so `:setlocal llm.model=…` then
+  `:llm-retry` tries another model. Retry is refused while a reply is
+  coming. Moving to another provider leaves out the reasoning only the
+  first could check, and says so once.
 - **LLM chats can run commands, asking first.** With `lattice.exec` in
   `llm.tools`, a model may call `run_command`. Each command opens the
   permission menu showing what will run: allow once, allow for this chat,

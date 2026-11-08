@@ -567,3 +567,35 @@ async fn the_menu_sets_the_model_from_the_keyboard() {
         "the typed value became the session's model"
     );
 }
+
+/// LL.19: `gb` on a past question opens a new chat holding the history before
+/// it, with the question already in the prompt, and leaves this chat alone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gb_forks_a_chat_with_the_question_in_its_prompt() {
+    let addr = serve(Duration::ZERO);
+    let mut editor = Editor::boot(CoreDocument::from_text("scratch\n"));
+    chats(&editor).set_config(config_for(addr));
+    let (id, _session, _) = chat_with_history(&mut editor).await;
+    let before = text_of(&editor, id);
+    let q_line = before.lines().position(|l| l == "q").unwrap() as u32;
+
+    editor.modal = lattice_grammar::ModalState::Normal;
+    editor.cursor = Position::new(q_line, 0);
+    let mut partial: Vec<KeyChord> = Vec::new();
+    for c in parse_chord_sequence("gb").unwrap() {
+        editor.dispatch_chord(c, &mut partial);
+    }
+    let fork = editor.active_pane_buffer_id();
+    assert_ne!(fork, id, "the fork opens in its own buffer");
+    // Forked at the first question: no history, the question to edit.
+    assert!(
+        settle(&mut editor, |e| text_of(e, fork) == "> q").await,
+        "{:?}",
+        text_of(&editor, fork)
+    );
+    assert_eq!(text_of(&editor, id), before, "the original is untouched");
+    assert!(
+        chats(&editor).for_buffer(fork).is_some(),
+        "a chat, bound to its buffer"
+    );
+}

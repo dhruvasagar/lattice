@@ -640,9 +640,19 @@ capped; `:opencode-acp` permissions unchanged; a project cannot enable exec.
 
 ## Session extras
 
-### LL.19 — Fork and retry 📝
+### LL.19 — Fork and retry ✅
 
 **Files:** `src/llm/modes/chat.rs`, `src/conversation/model.rs`, `:llm-retry`.
+
+**Landed.** `Conversation::fork_at(turn)` (the prefix before the question, its reasoning data
+and tool-call arguments, and the question's text) and `drop_last_reply`;
+`projection::turn_at_line` (one layout pass, as `gf`'s `source_at_line`); `LlmChats::fork` /
+`retry`; `gb` and `:llm-fork` share `fork_effect`; `:llm-retry`. `TranscriptBinding.prompt`
+seeds the fork's prompt in the seeding replace, taken once from `ChatSession::prompt_seed`
+so a reopened buffer does not refill it. `prepare` names another provider's reasoning once
+per chat (`ProviderKind::reasoning_tag`). Tests: `tests/llm_fork_retry.rs` (5),
+`lattice-host/tests/llm_chat_buffer.rs::gb_forks_a_chat_with_the_question_in_its_prompt`,
+model and projection unit tests. Bench: `llm_fork`.
 
 **Tests:** fork copies history to that turn, with the prompt ready, and leaves the original untouched,
 including its tool calls; retry uses current settings; switching provider drops reasoning data and says so;

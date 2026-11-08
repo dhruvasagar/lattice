@@ -156,6 +156,9 @@ pub struct ChatSession {
     /// Tools the user allowed "for this chat" when asked (LL.18). Like trust,
     /// never saved, never copied, and gone when the chat closes.
     allowed_tools: Arc<Mutex<HashSet<String>>>,
+    /// The text a fork's prompt starts with (LL.19), taken by the first
+    /// activation so a reopened buffer does not refill it.
+    prompt_seed: Mutex<Option<String>>,
 }
 
 /// Where llm sessions' diff tags start (see [`ChatSession::origin`]).
@@ -167,6 +170,14 @@ impl ChatSession {
     /// The tag this session's diffs carry.
     pub fn origin(&self) -> u64 {
         self.origin
+    }
+
+    /// The text this chat's prompt starts with, once (LL.19's fork).
+    pub fn take_prompt_seed(&self) -> Option<String> {
+        self.prompt_seed
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
     }
 
     /// Whether this session's edits apply without a review.
@@ -264,6 +275,30 @@ impl ChatSession {
             .unwrap_or_else(|e| e.into_inner())
             .insert(what)
     }
+}
+
+/// The providers whose reasoning data `messages` carry but a provider with
+/// `tag` would not accept (LL.19: a retry on another model).
+fn foreign_reasoning(
+    messages: &[Message],
+    tag: Option<&str>,
+) -> std::collections::BTreeSet<String> {
+    messages
+        .iter()
+        .filter_map(|m| match m {
+            Message::Assistant(parts) => Some(parts),
+            _ => None,
+        })
+        .flatten()
+        .filter_map(|p| match p {
+            super::AssistantPart::Reasoning { data: Some(d), .. }
+                if Some(d.provider.as_str()) != tag =>
+            {
+                Some(d.provider.clone())
+            }
+            _ => None,
+        })
+        .collect()
 }
 
 /// A request ready to send but for its key ([`LlmChats::prepare`]).
@@ -1059,6 +1094,7 @@ impl LlmChats {
             origin: ORIGIN_BASE + NEXT_ORIGIN.fetch_add(1, Ordering::Relaxed),
             trusted: Arc::new(AtomicBool::new(false)),
             allowed_tools: Arc::default(),
+            prompt_seed: Mutex::new(None),
         });
         {
             let mut reg = self.reg();
@@ -1289,6 +1325,61 @@ impl LlmChats {
         &self.requests
     }
 
+    /// LL.19: a new chat holding `buffer`'s history before the question at
+    /// `turn`, with that question in its prompt, ready to edit and send. It
+    /// starts from `buffer`'s settings and context, like any chat made from a
+    /// buffer; trust and "allow for this chat" are not copied. The original
+    /// chat is not touched.
+    pub fn fork(&self, buffer: BufferId, turn: usize) -> Result<Arc<ChatSession>, String> {
+        let source = self
+            .for_buffer(buffer)
+            .ok_or_else(|| "llm: not a chat buffer".to_string())?;
+        let (history, prompt) = source
+            .store
+            .snapshot()
+            .fork_at(turn)
+            .ok_or_else(|| "llm: no question here to fork from".to_string())?;
+        let fork = self.create_with(None, Some(buffer));
+        let label = fork.store.snapshot().assistant_label;
+        fork.store.mutate(&fork.key, |c| {
+            *c = Conversation {
+                assistant_label: label.or(history.assistant_label.clone()),
+                error: c.error.take(),
+                ..history
+            };
+        });
+        *fork.prompt_seed.lock().unwrap_or_else(|e| e.into_inner()) = Some(prompt);
+        Ok(fork)
+    }
+
+    /// LL.19: send the last question again, with the settings as they are
+    /// now, in place of its reply. Refused while a reply is still coming:
+    /// stopping it is a separate decision.
+    pub fn retry(self: &Arc<Self>, session: &Arc<ChatSession>) -> Result<(), String> {
+        {
+            let mut turn = session.turn();
+            if turn.busy {
+                return Err("llm: a reply is still coming; stop it (<C-c>) before retrying".into());
+            }
+            let mut retried = false;
+            session.store.mutate(&session.key, |c| {
+                if c.drop_last_reply() {
+                    c.error = None;
+                    c.status = SessionStatus::Thinking;
+                    retried = true;
+                }
+            });
+            if !retried {
+                return Err("llm: nothing to retry yet".into());
+            }
+            turn.busy = true;
+            turn.interrupted = false;
+            turn.current = RequestOverrides::default();
+        }
+        self.start_request(session);
+        Ok(())
+    }
+
     pub fn interrupt(&self, session: &Arc<ChatSession>) {
         let request = {
             let mut turn = session.turn();
@@ -1480,6 +1571,19 @@ impl LlmChats {
             .values
             .messages
             .apply(&history, |m| matches!(m, Message::User(_)));
+        // A provider can verify only its own reasoning, so another's is left
+        // out of the request (the adapter drops it); say so once per chat.
+        for from in foreign_reasoning(&messages, chosen.provider.kind.reasoning_tag()) {
+            if session.first_report(format!("reasoning\u{0}{from}\u{0}{}", chosen.provider.name)) {
+                tracing::info!(
+                    target: "lattice::llm",
+                    "llm: reasoning written by {from} is not sent to {} ({}): only the \
+                     provider that wrote it can check it",
+                    chosen.provider.name,
+                    chosen.model
+                );
+            }
+        }
         let items = session
             .context
             .lock()
@@ -1910,6 +2014,36 @@ mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
     use crate::llm::RequestRegistry;
+
+    /// LL.19: reasoning another provider wrote is named, once per provider;
+    /// the provider's own, and reasoning with no data, are not.
+    #[test]
+    fn foreign_reasoning_names_the_providers_that_cannot_be_checked() {
+        let part = |provider: Option<&str>| super::super::AssistantPart::Reasoning {
+            text: "t".into(),
+            data: provider.map(|p| super::super::ReasoningData {
+                provider: p.into(),
+                data: "sig".into(),
+            }),
+        };
+        let messages = vec![
+            Message::User("q".into()),
+            Message::Assistant(vec![part(Some("anthropic")), part(None)]),
+            Message::Assistant(vec![part(Some("anthropic")), part(Some("gemini"))]),
+        ];
+        assert_eq!(
+            foreign_reasoning(&messages, None)
+                .into_iter()
+                .collect::<Vec<_>>(),
+            ["anthropic", "gemini"]
+        );
+        assert_eq!(
+            foreign_reasoning(&messages, Some("anthropic"))
+                .into_iter()
+                .collect::<Vec<_>>(),
+            ["gemini"]
+        );
+    }
 
     #[tokio::test]
     async fn the_early_ended_cache_evicts_the_oldest_and_keeps_the_rest() {

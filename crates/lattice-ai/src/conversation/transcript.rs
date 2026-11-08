@@ -336,6 +336,9 @@ pub struct TranscriptBinding<'a> {
     /// How the transcript is projected. `ProjectionSource::default()` is the
     /// ACP display.
     pub projection: ProjectionSource,
+    /// Text the prompt starts with, written in the same replace that seeds
+    /// the buffer: a forked chat's question, ready to edit (LL.19).
+    pub prompt: Option<String>,
 }
 
 /// The activation guard: the `ConversationUpdated` subscription plus this
@@ -404,6 +407,7 @@ pub async fn bind(b: TranscriptBinding<'_>) -> TranscriptGuard {
         only_session,
         runtime,
         projection,
+        prompt,
     } = b;
 
     // Sync the buffer to the current snapshot with a single full replace
@@ -424,7 +428,11 @@ pub async fn bind(b: TranscriptBinding<'_>) -> TranscriptGuard {
     });
     let mut last = seed_text;
     let mut last_submissions = seed.submission_count();
-    full_replace(&handle, &format!("{last}{PROMPT_MARKER}")).await;
+    full_replace(
+        &handle,
+        &format!("{last}{PROMPT_MARKER}{}", prompt.unwrap_or_default()),
+    )
+    .await;
 
     let generation = anchors.seed(buffer_id, prompt_anchor_line(&last));
 

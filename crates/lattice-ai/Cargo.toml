@@ -77,6 +77,7 @@ tracing = { workspace = true }
 tokio = { workspace = true, features = ["test-util", "time", "macros", "rt", "net", "io-util"] }
 futures = { workspace = true }
 criterion = { workspace = true }
+tracing-subscriber = { workspace = true }
 
 [[bench]]
 name = "llm_decode"

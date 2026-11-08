@@ -21,5 +21,5 @@ pub use model::{
 };
 pub use projection::{
     FoldDisplay, ProjectionOptions, ProjectionSource, project_conversation,
-    project_conversation_with, render_conversation, render_conversation_with,
+    project_conversation_with, render_conversation, render_conversation_with, turn_at_line,
 };

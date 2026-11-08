@@ -152,12 +152,24 @@ pub fn source_at_line(
         .map(|(_, _, link)| link)
 }
 
+/// LL.19: the index of the turn whose text `line` falls in, as `opts` lays the
+/// transcript out. `None` on the prompt and anything below the transcript.
+pub fn turn_at_line(conv: &Conversation, opts: &ProjectionOptions, line: u32) -> Option<usize> {
+    let laid = layout(conv, opts);
+    if line >= laid.text.matches('\n').count() as u32 {
+        return None;
+    }
+    laid.turn_starts.iter().rposition(|&start| start <= line)
+}
+
 /// One layout pass: the text, its folds, and the line span of each linked
 /// source block.
 struct Layout {
     text: String,
     folds: Vec<ConversationFold>,
     sources: Vec<(u32, u32, SourceLink)>,
+    /// The line each turn's label starts on, in turn order.
+    turn_starts: Vec<u32>,
 }
 
 fn layout(conv: &Conversation, opts: &ProjectionOptions) -> Layout {
@@ -173,7 +185,9 @@ fn layout(conv: &Conversation, opts: &ProjectionOptions) -> Layout {
     // of whether it is foldable or shown, so a given block's ordinal stays
     // stable.
     let mut reasoning_ordinal: usize = 0;
+    let mut turn_starts: Vec<u32> = Vec::with_capacity(conv.turns.len());
     for turn in &conv.turns {
+        turn_starts.push(s.line);
         let who = match turn.role {
             Role::User => "you",
             Role::Assistant => conv.assistant_label(),
@@ -325,6 +339,7 @@ fn layout(conv: &Conversation, opts: &ProjectionOptions) -> Layout {
         text: s.out,
         folds,
         sources,
+        turn_starts,
     }
 }
 
@@ -564,6 +579,32 @@ mod tests {
 
     use crate::conversation::model::SourceLink;
     use crate::conversation::tool_fold::ConversationFoldKind;
+
+    /// LL.19: every line of a turn, its label included, names that turn;
+    /// past the transcript (the prompt) names none.
+    #[test]
+    fn turn_at_line_names_the_turn_a_line_belongs_to() {
+        let conv = Conversation {
+            turns: vec![
+                text_turn(Role::User, "one"),
+                text_turn(Role::Assistant, "two\nlines"),
+                text_turn(Role::User, "three"),
+            ],
+            ..Default::default()
+        };
+        let opts = ProjectionOptions::default();
+        let text = render_conversation_with(&conv, &opts);
+        let lines: Vec<&str> = text.lines().collect();
+        let line_of = |needle: &str| lines.iter().position(|l| l.contains(needle)).unwrap() as u32;
+        assert_eq!(turn_at_line(&conv, &opts, 0), Some(0));
+        assert_eq!(turn_at_line(&conv, &opts, line_of("one")), Some(0));
+        assert_eq!(turn_at_line(&conv, &opts, line_of("two")), Some(1));
+        assert_eq!(turn_at_line(&conv, &opts, line_of("lines")), Some(1));
+        assert_eq!(turn_at_line(&conv, &opts, line_of("three")), Some(2));
+        let past = text.matches('\n').count() as u32;
+        assert_eq!(turn_at_line(&conv, &opts, past), None, "the prompt line");
+        assert_eq!(turn_at_line(&Conversation::default(), &opts, 0), None);
+    }
 
     #[test]
     fn renders_turn_headers_and_blocks() {

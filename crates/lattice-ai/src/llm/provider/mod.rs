@@ -4,6 +4,7 @@ mod anthropic;
 mod openai;
 
 pub use anthropic::AnthropicProvider;
+pub(crate) use anthropic::PROVIDER_TAG as ANTHROPIC_REASONING_TAG;
 pub use openai::OpenAiProvider;
 
 use super::{ApiKey, HttpRequest, LlmRequest, ProviderError, StreamEvent};

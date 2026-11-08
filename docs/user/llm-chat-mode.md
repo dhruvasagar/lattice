@@ -1,5 +1,5 @@
 ---
-summary: "llm-chat-mode: a chat with a language model in its own buffer — a read-only transcript with an editable prompt. CR sends, C-j newlines, C-c interrupts, gq closes."
+summary: "llm-chat-mode: a chat with a language model in its own buffer — a read-only transcript with an editable prompt. CR sends, C-j newlines, C-c interrupts, gb forks, gq closes; :llm-retry asks again."
 related: [llm, ai, chat, model]
 ---
 
@@ -30,6 +30,7 @@ behind a reply.
 | `<C-c>` | Insert | Interrupt the reply |
 | `gq` | Normal | Close the chat |
 | `gf` | Normal | On text an ask sent, go back to where it came from |
+| `gb` | Normal | Fork a new chat from the question under the cursor |
 | `<C-t>` | Normal, Insert | Trust this chat's edits (apply without a diff); again to stop |
 
 `<CR>` sends, which is why a newline needs its own key.
@@ -45,6 +46,30 @@ sent it. The first reply is never split by a later question.
 If a reply fails instead, the error is shown and the queued prompts wait: the next
 prompt you send resumes them in order. The failed question is not sent to the
 model again.
+
+## Forking and retrying
+
+The history cannot be edited, so going back is done by **forking**. `gb`
+on a past question (or on the answer to it) opens a new chat holding
+everything before that question, with the question in its prompt, ready to
+edit and send. `:llm-fork` does the same. The chat you forked from is left
+exactly as it was, so you can compare where the two go. The fork starts from
+this chat's settings and context; trust (`<C-t>`) and commands you allowed
+"for this chat" are not carried over.
+
+`:llm-retry` sends the last question again **in place of its answer**,
+with the settings as they are now. That is how to try another model:
+
+```
+:setlocal llm.model=local/qwen2.5-coder
+:llm-retry
+```
+
+It is refused while a reply is still coming: stop it with `<C-c>` first.
+
+Some models send their reasoning back with a signature that only the same
+provider can check. When a chat moves to another provider, that reasoning
+is left out of the requests, and `*messages*` says so once.
 
 ## Setting up a provider
 

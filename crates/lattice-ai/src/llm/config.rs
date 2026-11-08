@@ -76,6 +76,17 @@ pub struct ProviderConfig {
     pub output_cost_per_mtok: Option<f64>,
 }
 
+impl ProviderKind {
+    /// The tag on reasoning data this kind of provider writes and accepts
+    /// back, `None` for one that round-trips none.
+    pub fn reasoning_tag(self) -> Option<&'static str> {
+        match self {
+            ProviderKind::Anthropic => Some(super::provider::ANTHROPIC_REASONING_TAG),
+            ProviderKind::OpenAiCompatible => None,
+        }
+    }
+}
+
 impl ProviderConfig {
     pub fn build(&self) -> Arc<dyn Provider> {
         match self.kind {

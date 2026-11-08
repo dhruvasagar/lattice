@@ -247,6 +247,7 @@ impl Mode for AiConversationMode {
                 only_session: None,
                 runtime,
                 projection: Default::default(),
+                prompt: None,
             })
             .await;
             Ok(Some(guard))

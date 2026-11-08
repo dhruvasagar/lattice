@@ -97,9 +97,22 @@ are your own buffers.**
 What in-place editing gave is replaced by:
 
 - **Fork:** a chord on a past turn opens a new chat holding the history up to that point,
-  with that prompt ready to edit. The original stays intact.
+  with that prompt ready to edit. The original stays intact. The chord is `gb` (branch);
+  `:llm-fork` is its ex-command. On an answer it forks from the question the answer
+  belongs to. The copy is the model's, not the buffer's: reasoning data (keyed by turn
+  index, which a prefix keeps) and the arguments of the tool calls those turns made come
+  along, so the fork's first request is as valid as the original's next one would be. It
+  starts from the source's settings and context like any chat made from a buffer; trust and
+  "allow for this chat" are per-chat grants and are not copied. The prompt is seeded by the
+  same replace that seeds the transcript, so there is no frame with an empty prompt.
 - **`:llm-retry`** re-runs the last turn with current settings, which is also how to try
-  another model.
+  another model. It drops the last reply (and the reasoning and call arguments only it
+  held) and sends the question again: turns are removed only from the end, so nothing kept
+  is re-keyed. It is refused while a reply streams; stopping is a separate decision, and
+  retry silently interrupting would lose the reply the user may still want.
+- **Changing provider** leaves another provider's reasoning out of the request: only the
+  provider that signed it can verify it. The adapter already drops it; the chat says so
+  once per chat and provider, in `*messages*`, beside the other "not sent" notes.
 - **`:llm-export`** writes `.md` (and `.org`) for keeping. Resuming uses a separate
   session file.
 

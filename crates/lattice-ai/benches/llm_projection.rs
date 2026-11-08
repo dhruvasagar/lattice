@@ -172,11 +172,42 @@ fn bench_permission_scan(c: &mut Criterion) {
     group.finish();
 }
 
+/// LL.19: `gb` finds the turn under the cursor with one layout pass, and the
+/// fork copies the turns before it. Both run once per chord, on the editor
+/// thread, so they are measured against a long chat.
+fn bench_fork(c: &mut Criterion) {
+    let mut group = c.benchmark_group("llm_fork");
+    for exchanges in [20usize, 200, 1000] {
+        let conv = Conversation {
+            turns: history(exchanges),
+            ..Default::default()
+        };
+        // The middle question: half the history is copied.
+        let line = {
+            let text = lattice_ai::conversation::render_conversation_with(&conv, &OPTS);
+            let needle = format!("question {}", exchanges / 2);
+            text.lines().position(|l| l == needle).unwrap_or(0) as u32
+        };
+        group.bench_with_input(
+            BenchmarkId::new("turn_at_line", exchanges),
+            &conv,
+            |b, conv| {
+                b.iter(|| black_box(lattice_ai::conversation::turn_at_line(conv, &OPTS, line)))
+            },
+        );
+        group.bench_with_input(BenchmarkId::new("fork_at", exchanges), &conv, |b, conv| {
+            b.iter(|| black_box(conv.fork_at(exchanges)))
+        });
+    }
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench,
     bench_tool_history,
     bench_edit_span,
-    bench_permission_scan
+    bench_permission_scan,
+    bench_fork
 );
 criterion_main!(benches);

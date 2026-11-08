@@ -43,6 +43,8 @@ const ACTION_GOTO_SOURCE: &str = "action:llm-chat-goto-source";
 /// The yes half of the confirm shown when `@profile` would widen tools.
 const ACTION_SEND_WIDENED: &str = "action:llm-chat-send-widened";
 const ACTION_TRUST: &str = "action:llm-chat-trust";
+/// `gb` on a past turn: branch a new chat from it (LL.19).
+const ACTION_FORK: &str = "action:llm-chat-fork";
 
 /// Registered with the host so a key reaches [`ChatHeaderline`] even before the
 /// buffer has content.
@@ -167,6 +169,19 @@ impl Mode for LlmChatMode {
                 handler: send_widened_handler(self.chats.clone()),
             },
             ActionHandlerContribution {
+                action_name: ACTION_FORK,
+                handler: {
+                    let chats = self.chats.clone();
+                    Arc::new(move |ctx: &ActionContext<'_>| {
+                        Some(fork_effect(
+                            &chats,
+                            lattice_core::BufferId(ctx.buffer_id.0 as u32),
+                            ctx.cursor.line,
+                        ))
+                    })
+                },
+            },
+            ActionHandlerContribution {
                 action_name: ACTION_TRUST,
                 handler: trust_handler(self.chats.clone(), self.headerline_version.clone()),
             },
@@ -224,6 +239,7 @@ impl Mode for LlmChatMode {
                     let chats = self.chats.clone();
                     move || chats.projection_options_for(buffer_id)
                 }),
+                prompt: session.take_prompt_seed(),
             })
             .await;
             Ok(Some(LlmChatGuard {
@@ -263,6 +279,14 @@ fn keymap_entries() -> &'static [KeymapEntry] {
                 mode: Normal, chord: "gf",
                 doc: "llm-chat: go to where the sent text came from",
                 cmd: "action:llm-chat-goto-source"
+            },
+            // A branch of the conversation: the chat up to the question under
+            // the cursor, in a new buffer, with that question to edit. This
+            // chat is left as it is.
+            keymap_entry! {
+                mode: Normal, chord: "gb",
+                doc: "llm-chat: fork a new chat from the question under the cursor",
+                cmd: "action:llm-chat-fork"
             },
             keymap_entry! {
                 mode: Normal, chord: "gq",
@@ -382,6 +406,33 @@ fn goto_source_handler(chats: LlmChatsHandle) -> ActionHandler {
     })
 }
 
+/// `gb` and `:llm-fork`: open a new chat from the question the line `line` of
+/// chat `buffer` belongs to. Off a turn (on the prompt, say) it says so.
+pub fn fork_effect(chats: &LlmChatsHandle, buffer: lattice_core::BufferId, line: u32) -> Effect {
+    let error = |text: String| Effect::Echo {
+        level: lattice_grammar::effect::EchoLevel::Error,
+        text,
+    };
+    let Some(session) = chats.for_buffer(buffer) else {
+        return error("llm: not a chat buffer".into());
+    };
+    let conv = session.store.snapshot();
+    let opts = chats.projection_options_for(buffer);
+    let Some(turn) = crate::conversation::projection::turn_at_line(&conv, &opts, line) else {
+        return error("llm: put the cursor on a past turn to fork from it".into());
+    };
+    match chats.fork(buffer, turn) {
+        Ok(fork) => Effect::OpenSyntheticBuffer {
+            name: fork.name.clone(),
+            mode_id: LlmChatMode::mode_id().as_str().to_string(),
+            content: None,
+            cursor: None,
+            activate_minor: None,
+        },
+        Err(e) => error(e),
+    }
+}
+
 /// `<C-t>`: flip this chat's trust. Trusted, its edit tools apply without a
 /// diff; the headerline says so for as long as it lasts.
 fn trust_handler(chats: LlmChatsHandle, headerline: Arc<AtomicU64>) -> ActionHandler {
@@ -432,6 +483,11 @@ pub fn register_actions(registry: &mut lattice_grammar::CommandRegistry) {
         (
             ACTION_TRUST,
             "llm-chat: trust this chat's edits, applying them without review; again to stop.",
+        ),
+        (
+            ACTION_FORK,
+            "llm-chat: open a new chat with the history before the question under the cursor, \
+             that question ready to edit in its prompt.",
         ),
         (
             ACTION_SEND_WIDENED,

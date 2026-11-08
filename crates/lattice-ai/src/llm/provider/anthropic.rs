@@ -12,7 +12,7 @@ use crate::llm::{
 
 const API_VERSION: &str = "2023-06-01";
 /// Tag on [`ReasoningData`] this adapter produces and is the only one to accept.
-const PROVIDER_TAG: &str = "anthropic";
+pub(crate) const PROVIDER_TAG: &str = "anthropic";
 
 #[derive(Debug, Clone)]
 pub struct AnthropicProvider {

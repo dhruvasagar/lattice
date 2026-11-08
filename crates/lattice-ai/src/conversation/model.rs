@@ -294,6 +294,54 @@ impl Conversation {
         self.turns.iter().filter(|t| t.role == Role::User).count() + self.queued.len()
     }
 
+    /// LL.19: fork at `turn`: the history before the question `turn` belongs
+    /// to, and that question's text, for a new chat to hold and offer as its
+    /// prompt. On an assistant turn the question is the user turn before it.
+    /// `None` when no question precedes `turn`.
+    ///
+    /// Everything the earlier turns need on the wire comes along: reasoning
+    /// data (keyed by turn index, which a prefix keeps) and the arguments of
+    /// every tool call those turns made. Nothing of this conversation is
+    /// changed: the fork is a copy.
+    pub fn fork_at(&self, turn: usize) -> Option<(Conversation, String)> {
+        let question = (0..=turn.min(self.turns.len().checked_sub(1)?))
+            .rev()
+            .find(|&t| self.turns[t].role == Role::User)?;
+        let turns: Vec<Turn> = self.turns[..question].to_vec();
+        let mut fork = Conversation {
+            assistant_label: self.assistant_label.clone(),
+            reasoning_data: self
+                .reasoning_data
+                .range(..(question, 0))
+                .map(|(k, v)| (*k, v.clone()))
+                .collect(),
+            ..Conversation::default()
+        };
+        fork.tool_calls = calls_in(&turns)
+            .filter_map(|id| Some((id.to_string(), self.tool_calls.get(id)?.clone())))
+            .collect();
+        fork.turns = turns;
+        Some((fork, user_turn_text(&self.turns[question])))
+    }
+
+    /// LL.19: drop the reply to the last question, so the question can be
+    /// sent again (`:llm-retry`). The reply's reasoning data and tool-call
+    /// arguments go with it. `false` when there is no question to retry.
+    ///
+    /// The one place turns are removed rather than appended: indices below
+    /// the question still name the same blocks, so nothing kept is re-keyed.
+    pub fn drop_last_reply(&mut self) -> bool {
+        let Some(question) = self.turns.iter().rposition(|t| t.role == Role::User) else {
+            return false;
+        };
+        let dropped: Vec<Turn> = self.turns.split_off(question + 1);
+        for id in calls_in(&dropped) {
+            self.tool_calls.remove(id);
+        }
+        self.reasoning_data.retain(|(t, _), _| *t <= question);
+        true
+    }
+
     /// Attach round-trip data to the most recent `Reasoning` block.
     pub fn attach_reasoning_data(&mut self, data: OpaqueReasoning) {
         let Some((t, turn)) = self
@@ -721,6 +769,30 @@ impl ConversationStore {
     }
 }
 
+/// The ids of the tool calls `turns` made.
+fn calls_in(turns: &[Turn]) -> impl Iterator<Item = &str> {
+    turns.iter().flat_map(|t| {
+        t.blocks.iter().filter_map(|b| match b {
+            Block::ToolCall { id, .. } => Some(id.as_str()),
+            _ => None,
+        })
+    })
+}
+
+/// A user turn as prompt text: its typed text, and any text it sent from a
+/// buffer, in order.
+fn user_turn_text(turn: &Turn) -> String {
+    turn.blocks
+        .iter()
+        .filter_map(|b| match b {
+            Block::Text(s) => Some(s.clone()),
+            Block::Source { text, .. } => Some(text.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
@@ -732,6 +804,123 @@ mod tests {
         kind: PermissionKind,
     ) -> PermissionOption {
         PermissionOption::new(id, name, kind)
+    }
+
+    /// Two exchanges, the first with signed reasoning and a tool call:
+    /// turns 0 (you) 1 (model) 2 (you) 3 (model).
+    fn two_exchanges() -> Conversation {
+        let mut c = Conversation::default();
+        c.push_user_text("first question");
+        c.extend_reasoning("thinking");
+        c.attach_reasoning_data(OpaqueReasoning {
+            provider: "anthropic".into(),
+            data: "sig-1".into(),
+        });
+        c.push_tool_call(
+            "call-1".into(),
+            None,
+            "read".into(),
+            ToolStatus::Ok,
+            ToolKind::Read,
+            None,
+            Some("text".into()),
+        );
+        c.tool_calls.insert(
+            "call-1".into(),
+            ToolCallData {
+                name: "lattice__read_file".into(),
+                input: serde_json::json!({"path": "a"}),
+                malformed: None,
+            },
+        );
+        c.extend_text(Role::Assistant, "first answer");
+        c.push_user_text("second question");
+        c.extend_reasoning("more thinking");
+        c.attach_reasoning_data(OpaqueReasoning {
+            provider: "anthropic".into(),
+            data: "sig-2".into(),
+        });
+        c.push_tool_call(
+            "call-2".into(),
+            None,
+            "read".into(),
+            ToolStatus::Ok,
+            ToolKind::Read,
+            None,
+            Some("text".into()),
+        );
+        c.tool_calls.insert(
+            "call-2".into(),
+            ToolCallData {
+                name: "lattice__read_file".into(),
+                input: serde_json::json!({"path": "b"}),
+                malformed: None,
+            },
+        );
+        c.extend_text(Role::Assistant, "second answer");
+        c
+    }
+
+    /// LL.19: forking at the second question keeps the first exchange whole,
+    /// its signed reasoning and tool-call arguments included, and offers the
+    /// question as the prompt. The original is unchanged.
+    #[test]
+    fn a_fork_keeps_the_history_before_the_question_and_offers_it() {
+        let c = two_exchanges();
+        let before = c.clone();
+        let (fork, prompt) = c.fork_at(2).unwrap();
+        assert_eq!(prompt, "second question");
+        assert_eq!(fork.turns, before.turns[..2].to_vec());
+        assert_eq!(
+            fork.reasoning_data
+                .values()
+                .map(|d| d.data.as_str())
+                .collect::<Vec<_>>(),
+            ["sig-1"]
+        );
+        assert_eq!(fork.tool_calls.keys().collect::<Vec<_>>(), ["call-1"]);
+        assert_eq!(c, before, "the original is untouched");
+
+        // On the answer, the fork is from the question it answers.
+        let (from_answer, prompt) = c.fork_at(3).unwrap();
+        assert_eq!(prompt, "second question");
+        assert_eq!(from_answer.turns.len(), 2);
+
+        // From the first question: an empty history, that question to send.
+        let (first, prompt) = c.fork_at(1).unwrap();
+        assert!(first.turns.is_empty() && first.tool_calls.is_empty());
+        assert_eq!(prompt, "first question");
+    }
+
+    #[test]
+    fn nothing_to_fork_before_the_first_question() {
+        let mut c = Conversation::default();
+        assert!(c.fork_at(0).is_none());
+        c.extend_text(Role::Assistant, "hello");
+        assert!(
+            c.fork_at(0).is_none(),
+            "an answer with no question before it"
+        );
+    }
+
+    /// LL.19: retry drops the last reply and what only it needed, and keeps
+    /// everything before it keyed as it was.
+    #[test]
+    fn dropping_the_last_reply_keeps_the_question_and_what_came_before() {
+        let mut c = two_exchanges();
+        assert!(c.drop_last_reply());
+        assert_eq!(c.turns.len(), 3);
+        assert_eq!(c.turns[2].role, Role::User);
+        assert_eq!(c.tool_calls.keys().collect::<Vec<_>>(), ["call-1"]);
+        assert_eq!(
+            c.reasoning_data.keys().copied().collect::<Vec<_>>(),
+            [(1, 0)]
+        );
+        // Again: nothing after the question is left to drop, and it says so
+        // by keeping the question.
+        assert!(c.drop_last_reply());
+        assert_eq!(c.turns.len(), 3);
+        assert!(!Conversation::default().drop_last_reply());
     }
 
     /// AU‑3: a user prompt lands as its own `User` turn (the REPL model:

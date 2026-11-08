@@ -469,6 +469,55 @@ pub fn register(registry: &mut CommandRegistry, chats: LlmChatsHandle) {
             surface_form: SurfaceForm::Keyword,
         },
     );
+    let retry = chats.clone();
+    registry.register_ex_command(
+        "llm-retry",
+        "Send this chat's last question again, with the settings as they are now, in place \
+         of its reply: how to try another model (`:setlocal llm.model=…` first). Refused \
+         while a reply is still coming.",
+        ExCommandSpec {
+            latency_class: LatencyClass::Reflex,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Arc::new(lattice_agent::parse_no_args),
+            apply: Arc::new(move |ctx| {
+                let Some(session) = retry.for_buffer(ctx.buffer_id) else {
+                    return Ok(echo(
+                        EchoLevel::Error,
+                        "llm: :llm-retry works in a chat buffer".to_string(),
+                    ));
+                };
+                Ok(match retry.retry(&session) {
+                    Ok(()) => Effect::None,
+                    Err(e) => echo(EchoLevel::Error, e),
+                })
+            }),
+            args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+    let fork = chats.clone();
+    registry.register_ex_command(
+        "llm-fork",
+        "Open a new chat holding this chat's history before the question under the cursor, \
+         with that question in its prompt to edit and send. This chat is left as it is. \
+         `gb` in a chat does the same.",
+        ExCommandSpec {
+            latency_class: LatencyClass::Reflex,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Arc::new(lattice_agent::parse_no_args),
+            apply: Arc::new(move |ctx| {
+                Ok(super::modes::chat::fork_effect(
+                    &fork,
+                    ctx.buffer_id,
+                    ctx.cursor.line,
+                ))
+            }),
+            args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
     let system = chats;
     registry.register_ex_command(
         "llm-system",

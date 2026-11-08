@@ -57587,6 +57587,35 @@ mod tests {
         );
     }
 
+    /// `<Tab>` after a range completes the command word, and accepting
+    /// keeps the range: `:'<,'>sor` becomes `:'<,'>sort`, as Visual mode's
+    /// `:` leaves it.
+    #[test]
+    fn command_line_completion_after_a_range_keeps_the_range() {
+        // What `<Tab><CR>` makes of `typed` on a fresh `:` line.
+        fn accept_first(typed: &str) -> String {
+            let mut editor = Editor::boot(lattice_core::Document::from_text("b\na\n"));
+            editor.dispatch(Action::EnterCommandLine);
+            cl_type(&mut editor, typed);
+            cl_chord(
+                &mut editor,
+                crate::chord::KeyChord::special(crate::chord::SpecialKey::Tab),
+            );
+            assert!(
+                editor.completion_state.is_some(),
+                "<Tab> on {typed:?} opens the popup"
+            );
+            cl_chord(
+                &mut editor,
+                crate::chord::KeyChord::special(crate::chord::SpecialKey::Enter),
+            );
+            editor.command_line()
+        }
+        let alone = accept_first("sor");
+        assert_eq!(accept_first("'<,'>sor"), format!("'<,'>{alone}"));
+        assert_eq!(accept_first("%sor"), format!("%{alone}"));
+    }
+
     /// A plugin's published list reaches `<Tab>` on its command's argument:
     /// stepping from the command name into the slot, then narrowing.
     #[test]

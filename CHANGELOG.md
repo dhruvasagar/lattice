@@ -125,6 +125,11 @@
   (`:set messages.filter=info,rmcp=debug` to see it).
 
 ### Fixed
+- **`<Tab>` completes after a range on the `:` line.** `:'<,'>cl<Tab>`
+  (what Visual mode's `:` gives you), `:%sor<Tab>` and `:5,$wr<Tab>`
+  complete the command as they would without the range, and keep the
+  range when you accept. Argument completion and `<C-h>` help work after
+  a range too.
 - **`:claude-send` works from Visual mode.** `:'<,'>claude-send` (or any
   line range) mentions those lines of the current file instead of
   failing with "E481: No range allowed".

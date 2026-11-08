@@ -218,8 +218,9 @@ serde_json = "1.0"
 # primitive, no heavier `rand`/`uuid` dep pulled for one token.
 tokio-tungstenite = "0.24"
 # `rmcp` is the official MCP SDK. LL.22: lattice's MCP server (the Claude
-# Code IDE WebSocket) runs on it; LL.23/24 add the client side. Only the
-# `server` feature for now: no macros, no HTTP transports.
+# Code IDE WebSocket) runs on it. Only `server` here, no macros; the llm
+# layer's client side (LL.24: external servers over stdio and streamable
+# HTTP) adds its features in lattice-ai's `llm` feature.
 rmcp = { version = "3.6.0", default-features = false, features = ["server"] }
 getrandom = "0.2"
 

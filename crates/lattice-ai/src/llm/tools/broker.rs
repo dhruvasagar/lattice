@@ -200,6 +200,7 @@ impl ToolBroker {
             .unwrap_or_else(|e| e.into_inner())
             .clone();
         let mut offer = Offer::default();
+        let mut wanted_sources = Vec::new();
         for (server, source) in sources {
             let wanted: Vec<&str> = selection
                 .iter()
@@ -208,7 +209,15 @@ impl ToolBroker {
             if wanted.is_empty() {
                 continue;
             }
-            let listed = match source.list().await {
+            wanted_sources.push((server, source, wanted));
+        }
+        // Listed together: an external server may be starting, and one slow
+        // to start must not add its wait to another's.
+        let listed =
+            futures::future::join_all(wanted_sources.iter().map(|(_, source, _)| source.list()))
+                .await;
+        for ((server, source, wanted), listed) in wanted_sources.into_iter().zip(listed) {
+            let listed = match listed {
                 Ok(listed) => listed,
                 Err(e) => {
                     tracing::warn!(target: "lattice::llm", "llm: tools from {server} are unavailable: {e}");
@@ -219,7 +228,8 @@ impl ToolBroker {
             for tool in &listed {
                 if selected(&wanted, tool, &listed, &server) {
                     any = true;
-                    offer.tools.push(offered(&server, tool));
+                    let allowed = source.allowed(&tool.descriptor.name);
+                    offer.tools.push(offered(&server, tool, allowed));
                 }
             }
             if any {
@@ -252,14 +262,18 @@ fn group_of(kind: ToolKind) -> Option<&'static str> {
     }
 }
 
-fn offered(server: &str, tool: &SourceTool) -> OfferedTool {
+/// `allowed`: the user's config names this tool as one that runs without
+/// asking (only an external server's tool can be; lattice's own follow the
+/// table).
+fn offered(server: &str, tool: &SourceTool, allowed: bool) -> OfferedTool {
     let ours = server == LATTICE;
     // Kinds are believed for lattice's tools only; another server's tool is
-    // shown as `Other` and always asks.
+    // shown as `Other` and asks unless the user allowed it by name.
     let kind = if ours { tool.kind } else { ToolKind::Other };
     let permission = match (ours, kind) {
         (true, ToolKind::Read | ToolKind::Search) => Permission::Run,
         (true, ToolKind::Edit) => Permission::Review,
+        (false, _) if allowed => Permission::Run,
         _ => Permission::Ask,
     };
     OfferedTool {

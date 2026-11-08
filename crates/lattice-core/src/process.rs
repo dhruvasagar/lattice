@@ -204,37 +204,51 @@ fn drain(pipe: Option<impl Read + Send + 'static>, cap: usize) -> thread::JoinHa
 }
 
 /// Start the child as the leader of its own process group, so the whole
-/// tree can be killed at once.
+/// tree can be killed at once with [`kill_process_tree`]. A no-op off Unix,
+/// where `taskkill /T` follows the tree without one.
+///
+/// Public for a child that outlives one call (LL.24: an MCP server over
+/// stdio), which cannot go through [`run_cancellable`].
 #[cfg(unix)]
-fn own_process_group(command: &mut Command) {
+pub fn own_process_group(command: &mut Command) {
     use std::os::unix::process::CommandExt as _;
     command.process_group(0);
 }
 
 #[cfg(not(unix))]
-fn own_process_group(_command: &mut Command) {}
+pub fn own_process_group(_command: &mut Command) {}
 
-/// Kill the child and everything it started. The direct `Child::kill`
-/// afterwards covers a sandbox with no `kill` / `taskkill` on `PATH`.
-fn kill_tree(child: &mut Child) {
+/// Kill process `pid` and everything it started: its process group on Unix
+/// (so it must have been started with [`own_process_group`]), its tree on
+/// Windows. Blocks for one short-lived `kill` / `taskkill`. Errors are
+/// logged at `debug` and otherwise ignored: the process may already be gone.
+pub fn kill_process_tree(pid: u32) {
     #[cfg(unix)]
     let tree = Command::new("kill")
-        .args(["-KILL", "--", &format!("-{}", child.id())])
+        .args(["-KILL", "--", &format!("-{pid}")])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status();
     #[cfg(windows)]
     let tree = Command::new("taskkill")
-        .args(["/T", "/F", "/PID", &child.id().to_string()])
+        .args(["/T", "/F", "/PID", &pid.to_string()])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status();
     #[cfg(any(unix, windows))]
     if let Err(error) = tree {
-        tracing::debug!(%error, "process-tree kill unavailable; killing the child alone");
+        tracing::debug!(%error, "process-tree kill unavailable");
     }
+    #[cfg(not(any(unix, windows)))]
+    let _ = pid;
+}
+
+/// Kill the child and everything it started. The direct `Child::kill`
+/// afterwards covers a sandbox with no `kill` / `taskkill` on `PATH`.
+fn kill_tree(child: &mut Child) {
+    kill_process_tree(child.id());
     let _ = child.kill();
 }
 

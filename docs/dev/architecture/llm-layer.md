@@ -370,6 +370,7 @@ external MCP client ever should drive lattice's full tool set.
 	[llm.mcp.github]
 	command = "github-mcp-server"	# stdio; or url = "https://…" for streamable HTTP
 	env = { GITHUB_TOKEN = "$GITHUB_TOKEN" }
+	allow = ["get_issue"]	# runs without asking
 
 	[llm.profiles.coding]
 	tools = ["lattice.read", "lattice.edit", "lattice.exec", "github.*"]
@@ -378,6 +379,35 @@ Tools are namespaced by server, and profiles and `:setlocal` select them with th
 syntax. `:llm-mcp` is a buffer listing each server, its state and its tools. A server that
 fails to start is reported there and never blocks a request; servers start when a session
 first needs them.
+
+**External servers (LL.24)** are `tools::mcp::McpServer`, one per table, each a tool
+source registered with the broker at boot and started by the first offer that selects it.
+Starting (spawn or connect, `initialize`, `tools/list`) is bounded at 10 s, and the broker
+lists its sources together, so one slow server costs a request one bound, not one per
+server. A server that **failed** to start stays failed until `r` in `*llm-mcp*`: a wrong
+command fails identically every time, and retrying it per request charges each request
+the attempt. A server that was **running** and exited is started again by the next
+request that needs it, since a crash after a good start is more likely transient. A call
+in flight when its server dies is that call's error. Dropping a call (the request
+stopped) sends MCP's `notifications/cancelled` and leaves the server up; stopping or
+restarting a server, a failed start, and the connection ending kill a stdio child's whole
+process group (`lattice_core::process::{own_process_group, kill_process_tree}`), so a
+server behind `npx` or a shell leaves nothing running.
+
+`allow` is per server and names tools exactly; it lives in the same user-only table as
+the command, so a project file, which cannot declare a server, cannot allow one either.
+`env` and `headers` values expand `$NAME` / `${NAME}` when the server starts; an unset
+variable fails the start by name. Values are never shown, and the child's stderr is
+scrubbed of them before it is logged or shown. A tool whose wire name providers would
+reject (`[A-Za-z0-9_-]`, at most 64 with `server__` in front) is listed in `*llm-mcp*` as
+not offered rather than renamed: a renamed tool is one the server does not know.
+
+Rejected for external servers: retrying a failed start on every request (above); killing
+the server when a call is cancelled (other chats share it, and MCP has a cancellation
+message for exactly this); an `allow = ["*"]` wildcard (it would make a server's whole,
+changing tool list run unasked, including tools added after the user wrote the line);
+believing `readOnlyHint` to skip the question (it is the server's claim, §6's table);
+renaming tools with unusable names (calls would carry a name the server never listed).
 
 **Trust is decided by us, not claimed by the server.**
 

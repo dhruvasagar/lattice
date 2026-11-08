@@ -176,6 +176,7 @@ same surface).
 | Ask about any text         | [`llm-mode`](help:llm-mode) | ✅      |
 |   — settings and profiles  | [`llm`](help:llm)                        | ✅      |
 |   — system prompt          | [`llm-system-mode`](help:llm-system-mode) | ✅      |
+|   — MCP servers as tools   | [`llm-mcp-mode`](help:llm-mcp-mode) | ✅      |
 | Languages                  | [`languages`](help:languages)            | ✅      |
 | Plain text (fallback)      | [`text-mode`](help:text-mode) | ✅      |
 | Rust                       | [`rust-mode`](help:rust-mode) | ✅      |

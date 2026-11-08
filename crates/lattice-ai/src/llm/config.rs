@@ -5,9 +5,9 @@
 //! `llm.*` options ([`super::options`]); the loader writes them into the
 //! registry like any option, and [`super::settings`] reads them from there so
 //! `:set` applies live. What the registry cannot hold is a table of named
-//! things, so providers (`[llm.providers.<name>]`) and profiles
-//! (`[llm.profiles.<name>]`) are read here, once at boot. Editing those applies
-//! on the next start.
+//! things, so providers (`[llm.providers.<name>]`), profiles
+//! (`[llm.profiles.<name>]`) and MCP servers (`[llm.mcp.<name>]`, LL.24) are
+//! read here, once at boot. Editing those applies on the next start.
 //!
 //! ```toml
 //! [llm]
@@ -29,6 +29,16 @@
 //! [llm.profiles.writer]
 //! model = "local/qwen2.5-coder"
 //! system = "~/.config/lattice/llm/editor.md"
+//!
+//! [llm.mcp.github]                      # tools are github.<tool>
+//! command = "github-mcp-server"
+//! args = ["stdio"]
+//! env = { GITHUB_PERSONAL_ACCESS_TOKEN = "$GITHUB_TOKEN" }
+//! allow = ["get_issue"]                 # runs without asking
+//!
+//! [llm.mcp.docs]
+//! url = "https://example.com/mcp"       # streamable HTTP
+//! headers = { Authorization = "Bearer $DOCS_TOKEN" }
 //! ```
 //!
 //! A key is never read from this file. It comes from an environment variable
@@ -38,7 +48,7 @@
 //! reaches an error message.
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -117,6 +127,9 @@ pub struct LlmConfig {
     /// wins; this copy is what a config read without a registry (a test, the
     /// `LlmConfig::load` path) resolves from.
     pub global: RawSet,
+    /// `[llm.mcp.<name>]`, in name order. Only ever from the user's own file:
+    /// a project file cannot declare one (settings' trust table).
+    pub mcp: Vec<super::tools::mcp::McpServerConfig>,
     /// Problems found while reading, for the log. A bad provider is skipped,
     /// not fatal: one typo must not take the others down.
     pub warnings: Vec<String>,
@@ -178,6 +191,22 @@ impl LlmConfig {
                     None => cfg
                         .warnings
                         .push(format!("llm: profile `{name}` must be a table")),
+                }
+            }
+        }
+        if let Some(servers) = llm.get("mcp").and_then(toml::Value::as_table) {
+            for (name, value) in servers {
+                match value.as_table() {
+                    Some(t) => match parse_mcp_server(name, t) {
+                        Ok((server, mut warns)) => {
+                            cfg.warnings.append(&mut warns);
+                            cfg.mcp.push(server);
+                        }
+                        Err(w) => cfg.warnings.push(w),
+                    },
+                    None => cfg
+                        .warnings
+                        .push(format!("llm: MCP server `{name}` must be a table")),
                 }
             }
         }
@@ -365,6 +394,120 @@ fn parse_provider(name: &str, t: &toml::Table) -> Result<(ProviderConfig, Vec<St
             model: str_of(t, "model"),
             input_cost_per_mtok: t.get("input_cost_per_mtok").and_then(number),
             output_cost_per_mtok: t.get("output_cost_per_mtok").and_then(number),
+        },
+        warnings,
+    ))
+}
+
+/// One `[llm.mcp.<name>]` table. Exactly one of `command` (stdio) and `url`
+/// (streamable HTTP). Values are never echoed: `env` and `headers` can hold
+/// tokens.
+fn parse_mcp_server(
+    name: &str,
+    t: &toml::Table,
+) -> Result<(super::tools::mcp::McpServerConfig, Vec<String>), String> {
+    use super::tools::mcp::{McpServerConfig, McpTransport};
+    let mut warnings = Vec::new();
+    let valid_name =
+        !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
+    if !valid_name {
+        return Err(format!(
+            "llm: MCP server `{name}`: a server name is letters, digits and `-` only              (its tools are `{name}.<tool>`)"
+        ));
+    }
+    if name == super::tools::broker::LATTICE {
+        return Err("llm: MCP server `lattice`: that name is lattice's own tools".to_string());
+    }
+    let strings = |key: &str, warnings: &mut Vec<String>| -> Vec<String> {
+        match t.get(key) {
+            None => Vec::new(),
+            Some(toml::Value::Array(items)) => items
+                .iter()
+                .filter_map(|v| match v.as_str() {
+                    Some(s) => Some(s.to_string()),
+                    None => {
+                        warnings.push(format!(
+                            "llm: MCP server `{name}`: `{key}` holds something that is not a string; it is skipped"
+                        ));
+                        None
+                    }
+                })
+                .collect(),
+            Some(_) => {
+                warnings.push(format!(
+                    "llm: MCP server `{name}`: `{key}` must be a list of strings"
+                ));
+                Vec::new()
+            }
+        }
+    };
+    let table = |key: &str, warnings: &mut Vec<String>| -> BTreeMap<String, String> {
+        match t.get(key) {
+            None => BTreeMap::new(),
+            Some(toml::Value::Table(entries)) => entries
+                .iter()
+                .filter_map(|(k, v)| match v.as_str() {
+                    Some(s) => Some((k.clone(), s.to_string())),
+                    None => {
+                        warnings.push(format!(
+                            "llm: MCP server `{name}`: `{key}.{k}` must be a string; it is skipped"
+                        ));
+                        None
+                    }
+                })
+                .collect(),
+            Some(_) => {
+                warnings.push(format!(
+                    "llm: MCP server `{name}`: `{key}` must be a table of strings"
+                ));
+                BTreeMap::new()
+            }
+        }
+    };
+    let transport = match (str_of(t, "command"), str_of(t, "url")) {
+        (Some(_), Some(_)) => {
+            return Err(format!(
+                "llm: MCP server `{name}`: give `command` (stdio) or `url` (HTTP), not both"
+            ));
+        }
+        (None, None) => {
+            return Err(format!(
+                "llm: MCP server `{name}`: needs `command` (stdio) or `url` (HTTP)"
+            ));
+        }
+        (Some(command), None) => McpTransport::Stdio {
+            command,
+            args: strings("args", &mut warnings),
+            env: table("env", &mut warnings),
+            cwd: str_of(t, "cwd").map(|c| PathBuf::from(lattice_core::home::expand_tilde(&c))),
+        },
+        (None, Some(url)) => {
+            if !(url.starts_with("http://") || url.starts_with("https://")) {
+                return Err(format!(
+                    "llm: MCP server `{name}`: `url` must start with http:// or https://"
+                ));
+            }
+            McpTransport::Http {
+                url,
+                headers: table("headers", &mut warnings),
+            }
+        }
+    };
+    let known: &[&str] = match transport {
+        McpTransport::Stdio { .. } => &["command", "args", "env", "cwd", "allow"],
+        McpTransport::Http { .. } => &["url", "headers", "allow"],
+    };
+    for key in t.keys().filter(|k| !known.contains(&k.as_str())) {
+        warnings.push(format!(
+            "llm: MCP server `{name}`: unknown key `{key}`; it is ignored"
+        ));
+    }
+    let allow = strings("allow", &mut warnings).into_iter().collect();
+    Ok((
+        McpServerConfig {
+            name: name.to_string(),
+            transport,
+            allow,
         },
         warnings,
     ))
@@ -575,6 +718,79 @@ mod tests {
             "meta/llama"
         );
         assert_eq!(c.choose(Some("local/qwen"), None).unwrap().model, "qwen");
+    }
+
+    /// LL.24: `[llm.mcp.<name>]`, stdio and HTTP, with the allow list.
+    #[test]
+    fn mcp_servers_are_read_with_their_transport_and_allow_list() {
+        use crate::llm::tools::mcp::McpTransport;
+        let c = cfg(r#"
+            [llm.mcp.github]
+            command = "github-mcp-server"
+            args = ["stdio"]
+            env = { GITHUB_PERSONAL_ACCESS_TOKEN = "$GITHUB_TOKEN" }
+            allow = ["get_issue"]
+            [llm.mcp.docs]
+            url = "https://example.com/mcp"
+            headers = { Authorization = "Bearer $DOCS_TOKEN" }
+        "#);
+        assert!(c.warnings.is_empty(), "{:?}", c.warnings);
+        let names: Vec<&str> = c.mcp.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, ["docs", "github"]);
+        let github = &c.mcp[1];
+        assert!(github.allow.contains("get_issue"));
+        match &github.transport {
+            McpTransport::Stdio {
+                command, args, env, ..
+            } => {
+                assert_eq!(command, "github-mcp-server");
+                assert_eq!(args, &["stdio"]);
+                assert_eq!(env["GITHUB_PERSONAL_ACCESS_TOKEN"], "$GITHUB_TOKEN");
+            }
+            other => panic!("expected stdio, got {other:?}"),
+        }
+        assert!(
+            matches!(&c.mcp[0].transport, McpTransport::Http { url, headers }
+            if url == "https://example.com/mcp" && headers.contains_key("Authorization"))
+        );
+    }
+
+    /// A bad server is skipped with a reason; the rest still load, and no
+    /// warning repeats an `env` or `headers` value (either can be a token).
+    #[test]
+    fn a_bad_mcp_server_is_skipped_and_its_values_never_echoed() {
+        let c = cfg(r#"
+            [llm.mcp.both]
+            command = "x"
+            url = "https://x"
+            [llm.mcp.neither]
+            allow = ["a"]
+            [llm."mcp"."has.dot"]
+            command = "x"
+            [llm.mcp.lattice]
+            command = "x"
+            [llm.mcp.ftp]
+            url = "ftp://x"
+            [llm.mcp.ok]
+            command = "ok-server"
+            env = { TOKEN = "ghp_literal_secret_value", N = 3 }
+            colour = "blue"
+        "#);
+        let names: Vec<&str> = c.mcp.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, ["ok"]);
+        let all = c.warnings.join("\n");
+        for needle in [
+            "`both`",
+            "`neither`",
+            "`has.dot`",
+            "`lattice`",
+            "`ftp`",
+            "env.N",
+            "`colour`",
+        ] {
+            assert!(all.contains(needle), "no warning names {needle}: {all}");
+        }
+        assert!(!all.contains("ghp_literal_secret_value"), "{all}");
     }
 
     #[test]

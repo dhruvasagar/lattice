@@ -1,7 +1,7 @@
 //! Tools a model may call (LL.16, design `llm-layer.md` §6).
 //!
 //! A [`ToolSource`] is anything that lists tools and runs them: lattice's own
-//! (`lattice.rs`), and later each MCP server. The [`ToolBroker`] holds the
+//! (`lattice.rs`), and each external MCP server (`mcp.rs`, LL.24). The [`ToolBroker`] holds the
 //! sources, namespaces their tools and decides what each may do; the loop sees
 //! only the [`Offer`] the broker makes for one request.
 //!
@@ -12,6 +12,7 @@
 
 pub mod broker;
 pub mod lattice;
+pub mod mcp;
 
 use std::future::Future;
 use std::pin::Pin;
@@ -120,8 +121,8 @@ impl std::fmt::Debug for CallContext {
     }
 }
 
-/// Lists tools and runs them. Implemented by lattice's tools and, later, by an
-/// MCP client connection.
+/// Lists tools and runs them. Implemented by lattice's tools and by each
+/// external MCP server's client connection.
 pub trait ToolSource: Send + Sync {
     /// The tools this source offers now.
     fn list(&self) -> BoxFuture<'_, Result<Vec<SourceTool>, ToolError>>;
@@ -139,5 +140,13 @@ pub trait ToolSource: Send + Sync {
     /// it: `cargo test` for a command. `None` shows the arguments.
     fn describe(&self, _name: &str, _input: &Value) -> Option<String> {
         None
+    }
+
+    /// The user's own config allows `name` to run without asking (LL.24:
+    /// `allow = [...]` on an `[llm.mcp.*]` table). It comes from the user's
+    /// file through the source lattice built from it, never from what a
+    /// server says about itself.
+    fn allowed(&self, _name: &str) -> bool {
+        false
     }
 }

@@ -3,6 +3,16 @@
 ## Unreleased
 
 ### Added
+- **MCP servers as tools in LLM chats.** An `[llm.mcp.<name>]` table in
+  your `lattice.toml` (a stdio `command`, or an HTTP `url`) gives a chat
+  that server's tools: select them with `llm.tools = ["<name>.*"]`. Each
+  asks before it runs unless named in the table's `allow`; a server's
+  "read-only" claim is shown, not trusted. A server starts when a request
+  first needs it, and one that fails never holds a request up.
+  `:llm-mcp` lists every server, its state and tools; `r` restarts one,
+  `dd` stops it, and stopping kills its whole process tree. Tokens can
+  come from `$VARIABLES` and are never shown. A project file cannot
+  declare a server.
 - **Gemini in LLM chats.** A provider with `kind = "gemini"` (or simply
   named `gemini`) talks to Google's Gemini API, tools included; the key
   comes from `api_key_env` or `api_key_command` and is sent in a header,

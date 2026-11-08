@@ -39,6 +39,7 @@ pub fn install(
     for warning in &config.warnings {
         tracing::warn!(target: "lattice::llm", "{warning}");
     }
+    let mcp_configs = config.mcp.clone();
 
     let chats: LlmChatsHandle = Arc::new(LlmChats::new(
         boot.runtime_handle().clone(),
@@ -137,6 +138,21 @@ pub fn install(
             .tools()
             .add_source(super::tools::broker::LATTICE, Arc::new(tools));
     }
+    // LL.24: each `[llm.mcp.<name>]` server is a tool source of its own. None
+    // starts here: a server starts when a request's `llm.tools` first selects
+    // it. A change of state publishes `McpServersChanged`, which repaints
+    // `*llm-mcp*`.
+    let mcp: super::tools::mcp::McpServersHandle = {
+        let bus = boot.event_bus().clone();
+        Arc::new(super::tools::mcp::McpServers::new(
+            &mcp_configs,
+            super::tools::mcp::connect_transport(),
+            boot.runtime_handle(),
+            Arc::new(move || bus.publish_typed(super::tools::mcp::McpServersChanged)),
+        ))
+    };
+    mcp.register(chats.tools());
+    boot.register_service::<super::tools::mcp::McpServersHandle>(mcp.clone());
     let chat_mode = LlmChatMode::new(chats.clone());
     let anchors = chat_mode.anchors();
     boot.modes_mut()
@@ -211,6 +227,12 @@ pub fn install(
         ))
         .expect("llm-requests-mode register");
     super::modes::requests::register_actions(boot.commands_mut());
+    // LL.24: `*llm-mcp*`, the servers and their tools.
+    let bus = boot.event_bus().clone();
+    boot.modes_mut()
+        .register(super::modes::mcp::LlmMcpMode::new(mcp, bus, inline.clone()))
+        .expect("llm-mcp-mode register");
+    super::modes::mcp::register(boot.commands_mut());
     // LL.15: what requests carry, and exactly what one sends. Both views
     // repaint themselves and wake the editor through the same bus.
     boot.modes_mut()

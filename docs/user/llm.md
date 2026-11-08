@@ -61,8 +61,9 @@ this layer"**.
 
 `llm.model` (`provider/model` or a bare model), `llm.system` (text; a path in your own
 config), `llm.temperature`, `llm.max_tokens`, `llm.reasoning`, `llm.messages` (`all`,
-`last`, a number), `llm.tools` (tool selectors such as `lattice.read`; see
-[`llm-chat-mode`](help:llm-chat-mode)), `llm.destination` (a kind, or an open chat's buffer
+`last`, a number), `llm.tools` (tool selectors such as `lattice.read` or an MCP
+server's `github.*`; see [`llm-chat-mode`](help:llm-chat-mode) and
+[`llm-mcp-mode`](help:llm-mcp-mode)), `llm.destination` (a kind, or an open chat's buffer
 name to continue it), `llm.fold.reasoning` and `llm.fold.tools` (`closed` `open`
 `hidden`, applied to open chats live), `llm.profile`, and the global-only
 `llm.default_profile`, `llm.default_provider`, `llm.exclude` (globs naming files
@@ -110,4 +111,5 @@ A profile named in a prompt follows the same table.
 
 ## See also
 
-[`llm-chat-mode`](help:llm-chat-mode), [`ai-conversation-mode`](help:ai-conversation-mode).
+[`llm-chat-mode`](help:llm-chat-mode), [`llm-mcp-mode`](help:llm-mcp-mode) (external
+MCP servers), [`ai-conversation-mode`](help:ai-conversation-mode).

@@ -744,7 +744,7 @@ round trip, while no external client wants the full catalogue and LL.24 exercise
 `LatticeTools` stays a direct `ToolSource`; LL.24 builds `Connection` for external servers. Design
 `llm-layer.md` §6 records it.
 
-### LL.24 — External servers 📝
+### LL.24 — External servers ✅
 
 **Files:** `src/llm/tools/mcp.rs` (stdio, streamable HTTP), `src/llm/config.rs` (`[llm.mcp.*]`),
 `src/llm/modes/mcp.rs` (`:llm-mcp`), `docs/user/llm-mcp-mode.md`.
@@ -753,3 +753,24 @@ round trip, while no external client wants the full catalogue and LL.24 exercise
 allowed by name; `readOnlyHint` shown and not trusted; a server failing to start reports in `:llm-mcp` and
 does not block a request; a server dying mid-call becomes a tool error; `tools/list_changed` updates the list;
 project config cannot declare a server; cancel kills a stdio child.
+
+**Landed.** `McpServer` (`src/llm/tools/mcp.rs`) is one rmcp client connection per `[llm.mcp.<name>]`,
+registered with the broker at boot and started by the first offer that selects it (bounded at 10 s; the
+broker now lists its sources together). The plan's list maps to `tests/llm_mcp.rs`, against an in-process
+rmcp server over a duplex pipe (the LSP tests' shape), plus real transports where the transport is the
+subject: namespacing and `github.*` selection, with an unselected server never started; ask unless
+`allow`ed by name (`ToolSource::allowed`, read from the user's table, is the broker's only new input);
+`readOnlyHint` in the question and the listing, still asking; a failed start left out of the offer, shown,
+and not retried until `r`; a missing command named; a death mid-call as the call's error, then a restart on
+next need; `tools/list_changed` re-listed; a dropped call cancelled on the server (`notifications/cancelled`),
+which stays up; stopping a stdio server kills its process tree (a real `sh` with a grandchild, Unix); and
+streamable HTTP against a local responder, with an expanded header. "Project config cannot declare a server"
+was already refused by the trust table; `settings.rs` gains the real `[mcp.<name>]` shape.
+
+**Reading of "cancel kills a stdio child".** A cancelled *call* sends `notifications/cancelled` and leaves the
+server up (other chats share it); stopping or restarting the *server*, a failed or abandoned start, and the
+connection ending kill the child's whole process group. Design §6 records why.
+
+Also: `lattice_core::process::{own_process_group, kill_process_tree}` made public (the existing group-kill,
+reused rather than copied); `*llm-mcp*` (`llm-mcp-mode`, `r` / `dd`, self-repainting on
+`McpServersChanged`); `docs/user/llm-mcp-mode.md`. Bench: `llm_mcp_call`.

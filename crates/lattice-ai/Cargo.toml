@@ -13,7 +13,9 @@ default = ["acp", "mcp", "llm"]
 acp = ["dep:agent-client-protocol", "dep:tokio-util", "dep:linkme", "tokio/process"]
 # Direct model-API layer: no-I/O provider adapters (LL.3), later the engine. Shares
 # the protocol-neutral `conversation` model with `acp`; never depends on it.
-llm = ["dep:linkme", "dep:tokio-util", "dep:reqwest", "dep:toml", "dep:regex", "dep:ignore", "tokio/net", "tokio/process"]
+# LL.24: external MCP servers are tool sources, through rmcp's client over a
+# stdio child or streamable HTTP (reqwest + rustls, as the providers use).
+llm = ["dep:linkme", "dep:tokio-util", "dep:reqwest", "dep:toml", "dep:regex", "dep:ignore", "tokio/net", "tokio/process", "dep:rmcp", "rmcp/client", "rmcp/transport-child-process", "rmcp/transport-streamable-http-client-reqwest", "rmcp/reqwest"]
 # MCP IDE-peer transport (Claude Code, folded in by AG-4): the loopback
 # WebSocket server + the read / write / diff tools it exposes.
 mcp = ["dep:rmcp", "dep:tokio-tungstenite", "dep:dirs", "dep:getrandom", "dep:lattice-lsp", "tokio/net"]
@@ -50,7 +52,8 @@ lattice-lsp = { path = "../lattice-lsp", optional = true }
 # mcp: the loopback WebSocket transport the external `claude` CLI dials into.
 tokio-tungstenite = { workspace = true, optional = true }
 # mcp: the MCP protocol itself (LL.22): `LatticeServer` is an rmcp
-# `ServerHandler`, served over the WebSocket above.
+# `ServerHandler`, served over the WebSocket above. llm: the client side
+# (LL.24), for external servers.
 rmcp = { workspace = true, optional = true }
 # mcp: discovery-lockfile home dir + ephemeral auth-token entropy.
 dirs = { workspace = true, optional = true }
@@ -86,6 +89,11 @@ tracing-subscriber = { workspace = true }
 name = "mcp_call"
 harness = false
 required-features = ["mcp"]
+
+[[bench]]
+name = "llm_mcp_call"
+harness = false
+required-features = ["llm"]
 
 [[bench]]
 name = "llm_decode"

@@ -236,6 +236,23 @@ the median sits on the baseline), so streamed output does not tax typing in the 
 
 ---
 
+## LL.24 — one external MCP tool call (2026-11-08)
+
+`crates/lattice-ai/benches/llm_mcp_call.rs`. A model's call to an allowed external tool as the
+tool loop makes it: the offer, `McpServer::call`, rmcp's client, an in-memory pipe, an
+in-process rmcp server, and back. The server does no work of its own.
+
+| Call | Round trip |
+|---|---|
+| `bench__echo` (allowed, so nothing asks) | 129 µs |
+
+About twice LL.22's server-side number, as expected: the client and the server each pay
+the decode, encode and task wakes. A real server adds its own process and its own work on
+top; this is the floor lattice sets. Off the editor thread, and three orders of magnitude
+below a model's turn.
+
+---
+
 ## LL.22 — one MCP tool call through rmcp (2026-11-08)
 
 `crates/lattice-ai/benches/mcp_call.rs`. The Claude Code connection runs on rmcp; this is what

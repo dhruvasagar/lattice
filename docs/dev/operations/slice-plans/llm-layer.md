@@ -676,11 +676,24 @@ Bench: `llm_session_file`.
 **Tests:** `.md` round trip; `.org` conversion including fences; session resume restores tool ids; a tampered
 or newer-version file is refused with a message; a session file cannot widen trust; no key on disk.
 
-### LL.21 — Gemini 📝
+### LL.21 — Gemini ✅
 
 **Files:** `src/llm/provider/gemini.rs`, fixtures.
 
 **Tests:** the LL.3 suite, including the split-at-every-byte check, on Gemini fixtures.
+
+**Landed.** `GeminiProvider` (`streamGenerateContent?alt=sse`, key in `x-goog-api-key`,
+`parametersJsonSchema` for tools, results merged into one `user` turn of `functionResponse`
+parts named from their calls); `ProviderKind::Gemini` (kind `gemini`; a provider named
+`gemini` defaults to it; a key is required). Thought signatures ride on an empty reasoning
+block anchored to their call (design §3 "A signature on a call"); the projection and org
+export skip empty reasoning. No end marker on the wire: `finish()` is `Done` only after a
+`finishReason`, else `Truncated`; `STOP` after calls is `ToolUse`. Fixtures
+`gemini_text_thinking.sse`, `gemini_tool_calls.sse` (an id-less call; CRLF framing is covered by `tests/llm_gemini.rs`, whose mock replies use `\r\n`, since `.gitattributes` checks fixtures out LF). Tests: both LL.3
+files extended (every fixture split at every byte, truncation, unknown chunks, in-band and
+blocked-prompt errors, garbage, endless line), exact-body build tests, config tests, and
+`tests/llm_gemini.rs` (a tool loop whose second request carries the signature on its call).
+Bench: `llm_decode/gemini`.
 
 ## MCP (last)
 

@@ -48,6 +48,7 @@ pub fn org(conv: &Conversation, title: &str) -> String {
         for block in &turn.blocks {
             match block {
                 Block::Text(text) => text_to_org(&mut out, text, 1),
+                Block::Reasoning(text) if text.is_empty() => {}
                 Block::Reasoning(text) => push_block(&mut out, "example", "", text),
                 Block::ToolCall {
                     origin,

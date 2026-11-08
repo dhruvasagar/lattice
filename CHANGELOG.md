@@ -3,6 +3,10 @@
 ## Unreleased
 
 ### Added
+- **Gemini in LLM chats.** A provider with `kind = "gemini"` (or simply
+  named `gemini`) talks to Google's Gemini API, tools included; the key
+  comes from `api_key_env` or `api_key_command` and is sent in a header,
+  never in the URL. Thinking models keep working across a tool loop.
 - **Keep an LLM chat, and pick it up again.** `:llm-save file` saves a
   chat and `:llm-resume file` opens it again, history and tool calls
   included; `:llm-export file.md` (or `.org`) writes it out for reading.

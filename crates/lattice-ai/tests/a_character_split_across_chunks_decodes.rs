@@ -4,41 +4,58 @@
 //! every interior position), and the events must be identical.
 
 #![cfg(feature = "llm")]
-use lattice_ai::llm::{AnthropicProvider, OpenAiProvider, Provider, StreamEvent};
+use lattice_ai::llm::{AnthropicProvider, GeminiProvider, OpenAiProvider, Provider, StreamEvent};
 
-const FIXTURES: &[(&str, &str, bool)] = &[
+#[derive(Clone, Copy)]
+enum Wire {
+    Anthropic,
+    OpenAi,
+    Gemini,
+}
+
+const FIXTURES: &[(&str, &str, Wire)] = &[
     (
         "anthropic_text_thinking",
         include_str!("fixtures/llm/anthropic_text_thinking.sse"),
-        true,
+        Wire::Anthropic,
     ),
     (
         "anthropic_tool_use",
         include_str!("fixtures/llm/anthropic_tool_use.sse"),
-        true,
+        Wire::Anthropic,
     ),
     (
         "openai_text_reasoning",
         include_str!("fixtures/llm/openai_text_reasoning.sse"),
-        false,
+        Wire::OpenAi,
     ),
     (
         "openai_tool_calls",
         include_str!("fixtures/llm/openai_tool_calls.sse"),
-        false,
+        Wire::OpenAi,
     ),
     (
         "openai_ollama_no_usage",
         include_str!("fixtures/llm/openai_ollama_no_usage.sse"),
-        false,
+        Wire::OpenAi,
+    ),
+    (
+        "gemini_text_thinking",
+        include_str!("fixtures/llm/gemini_text_thinking.sse"),
+        Wire::Gemini,
+    ),
+    (
+        "gemini_tool_calls",
+        include_str!("fixtures/llm/gemini_tool_calls.sse"),
+        Wire::Gemini,
     ),
 ];
 
-fn provider(anthropic: bool) -> Box<dyn Provider> {
-    if anthropic {
-        Box::new(AnthropicProvider::default())
-    } else {
-        Box::new(OpenAiProvider::new("http://localhost/v1"))
+fn provider(wire: Wire) -> Box<dyn Provider> {
+    match wire {
+        Wire::Anthropic => Box::new(AnthropicProvider::default()),
+        Wire::OpenAi => Box::new(OpenAiProvider::new("http://localhost/v1")),
+        Wire::Gemini => Box::new(GeminiProvider::default()),
     }
 }
 
@@ -59,8 +76,8 @@ fn chunked(p: &dyn Provider, bytes: &[u8], at: usize) -> Vec<StreamEvent> {
 
 #[test]
 fn every_fixture_decodes_identically_split_at_every_byte() {
-    for (name, text, anthropic) in FIXTURES {
-        let p = provider(*anthropic);
+    for (name, text, wire) in FIXTURES {
+        let p = provider(*wire);
         let bytes = text.as_bytes();
         let expected = whole(p.as_ref(), bytes);
         assert!(
@@ -84,17 +101,26 @@ fn every_fixture_decodes_identically_split_at_every_byte() {
 
 #[test]
 fn multibyte_text_survives_without_replacement_characters() {
-    let text = include_str!("fixtures/llm/anthropic_text_thinking.sse");
-    let p = AnthropicProvider::default();
-    let at = text.find('日').expect("fixture has multi-byte text") + 1;
-    let ev = chunked(&p, text.as_bytes(), at);
-    let joined: String = ev
-        .iter()
-        .filter_map(|e| match e {
-            StreamEvent::Text(t) | StreamEvent::Reasoning(t) => Some(t.as_str()),
-            _ => None,
-        })
-        .collect();
-    assert!(joined.contains("日本語") && joined.contains("こんにちは ✓"));
-    assert!(!joined.contains('\u{fffd}'));
+    for (text, p) in [
+        (
+            include_str!("fixtures/llm/anthropic_text_thinking.sse"),
+            provider(Wire::Anthropic),
+        ),
+        (
+            include_str!("fixtures/llm/gemini_text_thinking.sse"),
+            provider(Wire::Gemini),
+        ),
+    ] {
+        let at = text.find('日').expect("fixture has multi-byte text") + 1;
+        let ev = chunked(p.as_ref(), text.as_bytes(), at);
+        let joined: String = ev
+            .iter()
+            .filter_map(|e| match e {
+                StreamEvent::Text(t) | StreamEvent::Reasoning(t) => Some(t.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(joined.contains("日本語") && joined.contains("こんにちは ✓"));
+        assert!(!joined.contains('\u{fffd}'));
+    }
 }

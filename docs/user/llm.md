@@ -37,6 +37,9 @@ model            = "claude-sonnet-4-5"
 [llm.providers.anthropic]
 api_key_env = "ANTHROPIC_API_KEY"
 
+[llm.providers.gemini]
+api_key_env = "GEMINI_API_KEY"
+
 [llm.providers.local]
 kind     = "openai-compatible"
 base_url = "http://localhost:11434/v1"

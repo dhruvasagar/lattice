@@ -1,0 +1,6 @@
+data: {"candidates": [{"content": {"parts": [{"text": "Say hello in Japanese: 日本語","thought": true}],"role": "model"},"index": 0}],"usageMetadata": {"promptTokenCount": 25,"totalTokenCount": 25},"modelVersion": "gemini-2.5-flash"}
+
+data: {"candidates": [{"content": {"parts": [{"text": "Héllo → "}],"role": "model"},"index": 0}],"usageMetadata": {"promptTokenCount": 25,"candidatesTokenCount": 3,"thoughtsTokenCount": 12,"totalTokenCount": 40},"modelVersion": "gemini-2.5-flash"}
+
+data: {"candidates": [{"content": {"parts": [{"text": "こんにちは ✓"}],"role": "model"},"finishReason": "STOP","index": 0}],"usageMetadata": {"promptTokenCount": 25,"candidatesTokenCount": 30,"thoughtsTokenCount": 12,"cachedContentTokenCount": 7,"totalTokenCount": 67},"modelVersion": "gemini-2.5-flash"}
+

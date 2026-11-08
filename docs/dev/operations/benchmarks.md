@@ -248,6 +248,19 @@ chunks. Off the UI thread; recorded so a decoder regression shows.
 | Anthropic | 754 µs | ~382 MiB/s |
 | OpenAI-compatible | 349 µs | ~474 MiB/s |
 
+LL.21 (2026-11-08) added Gemini; one run of all three, so the rows compare with each other
+rather than with the 2026-11-01 numbers above:
+
+| Provider | Time per stream | Throughput |
+|---|---|---|
+| Anthropic | 372 µs | ~774 MiB/s |
+| OpenAI-compatible | 179 µs | ~925 MiB/s |
+| Gemini | 712 µs | ~215 MiB/s |
+
+Gemini is the slowest per byte because every chunk is a whole JSON object with the
+candidate wrapper and usage repeated, parsed in full; its fixture is also the shortest, so
+the fixed per-event cost weighs more. Still four orders of magnitude above model output.
+
 Real model output is orders of magnitude slower than this, so the decoder is
 never the bottleneck.
 

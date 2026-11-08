@@ -39,7 +39,7 @@ pub use request::{
 };
 pub use transport::SinkFlow;
 
-pub use provider::{AnthropicProvider, OpenAiProvider, Provider, StreamDecoder};
+pub use provider::{AnthropicProvider, GeminiProvider, OpenAiProvider, Provider, StreamDecoder};
 
 use serde_json::Value;
 

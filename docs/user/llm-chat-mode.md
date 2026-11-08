@@ -96,8 +96,9 @@ the model was sent, and so is one written by a newer lattice.
 ## Setting up a provider
 
 Chats read an `[llm]` table from your `lattice.toml` when the editor
-starts. Providers are named; `kind` is `anthropic` or `openai-compatible`
-(a provider named `anthropic` defaults to the first).
+starts. Providers are named; `kind` is `anthropic`, `gemini` or
+`openai-compatible` (a provider named `anthropic` or `gemini` gets that
+kind without saying so; anything else defaults to `openai-compatible`).
 
 ```toml
 [llm]
@@ -106,6 +107,10 @@ model = "claude-sonnet-4-5"
 
 [llm.providers.anthropic]
 api_key_env = "ANTHROPIC_API_KEY"
+
+[llm.providers.gemini]
+api_key_env = "GEMINI_API_KEY"
+model = "gemini-2.5-flash"
 
 [llm.providers.local]
 kind = "openai-compatible"
@@ -116,7 +121,8 @@ model = "qwen2.5-coder"
 - `default_provider` is optional when only one provider is configured.
 - `model` is `provider/model` or a bare model on the default provider; a
   provider's own `model` is used when nothing else names one.
-- `base_url` has a sensible default for `anthropic` and OpenAI.
+- `base_url` has a sensible default for `anthropic`, `gemini` and OpenAI.
+  A `gemini` base URL includes the version (`.../v1beta`).
 - `input_cost_per_mtok` and `output_cost_per_mtok` (USD per million
   tokens) turn on the cost in the headerline. Without both, no cost is
   shown: a guessed price is worse than none.

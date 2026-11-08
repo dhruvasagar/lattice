@@ -1,10 +1,13 @@
 //! Provider adapters: request building and stream decoding, no I/O.
 
 mod anthropic;
+mod gemini;
 mod openai;
 
 pub use anthropic::AnthropicProvider;
 pub(crate) use anthropic::PROVIDER_TAG as ANTHROPIC_REASONING_TAG;
+pub use gemini::GeminiProvider;
+pub(crate) use gemini::PROVIDER_TAG as GEMINI_REASONING_TAG;
 pub use openai::OpenAiProvider;
 
 use super::{ApiKey, HttpRequest, LlmRequest, ProviderError, StreamEvent};

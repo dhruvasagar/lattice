@@ -18,6 +18,9 @@
 //! [llm.providers.anthropic]
 //! api_key_env = "ANTHROPIC_API_KEY"     # or api_key_command; never a key in TOML
 //!
+//! [llm.providers.gemini]                # kind `gemini` by name
+//! api_key_env = "GEMINI_API_KEY"
+//!
 //! [llm.providers.local]
 //! kind = "openai-compatible"
 //! base_url = "http://localhost:11434/v1"
@@ -40,9 +43,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use super::settings::{RawSet, SettingKey, parse_profile, validate, value_text};
-use super::{AnthropicProvider, ApiKey, OpenAiProvider, Provider};
+use super::{AnthropicProvider, ApiKey, GeminiProvider, OpenAiProvider, Provider};
 
 const ANTHROPIC_BASE_URL: &str = "https://api.anthropic.com";
+const GEMINI_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta";
 const OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
 
 /// How long `api_key_command` may run before the request fails.
@@ -52,6 +56,7 @@ pub const KEY_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 pub enum ProviderKind {
     Anthropic,
     OpenAiCompatible,
+    Gemini,
 }
 
 /// Where a provider's key comes from.
@@ -82,6 +87,7 @@ impl ProviderKind {
     pub fn reasoning_tag(self) -> Option<&'static str> {
         match self {
             ProviderKind::Anthropic => Some(super::provider::ANTHROPIC_REASONING_TAG),
+            ProviderKind::Gemini => Some(super::provider::GEMINI_REASONING_TAG),
             ProviderKind::OpenAiCompatible => None,
         }
     }
@@ -92,6 +98,7 @@ impl ProviderConfig {
         match self.kind {
             ProviderKind::Anthropic => Arc::new(AnthropicProvider::new(&self.base_url)),
             ProviderKind::OpenAiCompatible => Arc::new(OpenAiProvider::new(&self.base_url)),
+            ProviderKind::Gemini => Arc::new(GeminiProvider::new(&self.base_url)),
         }
     }
 }
@@ -325,19 +332,22 @@ fn parse_provider(name: &str, t: &toml::Table) -> Result<(ProviderConfig, Vec<St
     let kind = match str_of(t, "kind").as_deref() {
         Some("anthropic") => ProviderKind::Anthropic,
         Some("openai-compatible") => ProviderKind::OpenAiCompatible,
+        Some("gemini") => ProviderKind::Gemini,
         Some(other) => {
             return Err(format!(
                 "llm: provider `{name}`: unknown kind `{other}` \
-                 (expected `anthropic` or `openai-compatible`)"
+                 (expected `anthropic`, `gemini` or `openai-compatible`)"
             ));
         }
         None if name == "anthropic" => ProviderKind::Anthropic,
+        None if name == "gemini" => ProviderKind::Gemini,
         None => ProviderKind::OpenAiCompatible,
     };
     let base_url = str_of(t, "base_url").unwrap_or_else(|| {
         match kind {
             ProviderKind::Anthropic => ANTHROPIC_BASE_URL,
             ProviderKind::OpenAiCompatible => OPENAI_BASE_URL,
+            ProviderKind::Gemini => GEMINI_BASE_URL,
         }
         .to_string()
     });
@@ -434,7 +444,7 @@ pub async fn resolve_key(provider: &ProviderConfig) -> Result<ApiKey, String> {
     match &provider.key {
         KeySource::None => match provider.kind {
             ProviderKind::OpenAiCompatible => Ok(ApiKey::new("")),
-            ProviderKind::Anthropic => Err(format!(
+            ProviderKind::Anthropic | ProviderKind::Gemini => Err(format!(
                 "provider `{}` has no key: set api_key_env or api_key_command",
                 provider.name
             )),
@@ -568,6 +578,24 @@ mod tests {
     }
 
     #[test]
+    fn gemini_is_a_kind_and_a_provider_named_gemini_defaults_to_it() {
+        let c = cfg(r#"
+            [llm.providers.gemini]
+            api_key_env = "GEMINI_API_KEY"
+            model = "gemini-2.5-flash"
+            [llm.providers.vertex-proxy]
+            kind = "gemini"
+            base_url = "https://proxy.example/v1beta"
+        "#);
+        assert!(c.warnings.is_empty(), "{:?}", c.warnings);
+        let g = &c.providers["gemini"];
+        assert_eq!(g.kind, ProviderKind::Gemini);
+        assert_eq!(g.base_url, GEMINI_BASE_URL);
+        assert_eq!(c.providers["vertex-proxy"].kind, ProviderKind::Gemini);
+        assert_eq!(ProviderKind::Gemini.reasoning_tag(), Some("gemini"));
+    }
+
+    #[test]
     fn a_missing_model_names_where_to_set_it() {
         let c = cfg("[llm.providers.local]\n");
         assert!(c.choose(None, None).unwrap_err().contains("llm.model"));
@@ -577,7 +605,7 @@ mod tests {
     fn a_bad_provider_is_skipped_with_a_warning_and_the_rest_survive() {
         let c = cfg(r#"
             [llm.providers.bad]
-            kind = "gemini"
+            kind = "carrier-pigeon"
             [llm.providers.good]
         "#);
         assert_eq!(c.warnings.len(), 1);
@@ -693,6 +721,11 @@ mod tests {
         assert!(resolve_key(&local).await.unwrap().is_empty());
         let a = provider(ProviderKind::Anthropic, KeySource::None);
         assert!(resolve_key(&a).await.unwrap_err().contains("api_key_env"));
+        let g = provider(ProviderKind::Gemini, KeySource::None);
+        assert!(
+            resolve_key(&g).await.unwrap_err().contains("api_key_env"),
+            "Gemini needs a key too"
+        );
     }
 
     #[tokio::test]

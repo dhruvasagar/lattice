@@ -19,6 +19,10 @@ fn openai() -> OpenAiProvider {
     OpenAiProvider::new("http://localhost:11434/v1")
 }
 
+fn gemini() -> GeminiProvider {
+    GeminiProvider::default()
+}
+
 fn usage(i: u64, o: u64, cr: u64, cw: u64) -> StreamEvent {
     StreamEvent::Usage(Usage {
         input_tokens: i,
@@ -163,6 +167,10 @@ fn truncated_streams_yield_error_not_a_panic() {
             &openai(),
             include_str!("fixtures/llm/openai_text_reasoning.sse"),
         ),
+        (
+            &gemini(),
+            include_str!("fixtures/llm/gemini_text_thinking.sse"),
+        ),
     ] {
         // Cut mid-event, mid-stream.
         let cut = &text[..text.len() / 2];
@@ -214,7 +222,7 @@ fn arbitrary_garbage_never_panics() {
         b"event: message_start\ndata: {\"type\":\"message_start\",\"message\":7}\n\n",
         b"data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":\"x\",\"function\":3}]}}]}\n\n",
     ];
-    for p in [&anthropic() as &dyn Provider, &openai()] {
+    for p in [&anthropic() as &dyn Provider, &openai(), &gemini()] {
         for input in inputs {
             let mut d = p.decoder();
             let _ = d.push(input);
@@ -363,7 +371,7 @@ fn anthropic_interleaved_tool_blocks_keep_their_ids() {
 
 #[test]
 fn an_endless_line_is_cut_off_with_an_error_not_buffered_forever() {
-    for p in [&anthropic() as &dyn Provider, &openai()] {
+    for p in [&anthropic() as &dyn Provider, &openai(), &gemini()] {
         let mut d = p.decoder();
         let chunk = vec![b'x'; 1024 * 1024];
         let mut ev = Vec::new();
@@ -383,4 +391,117 @@ fn an_endless_line_is_cut_off_with_an_error_not_buffered_forever() {
             1
         );
     }
+}
+
+#[test]
+fn gemini_text_reasoning_and_usage() {
+    let ev = run(
+        &gemini(),
+        include_str!("fixtures/llm/gemini_text_thinking.sse"),
+    );
+    assert_eq!(
+        ev,
+        vec![
+            StreamEvent::Reasoning("Say hello in Japanese: 日本語".into()),
+            StreamEvent::Text("Héllo → ".into()),
+            StreamEvent::Text("こんにちは ✓".into()),
+            // The last report, once, with thinking counted as output.
+            usage(25, 42, 7, 0),
+            StreamEvent::Done(StopReason::EndTurn),
+        ]
+    );
+}
+
+#[test]
+fn gemini_calls_arrive_whole_and_keep_their_signature_on_the_call() {
+    let ev = run(
+        &gemini(),
+        include_str!("fixtures/llm/gemini_tool_calls.sse"),
+    );
+    let anchor = serde_json::json!({"call": "fc_01", "signature": "CiQBVKhc7sig"}).to_string();
+    assert_eq!(
+        ev,
+        vec![
+            StreamEvent::Text("Reading both files…".into()),
+            // A block to keep the signature on, then the call it belongs to.
+            StreamEvent::Reasoning(String::new()),
+            StreamEvent::ReasoningData(ReasoningData {
+                provider: "gemini".into(),
+                data: anchor,
+            }),
+            StreamEvent::ToolCallStart {
+                id: "fc_01".into(),
+                name: "lattice__read_file".into()
+            },
+            StreamEvent::ToolCallInput {
+                id: "fc_01".into(),
+                json_fragment: "{\"path\":\"src/lib.rs\"}".into()
+            },
+            StreamEvent::ToolCallEnd { id: "fc_01".into() },
+            // No id on the wire: one is made, unique within the reply.
+            StreamEvent::ToolCallStart {
+                id: "gemini_call_1".into(),
+                name: "lattice__read_file".into()
+            },
+            StreamEvent::ToolCallInput {
+                id: "gemini_call_1".into(),
+                json_fragment: "{\"path\":\"src/ü.rs\"}".into()
+            },
+            StreamEvent::ToolCallEnd {
+                id: "gemini_call_1".into()
+            },
+            usage(40, 27, 0, 0),
+            // `STOP` after calls means "run them".
+            StreamEvent::Done(StopReason::ToolUse),
+        ]
+    );
+}
+
+#[test]
+fn gemini_errors_and_blocked_prompts_surface_once() {
+    let e = run(
+        &gemini(),
+        "data: {\"error\": {\"code\": 429, \"message\": \"Resource exhausted\", \"status\": \"RESOURCE_EXHAUSTED\"}}\n\n",
+    );
+    assert_eq!(
+        e,
+        vec![StreamEvent::Error(ProviderError::Api {
+            kind: "RESOURCE_EXHAUSTED".into(),
+            message: "Resource exhausted".into()
+        })]
+    );
+    let b = run(
+        &gemini(),
+        "data: {\"promptFeedback\": {\"blockReason\": \"SAFETY\"}}\n\n",
+    );
+    assert_eq!(
+        b,
+        vec![StreamEvent::Error(ProviderError::Api {
+            kind: "blocked".into(),
+            message: "the prompt was blocked (SAFETY)".into()
+        })]
+    );
+}
+
+#[test]
+fn gemini_unknown_chunks_are_skipped_and_other_finishes_are_named() {
+    let ev = run(
+        &gemini(),
+        "data: {\"something\": \"else\"}\n\ndata: {\"candidates\": [{\"content\": {\"parts\": [{\"text\": \"x\"}]}, \"finishReason\": \"MAX_TOKENS\"}]}\n\n",
+    );
+    assert_eq!(
+        ev,
+        vec![
+            StreamEvent::Text("x".into()),
+            StreamEvent::Done(StopReason::MaxTokens)
+        ]
+    );
+    let ev = run(
+        &gemini(),
+        "data: {\"candidates\": [{\"finishReason\": \"SAFETY\"}]}\n\n",
+    );
+    assert_eq!(
+        ev,
+        vec![StreamEvent::Done(StopReason::Other("safety".into()))]
+    );
 }

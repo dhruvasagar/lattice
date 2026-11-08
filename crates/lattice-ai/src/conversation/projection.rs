@@ -201,7 +201,9 @@ fn layout(conv: &Conversation, opts: &ProjectionOptions) -> Layout {
                 Block::Reasoning(text) => {
                     let ordinal = reasoning_ordinal;
                     reasoning_ordinal += 1;
-                    if opts.reasoning == FoldDisplay::Hidden {
+                    // An empty block holds only round-trip data (a signature
+                    // a provider gave without thought text): nothing to show.
+                    if opts.reasoning == FoldDisplay::Hidden || text.is_empty() {
                         continue;
                     }
                     let start = s.line;

@@ -6,11 +6,12 @@
 //! (1 KiB) chunks, the shape `reqwest` delivers.
 
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
-use lattice_ai::llm::{AnthropicProvider, OpenAiProvider, Provider};
+use lattice_ai::llm::{AnthropicProvider, GeminiProvider, OpenAiProvider, Provider};
 use std::hint::black_box;
 
 const ANTHROPIC: &str = include_str!("../tests/fixtures/llm/anthropic_text_thinking.sse");
 const OPENAI: &str = include_str!("../tests/fixtures/llm/openai_text_reasoning.sse");
+const GEMINI: &str = include_str!("../tests/fixtures/llm/gemini_text_thinking.sse");
 const CHUNK: usize = 1024;
 const REPEATS: usize = 200;
 
@@ -36,6 +37,7 @@ fn bench(c: &mut Criterion) {
             OPENAI,
             Box::new(OpenAiProvider::new("http://localhost/v1")),
         ),
+        ("gemini", GEMINI, Box::new(GeminiProvider::default())),
     ] {
         let bytes = fixture.repeat(REPEATS).into_bytes();
         group.throughput(Throughput::Bytes(bytes.len() as u64));

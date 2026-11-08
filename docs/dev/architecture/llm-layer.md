@@ -113,6 +113,16 @@ What in-place editing gave is replaced by:
 - **Changing provider** leaves another provider's reasoning out of the request: only the
   provider that signed it can verify it. The adapter already drops it; the chat says so
   once per chat and provider, in `*messages*`, beside the other "not sent" notes.
+- **A signature on a call, not on reasoning.** Gemini signs its thinking on a reply part,
+  usually the first function call, often with no thought text at all; newer models reject a
+  call sent back without its signature, which would break a tool loop on round two. Round-trip
+  data lives only on reasoning blocks, and that is kept: the adapter opens an empty reasoning
+  block before a signed call and its data names the call, so building the next request puts
+  the signature back on that call. An empty block is data only: the projection and the org
+  export show nothing for it. A signature on a text part is optional and is dropped, since
+  keeping it would split the reply's text around a block of its own. Rejected: a signature
+  field on `Block::ToolCall`. It would make one provider's wire detail part of the shared
+  model ACP also uses, for a case the existing keyed map already holds.
 - **`:llm-export`** writes `.md` (and `.org`) for keeping. Resuming uses a separate
   session file: `:llm-save` / `:llm-resume`. The markdown is the projection with every
   block open; org is built from the model, not by re-reading the markdown, so prose that

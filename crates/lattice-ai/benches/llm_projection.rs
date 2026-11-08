@@ -151,5 +151,32 @@ fn bench_edit_span(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench, bench_tool_history, bench_edit_span);
+/// LL.18: the permission popup's tick asks every producer for the oldest
+/// pending request, on the editor thread, on every tick. The usual answer is
+/// "none", across however many chats are open; this is that walk.
+fn bench_permission_scan(c: &mut Criterion) {
+    use lattice_ai::conversation::ConversationStore;
+    use lattice_ai::permission::PermissionSources;
+    use std::sync::Arc;
+    let mut group = c.benchmark_group("llm_permission_scan");
+    for chats in [1usize, 10, 100] {
+        let stores: Vec<ConversationStore> = (0..chats)
+            .map(|_| ConversationStore::new(Arc::new(|_| {})))
+            .collect();
+        let sources = PermissionSources::new();
+        sources.add(Arc::new(move || stores.clone()));
+        group.bench_with_input(BenchmarkId::new("chats", chats), &chats, |b, _| {
+            b.iter(|| black_box(sources.oldest_pending_where(|_| true).is_none()))
+        });
+    }
+    group.finish();
+}
+
+criterion_group!(
+    benches,
+    bench,
+    bench_tool_history,
+    bench_edit_span,
+    bench_permission_scan
+);
 criterion_main!(benches);

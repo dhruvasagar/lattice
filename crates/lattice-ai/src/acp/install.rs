@@ -19,7 +19,11 @@ use crate::conversation::ConversationStore;
 /// Wire the ACP (Agent Client Protocol) transport into the editor at boot. The
 /// `logger` is the port-level `AiLogger` the supervisor streams *trace* records
 /// into; the crate-root `install` already registered it as a service.
-pub fn install(boot: &mut impl SubsystemBoot, logger: &AiLogger) {
+pub fn install(
+    boot: &mut impl SubsystemBoot,
+    logger: &AiLogger,
+    permissions: &crate::permission::PermissionSourcesHandle,
+) {
     // The structured conversation store: the supervisor folds agent *conversation*
     // output into it and publishes `ConversationUpdated` on the event bus so the
     // `ai-conversation` mode (AU-2) can live-tail. Registered as a service so the
@@ -33,12 +37,12 @@ pub fn install(boot: &mut impl SubsystemBoot, logger: &AiLogger) {
         .register(AiConversationMode::new())
         .expect("ai-conversation-mode register");
 
-    // PU-B: the `ai-permission` major mode backs the `*ai-permission*` popup
-    // menu; its `on_activate` reads the ConversationStore and projects the
-    // oldest pending request.
-    boot.modes_mut()
-        .register(crate::acp::permission_mode::AiPermissionMode::new())
-        .expect("ai-permission-mode register");
+    // PU-B: the `*ai-permission*` popup is `crate::permission`'s (LL.18); the
+    // agent's requests reach it through this store.
+    {
+        let store = conv_store.clone();
+        permissions.add(Arc::new(move || vec![store.clone()]));
+    }
 
     // AU‑4: the host-registered programmatic-diff bus (the `review_diff`
     // producer side), shared with MCP's `openDiff`. `None` if absent → edit
@@ -65,31 +69,6 @@ pub fn install(boot: &mut impl SubsystemBoot, logger: &AiLogger) {
     // bodies live in `AiConversationMode::action_handlers`.
     crate::acp::conversation_mode::register_ai_conversation_actions(boot.commands_mut());
 
-    // PU-B: the `ai-permission` menu's action commands (`action:ai-perm-*`).
-    crate::acp::permission_mode::register_ai_permission_actions(boot.commands_mut());
-
-    // PU-B.3: the permission-menu auto-open coordinator (menu-open gate +
-    // Esc-deferred set), shared by `ai-permission-mode` and the auto-open tick
-    // callback below. Registered as a service (the `Arc<X>` handle convention).
-    let coordinator: crate::acp::permission_mode::PermissionMenuCoordinatorHandle =
-        Arc::new(crate::acp::permission_mode::PermissionMenuCoordinator::new());
-    boot.register_service::<crate::acp::permission_mode::PermissionMenuCoordinatorHandle>(
-        coordinator.clone(),
-    );
-
-    // PU-B.3: the auto-open tick callback. `run_tick_pending` runs it on the
-    // actor's `async_landed` wake (below) — no keystroke — so a permission that
-    // becomes pending while the user is idle opens the menu on its own. The body
-    // is mode-owned (`permission_mode::auto_open_tick`); the host only runs the
-    // closure + applies the returned `Effect::OpenPopup`.
-    {
-        let conv_store = conv_store.clone();
-        let coordinator = coordinator.clone();
-        boot.tick_callback(Box::new(move || {
-            crate::acp::permission_mode::auto_open_tick(&conv_store, &coordinator)
-        }));
-    }
-
     // Services: `AiClientHandle` for a future modeline/UI; `ConversationStore`
     // for the `ai-conversation` mode's projection.
     boot.register_service::<AiClientHandle>(handle);
@@ -101,10 +80,4 @@ pub fn install(boot: &mut impl SubsystemBoot, logger: &AiLogger) {
     // without needing a keystroke. Sequenced after the edit — via this event,
     // not `ConversationUpdated` — so the wake never paints stale content.
     boot.wake_on_event::<crate::conversation::ConversationProjected>();
-
-    // PU-B.3: also wake on `ConversationUpdated` (fired by the supervisor's
-    // `push_permission_request`) so the auto-open tick callback runs the instant
-    // a permission goes pending — even when the `*ai:opencode*` buffer isn't
-    // focused, so its `ConversationProjected` drain isn't the one waking us.
-    boot.wake_on_event::<crate::conversation::ConversationUpdated>();
 }

@@ -3,6 +3,7 @@
 //! a profile and a project file contribute, the trust table holds end to end,
 //! and "a change applies to the next request, never to one in flight".
 
+#![cfg(feature = "llm")]
 #![allow(clippy::unwrap_used, clippy::panic)]
 
 mod llm_support;

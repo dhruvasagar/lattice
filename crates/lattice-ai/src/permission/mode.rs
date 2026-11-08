@@ -1,10 +1,10 @@
-//! `ai-permission-mode` — the ACP permission menu (PU-B).
+//! `ai-permission-mode` — the permission menu (PU-B; neutral since LL.18).
 //!
 //! A momentary popup surface over a dynamic option list (design §5.3). The
 //! buffer is a `BufferData::Help` popup (so the popup renderer draws it) whose
 //! MAJOR mode is this one: the KIND names the surface, this mode names the
-//! behaviour. `on_activate` reads the oldest `Pending` permission from the
-//! [`ConversationStore`] and owner-writes the projection; `<CR>` on an option
+//! behaviour. `on_activate` reads the oldest `Pending` permission across the
+//! [`PermissionSources`] and owner-writes the projection; `<CR>` on an option
 //! line resolves it (the file-tree / oil `entry_at_line` model), `Esc`/`q`
 //! defer. Resolution routes through
 //! [`ConversationStore::resolve_permission`](crate::conversation::ConversationStore::resolve_permission)
@@ -26,6 +26,7 @@ use lattice_mode::{
     keymap_entry,
 };
 
+use super::{PermissionSources, PermissionSourcesHandle};
 use crate::conversation::{ConversationStore, PendingPermissionView};
 
 /// The synthetic buffer name the popup menu is projected into. `:ai-permission`
@@ -44,6 +45,8 @@ const FIRST_OPTION_LINE: u32 = 2;
 struct MenuState {
     request_id: Option<String>,
     option_ids: Vec<String>,
+    /// The store holding the request: the choice is resolved there.
+    store: Option<ConversationStore>,
 }
 
 /// Service handle for `ServiceRegistry` lookup (the `Arc<T>` alias convention,
@@ -185,14 +188,14 @@ impl Mode for AiPermissionMode {
             let Some(handle) = store.handle_for(buffer_id) else {
                 return Ok(guard);
             };
-            let Some(conv_store) = ctx.service::<ConversationStore>() else {
+            let Some(sources) = ctx.service::<PermissionSourcesHandle>() else {
                 return Ok(guard);
             };
             // Each open is a fresh buffer (dismiss tears the prior one down), so
             // projecting the CURRENT oldest-pending request on every activation
             // keeps the menu in sync as requests resolve.
-            let (text, state) = match conv_store.oldest_pending_permission() {
-                Some(pending) => {
+            let (text, state) = match sources.oldest_pending_where(|_| true) {
+                Some((store, pending)) => {
                     let state = MenuState {
                         request_id: Some(pending.id.clone()),
                         option_ids: pending
@@ -200,6 +203,7 @@ impl Mode for AiPermissionMode {
                             .iter()
                             .map(|o| o.option_id.clone())
                             .collect(),
+                        store: Some(store),
                     };
                     (project_permission(&pending), state)
                 }
@@ -272,13 +276,16 @@ fn ai_permission_keymap_entries() -> &'static [KeymapEntry] {
 /// `Esc` hint) map to no option, so the keystroke is a harmless no-op there.
 fn select_at_cursor_handler(menu: Arc<Mutex<MenuState>>) -> ActionHandler {
     Arc::new(move |ctx: &ActionContext<'_>| -> Option<Effect> {
-        let (id, option_id) = {
+        let (id, option_id, store) = {
             let guard = menu.lock().ok()?;
             let id = guard.request_id.clone()?;
             let index = ctx.cursor.line.checked_sub(FIRST_OPTION_LINE)? as usize;
-            (id, guard.option_ids.get(index)?.clone())
+            (
+                id,
+                guard.option_ids.get(index)?.clone(),
+                guard.store.clone()?,
+            )
         };
-        let store = ctx.services.get::<ConversationStore>()?;
         store.resolve_permission(&id, &option_id);
         // A choice was made — close the menu.
         Some(Effect::DismissPopup)
@@ -310,25 +317,20 @@ fn dismiss_handler(menu: Arc<Mutex<MenuState>>) -> ActionHandler {
 /// showing, and sets `menu_open` optimistically so it emits ONCE rather than
 /// every tick until `on_activate` lands. Returns the effects to apply.
 pub fn auto_open_tick(
-    conv_store: &ConversationStore,
+    sources: &PermissionSources,
     coordinator: &PermissionMenuCoordinator,
 ) -> Vec<Effect> {
     if coordinator.is_open() {
         return Vec::new();
     }
-    if conv_store
-        .oldest_pending_permission_where(|id| !coordinator.is_deferred(id))
+    if sources
+        .oldest_pending_where(|id| !coordinator.is_deferred(id))
         .is_none()
     {
         return Vec::new();
     }
     coordinator.set_open(true);
-    vec![Effect::OpenPopup {
-        name: PERMISSION_BUFFER_NAME.to_string(),
-        mode_id: AiPermissionMode::mode_id().as_str().to_string(),
-        placement: lattice_core::ui::popup::PopupPlacement::Centered,
-        focus: lattice_core::ui::popup::PopupFocus::Steal,
-    }]
+    vec![super::open_popup()]
 }
 
 /// Register the `ai-permission` action commands so the mode's keymap `cmd`
@@ -379,6 +381,13 @@ mod tests {
     use crate::conversation::{PermissionKind, PermissionOption};
     use lattice_agent::SessionKey;
 
+    fn sources_of(store: &ConversationStore) -> PermissionSources {
+        let sources = PermissionSources::new();
+        let store = store.clone();
+        sources.add(Arc::new(move || vec![store.clone()]));
+        sources
+    }
+
     fn store_with_pending(ids: &[&str]) -> ConversationStore {
         let store = ConversationStore::new(Arc::new(|_| {}));
         for id in ids {
@@ -407,7 +416,7 @@ mod tests {
         let store = store_with_pending(&["perm-1"]);
         let coord = PermissionMenuCoordinator::new();
 
-        let first = auto_open_tick(&store, &coord);
+        let first = auto_open_tick(&sources_of(&store), &coord);
         assert!(
             matches!(first.as_slice(), [Effect::OpenPopup { name, .. }] if name == PERMISSION_BUFFER_NAME),
             "a pending request auto-opens the menu",
@@ -417,7 +426,7 @@ mod tests {
             "menu_open set optimistically so it emits once"
         );
         assert!(
-            auto_open_tick(&store, &coord).is_empty(),
+            auto_open_tick(&sources_of(&store), &coord).is_empty(),
             "gated while a menu is open — no repeat emit every tick",
         );
     }
@@ -428,7 +437,7 @@ mod tests {
         let coord = PermissionMenuCoordinator::new();
         coord.defer("perm-1"); // user pressed Esc
         assert!(
-            auto_open_tick(&store, &coord).is_empty(),
+            auto_open_tick(&sources_of(&store), &coord).is_empty(),
             "an Esc-deferred request is not auto-reopened",
         );
     }
@@ -443,7 +452,7 @@ mod tests {
         coord.set_open(false); // guard Drop on dismiss
         assert!(
             matches!(
-                auto_open_tick(&store, &coord).as_slice(),
+                auto_open_tick(&sources_of(&store), &coord).as_slice(),
                 [Effect::OpenPopup { .. }]
             ),
             "the next pending request opens once the menu closes",
@@ -454,7 +463,7 @@ mod tests {
     fn auto_open_noop_without_pending() {
         let store = ConversationStore::new(Arc::new(|_| {}));
         let coord = PermissionMenuCoordinator::new();
-        assert!(auto_open_tick(&store, &coord).is_empty());
+        assert!(auto_open_tick(&sources_of(&store), &coord).is_empty());
     }
 
     fn view() -> PendingPermissionView {

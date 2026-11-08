@@ -425,6 +425,48 @@ diffs at once, one from a rewrite, would fight for the focus); trust as an optio
 (`llm.trust`) a profile or project file could set — §4's table puts trust out of a
 project's reach, and a key in the chat it applies to is the narrowest grant.
 
+**Lattice's exec tool** (LL.18: `run_command`, selected as `lattice.exec`) asks before
+every run. The question is the same popup an ACP agent's permission request uses, and
+the request is `AwaitingReview` while it waits. It names the tool and shows the command
+(`$ cargo test`, plus `in <dir>` when the model gave one), with three answers: allow
+once, allow for this chat, deny. A denial is the tool's result ("the user denied
+running …; do not try it again unless they ask"), so the model learns why and the loop
+continues. Deferring (`<Esc>`) leaves the question pending: `:ai-permission` reopens it.
+A request stopped while it waits withdraws the question as a denial, so a stale popup
+can never run anything.
+
+The command runs in `sh -c` (`cmd /C` on Windows) at the project root, or a `cwd` inside
+it, through `lattice_core::process::run_cancellable_capped` in its **own process group**:
+`:llm-stop`, `<C-c>` or closing the chat kills the whole tree, not just the shell. It
+times out (120 s by default, up to 600 s if the model asks), and each stream keeps its
+first 30 000 bytes and drains the rest, so a noisy command can neither fill memory nor
+block on a full pipe. The result carries the exit status, both streams, and a line
+saying where each was cut.
+
+**"Allow for this chat"** is per tool and lives on the chat session, like `<C-t>`: never
+saved, never copied, cleared when the chat closes. `<C-t>` trusts edits only; it never
+lets a command run unasked, because a command's effects cannot be reviewed or undone.
+Exec is off unless the user's own config, a profile, or `:setlocal` selects it; §4's
+table already keeps a project file from widening `llm.tools`, and that holds for
+`lattice.exec`.
+
+**One permission popup, many producers.** The popup moved from the ACP module to a
+neutral `permission` module and reads a `PermissionSources` registry: each producer adds
+a closure that lists its conversation stores (ACP adds its one store; the llm layer adds
+every chat's). The popup shows the oldest pending request across all of them and answers
+it on the store that holds it. The broker reaches the user through `CallContext.ask`,
+which returns `Answer::{Once, ForChat, Deny}`; the chat's asker turns that into a
+pending permission on its store. A tool that needs asking with no asker attached is
+refused, never run.
+
+Rejected for exec: running commands through the user's terminal buffer (the output
+would be the user's scrollback, not a result, and a stop could not tell the model's
+process from the user's); trusting a command prefix ("always allow `cargo`") in this
+slice (prefix rules are a policy language, and getting one wrong runs arbitrary code;
+"allow for this chat" covers the repeated case without a parser); a second popup for
+llm questions (two menus for one decision, and only one could be focused when both
+fire).
+
 Rejected: a request id per exchange (the modeline, `:llm-requests` and `:llm-stop` would
 see a loop as unrelated requests, and a cancel between exchanges would find nothing to
 cancel); accumulating the loop's messages beside the store (two records of one conversation,

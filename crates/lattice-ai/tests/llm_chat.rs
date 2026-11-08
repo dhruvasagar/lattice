@@ -2,6 +2,7 @@
 //! failures, and cancel-on-close. The buffer half is tested in
 //! `lattice-host/tests/llm_chat_buffer.rs`.
 
+#![cfg(feature = "llm")]
 #![allow(clippy::unwrap_used, clippy::panic)]
 
 mod llm_support;

@@ -140,7 +140,8 @@ impl PromptAnchors {
         })
     }
 
-    #[cfg(test)]
+    // Read only by the ACP conversation mode's tests.
+    #[cfg(all(test, feature = "acp"))]
     pub(crate) fn len(&self) -> usize {
         self.0
             .entries

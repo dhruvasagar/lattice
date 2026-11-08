@@ -23,7 +23,7 @@ use std::sync::{Arc, RwLock};
 
 use serde_json::Value;
 
-use super::{CallContext, SourceTool, ToolError, ToolOutput, ToolSource};
+use super::{Answer, CallContext, Question, SourceTool, ToolError, ToolOutput, ToolSource};
 use crate::conversation::ToolKind;
 use crate::llm::ToolDescriptor;
 
@@ -99,8 +99,9 @@ impl Offer {
 
     /// Run the tool the model named. A name this request was not offered is
     /// refused by name, whatever any earlier result said. A `Review` tool is
-    /// lattice's own and opens its review itself (LL.17); a tool that must
-    /// ask first is not run, since asking arrives with LL.18.
+    /// lattice's own and opens its review itself (LL.17); an `Ask` tool runs
+    /// only once the user allows it (LL.18), and is refused where nothing can
+    /// ask.
     pub async fn call(
         &self,
         wire: &str,
@@ -110,17 +111,50 @@ impl Offer {
         let tool = self
             .find(wire)
             .ok_or_else(|| ToolError::UnknownTool(wire.to_string()))?;
-        if tool.permission == Permission::Ask {
-            return Err(ToolError::Refused(format!(
-                "{}.{} needs approval, which this version cannot ask for yet",
-                tool.server, tool.name
-            )));
-        }
         let source = self
             .sources
             .get(&tool.server)
             .ok_or_else(|| ToolError::UnknownTool(wire.to_string()))?;
+        if tool.permission == Permission::Ask {
+            let shown = format!("{}.{}", tool.server, tool.name);
+            let Some(ask) = &ctx.ask else {
+                return Err(ToolError::Refused(format!(
+                    "{shown} needs the user's approval, and nothing here can ask for it"
+                )));
+            };
+            let detail = source
+                .describe(&tool.name, &input)
+                .or_else(|| Some(arguments_shown(&input)));
+            let question = Question {
+                tool: shown.clone(),
+                title: format!("Allow {shown}?"),
+                detail,
+            };
+            if let Some(f) = &ctx.on_review {
+                f(true);
+            }
+            let answer = ask(question).await;
+            if let Some(f) = &ctx.on_review {
+                f(false);
+            }
+            if answer == Answer::Deny {
+                return Err(ToolError::Refused(format!(
+                    "the user denied running {shown}; do not try it again unless they ask"
+                )));
+            }
+        }
         source.call(&tool.name, input, ctx).await
+    }
+}
+
+/// A call's arguments as the user sees them when asked: indented JSON, cut
+/// short past a screenful.
+fn arguments_shown(input: &Value) -> String {
+    const MAX: usize = 2000;
+    let text = serde_json::to_string_pretty(input).unwrap_or_else(|_| input.to_string());
+    match text.char_indices().nth(MAX) {
+        Some((cut, _)) => format!("{}…", &text[..cut]),
+        None => text,
     }
 }
 
@@ -351,7 +385,8 @@ mod tests {
             o.call("github__search_issues", Value::Null, ctx()).await,
             Err(ToolError::UnknownTool(_))
         ));
-        // A review tool runs (it reviews itself); one that must ask does not.
+        // A review tool runs (it reviews itself); one that must ask, with
+        // nothing to ask, does not.
         assert!(
             o.call("lattice__write_file", Value::Null, ctx())
                 .await
@@ -362,5 +397,37 @@ mod tests {
             o.call("github__create_issue", Value::Null, ctx()).await,
             Err(ToolError::Refused(_))
         ));
+    }
+
+    /// An `Ask` tool runs once allowed, and a denial reaches the model as a
+    /// refusal; the question names the tool and shows the arguments.
+    #[tokio::test]
+    async fn an_ask_tool_runs_only_when_allowed() {
+        let b = broker();
+        let o = b.offer(&pick(&["github.*"])).await;
+        let asked: Arc<std::sync::Mutex<Vec<Question>>> = Arc::default();
+        let with = |answer: Answer| {
+            let asked = asked.clone();
+            CallContext {
+                ask: Some(Arc::new(move |q| {
+                    asked.lock().unwrap().push(q);
+                    Box::pin(async move { answer })
+                })),
+                ..CallContext::default()
+            }
+        };
+        let input = serde_json::json!({"title": "bug"});
+        let ran = o
+            .call("github__create_issue", input.clone(), with(Answer::Once))
+            .await
+            .unwrap();
+        assert_eq!(ran.text, "ran create_issue");
+        let denied = o
+            .call("github__create_issue", input, with(Answer::Deny))
+            .await;
+        assert!(matches!(&denied, Err(ToolError::Refused(why)) if why.contains("denied")));
+        let q = asked.lock().unwrap()[0].clone();
+        assert_eq!(q.tool, "github.create_issue");
+        assert!(q.detail.unwrap().contains("\"bug\""));
     }
 }

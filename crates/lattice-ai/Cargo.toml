@@ -13,7 +13,7 @@ default = ["acp", "mcp", "llm"]
 acp = ["dep:agent-client-protocol", "dep:tokio-util", "dep:linkme", "tokio/process"]
 # Direct model-API layer: no-I/O provider adapters (LL.3), later the engine. Shares
 # the protocol-neutral `conversation` model with `acp`; never depends on it.
-llm = ["dep:linkme", "dep:tokio-util", "dep:reqwest", "dep:toml", "dep:regex", "dep:ignore", "tokio/net"]
+llm = ["dep:linkme", "dep:tokio-util", "dep:reqwest", "dep:toml", "dep:regex", "dep:ignore", "tokio/net", "tokio/process"]
 # MCP IDE-peer transport (Claude Code, folded in by AG-4): the loopback
 # WebSocket server + the read / write / diff tools it exposes.
 mcp = ["dep:tokio-tungstenite", "dep:dirs", "dep:getrandom", "dep:lattice-lsp", "tokio/net"]

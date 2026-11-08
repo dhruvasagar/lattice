@@ -1,6 +1,7 @@
 //! Recorded-shape fixtures per provider: text, reasoning, tool calls, usage,
 //! plus the failure modes (truncation, unknown events, garbage input).
 
+#![cfg(feature = "llm")]
 use lattice_ai::llm::*;
 
 fn run(p: &dyn Provider, text: &str) -> Vec<StreamEvent> {

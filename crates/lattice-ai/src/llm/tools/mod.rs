@@ -81,7 +81,35 @@ pub struct CallContext {
     /// Told `true` when a review opens and `false` when it closes, so the
     /// request shows `AwaitingReview` while the user decides.
     pub on_review: Option<std::sync::Arc<dyn Fn(bool) + Send + Sync>>,
+    /// Asks the user whether a tool may run (LL.18). `None` where nothing
+    /// can ask: a tool that must ask is then refused.
+    pub ask: Option<AskFn>,
 }
+
+/// What the user is asked before a tool runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Question {
+    /// `server.name`, the key an "allow for this chat" is remembered by.
+    pub tool: String,
+    pub title: String,
+    /// What it would do: the command, or the arguments.
+    pub detail: Option<String>,
+}
+
+/// The user's answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Answer {
+    /// Run it this once.
+    Once,
+    /// Run it, and this tool again in this chat without asking.
+    ForChat,
+    /// Do not run it.
+    Deny,
+}
+
+/// Puts a [`Question`] to the user and resolves with the answer. Dropping
+/// the future withdraws the question.
+pub type AskFn = std::sync::Arc<dyn Fn(Question) -> BoxFuture<'static, Answer> + Send + Sync>;
 
 impl std::fmt::Debug for CallContext {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -106,4 +134,10 @@ pub trait ToolSource: Send + Sync {
         input: Value,
         ctx: CallContext,
     ) -> BoxFuture<'_, Result<ToolOutput, ToolError>>;
+
+    /// What a call would do, in a line the user can judge before allowing
+    /// it: `cargo test` for a command. `None` shows the arguments.
+    fn describe(&self, _name: &str, _input: &Value) -> Option<String> {
+        None
+    }
 }

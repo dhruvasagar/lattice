@@ -2,6 +2,7 @@
 //! chat's history valid. The call is answered with an error result, so the
 //! next prompt's request is one a strict server accepts.
 
+#![cfg(feature = "llm")]
 #![allow(clippy::unwrap_used, clippy::panic)]
 
 mod llm_support;

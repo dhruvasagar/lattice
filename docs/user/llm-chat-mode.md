@@ -187,9 +187,32 @@ and the headerline says `edits trusted` until you press `<C-t>` again or
 close the chat. It is never saved and never carried to another chat.
 Closing a chat closes any diff it still has open.
 
+`lattice.exec` lets it run commands:
+
+| Tool | Does |
+|---|---|
+| `run_command` | Runs a shell command in the project |
+
+**Every command asks first.** A menu shows the command and where it
+runs, with three answers: allow once, allow for this chat, or deny.
+Move to one and press `<CR>`. A denial is passed to the model, which is
+told not to try again unless you ask. `<Esc>` decides later: the request
+waits, and `:ai-permission` brings the question back.
+
+The command runs in the project, in its own process group, so stopping
+the request (`<C-c>`, `:llm-stop`, closing the chat) ends everything it
+started. It stops after 120 seconds unless the model asks for longer (up
+to 600), and the model sees at most the first 30 000 bytes of each of
+its output and error streams, with a note saying where it was cut.
+
+"Allow for this chat" covers that tool until the chat closes. It is never
+saved. `<C-t>` trusts edits only: commands still ask. A project's
+`.lattice/llm.toml` cannot turn `lattice.exec` on; only your own config,
+a profile, or `:setlocal` in the chat can.
+
 A selector is `server.name`: one tool (`lattice.read_file`), a kind
-(`lattice.read`, `lattice.edit`), or all of a server's (`lattice.*`).
-Command tools come later.
+(`lattice.read`, `lattice.edit`, `lattice.exec`), or all of a server's
+(`lattice.*`).
 
 One request may run tools for up to `llm.tool_rounds` rounds (25 unless
 you set it). A model still calling tools then is stopped with a message;

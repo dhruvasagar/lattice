@@ -21,6 +21,10 @@ pub mod commands;
 #[cfg(any(feature = "acp", feature = "llm"))]
 pub mod conversation;
 
+// LL.18: the permission popup every asking producer shares (moved from acp).
+#[cfg(any(feature = "acp", feature = "llm"))]
+pub mod permission;
+
 // LL.3: direct model-API layer (provider adapters; no I/O yet).
 #[cfg(feature = "llm")]
 pub mod llm;

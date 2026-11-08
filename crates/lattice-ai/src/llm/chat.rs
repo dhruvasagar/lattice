@@ -153,6 +153,9 @@ pub struct ChatSession {
     /// `<C-t>`: this session's edits apply without a review. Never saved and
     /// never copied: it ends when the chat closes.
     trusted: Arc<AtomicBool>,
+    /// Tools the user allowed "for this chat" when asked (LL.18). Like trust,
+    /// never saved, never copied, and gone when the chat closes.
+    allowed_tools: Arc<Mutex<HashSet<String>>>,
 }
 
 /// Where llm sessions' diff tags start (see [`ChatSession::origin`]).
@@ -766,6 +769,17 @@ impl LlmChats {
         })
     }
 
+    /// Every session's store, shown or not: where the permission popup looks
+    /// for a tool's question (LL.18).
+    pub fn stores(&self) -> Vec<ConversationStore> {
+        let reg = self.reg();
+        reg.by_buffer
+            .values()
+            .map(|(_, s)| s.store.clone())
+            .chain(reg.unbound.iter().map(|s| s.store.clone()))
+            .collect()
+    }
+
     fn reg(&self) -> MutexGuard<'_, Registry> {
         self.inner.lock().unwrap_or_else(|e| e.into_inner())
     }
@@ -1044,6 +1058,7 @@ impl LlmChats {
             context: Mutex::new(from.map(|b| self.context_of(b)).unwrap_or_default()),
             origin: ORIGIN_BASE + NEXT_ORIGIN.fetch_add(1, Ordering::Relaxed),
             trusted: Arc::new(AtomicBool::new(false)),
+            allowed_tools: Arc::default(),
         });
         {
             let mut reg = self.reg();
@@ -1114,6 +1129,11 @@ impl LlmChats {
         session.closed.store(true, Ordering::Release);
         // Trust was given to a chat on screen; closed, it lapses.
         session.trusted.store(false, Ordering::Release);
+        session
+            .allowed_tools
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
         // Stopping the request drops any edit waiting on a review, and that
         // closes the session's diffs.
         self.interrupt(&session);
@@ -1377,7 +1397,11 @@ impl LlmChats {
                     req.clone(),
                     chats.tool_rounds(),
                 )
-                .for_session(session.origin, session.trusted.clone());
+                .for_session(
+                    session.origin,
+                    session.trusted.clone(),
+                    session.allowed_tools.clone(),
+                );
                 chats.requests.start_loop(
                     target,
                     req,

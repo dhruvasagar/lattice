@@ -40,6 +40,11 @@ pub const MAX_MATCHES: usize = 200;
 const MAX_MATCH_CHARS: usize = 240;
 /// Files larger than this are not searched.
 const MAX_SEARCH_FILE: u64 = 2_000_000;
+/// `run_command` keeps this much of each of stdout and stderr.
+const MAX_EXEC_OUTPUT: usize = 30_000;
+/// `run_command`'s timeout when the call names none, and the most it may name.
+const EXEC_TIMEOUT: u64 = 120;
+const MAX_EXEC_TIMEOUT: u64 = 600;
 
 /// The project root a read is confined to, asked per call so a changed root
 /// applies at once.
@@ -90,6 +95,27 @@ impl LatticeTools {
         if self.review.is_some() {
             tools.extend(Self::edit_catalogue());
         }
+        tools.push(SourceTool {
+            descriptor: ToolDescriptor {
+                name: "run_command".into(),
+                description: format!(
+                    "Run a shell command in the project and return its exit status and \
+                     output (each stream cut at {MAX_EXEC_OUTPUT} bytes). The user is asked \
+                     before it runs and may refuse. cwd is relative to the project root; \
+                     timeout_secs defaults to {EXEC_TIMEOUT}, at most {MAX_EXEC_TIMEOUT}."
+                ),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "command": {"type": "string", "description": "The command, run by the shell"},
+                        "cwd": {"type": "string", "description": "Directory to run in, relative to the project root"},
+                        "timeout_secs": {"type": "integer", "minimum": 1, "maximum": MAX_EXEC_TIMEOUT}
+                    },
+                    "required": ["command"]
+                }),
+            },
+            kind: ToolKind::Execute,
+        });
         tools
     }
 
@@ -312,8 +338,22 @@ impl ToolSource for LatticeTools {
                 "search" => self.search(input).await,
                 "edit_file" if self.review.is_some() => self.edit_file(input, ctx).await,
                 "write_file" if self.review.is_some() => self.write_file(input, ctx).await,
+                "run_command" => self.run_command(input).await,
                 other => Err(ToolError::UnknownTool(other.to_string())),
             }
+        })
+    }
+
+    /// A command is shown as the command (and where it runs), which is what
+    /// the user is deciding on.
+    fn describe(&self, name: &str, input: &Value) -> Option<String> {
+        if name != "run_command" {
+            return None;
+        }
+        let command = input.get("command")?.as_str()?;
+        Some(match input.get("cwd").and_then(Value::as_str) {
+            Some(cwd) if cwd != "." && !cwd.is_empty() => format!("$ {command}\n  in {cwd}"),
+            _ => format!("$ {command}"),
         })
     }
 }
@@ -600,6 +640,121 @@ fn write_if_unchanged(
     }
     std::fs::write(path, text)?;
     Ok(true)
+}
+
+#[derive(Deserialize)]
+struct ExecArgs {
+    command: String,
+    cwd: Option<String>,
+    timeout_secs: Option<u64>,
+}
+
+impl LatticeTools {
+    /// Run a command the user allowed (the broker asked). Its process group
+    /// is killed when the call is dropped (the request stopped) or times out,
+    /// so nothing it started outlives it.
+    async fn run_command(&self, input: Value) -> Result<ToolOutput, ToolError> {
+        let args: ExecArgs = parse(input)?;
+        if args.command.trim().is_empty() {
+            return Err(ToolError::InvalidArguments("command is empty".into()));
+        }
+        let dir = self.resolve(args.cwd.as_deref().unwrap_or("."))?.path;
+        if !dir.is_dir() {
+            return Err(ToolError::Failed(format!(
+                "`{}` is not a directory",
+                args.cwd.as_deref().unwrap_or(".")
+            )));
+        }
+        let timeout = args
+            .timeout_secs
+            .unwrap_or(EXEC_TIMEOUT)
+            .clamp(1, MAX_EXEC_TIMEOUT);
+        let mut command = shell(&args.command);
+        command.current_dir(&dir);
+        let token = lattice_protocol::CancellationToken::new();
+        let _stop = CancelOnDrop(token.clone());
+        let run = {
+            let token = token.clone();
+            tokio::task::spawn_blocking(move || {
+                lattice_core::process::run_cancellable_capped(
+                    command,
+                    None,
+                    lattice_core::process::ProcessGroup::Own,
+                    &token,
+                    MAX_EXEC_OUTPUT,
+                )
+            })
+        };
+        let outcome = match tokio::time::timeout(std::time::Duration::from_secs(timeout), run).await
+        {
+            Ok(joined) => joined.map_err(|e| ToolError::Failed(e.to_string()))?,
+            Err(_) => {
+                token.cancel();
+                return Err(ToolError::Failed(format!(
+                    "`{}` was still running after {timeout}s and was stopped",
+                    args.command
+                )));
+            }
+        };
+        match outcome {
+            Ok(lattice_core::process::RunOutcome::Finished(out)) => Ok(ToolOutput {
+                text: exec_report(&out),
+            }),
+            Ok(lattice_core::process::RunOutcome::Cancelled) => {
+                Err(ToolError::Failed("the command was stopped".into()))
+            }
+            Err(e) => Err(ToolError::Failed(format!(
+                "`{}` could not be started: {e}",
+                args.command
+            ))),
+        }
+    }
+}
+
+/// The platform shell running `command`.
+fn shell(command: &str) -> std::process::Command {
+    #[cfg(windows)]
+    {
+        let mut c = std::process::Command::new("cmd");
+        c.args(["/C", command]);
+        c
+    }
+    #[cfg(not(windows))]
+    {
+        let mut c = std::process::Command::new("sh");
+        c.args(["-c", command]);
+        c
+    }
+}
+
+/// `exit status N`, then each non-empty stream, each cut at the cap with a
+/// note saying so.
+fn exec_report(out: &std::process::Output) -> String {
+    let mut text = match out.status.code() {
+        Some(code) => format!("exit status {code}"),
+        None => "ended by a signal".to_string(),
+    };
+    for (name, bytes) in [("stdout", &out.stdout), ("stderr", &out.stderr)] {
+        if bytes.is_empty() {
+            continue;
+        }
+        let cut = bytes.len() > MAX_EXEC_OUTPUT;
+        let shown = String::from_utf8_lossy(&bytes[..bytes.len().min(MAX_EXEC_OUTPUT)]);
+        text.push_str(&format!("\n--- {name} ---\n{shown}"));
+        if cut {
+            text.push_str(&format!("\n[{name} cut at {MAX_EXEC_OUTPUT} bytes]"));
+        }
+    }
+    text
+}
+
+/// Cancels the command's token when the call goes away.
+struct CancelOnDrop(lattice_protocol::CancellationToken);
+
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        self.0.cancel();
+    }
 }
 
 /// Sets its flag when dropped, so blocking work can see its caller is gone.

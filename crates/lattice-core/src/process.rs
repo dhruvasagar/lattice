@@ -104,10 +104,30 @@ pub enum RunOutcome {
 /// # }
 /// ```
 pub fn run_cancellable(
+    command: Command,
+    input: Option<Vec<u8>>,
+    group: ProcessGroup,
+    token: &CancellationToken,
+) -> io::Result<RunOutcome> {
+    run_cancellable_capped(command, input, group, token, usize::MAX)
+}
+
+/// [`run_cancellable`], keeping at most `cap + 1` bytes of each of stdout and
+/// stderr (LL.18). The pipes are still read to the end, so a child writing
+/// more never blocks on a full pipe; what is past the cap is dropped as it
+/// arrives, so memory stays bounded however much it writes. A stream longer
+/// than `cap` comes back `cap + 1` bytes long, which is how the caller knows
+/// it was cut.
+///
+/// # Errors
+///
+/// As [`run_cancellable`].
+pub fn run_cancellable_capped(
     mut command: Command,
     input: Option<Vec<u8>>,
     group: ProcessGroup,
     token: &CancellationToken,
+    cap: usize,
 ) -> io::Result<RunOutcome> {
     if token.is_cancelled() {
         return Ok(RunOutcome::Cancelled);
@@ -132,8 +152,8 @@ pub fn run_cancellable(
             let _ = stdin.write_all(&bytes);
         });
     }
-    let stdout = drain(child.stdout.take());
-    let stderr = drain(child.stderr.take());
+    let stdout = drain(child.stdout.take(), cap);
+    let stderr = drain(child.stderr.take(), cap);
 
     loop {
         if token.is_cancelled() {
@@ -162,11 +182,22 @@ pub fn run_cancellable(
 }
 
 /// Read a pipe to its end on its own thread.
-fn drain(pipe: Option<impl Read + Send + 'static>) -> thread::JoinHandle<Vec<u8>> {
+fn drain(pipe: Option<impl Read + Send + 'static>, cap: usize) -> thread::JoinHandle<Vec<u8>> {
+    let keep = cap.saturating_add(1);
     thread::spawn(move || {
         let mut bytes = Vec::new();
         if let Some(mut pipe) = pipe {
-            let _ = pipe.read_to_end(&mut bytes);
+            let mut chunk = [0u8; 8192];
+            loop {
+                match pipe.read(&mut chunk) {
+                    Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        let room = keep.saturating_sub(bytes.len());
+                        bytes.extend_from_slice(&chunk[..n.min(room)]);
+                    }
+                }
+            }
         }
         bytes
     })
@@ -368,5 +399,21 @@ mod tests {
             alive,
             "Shared kills the child alone; the grandchild is left to finish"
         );
+    }
+
+    /// A child writing far past the cap finishes (its pipe never fills), and
+    /// only `cap + 1` bytes are kept.
+    #[test]
+    fn capped_output_keeps_cap_plus_one_and_lets_the_child_finish() {
+        let mut big = Command::new("sh");
+        big.args(["-c", "head -c 1000000 /dev/zero; echo done >&2"]);
+        let token = CancellationToken::new();
+        let outcome = run_cancellable_capped(big, None, ProcessGroup::Own, &token, 100).unwrap();
+        let RunOutcome::Finished(out) = outcome else {
+            panic!("finished");
+        };
+        assert!(out.status.success());
+        assert_eq!(out.stdout.len(), 101);
+        assert_eq!(out.stderr, b"done\n");
     }
 }

@@ -3,6 +3,14 @@
 ## Unreleased
 
 ### Added
+- **LLM chats can run commands, asking first.** With `lattice.exec` in
+  `llm.tools`, a model may call `run_command`. Each command opens the
+  permission menu showing what will run: allow once, allow for this chat,
+  or deny (the model is told). `<Esc>` decides later; `:ai-permission`
+  reopens it. Commands run in the project in their own process group, so
+  stopping the request kills everything they started; they time out after
+  120 s (600 s at most) and the model sees at most 30 000 bytes of each
+  stream. A project's config cannot turn exec on.
 - **LLM chats can edit your files, through review.** With `lattice.edit`
   in `llm.tools`, a model may call `edit_file` and `write_file`; each
   change opens as a diff against the file as you have it, and the model is

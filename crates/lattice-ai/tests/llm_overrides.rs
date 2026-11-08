@@ -3,6 +3,7 @@
 //! buffer's apply. The buffer half of `:w` is tested in
 //! `lattice-host/tests/llm_system_write.rs`.
 
+#![cfg(feature = "llm")]
 #![allow(clippy::unwrap_used, clippy::panic)]
 
 mod llm_support;

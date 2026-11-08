@@ -6,100 +6,16 @@
 
 #[cfg(test)]
 mod tests {
-    use std::io::{Read, Write};
-    use std::net::TcpListener;
     use std::path::PathBuf;
-    use std::sync::{Arc, Mutex};
 
     use crate::app::App;
+    use crate::app::llm_mock::{Log, results, serve};
     use crate::app::test_helpers::*;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use lattice_ai::llm::RequestState;
     use lattice_ai::llm::chat::LlmChatsHandle;
     use lattice_ai::llm::config::LlmConfig;
     use serde_json::{Value, json};
-
-    type Log = Arc<Mutex<Vec<Value>>>;
-
-    fn body_of(s: &mut std::net::TcpStream) -> Option<Value> {
-        let mut buf = Vec::new();
-        let mut chunk = vec![0u8; 65536];
-        loop {
-            let n = s.read(&mut chunk).ok()?;
-            if n == 0 {
-                return None;
-            }
-            buf.extend_from_slice(&chunk[..n]);
-            let text = String::from_utf8_lossy(&buf).to_string();
-            if let Some(head_end) = text.find("\r\n\r\n") {
-                let len = text[..head_end]
-                    .lines()
-                    .find_map(|l| {
-                        l.to_ascii_lowercase()
-                            .strip_prefix("content-length:")
-                            .map(|v| v.trim().parse::<usize>().unwrap_or(0))
-                    })
-                    .unwrap_or(0);
-                if buf.len() >= head_end + 4 + len {
-                    return serde_json::from_slice(&buf[head_end + 4..head_end + 4 + len]).ok();
-                }
-            }
-        }
-    }
-
-    fn sse(events: &[Value]) -> String {
-        let mut out = String::from(
-            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n",
-        );
-        for e in events {
-            out.push_str(&format!("data: {e}\n\n"));
-        }
-        out.push_str("data: [DONE]\n\n");
-        out
-    }
-
-    /// A model whose first reply makes `calls` (tool name, arguments) and
-    /// whose later replies say "done".
-    fn serve(calls: Vec<(&'static str, Value)>) -> (std::net::SocketAddr, Log) {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let log: Log = Arc::default();
-        let seen = log.clone();
-        let calls: Vec<Value> = calls
-            .into_iter()
-            .enumerate()
-            .map(|(i, (name, args))| {
-                json!({"index": i, "id": format!("call_{i}"), "type": "function",
-                       "function": {"name": format!("lattice__{name}"), "arguments": args.to_string()}})
-            })
-            .collect();
-        std::thread::spawn(move || {
-            for conn in listener.incoming() {
-                let Ok(mut s) = conn else { continue };
-                let (seen, calls) = (seen.clone(), calls.clone());
-                std::thread::spawn(move || {
-                    let n = {
-                        let mut g = seen.lock().unwrap();
-                        g.push(body_of(&mut s).unwrap_or_default());
-                        g.len()
-                    };
-                    let reply = if n == 1 {
-                        sse(&[
-                            json!({"choices":[{"index":0,"delta":{"tool_calls":calls}}]}),
-                            json!({"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}),
-                        ])
-                    } else {
-                        sse(&[
-                            json!({"choices":[{"index":0,"delta":{"content":"done"}}]}),
-                            json!({"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}),
-                        ])
-                    };
-                    let _ = s.write_all(reply.as_bytes());
-                });
-            }
-        });
-        (addr, log)
-    }
 
     fn chats(a: &App) -> LlmChatsHandle {
         (*a.editor.services.get::<LlmChatsHandle>().unwrap()).clone()
@@ -185,18 +101,6 @@ mod tests {
         let session = chats(a).for_buffer(chat).unwrap();
         chats(a).submit(&session, prompt.to_string());
         chat
-    }
-
-    /// Every tool result the request after the calls carried, in order.
-    fn results(log: &Log) -> Vec<String> {
-        let sent = log.lock().unwrap().clone();
-        sent.get(1)
-            .and_then(|r| r["messages"].as_array().cloned())
-            .unwrap_or_default()
-            .iter()
-            .filter(|m| m["role"] == "tool")
-            .filter_map(|m| m["content"].as_str().map(str::to_string))
-            .collect()
     }
 
     async fn second_request(a: &mut App, log: &Log) {

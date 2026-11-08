@@ -71,6 +71,26 @@ target rather than just a slower number.
 
 ---
 
+## LL.18 — the permission popup's per-tick scan (2026-11-08)
+
+The `*ai-permission*` popup opens on its own when a request is waiting, so its tick asks every
+producer (`PermissionSources`: ACP's store, and every open chat's) for the oldest pending
+request. That runs on the editor thread on every tick, and the usual answer is "none".
+`llm_permission_scan` is that walk with nothing pending (bench profile):
+
+| Bench | Time |
+|---|---|
+| `llm_permission_scan/chats/1` | 64 ns |
+| `llm_permission_scan/chats/10` | 381 ns |
+| `llm_permission_scan/chats/100` | 3.63 µs |
+
+Linear in open chats, about 36 ns each (one uncontended lock and an empty map per store). A
+hundred chats cost under 1% of a 120 Hz frame. The command itself never touches the editor
+thread: it runs under `spawn_blocking`, and its capped drain is bounded by the 30 000-byte cap
+per stream.
+
+---
+
 ## LL.17 — finding the span an accepted edit replaces (2026-11-08)
 
 An accepted edit to an open file is applied as the one span that differs, so the lines around

@@ -3,6 +3,7 @@
 //! request goes on, and the call is sent back with arguments a strict
 //! server accepts.
 
+#![cfg(feature = "llm")]
 #![allow(clippy::unwrap_used, clippy::panic)]
 
 mod llm_support;

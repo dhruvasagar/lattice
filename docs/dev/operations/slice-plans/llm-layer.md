@@ -614,9 +614,26 @@ broker's review/ask split. Bench: `llm_edit_span`.
 trust applies without a diff, resets per session; review surfaces as `AwaitingReview`; stale target; several
 edits queue; closing the chat rejects its pending diffs through `close_session_diffs`.
 
-### LL.18 — Exec and permissions 📝
+### LL.18 — Exec and permissions ✅
 
 **Files:** `src/llm/tools/lattice.rs`, `src/acp/permission_mode.rs` moved to `src/permission/` on neutral types.
+
+**Landed:** `run_command` (kind `Execute`, always listed, offered only when `lattice.exec` is
+selected) through `lattice_core::process::run_cancellable_capped` (new: per-stream cap with
+drain, own process group, timeout 120 s / max 600 s, 30 000 bytes per stream). The broker's
+`Ask` path asks through `CallContext.ask` (`Answer::{Once, ForChat, Deny}`), with
+`ToolSource::describe` giving the question its detail (`$ cmd`); with no asker it refuses.
+The chat's asker pushes a pending permission on its store; a `Withdraw` guard answers deny
+if the call is dropped. "Allow for this chat" is a per-session set, cleared on close.
+`permission::{PermissionSources, install}` replaces the ACP-only popup wiring: ACP adds its
+store, llm adds `chats.stores()`; `:ai-permission` moved with it. Prerequisite fix
+`a62349d8`: `<CR>` in the popup was swallowed by the host's Help-kind follow-link gate, so
+the menu could never be answered; it is now `help-mode`'s binding. Also: the `llm` feature
+enables `tokio/process` (its `api_key_command` needed it; only `acp` had been pulling it
+in), and `lattice-ai`'s llm integration tests are gated on `llm`. Tests:
+`lattice-ui-tui/src/app/llm_exec.rs` (7, end to end through the popup), the broker's
+`an_ask_tool_runs_only_when_allowed`, `capped_output_keeps_cap_plus_one_and_lets_the_child_finish`,
+the ACP permission-mode suite on `PermissionSources`.
 
 **Tests:** exec asks, defer leaves it pending, deny reaches the model; cancel kills the process tree; output is
 capped; `:opencode-acp` permissions unchanged; a project cannot enable exec.

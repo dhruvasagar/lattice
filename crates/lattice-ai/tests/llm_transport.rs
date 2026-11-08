@@ -1,5 +1,6 @@
 //! LL.4: the transport and request lifecycle against a local TCP mock.
 
+#![cfg(feature = "llm")]
 mod llm_support;
 
 use std::sync::Arc;

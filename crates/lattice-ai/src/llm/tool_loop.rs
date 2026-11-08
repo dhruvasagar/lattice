@@ -17,16 +17,19 @@
 //! last user message: settings, system prompt and context are not resolved
 //! again mid-loop, so a loop keeps the terms it started with.
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::collections::HashSet;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use lattice_agent::SessionKey;
 use tokio_util::sync::CancellationToken;
 
 use super::request::{Round, RoundStatus, Rounds};
-use super::tools::{BoxFuture, CallContext, Offer, ToolError};
+use super::tools::{Answer, AskFn, BoxFuture, CallContext, Offer, Question, ToolError};
 use super::{LlmRequest, Message, history};
-use crate::conversation::{Block, Conversation, ConversationStore, Role, ToolStatus};
+use crate::conversation::{
+    Block, Conversation, ConversationStore, PermissionKind, PermissionOption, Role, ToolStatus,
+};
 
 /// The result a call gets when its request stopped before it returned.
 pub const STOPPED: &str = "the call was stopped before it returned";
@@ -44,6 +47,8 @@ pub struct ChatRounds {
     /// toggle mid-loop applies to the next edit.
     origin: u64,
     trusted: Arc<AtomicBool>,
+    /// Tools allowed "for this chat" (LL.18): asked no more in it.
+    allowed: Arc<Mutex<HashSet<String>>>,
 }
 
 impl ChatRounds {
@@ -63,14 +68,21 @@ impl ChatRounds {
             limit: limit.max(1),
             origin: 0,
             trusted: Arc::default(),
+            allowed: Arc::default(),
         }
     }
 
     /// The session the calls belong to (LL.17): its edits' diffs carry
     /// `origin`, and apply without one while `trusted` is set.
-    pub fn for_session(mut self, origin: u64, trusted: Arc<AtomicBool>) -> Self {
+    pub fn for_session(
+        mut self,
+        origin: u64,
+        trusted: Arc<AtomicBool>,
+        allowed: Arc<Mutex<HashSet<String>>>,
+    ) -> Self {
         self.origin = origin;
         self.trusted = trusted;
+        self.allowed = allowed;
         self
     }
 
@@ -111,6 +123,11 @@ impl ChatRounds {
                 origin: self.origin,
                 trusted: self.trusted.load(Ordering::Acquire),
                 on_review: Some(Arc::new(move |open| status.reviewing(open))),
+                ask: Some(asker(
+                    self.store.clone(),
+                    self.key.clone(),
+                    self.allowed.clone(),
+                )),
             };
             let result = match &call.malformed {
                 Some(why) => Err(ToolError::InvalidArguments(why.clone())),
@@ -144,6 +161,80 @@ impl Rounds for ChatRounds {
         status: &'a RoundStatus,
     ) -> BoxFuture<'a, Round> {
         Box::pin(self.round(cancel, status))
+    }
+}
+
+static NEXT_QUESTION: AtomicU64 = AtomicU64::new(1);
+
+const ALLOW_ONCE: &str = "allow-once";
+const ALLOW_CHAT: &str = "allow-chat";
+const DENY: &str = "deny";
+
+/// Puts a tool's question in the chat's store, where the transcript shows it
+/// and the shared permission popup opens over it (LL.18), and waits for the
+/// answer. An `Esc` in the popup leaves it pending and the call waiting;
+/// dropping the call (the request stopped) withdraws it as denied, so no
+/// question stays open that nothing is waiting on.
+fn asker(store: ConversationStore, key: SessionKey, allowed: Arc<Mutex<HashSet<String>>>) -> AskFn {
+    Arc::new(move |q: Question| {
+        let (store, key, allowed) = (store.clone(), key.clone(), allowed.clone());
+        Box::pin(async move {
+            if allowed
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .contains(&q.tool)
+            {
+                return Answer::Once;
+            }
+            let id = format!("llm-ask-{}", NEXT_QUESTION.fetch_add(1, Ordering::Relaxed));
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            store.push_permission_request(
+                &key,
+                id.clone(),
+                q.title.clone(),
+                q.detail.clone(),
+                vec![
+                    PermissionOption::new(ALLOW_ONCE, "Allow once", PermissionKind::AllowOnce),
+                    PermissionOption::new(
+                        ALLOW_CHAT,
+                        "Allow for this chat",
+                        PermissionKind::AllowAlways,
+                    ),
+                    PermissionOption::new(DENY, "Deny", PermissionKind::RejectOnce),
+                ],
+                tx,
+            );
+            let withdraw = Withdraw {
+                store: store.clone(),
+                id,
+            };
+            let answer = match rx.await.as_deref() {
+                Ok(ALLOW_ONCE) => Answer::Once,
+                Ok(ALLOW_CHAT) => {
+                    allowed
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .insert(q.tool.clone());
+                    Answer::ForChat
+                }
+                _ => Answer::Deny,
+            };
+            drop(withdraw);
+            answer
+        })
+    })
+}
+
+/// Resolves a question as denied when its call goes away unanswered. After an
+/// answer it is a no-op: the store has already let the id go.
+struct Withdraw {
+    store: ConversationStore,
+    id: String,
+}
+
+impl Drop for Withdraw {
+    fn drop(&mut self) {
+        self.store.resolve_permission(&self.id, DENY);
     }
 }
 

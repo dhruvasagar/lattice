@@ -1,6 +1,7 @@
 //! A request started from a `current_thread` runtime (the editor actor's
 //! config) must run on the registry's own runtime, not the caller's thread.
 
+#![cfg(feature = "llm")]
 mod llm_support;
 
 use std::time::Duration;

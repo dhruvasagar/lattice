@@ -17,7 +17,7 @@ pub mod conversation_mode;
 pub mod error;
 pub mod handle;
 pub mod install;
-pub mod permission_mode;
+
 pub mod providers;
 pub mod session;
 pub mod supervisor;

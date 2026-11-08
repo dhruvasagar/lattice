@@ -2,6 +2,7 @@
 //! are fixed per request; what the editor sent back is read from the
 //! recorded requests, and checked as a strict server would.
 
+#![cfg(feature = "llm")]
 #![allow(clippy::unwrap_used, clippy::panic)]
 
 mod llm_support;

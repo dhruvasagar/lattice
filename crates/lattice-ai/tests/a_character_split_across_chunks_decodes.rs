@@ -3,6 +3,7 @@
 //! then split at every byte boundary (so each multi-byte character is cut at
 //! every interior position), and the events must be identical.
 
+#![cfg(feature = "llm")]
 use lattice_ai::llm::{AnthropicProvider, OpenAiProvider, Provider, StreamEvent};
 
 const FIXTURES: &[(&str, &str, bool)] = &[

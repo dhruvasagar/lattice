@@ -14,7 +14,10 @@ use super::request::{RequestRegistry, RequestRegistryHandle};
 /// Register the llm layer's services, mode and command. Look services up as
 /// their `*Handle` types (the same type used here -- `Arc<X>` registered under a
 /// different `T` would silently miss).
-pub fn install(boot: &mut impl SubsystemBoot) {
+pub fn install(
+    boot: &mut impl SubsystemBoot,
+    permissions: &crate::permission::PermissionSourcesHandle,
+) {
     let registry: RequestRegistryHandle = Arc::new(RequestRegistry::new(
         boot.runtime_handle().clone(),
         Some(boot.event_bus().clone()),
@@ -53,6 +56,14 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     spawn_options_listener(chats.clone(), boot.event_bus());
     boot.register_service::<LlmChatsHandle>(chats.clone());
 
+    // LL.18: a tool that must ask puts its question in its session's store;
+    // the shared permission popup finds it there. Weak: no cycle through boot.
+    {
+        let chats = Arc::downgrade(&chats);
+        permissions.add(Arc::new(move || {
+            chats.upgrade().map(|c| c.stores()).unwrap_or_default()
+        }));
+    }
     // `chats` reads context from the host's buffers when a request is sent.
     chats.set_store(boot.buffer_store().clone());
     // LL.11b: the rewrite. Its answer reaches review, and its result the

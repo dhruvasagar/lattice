@@ -1,6 +1,7 @@
 //! Review focus 4: a key must not reach visible text through an error -- not via
 //! a provider echoing the header, nor a proxy's HTML error page, nor the URL.
 
+#![cfg(feature = "llm")]
 mod llm_support;
 
 use std::time::Duration;

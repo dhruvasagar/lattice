@@ -658,9 +658,20 @@ model and projection unit tests. Bench: `llm_fork`.
 including its tool calls; retry uses current settings; switching provider drops reasoning data and says so;
 retry while streaming is refused.
 
-### LL.20 — Export and session files 📝
+### LL.20 — Export and session files ✅
 
 **Files:** `src/llm/session_file.rs`, `:llm-export`, resume command.
+
+**Landed.** `src/llm/export.rs` (`markdown`: the projection, every block open; `org`: from
+the model), `src/llm/session_file.rs` (`encode` / `decode`, `LlmSessionFiles` with its own
+inbound bus, `:llm-export`, `:llm-save`, `:llm-resume`; `!` overwrites, as `:w`). The resume
+command is `:llm-resume`; saving is its own verb, `:llm-save`, rather than an export format,
+since the two files have different readers and trust. `Settings::text` (inverse of `set`) so
+a file keeps effective values; `settings::restrict` (the project filter, for files);
+`LlmChats::saved_settings` / `resume` / `create_seeded`. Tests: `tests/llm_session_file.rs`
+(8, incl. runtime responsiveness, proven to fail with the decode inline), export and
+checksum unit tests, `lattice-host/tests/llm_chat_buffer.rs::save_export_and_resume_go_through_real_files`.
+Bench: `llm_session_file`.
 
 **Tests:** `.md` round trip; `.org` conversion including fences; session resume restores tool ids; a tampered
 or newer-version file is refused with a message; a session file cannot widen trust; no key on disk.

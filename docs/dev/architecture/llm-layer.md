@@ -114,7 +114,18 @@ What in-place editing gave is replaced by:
   provider that signed it can verify it. The adapter already drops it; the chat says so
   once per chat and provider, in `*messages*`, beside the other "not sent" notes.
 - **`:llm-export`** writes `.md` (and `.org`) for keeping. Resuming uses a separate
-  session file.
+  session file: `:llm-save` / `:llm-resume`. The markdown is the projection with every
+  block open; org is built from the model, not by re-reading the markdown, so prose that
+  reads `you:` is never a turn. The session file is versioned JSON with its own shapes (the
+  in-memory model can change without breaking a kept file) and keeps what the wire needs
+  exactly: tool-call ids and arguments, reasoning data. Its settings are the chat's
+  *effective* ones (a model from a profile comes back without the profile) and go back
+  through the same trust filter as project config, since a file may be downloaded. Its
+  checksum (FNV-1a over the session's JSON) catches a file edited after it was written,
+  whose history may no longer be what a provider signed; it is not a signature, and what a
+  forged file can do is bounded by the trust table, not by the checksum. Encode, decode and
+  render run on the blocking pool: the editor's runtime is single-threaded, and a plain
+  spawned task would run them on its thread.
 
 Other properties of the buffer:
 

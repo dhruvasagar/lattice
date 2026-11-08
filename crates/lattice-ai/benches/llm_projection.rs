@@ -202,12 +202,41 @@ fn bench_fork(c: &mut Criterion) {
     group.finish();
 }
 
+/// LL.20: `:llm-save`, `:llm-resume` and `:llm-export` encode, decode and
+/// render on the runtime, never the editor thread; this is what a long chat
+/// costs them.
+fn bench_session_file(c: &mut Criterion) {
+    use lattice_ai::llm::{export, session_file};
+    let mut group = c.benchmark_group("llm_session_file");
+    for exchanges in [20usize, 200, 1000] {
+        let conv = Conversation {
+            turns: history(exchanges),
+            ..Default::default()
+        };
+        let settings = Default::default();
+        let text = session_file::encode(&conv, &settings).unwrap_or_default();
+        group.bench_with_input(BenchmarkId::new("encode", exchanges), &conv, |b, conv| {
+            b.iter(|| black_box(session_file::encode(black_box(conv), &settings)))
+        });
+        group.bench_with_input(BenchmarkId::new("decode", exchanges), &text, |b, text| {
+            b.iter(|| black_box(session_file::decode(black_box(text), "bench.json").is_ok()))
+        });
+        group.bench_with_input(
+            BenchmarkId::new("export_org", exchanges),
+            &conv,
+            |b, conv| b.iter(|| black_box(export::org(black_box(conv), "*llm:1*"))),
+        );
+    }
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench,
     bench_tool_history,
     bench_edit_span,
     bench_permission_scan,
-    bench_fork
+    bench_fork,
+    bench_session_file
 );
 criterion_main!(benches);

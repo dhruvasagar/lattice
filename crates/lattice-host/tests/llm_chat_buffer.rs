@@ -599,3 +599,121 @@ async fn gb_forks_a_chat_with_the_question_in_its_prompt() {
         "a chat, bound to its buffer"
     );
 }
+
+fn ex(editor: &mut Editor, line: &str) {
+    let mut out = DispatchOutcome::default();
+    editor.execute_ex_line(line, &mut out);
+    for effect in std::mem::take(&mut out.effects) {
+        let _ = editor.handle_effect(effect);
+    }
+}
+
+fn message(editor: &Editor) -> String {
+    editor
+        .last_message
+        .as_ref()
+        .map(|m| m.text.clone())
+        .unwrap_or_default()
+}
+
+/// LL.20: `:llm-save`, `:llm-export` and `:llm-resume` through real files.
+/// Each result arrives off the editor thread; the test waits on the wake, so
+/// a result that needed a keystroke to show fails here.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn save_export_and_resume_go_through_real_files() {
+    let addr = serve(Duration::ZERO);
+    let mut editor = Editor::boot(CoreDocument::from_text("scratch\n"));
+    chats(&editor).set_config(config_for(addr));
+    let (id, _session, _) = chat_with_history(&mut editor).await;
+    let dir = std::env::temp_dir().join(format!(
+        "lattice-ll20-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let (json, md, org) = (
+        dir.join("chat.json"),
+        dir.join("chat.md"),
+        dir.join("chat.org"),
+    );
+
+    ex(&mut editor, &format!("llm-save {}", json.display()));
+    assert!(
+        settle_woken(&mut editor, |e| message(e).contains("saved")).await,
+        "{}",
+        message(&editor)
+    );
+    assert!(
+        std::fs::read_to_string(&json)
+            .unwrap()
+            .contains("lattice-llm-session")
+    );
+    // An existing file is kept without `!`, and replaced with it.
+    ex(&mut editor, &format!("llm-save {}", json.display()));
+    assert!(
+        settle_woken(&mut editor, |e| message(e)
+            .contains("exists (add ! to overwrite)"))
+        .await
+    );
+    ex(&mut editor, &format!("llm-save! {}", json.display()));
+    assert!(
+        settle_woken(&mut editor, |e| message(e).contains("saved")).await,
+        "{}",
+        message(&editor)
+    );
+
+    ex(&mut editor, &format!("llm-export {}", md.display()));
+    assert!(
+        settle_woken(&mut editor, |e| message(e).contains("chat.md")).await,
+        "{}",
+        message(&editor)
+    );
+    let written = std::fs::read_to_string(&md).unwrap();
+    assert!(
+        written.starts_with("you:\n\nq\n") && written.contains("mock-model:\n\na"),
+        "{written}"
+    );
+    ex(&mut editor, &format!("llm-export {}", org.display()));
+    assert!(
+        settle_woken(&mut editor, |e| message(e).contains("chat.org")).await,
+        "{}",
+        message(&editor)
+    );
+    let written = std::fs::read_to_string(&org).unwrap();
+    assert!(
+        written.starts_with("#+title: *llm:") && written.contains("\n* you\nq\n"),
+        "{written}"
+    );
+
+    ex(&mut editor, &format!("llm-resume {}", json.display()));
+    assert!(
+        settle_woken(&mut editor, |e| e.active_pane_buffer_id() != id).await,
+        "{}",
+        message(&editor)
+    );
+    let resumed = editor.active_pane_buffer_id();
+    let original = text_of(&editor, id);
+    assert!(
+        settle(&mut editor, |e| text_of(e, resumed) == original).await,
+        "{:?}",
+        text_of(&editor, resumed)
+    );
+    assert!(message(&editor).contains("resumed"), "{}", message(&editor));
+    assert!(
+        chats(&editor).for_buffer(resumed).is_some(),
+        "a chat, bound to its buffer"
+    );
+
+    // A file that is not a session is refused, and nothing opens.
+    ex(&mut editor, &format!("llm-resume {}", md.display()));
+    assert!(
+        settle_woken(&mut editor, |e| message(e)
+            .contains("not a lattice llm session file"))
+        .await
+    );
+    assert_eq!(editor.active_pane_buffer_id(), resumed);
+    let _ = std::fs::remove_dir_all(&dir);
+}

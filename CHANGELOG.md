@@ -3,6 +3,12 @@
 ## Unreleased
 
 ### Added
+- **Keep an LLM chat, and pick it up again.** `:llm-save file` saves a
+  chat and `:llm-resume file` opens it again, history and tool calls
+  included; `:llm-export file.md` (or `.org`) writes it out for reading.
+  A session file never holds a key, and one from elsewhere can choose the
+  model but cannot turn on tools, redirect requests or run a key command.
+  A file edited after it was saved, or from a newer lattice, is refused.
 - **Fork an LLM chat, or retry its last question.** `gb` on a past
   question in a chat (or `:llm-fork`) opens a new chat with everything
   before it and the question in the prompt, ready to edit; the original is

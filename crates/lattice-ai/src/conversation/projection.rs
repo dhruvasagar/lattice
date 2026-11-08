@@ -353,7 +353,7 @@ fn label_guard(s: &mut Sink, markdown: bool) {
 
 /// `text` on one line: newlines become spaces, so a title or origin cannot
 /// break the head line open.
-fn one_line(text: &str) -> String {
+pub(crate) fn one_line(text: &str) -> String {
     text.replace(['\r', '\n'], " ")
 }
 
@@ -445,7 +445,7 @@ fn push_markdown_tool(
 /// something, then `json` if it opens like an object or array, else `text`.
 /// No parse: this runs for every tool output on every projection, and a
 /// 100 KB body is not worth decoding to pick a highlighting language.
-fn output_language(kind: ToolKind, body: &str) -> &'static str {
+pub(crate) fn output_language(kind: ToolKind, body: &str) -> &'static str {
     match kind {
         ToolKind::Edit => "diff",
         ToolKind::Execute => "bash",
@@ -518,7 +518,7 @@ fn unclosed_fence(text: &str) -> Option<String> {
     open.map(|(ch, len)| ch.to_string().repeat(len))
 }
 
-fn status_tag(status: &ToolStatus) -> &'static str {
+pub(crate) fn status_tag(status: &ToolStatus) -> &'static str {
     use ToolStatus::*;
     match status {
         Pending => "pending",
@@ -528,7 +528,7 @@ fn status_tag(status: &ToolStatus) -> &'static str {
     }
 }
 
-fn edit_tag(status: &EditStatus) -> &'static str {
+pub(crate) fn edit_tag(status: &EditStatus) -> &'static str {
     use EditStatus::*;
     match status {
         Proposed => "proposed",
@@ -546,7 +546,7 @@ fn permission_prefix(status: &PermissionStatus) -> &'static str {
     }
 }
 
-fn permission_tag(status: &PermissionStatus) -> &'static str {
+pub(crate) fn permission_tag(status: &PermissionStatus) -> &'static str {
     use PermissionStatus::*;
     match status {
         Pending => "pending",

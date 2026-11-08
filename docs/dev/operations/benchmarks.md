@@ -71,6 +71,25 @@ target rather than just a slower number.
 
 ---
 
+## LL.20 — session files and export (2026-11-08)
+
+`:llm-save`, `:llm-resume` and `:llm-export` encode, decode and render on the blocking pool,
+never on the editor thread (the editor's runtime is single-threaded, so a plain spawned task
+would run there; `resuming_a_long_session_does_not_stall_the_runtime_thread` fails with a
+217 ms stall if the decode moves back onto the task). `llm_session_file` is that work for a
+chat of N exchanges, each with reasoning, a tool call and a fenced answer (bench profile):
+
+| Bench | 20 | 200 | 1000 |
+|---|---|---|---|
+| `llm_session_file/encode` | 51 µs | 459 µs | 2.26 ms |
+| `llm_session_file/decode` | 93 µs | 805 µs | 4.04 ms |
+| `llm_session_file/export_org` | 10 µs | 104 µs | 484 µs |
+
+Linear, about 4 µs per exchange to decode (parse, checksum, rebuild the model). None of it is
+on a keystroke path; the numbers are here so a regression in the file format's cost shows.
+
+---
+
 ## LL.19 — forking a chat (2026-11-08)
 
 `gb` finds the turn under the cursor by laying the transcript out once (the same pass `gf`

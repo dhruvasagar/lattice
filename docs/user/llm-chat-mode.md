@@ -1,5 +1,5 @@
 ---
-summary: "llm-chat-mode: a chat with a language model in its own buffer — a read-only transcript with an editable prompt. CR sends, C-j newlines, C-c interrupts, gb forks, gq closes; :llm-retry asks again."
+summary: "llm-chat-mode: a chat with a language model in its own buffer — a read-only transcript with an editable prompt. CR sends, C-j newlines, C-c interrupts, gb forks, gq closes; :llm-retry asks again; :llm-save / :llm-resume keep a chat, :llm-export writes it out."
 related: [llm, ai, chat, model]
 ---
 
@@ -70,6 +70,28 @@ It is refused while a reply is still coming: stop it with `<C-c>` first.
 Some models send their reasoning back with a signature that only the same
 provider can check. When a chat moves to another provider, that reasoning
 is left out of the requests, and `*messages*` says so once.
+
+## Keeping a chat
+
+`:llm-export notes.md` writes the chat to a file for reading later: the
+transcript as you see it, with every reasoning and tool block open. A
+`.org` file gets org instead: each turn a heading, code fences as
+`#+begin_src` blocks, and lines org would read as structure escaped. An
+export is for keeping, not resuming; nothing reads it back.
+
+`:llm-save chat.json` saves the chat to **continue later**, and
+`:llm-resume chat.json` opens it again as a new chat: its history, the
+tool calls and their results, and the model settings. The chat must have
+finished replying first. Like `:w`, both writing commands keep an existing
+file unless you add `!` (`:llm-save! chat.json`).
+
+A session file never holds a key. Because one may come from someone else,
+it is trusted as a project's config is: it may choose the model, a system
+prompt (as text) and parameters, and narrow the tools, but it cannot turn
+on tools your own config does not, point requests at another server, or
+name a key command. What it tried is listed in `*messages*`. A file edited
+after lattice wrote it is refused, since its history may no longer be what
+the model was sent, and so is one written by a newer lattice.
 
 ## Setting up a provider
 

@@ -33,7 +33,7 @@ use super::modes::requests::{LlmRequestsMode, REQUESTS_BUFFER};
 use super::modes::system::LlmSystemMode;
 use super::settings::{RawSet, SettingKey, validate};
 
-fn arg_text(args: &Args) -> String {
+pub(crate) fn arg_text(args: &Args) -> String {
     match args {
         Args::String(t) => t.trim().to_string(),
         _ => String::new(),

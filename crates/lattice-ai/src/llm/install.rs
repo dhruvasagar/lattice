@@ -77,6 +77,14 @@ pub fn install(
         diffs.clone(),
     ));
     rewrites.set_effects(boot.inbound::<super::rewrite::RewriteEffects, _>(|e| e.0));
+    // LL.20: `:llm-save`, `:llm-resume` and `:llm-export` read and write on
+    // the runtime; their result (an echo, the resumed chat's buffer) comes
+    // back with a wake.
+    let files: super::session_file::LlmSessionFilesHandle = Arc::new(
+        super::session_file::LlmSessionFiles::new(boot.runtime_handle().clone(), chats.clone()),
+    );
+    files.set_effects(boot.inbound::<super::session_file::SessionFileEffects, _>(|e| e.0));
+    super::session_file::register(boot.commands_mut(), files);
     // LL.16: lattice's read tools, over an editor view of its own (open
     // buffers by path, so a read sees unsaved text). Offered only to requests
     // whose `llm.tools` selects them. LL.17: with a diff bus, the edit tools

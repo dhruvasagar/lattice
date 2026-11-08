@@ -1054,6 +1054,23 @@ impl LlmChats {
         from: Option<BufferId>,
         hint: Option<&str>,
     ) -> Arc<ChatSession> {
+        let mut seed = from.map(|b| self.session_overrides(b)).unwrap_or_default();
+        if let Some(p) = profile {
+            if seed.get(&SettingKey::Profile).map(String::as_str) != Some(p) {
+                seed.clear();
+            }
+            seed.insert(SettingKey::Profile, p.to_string());
+        }
+        self.create_seeded(seed, from, hint)
+    }
+
+    /// A new chat whose session settings start as `seed`.
+    fn create_seeded(
+        &self,
+        seed: RawSet,
+        from: Option<BufferId>,
+        hint: Option<&str>,
+    ) -> Arc<ChatSession> {
         let n = self.next_chat.fetch_add(1, Ordering::Relaxed);
         let name = match hint.map(name_hint).filter(|h| !h.is_empty()) {
             Some(h) => format!("*llm:{h}:{n}*"),
@@ -1062,13 +1079,6 @@ impl LlmChats {
         let key = SessionKey::new(SESSION_PROVIDER, n);
         let bus = self.bus.clone();
         let store = ConversationStore::new(Arc::new(move |ev| bus.publish_typed(ev)));
-        let mut seed = from.map(|b| self.session_overrides(b)).unwrap_or_default();
-        if let Some(p) = profile {
-            if seed.get(&SettingKey::Profile).map(String::as_str) != Some(p) {
-                seed.clear();
-            }
-            seed.insert(SettingKey::Profile, p.to_string());
-        }
         self.refresh_project();
         let provisional = self.provisional(BufferId(0), seed.clone());
         store.mutate(&key, |c| {
@@ -1350,6 +1360,62 @@ impl LlmChats {
         });
         *fork.prompt_seed.lock().unwrap_or_else(|e| e.into_inner()) = Some(prompt);
         Ok(fork)
+    }
+
+    /// LL.20: what `:llm-save` keeps of the chat in `buffer`: its conversation
+    /// and its effective settings, the ones a session file may carry. Refused
+    /// while a reply is coming (a half-received turn and a running tool are
+    /// not history yet) and for an empty chat.
+    pub fn saved_settings(&self, buffer: BufferId) -> Result<(Conversation, RawSet), String> {
+        let session = self
+            .for_buffer(buffer)
+            .ok_or_else(|| "llm: not a chat buffer".to_string())?;
+        if session.is_busy() {
+            return Err(
+                "llm: a reply is still coming; save once it is done, or stop it (<C-c>)".into(),
+            );
+        }
+        let conv = session.store.snapshot();
+        if conv.turns.is_empty() {
+            return Err("llm: nothing to save yet".into());
+        }
+        let resolved = self.resolve_for(buffer).map_err(|e| format!("llm: {e}"))?;
+        let settings = super::settings::SAVED_KEYS
+            .into_iter()
+            .filter_map(|k| resolved.values.text(k).map(|t| (k, t)))
+            .collect();
+        Ok((conv, settings))
+    }
+
+    /// LL.20: a new chat from a session file. Its settings go through the
+    /// trust table as project config does, so a file from anywhere can choose
+    /// a model but cannot widen tools beyond what the user's own config
+    /// enables, redirect requests or name a key; what it tried is returned.
+    pub fn resume(
+        &self,
+        saved: super::session_file::Saved,
+        source: &str,
+    ) -> (Arc<ChatSession>, Vec<super::settings::Refusal>) {
+        let base_tools = resolve(
+            &self.layers_for(BufferId(0), RawSet::new()),
+            BufferId(0),
+            &RequestOverrides::default(),
+            Trust::User,
+        )
+        .map(|r| r.values.tools)
+        .unwrap_or_default();
+        let (seed, refused) =
+            super::settings::restrict(saved.settings.into_iter(), source, base_tools);
+        let session = self.create_seeded(seed, None, None);
+        let label = session.store.snapshot().assistant_label;
+        session.store.mutate(&session.key, |c| {
+            *c = Conversation {
+                assistant_label: label.or(saved.conversation.assistant_label.clone()),
+                error: c.error.take(),
+                ..saved.conversation
+            };
+        });
+        (session, refused)
     }
 
     /// LL.19: send the last question again, with the settings as they are
@@ -1785,7 +1851,7 @@ pub type DoneHook = Arc<dyn Fn(BufferId, &str, Option<&str>) + Send + Sync>;
 /// user's own config reaches here: a project's file path is refused in
 /// `resolve`. The message names the path and the failure kind, nothing of the
 /// contents.
-async fn read_system_file(raw: &str) -> Result<String, String> {
+pub(crate) async fn read_system_file(raw: &str) -> Result<String, String> {
     let raw = raw.trim();
     let path = match raw.strip_prefix("~/") {
         Some(rest) => match std::env::var_os("HOME") {

@@ -254,6 +254,15 @@ pub enum MessageScope {
 }
 
 impl MessageScope {
+    /// The text [`parse`](Self::parse) reads back as this scope.
+    fn text(self) -> String {
+        match self {
+            Self::All => "all".to_string(),
+            Self::Last => "last".to_string(),
+            Self::Trailing(n) => n.to_string(),
+        }
+    }
+
     fn parse(s: &str) -> Self {
         match s.trim() {
             "last" => Self::Last,
@@ -297,6 +306,28 @@ pub struct Settings {
 }
 
 impl Settings {
+    /// LL.20: `key`'s value as the text [`set`](Self::set) reads back, `None`
+    /// when unset. A session file keeps a chat's effective settings this way,
+    /// so a model that came from a profile comes back without the profile.
+    pub fn text(&self, key: SettingKey) -> Option<String> {
+        match key {
+            SettingKey::Model => self.model.clone(),
+            SettingKey::System => self.system.clone(),
+            SettingKey::Temperature => self.temperature.map(|t| t.to_string()),
+            SettingKey::MaxTokens => self.max_tokens.map(|n| n.to_string()),
+            SettingKey::Reasoning => self.reasoning.clone(),
+            SettingKey::Messages => Some(self.messages.text()),
+            SettingKey::Tools => Some(if self.tools.is_empty() {
+                "none".to_string()
+            } else {
+                self.tools.iter().cloned().collect::<Vec<_>>().join(",")
+            }),
+            SettingKey::Destination => self.destination.clone(),
+            SettingKey::FoldReasoning | SettingKey::FoldTools => None,
+            SettingKey::Profile => self.profile.clone(),
+        }
+    }
+
     fn set(&mut self, key: SettingKey, text: &str) {
         let t = text.trim();
         let some = || (!t.is_empty()).then(|| t.to_string());
@@ -495,6 +526,38 @@ fn restricted_may_set(key: SettingKey) -> bool {
         key,
         SettingKey::Model | SettingKey::System | SettingKey::Tools
     ) || key.is_parameter()
+}
+
+/// LL.20: the keys a session file keeps: the ones a restricted source may set,
+/// so everything saved can come back.
+pub const SAVED_KEYS: [SettingKey; 7] = [
+    SettingKey::Model,
+    SettingKey::System,
+    SettingKey::Temperature,
+    SettingKey::MaxTokens,
+    SettingKey::Reasoning,
+    SettingKey::Messages,
+    SettingKey::Tools,
+];
+
+/// The spelling a file uses for `key` (`max_tokens`), for keys a file may carry.
+pub fn file_key(key: SettingKey) -> Option<&'static str> {
+    key.file_key()
+}
+
+/// LL.20: a session file's settings through the trust table, as project config
+/// goes: it may have been downloaded, so it may set the model, the system
+/// prompt (as text), parameters and tools no wider than `base_tools`, the
+/// ones the user's own config enables. Everything else is refused, with why.
+pub fn restrict(
+    entries: impl Iterator<Item = (String, String)>,
+    source: &str,
+    base_tools: BTreeSet<String>,
+) -> (RawSet, Vec<Refusal>) {
+    let mut refused = Vec::new();
+    let mut tools = Some(base_tools);
+    let set = apply_restricted(entries, source, &mut tools, &mut refused);
+    (set, refused)
 }
 
 /// Reasons for the keys the table names, so the message says why and not only no.

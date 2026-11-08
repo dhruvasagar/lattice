@@ -16,7 +16,7 @@ acp = ["dep:agent-client-protocol", "dep:tokio-util", "dep:linkme", "tokio/proce
 llm = ["dep:linkme", "dep:tokio-util", "dep:reqwest", "dep:toml", "dep:regex", "dep:ignore", "tokio/net", "tokio/process"]
 # MCP IDE-peer transport (Claude Code, folded in by AG-4): the loopback
 # WebSocket server + the read / write / diff tools it exposes.
-mcp = ["dep:tokio-tungstenite", "dep:dirs", "dep:getrandom", "dep:lattice-lsp", "tokio/net"]
+mcp = ["dep:rmcp", "dep:tokio-tungstenite", "dep:dirs", "dep:getrandom", "dep:lattice-lsp", "tokio/net"]
 
 [dependencies]
 lattice-protocol = { path = "../lattice-protocol" }
@@ -49,6 +49,9 @@ linkme = { workspace = true, optional = true }
 lattice-lsp = { path = "../lattice-lsp", optional = true }
 # mcp: the loopback WebSocket transport the external `claude` CLI dials into.
 tokio-tungstenite = { workspace = true, optional = true }
+# mcp: the MCP protocol itself (LL.22): `LatticeServer` is an rmcp
+# `ServerHandler`, served over the WebSocket above.
+rmcp = { workspace = true, optional = true }
 # mcp: discovery-lockfile home dir + ephemeral auth-token entropy.
 dirs = { workspace = true, optional = true }
 getrandom = { workspace = true, optional = true }
@@ -78,6 +81,11 @@ tokio = { workspace = true, features = ["test-util", "time", "macros", "rt", "ne
 futures = { workspace = true }
 criterion = { workspace = true }
 tracing-subscriber = { workspace = true }
+
+[[bench]]
+name = "mcp_call"
+harness = false
+required-features = ["mcp"]
 
 [[bench]]
 name = "llm_decode"

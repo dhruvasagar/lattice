@@ -120,7 +120,11 @@ async fn ws_handshake_initialize_and_tools_list() {
         &mut ws,
         1,
         "initialize",
-        Some(json!({ "protocolVersion": "2024-11-05" })),
+        Some(json!({
+            "protocolVersion": "2024-11-05",
+            "capabilities": {},
+            "clientInfo": { "name": "claude-code", "version": "2.1.319" },
+        })),
     )
     .await;
     let resp = read_response(&mut ws).await;
@@ -345,6 +349,20 @@ async fn open_diff_does_not_block_loop_and_drop_rejects_pending_diff() {
     let (mut ws, _resp) = tokio_tungstenite::connect_async(request)
         .await
         .expect("authorized connect succeeds");
+
+    // A client initializes before calling tools, as `claude` does.
+    send_request(
+        &mut ws,
+        1,
+        "initialize",
+        Some(json!({
+            "protocolVersion": "2024-11-05",
+            "capabilities": {},
+            "clientInfo": { "name": "claude-code", "version": "2.1.319" },
+        })),
+    )
+    .await;
+    assert_eq!(read_response(&mut ws).await.id, RequestId::Number(1));
 
     // Fire openDiff (id=10). It blocks server-side awaiting the verdict.
     send_request(

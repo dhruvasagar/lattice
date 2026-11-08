@@ -2259,7 +2259,7 @@ The declarative front-end has two placements, the Emacs pair `switch-to-buffer` 
 - `messages-mode` owns `*messages*` per §5.10.5.
 - The mode registers a `tracing::Subscriber` at activate time. The subscriber receives every `tracing::info!` / `warn!` / etc. invocation in the codebase, formats `HH:MM:SS [LEVEL] target: message`, and appends to `*messages*` via `DocumentHandle`.
 - `EchoLevel` is a thin alias for `tracing::Level`; legacy `App::set_message(level, text)` routes through a single `tracing::event!` call. One code path, one subscriber.
-- Typed option `messages.filter: String` accepts standard `tracing-subscriber` filter syntax (`editor=info,lsp=debug,grammar=trace`). Live-editable via `:set messages.filter=...`. Per-subsystem verbosity for free; `RUST_LOG`-style filtering for power users.
+- Typed option `messages.filter: String` accepts standard `tracing-subscriber` filter syntax (`editor=info,lsp=debug,grammar=trace`). Live-editable via `:set messages.filter=...`. Per-subsystem verbosity for free; `RUST_LOG`-style filtering for power users. Dependencies whose `info` is protocol chatter (today `rmcp`, which logs every notification it receives) are held at `warn` unless the directive names them: `rmcp=debug` opts back in.
 - Syntax highlighting: `messages-mode` contributes a line-local highlight provider keyed by the bracketed level. `TRACE` dim, `DEBUG` cyan, `INFO` default, `WARN` yellow, `ERROR` red. Computed at append-time per new line; no rope re-parse.
 - Plugins (post-1.0 WIT host functions) get `host.log(level, target, msg)` — flows through the same subscriber. Plugin telemetry shows up in `*messages*` without any plumbing.
 

@@ -236,6 +236,23 @@ the median sits on the baseline), so streamed output does not tax typing in the 
 
 ---
 
+## LL.22 — one MCP tool call through rmcp (2026-11-08)
+
+`crates/lattice-ai/benches/mcp_call.rs`. The Claude Code connection runs on rmcp, and LL.23
+serves the same `LatticeServer` in-process, so this is what the protocol adds to a tool call:
+a newline-delimited `tools/call` written to an in-memory pipe, decoded, handled on its own
+task, encoded and read back. The tool (`getWorkspaceFolders`) does no work of its own.
+
+| Call | Round trip |
+|---|---|
+| `getWorkspaceFolders` | 57.7 µs |
+
+Most of it is two cross-thread wakes (the request task, then the reply) on a two-worker
+runtime. Off the editor thread, and three orders of magnitude below a model's turn; recorded
+so LL.23's in-process calls have a baseline.
+
+---
+
 ## LL.4 — LLM stream decode throughput (2026-11-01)
 
 `crates/lattice-ai/benches/llm_decode.rs`. The request task decodes every

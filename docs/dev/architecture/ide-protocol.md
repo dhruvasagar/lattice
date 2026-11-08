@@ -117,6 +117,26 @@ discovery env injected and activates `claude-code-mode` on it.
 The exact lockfile JSON field set is provisional until verified against a live
 `claude` CLI (before the terminal-launch slice).
 
+**Served by `rmcp` (LL.22).** The MCP side is `lattice_server::LatticeServer`, an `rmcp`
+`ServerHandler`; `server.rs` keeps the listener, lockfile, auth and the notification
+broadcast, and adapts the socket to an rmcp transport (one writer task carries rmcp's frames
+and the pushed notifications). The contract above is unchanged and pinned by tests:
+
+- The catalogue and result envelopes are written as the contract's JSON and mapped into
+  rmcp's types once, so the wire carries the same names, descriptions and schemas.
+- The server answers `2024-11-05` whatever a client asks for; rmcp would otherwise agree to
+  a newer version the client names, which changes what the client may expect.
+- Each request runs on its own task, so a blocking `openDiff` never holds up the frames
+  after it.
+- Teardown (reject + close the connection's diffs) fires the moment the socket ends, not
+  when the service finishes: rmcp drains in-flight handlers on close, and a pending review is
+  one of them.
+- **Stricter than before, as the protocol requires:** a request before `initialize`, or an
+  `initialize` without `capabilities` and `clientInfo`, is refused with an error carrying its
+  id. `claude` sends a complete handshake, so it is unaffected; the I1 tests sent a partial
+  one and were updated to the real client's (Dhruva, 2026-11-08). A frame rmcp cannot decode
+  at all is answered too: a parse error, or an invalid-request error with what it sent as id.
+
 ## 5. Three data paths (chosen for paramount #1 + #4)
 
 1. **Reads** — **crate-owned**. `lattice-claude-code` keeps a `ClaudeCodeReadState`
@@ -149,7 +169,7 @@ The exact lockfile JSON field set is provisional until verified against a live
    sides are editable (like `:diffsplit`); Accept writes the proposed side's
    *live* content, so a human can tweak the agent's proposal in the diff and have
    the tweaks persist. The
-   agent's `tools/call` blocks *on its own WS task* awaiting the oneshot, which
+   agent's `tools/call` blocks *on its own task* (rmcp runs each request on one) awaiting the oneshot, which
    fires on `:diff-accept` / `:diff-reject` (or a close-tab cancel → the dropped
    sender surfaces as a reject). On **Accept the host writes the proposed side to
    `old_file_path`** before firing the outcome (the review IS the save), so the

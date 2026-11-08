@@ -104,6 +104,16 @@
   of files whose text an ask refuses to send, by name; the default covers
   `.env`, `*.pem`, `*.key` and SSH keys.
 
+### Changed
+- **The Claude Code connection runs on the official MCP SDK** (`rmcp`).
+  `claude` sees the same tools and notifications as before. A client that
+  sends a request before `initialize`, or an `initialize` without its
+  capabilities and client info, now gets an error, as the protocol
+  requires; `claude` always sends both.
+- **`messages.filter` holds `rmcp` at `warn`** unless the filter names it,
+  so the MCP SDK's per-message logging stays out of `*messages*`
+  (`:set messages.filter=info,rmcp=debug` to see it).
+
 ### Fixed
 - **`:claude-send` works from Visual mode.** `:'<,'>claude-send` (or any
   line range) mentions those lines of the current file instead of

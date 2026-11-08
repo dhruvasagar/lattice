@@ -697,7 +697,7 @@ Bench: `llm_decode/gemini`.
 
 ## MCP (last)
 
-### LL.22 — `rmcp` gate: `LatticeServer` over the existing WebSocket 📝
+### LL.22 — `rmcp` gate: `LatticeServer` over the existing WebSocket ✅
 
 **Why:** one implementation. **A gate:** if it cannot pass, stop and tell Dhruva. The fallback is
 `rmcp` client-only, with `dispatch.rs` and `protocol.rs` kept.
@@ -708,6 +708,32 @@ delete `src/mcp/{dispatch,protocol}.rs`.
 **Tests:** `tests/mcp_ws_roundtrip.rs` unchanged and green; the catalogue equals today's by name and schema;
 `selection_changed` and `at_mentioned` still reach the client; a blocking `openDiff` does not stall the read
 loop; bad token still 401; **a real `claude` session driven by hand**, with the result recorded in the commit.
+
+**Landed; the gate passed.** `rmcp` 3.6.0 (`server` feature) under
+`mcp`; `src/mcp/lattice_server.rs` (`LatticeServer`, `ToolContext`, the catalogue as the
+contract's JSON); `server.rs` adapts the socket (`WsTransport`) and fires teardown when the
+socket ends; `dispatch.rs` and `protocol.rs` deleted. **One deviation, decided by Dhruva
+2026-11-08:** `mcp_ws_roundtrip.rs` is not byte-for-byte unchanged. rmcp refuses an
+`initialize` without `capabilities`/`clientInfo` and any request before `initialize`; the
+test's handshake gains those two fields, and the `openDiff` test initializes before calling
+(the second edit is the same principle, found after the decision). `messages.filter` holds
+`rmcp` at `warn` unless named (rmcp logs each notification at `info`). Tests: roundtrip (6),
+`tests/mcp_lattice_server.rs` (version pinned for a newer client, `tools/list_changed`, the
+wire catalogue, `selection_changed`/`at_mentioned` after the handshake, unknown tool,
+unreadable frames), `lattice_server` unit tests (catalogue equals the contract), the filter
+floor. Bench: `mcp_call`.
+
+**The hand-driven session (Dhruva, 2026-11-08, `claude` 2.1.319, GPUI).** It first failed to
+connect, before any MCP frame: `claude` asks for the `mcp` WebSocket subprotocol and lattice
+never echoed it (fixed separately, `e0de5d79`; pre-LL.22). `:'<,'>claude-send` was refused
+with E481 (fixed separately, `f4edbb8f`). Then: `/ide` connects; `:'<,'>claude-send` puts the
+`@file` mention in claude's prompt; two edits through `openDiff`, one `:diff-accept`ed and one
+`:diff-reject`ed, each reaching claude; `getDiagnostics` answers; `:claude-code-stop`
+disconnects. `getDiagnostics` is the only IDE tool claude offers its model: the CLI keeps the
+rest of the catalogue for itself, as with VS Code. **Follow-ups found, not LL.22's:**
+`openDiff` opens the file without a visible diff although accept/reject work (host-side
+display, shares no code with this slice); `:'<,'>claude<Tab>` does not complete after a range
+prefix.
 
 ### LL.23 — Lattice's tools in-process 📝
 

@@ -31,8 +31,8 @@ use lattice_runtime::EventBus;
 
 use lattice_agent::{EditorAccess, EditorStateHandle, EditorWriteRequest};
 
-use crate::mcp::dispatch::{self, DispatchContext, Outgoing};
 use crate::mcp::error::Result;
+use crate::mcp::lattice_server::{LatticeServer, ToolContext};
 use crate::mcp::lockfile::{Lockfile, LockfileContents};
 use crate::mcp::reads::ReadContext;
 use crate::mcp::{auth, transport};
@@ -87,14 +87,14 @@ pub struct ClaudeCodeServerHandle {
     cmd_tx: mpsc::UnboundedSender<ServerCmd>,
     state: Arc<ArcSwap<ServerState>>,
     /// The crate-owned read cache (subscription set up at spawn). Shared
-    /// into the [`DispatchContext`] built by `install_read_services`.
+    /// into the [`ToolContext`] built by `install_read_services`.
     cache: EditorStateHandle,
     /// Workspace folders from the config (for `getWorkspaceFolders`).
     workspace_folders: Vec<String>,
     /// The live dispatch context connections read. Starts with no generic
     /// services (cache + config only); `install_services` upgrades it once
     /// boot has wired the buffer-store / diagnostics handles + the write bus.
-    dispatch_ctx: Arc<ArcSwap<DispatchContext>>,
+    dispatch_ctx: Arc<ArcSwap<ToolContext>>,
     /// I6: broadcast channel for server-initiated notification frames. The
     /// notification task (`notifications.rs`) + `:claude-send` publish frames
     /// here; each connection subscribes a receiver and forwards frames to its
@@ -244,7 +244,7 @@ impl ClaudeCodeServerHandle {
     /// owns the channel, the per-tick drain, and the off-keystroke wake — the
     /// drain's registration token rides `boot.into_registrations()` into the
     /// Editor). AG-2b: the bus now rides inside the `EditorAccess` the write
-    /// tools call through, not a separate `DispatchContext` field. The server
+    /// tools call through, not a separate `ToolContext` field. The server
     /// handle is spawned before boot wires these handles, so this upgrade runs
     /// once, from the subsystem's `install(boot)`.
     pub fn install_services(
@@ -254,7 +254,7 @@ impl ClaudeCodeServerHandle {
         writes: InboundBus<EditorWriteRequest>,
         diff: Option<ProgrammaticDiffBus>,
     ) {
-        self.dispatch_ctx.store(Arc::new(DispatchContext {
+        self.dispatch_ctx.store(Arc::new(ToolContext {
             // Shared template; `serve_connection` clones this and stamps each
             // connection's own `conn_id` (D-fix.6).
             conn_id: 0,
@@ -298,7 +298,7 @@ pub fn spawn(
     // I2.2: start with a deps-less dispatch context (cache + config only);
     // `install_read_services` upgrades it once boot wires the generic
     // buffer-store / diagnostics handles.
-    let dispatch_ctx = Arc::new(ArcSwap::from_pointee(DispatchContext {
+    let dispatch_ctx = Arc::new(ArcSwap::from_pointee(ToolContext {
         // Shared template; per-connection `conn_id` stamped in
         // `serve_connection` (D-fix.6).
         conn_id: 0,
@@ -427,7 +427,7 @@ async fn supervisor_main(
     config: ServerConfig,
     mut cmd_rx: mpsc::UnboundedReceiver<ServerCmd>,
     state: Arc<ArcSwap<ServerState>>,
-    dispatch_ctx: Arc<ArcSwap<DispatchContext>>,
+    dispatch_ctx: Arc<ArcSwap<ToolContext>>,
     notify_tx: broadcast::Sender<String>,
     signals: StatusSignals,
 ) {
@@ -480,7 +480,7 @@ fn start_accepting(
     config: &ServerConfig,
     std_listener: std::net::TcpListener,
     token: String,
-    dispatch_ctx: Arc<ArcSwap<DispatchContext>>,
+    dispatch_ctx: Arc<ArcSwap<ToolContext>>,
     notify_tx: broadcast::Sender<String>,
     signals: StatusSignals,
 ) -> Result<RunningServer> {
@@ -521,7 +521,7 @@ fn start_accepting(
 async fn accept_loop(
     listener: TcpListener,
     token: String,
-    dispatch_ctx: Arc<ArcSwap<DispatchContext>>,
+    dispatch_ctx: Arc<ArcSwap<ToolContext>>,
     notify_tx: broadcast::Sender<String>,
     shutdown_tx: broadcast::Sender<()>,
     signals: StatusSignals,
@@ -576,33 +576,32 @@ async fn accept_loop(
 async fn serve_connection(
     stream: TcpStream,
     token: String,
-    dispatch_ctx: Arc<ArcSwap<DispatchContext>>,
+    dispatch_ctx: Arc<ArcSwap<ToolContext>>,
     // D-fix.6: this connection's unique id, stamped into the per-connection
-    // dispatch context so `openDiff` tags its diff and the close tools scope
+    // tool context so `openDiff` tags its diff and the close tools scope
     // teardown to THIS session.
     conn_id: u64,
     mut notify_rx: broadcast::Receiver<String>,
-    mut shutdown_rx: broadcast::Receiver<()>,
+    shutdown_rx: broadcast::Receiver<()>,
     // I7: held for the connection's lifetime; its `Drop` decrements the live
     // connection count + wakes the status segment when this connection ends.
     _conn_guard: ConnGuard,
 ) -> Result<()> {
     let ws = transport::accept(stream, &token).await?;
-    let (mut write, mut read) = ws.split();
-    // Load the current dispatch context once per connection (installed at
-    // boot before any start, so it carries the generic read services), and
-    // stamp THIS connection's id onto it (D-fix.6). Cheap clone — all fields
-    // are Arc-based handles or small values.
+    let (mut write, read) = ws.split();
+    // Load the current tool context once per connection (installed at boot
+    // before any start, so it carries the generic read services), and stamp
+    // THIS connection's id onto it (D-fix.6). Cheap clone: Arc handles.
     let mut ctx = (*dispatch_ctx.load_full()).clone();
     ctx.conn_id = conn_id;
 
     // I6: one WS sink can't be written from two tasks, so a single outbound
-    // channel funnels BOTH request responses (from the read loop) and pushed
-    // server-initiated notifications (from the broadcast) to one writer task.
+    // channel funnels BOTH rmcp's frames and pushed server-initiated
+    // notifications (from the broadcast) to one writer task.
     let (out_tx, mut out_rx) = mpsc::unbounded_channel::<String>();
 
     // Writer: drain the outbound channel → WS. Ends when every `out_tx` clone
-    // drops (read loop done + forwarder gone) or the peer write fails.
+    // drops (transport done + forwarder gone) or the peer write fails.
     let writer = tokio::spawn(async move {
         while let Some(payload) = out_rx.recv().await {
             if write.send(WsMessage::Text(payload)).await.is_err() {
@@ -629,91 +628,159 @@ async fn serve_connection(
         }
     });
 
-    // Read loop: handle incoming MCP frames; responses ride the same writer.
-    // The blocking `openDiff` tool is dispatched on its OWN task (tracked in
-    // `blocking`) so its unbounded, no-timeout verdict-wait never blocks the
-    // loop — the loop keeps polling `read.next()` + `shutdown_rx`, so a closed
-    // socket or `:claude-code-stop` is observed promptly even while a review is
-    // pending, and the agent can't be stranded forever. Every non-blocking tool
-    // stays inline + ordered. Capture the result so teardown runs on every path.
-    let mut blocking: tokio::task::JoinSet<()> = tokio::task::JoinSet::new();
-    let result: Result<()> = 'read: loop {
-        let frame = tokio::select! {
-            maybe = read.next() => match maybe {
-                Some(Ok(f)) => f,
-                Some(Err(e)) => break 'read Err(e.into()),
-                None => break 'read Ok(()), // peer closed the socket
-            },
-            // I7: the server stopped — the shutdown sender dropped, so
-            // `recv()` returns `Closed`. Either arm closes this connection.
-            _ = shutdown_rx.recv() => break 'read Ok(()),
-        };
-        if frame.is_close() {
-            break 'read Ok(());
-        }
-        // MCP frames are JSON text; ignore binary / ping / pong (pings are
-        // auto-ponged by the stream's read machinery).
-        let Ok(text) = frame.to_text() else {
-            continue;
-        };
-        if dispatch::is_blocking_tool_call(text.as_bytes()) {
-            // The verdict-wait posts its response (correlated by request id)
-            // when the user resolves the diff — or when teardown below rejects
-            // it. Meanwhile the loop moves straight on to the next frame.
-            let ctx = ctx.clone();
-            let out = out_tx.clone();
-            let text = text.to_owned();
-            blocking.spawn(async move {
-                for outgoing in dispatch::dispatch_frame(text.as_bytes(), &ctx).await {
-                    if let Some(payload) = serialize_outgoing(&outgoing) {
-                        let _ = out.send(payload);
-                    }
-                }
-            });
-        } else {
-            for outgoing in dispatch::dispatch_frame(text.as_bytes(), &ctx).await {
-                let Some(payload) = serialize_outgoing(&outgoing) else {
-                    continue;
-                };
-                if out_tx.send(payload).is_err() {
-                    break 'read Ok(()); // writer gone — connection is finished
-                }
-            }
-        }
-    };
-
-    // Teardown (runs on socket close, error, or stop). A connection that drops
-    // mid-review must not strand the agent or leak diff panes: reject + close
-    // every diff THIS connection opened (idempotent — a no-op when it opened
-    // none), so the host fires `DIFF_REJECTED` + tears the transient panes down.
-    // Then abort any in-flight `openDiff` handlers (their reply can't reach a
-    // dead socket anyway) so they release their `out_tx` clones, and drain the
-    // writer.
-    {
-        // AG-2b: the write bus rides inside `reads.editor`; a `None` bus
-        // (test harness, or a server never fully installed) degrades to a
-        // graceful no-op inside `close_all_diff_tabs`, so this is safe to
-        // always spawn.
-        let editor = ctx.reads.editor.clone();
+    // Teardown, fired the moment the socket ends (close, error, or stop): a
+    // connection that drops mid-review must not strand the agent or leak diff
+    // panes, so reject + close every diff THIS connection opened (a no-op
+    // when it opened none) and the host answers the pending `openDiff` with
+    // `DIFF_REJECTED`. It cannot wait for the service to finish: rmcp drains
+    // in-flight handlers first, and the pending review is one of them.
+    let editor = ctx.reads.editor.clone();
+    let teardown = Box::new(move || {
         tokio::spawn(async move {
             let _ = crate::mcp::writes::close_all_diff_tabs(&editor, conn_id).await;
         });
+    });
+    let ws_transport = WsTransport {
+        read,
+        out: out_tx.clone(),
+        shutdown: shutdown_rx,
+        teardown: Some(teardown),
+    };
+
+    // rmcp runs each request on its own task, so a blocking `openDiff` (an
+    // unbounded, user-paced wait) never holds up the frames after it.
+    match rmcp::service::serve_server(LatticeServer::new(ctx), ws_transport).await {
+        Ok(running) => {
+            let _ = running.waiting().await;
+        }
+        Err(e) => tracing::debug!(error = %e, "claude-code: MCP initialization failed"),
     }
-    blocking.abort_all();
+
     drop(out_tx);
     forwarder.abort();
     let _ = writer.await;
-    result
+    Ok(())
 }
 
-/// Serialize one outbound frame for the WS writer. A serialization failure
-/// (never expected for a well-formed `Response`/`Notification`) drops just
-/// that frame rather than tearing the connection down.
-fn serialize_outgoing(outgoing: &Outgoing) -> Option<String> {
-    match outgoing {
-        Outgoing::Response(r) => serde_json::to_string(r).ok(),
-        Outgoing::Notification(n) => serde_json::to_string(n).ok(),
+/// The WebSocket as an rmcp transport. Text frames carry one JSON-RPC
+/// message each; outgoing messages go to the connection's writer task.
+struct WsTransport {
+    read: futures::stream::SplitStream<tokio_tungstenite::WebSocketStream<TcpStream>>,
+    out: mpsc::UnboundedSender<String>,
+    shutdown: broadcast::Receiver<()>,
+    /// Run once when the socket ends, or when the transport is dropped
+    /// without having seen the end (initialization failed).
+    teardown: Option<Box<dyn FnOnce() + Send>>,
+}
+
+impl WsTransport {
+    fn ended(&mut self) {
+        if let Some(teardown) = self.teardown.take() {
+            teardown();
+        }
     }
+}
+
+impl Drop for WsTransport {
+    fn drop(&mut self) {
+        self.ended();
+    }
+}
+
+impl rmcp::transport::Transport<rmcp::service::RoleServer> for WsTransport {
+    type Error = std::io::Error;
+
+    fn send(
+        &mut self,
+        item: rmcp::service::TxJsonRpcMessage<rmcp::service::RoleServer>,
+    ) -> impl std::future::Future<Output = std::result::Result<(), Self::Error>> + Send + 'static
+    {
+        let sent = match serde_json::to_string(&item) {
+            Ok(text) => self.out.send(text).map_err(|_| {
+                std::io::Error::new(std::io::ErrorKind::BrokenPipe, "connection closed")
+            }),
+            Err(e) => {
+                // Never expected for rmcp's own types; drop just this frame.
+                tracing::debug!(error = %e, "claude-code: could not encode a frame");
+                Ok(())
+            }
+        };
+        std::future::ready(sent)
+    }
+
+    async fn receive(
+        &mut self,
+    ) -> Option<rmcp::service::RxJsonRpcMessage<rmcp::service::RoleServer>> {
+        loop {
+            let frame = tokio::select! {
+                maybe = self.read.next() => match maybe {
+                    Some(Ok(f)) => f,
+                    Some(Err(_)) | None => break,
+                },
+                // I7: the server stopped; the shutdown sender dropped.
+                _ = self.shutdown.recv() => break,
+            };
+            if frame.is_close() {
+                break;
+            }
+            // MCP frames are JSON text; binary / ping / pong are ignored
+            // (pings are answered by the stream itself).
+            let Ok(text) = frame.to_text() else {
+                continue;
+            };
+            match serde_json::from_str(text) {
+                Ok(message) => return Some(message),
+                Err(e) => {
+                    if let Some(reply) = undecodable_reply(text, &e) {
+                        let _ = self.out.send(reply);
+                    }
+                }
+            }
+        }
+        self.ended();
+        None
+    }
+
+    fn close(
+        &mut self,
+    ) -> impl std::future::Future<Output = std::result::Result<(), Self::Error>> + Send {
+        std::future::ready(Ok(()))
+    }
+}
+
+/// The answer to a frame rmcp cannot read. Not JSON: a parse error with a
+/// null id (the id cannot be recovered). A request rmcp cannot decode at all
+/// (an id that is neither a number nor a string, say): an invalid-request
+/// error carrying what it sent as its id, so the client is told rather than
+/// left waiting. Anything else (a notification, a stray response) is dropped.
+/// A request rmcp can decode but refuses (an `initialize` missing
+/// `clientInfo`) is rmcp's to answer, and it does, with the id.
+fn undecodable_reply(text: &str, err: &serde_json::Error) -> Option<String> {
+    use lattice_protocol::jsonrpc::error_codes;
+    let (id, code, message) = match serde_json::from_str::<serde_json::Value>(text) {
+        Err(e) => (
+            serde_json::Value::Null,
+            error_codes::PARSE_ERROR,
+            format!("parse error: {e}"),
+        ),
+        Ok(v) if v.get("method").is_some() && v.get("id").is_some() => (
+            v["id"].clone(),
+            error_codes::INVALID_REQUEST,
+            format!("invalid request: {err}"),
+        ),
+        Ok(_) => {
+            tracing::debug!(error = %err, "claude-code: dropping an unreadable frame");
+            return None;
+        }
+    };
+    Some(
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "error": { "code": code, "message": message },
+        })
+        .to_string(),
+    )
 }
 
 #[cfg(test)]
@@ -744,7 +811,7 @@ mod tests {
         handle.install_services(None, None, bus, None);
 
         // AG-2b: the write bus now rides inside the seated `EditorAccess`
-        // (no separate `DispatchContext::writes` field). Prove it's wired by
+        // (no separate `ToolContext::writes` field). Prove it's wired by
         // sending a write through the live context and observing it reach
         // the drain, rather than the graceful "not initialized" error a
         // `None` bus would produce.

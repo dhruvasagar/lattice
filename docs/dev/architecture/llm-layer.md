@@ -620,9 +620,9 @@ carves off the HTTP dependency, as `acp` and `mcp` do theirs.
     loopback WebSocket it offers exactly today's Claude Code catalogue, so connecting
     `claude` gains nothing it does not have now.
 
-  The current hand-written `dispatch.rs` and `protocol.rs` are replaced by this; `server.rs`
-  keeps the listener, lockfile and auth. Tool-call ids and provider data live in the session
-  store.
+  The hand-written `dispatch.rs` and `protocol.rs` were replaced by this in LL.22; `server.rs`
+  keeps the listener, lockfile and auth (see `ide-protocol.md` §4 for what changed on the
+  wire). Tool-call ids and provider data live in the session store.
 - **`modes`** — `llm-mode` (minor, global on documents: operators, shared chords) and
   `llm-chat-mode` (major, implies `repl-mode`). Both own their chords and handler bodies;
   buffers are created through `ModeActivator`.
@@ -656,10 +656,14 @@ Each of these is settled by the slice that needs it, and none changes the UX abo
   invocations and does not wait for the request.
 - **Headings and folds.** A reply's own `#` headings produce section folds that overlap the
   block folds. Turn labels stay plain lines for this reason. Confirm `zM` and `za` compose.
-- **`rmcp` against Claude Code.** Source review of 3.8.0 is favourable: `CustomNotification`
-  for `selection_changed` and `at_mentioned`, a pinnable `V_2024_11_05`, and a sink/stream
-  transport for the WebSocket. None of it is proven. The first MCP slice must pass
-  `mcp_ws_roundtrip.rs` and a real `claude` session before the rest builds on it. If it
-  cannot, `rmcp` stays client-only and the hand-written server stays.
+- **`rmcp` against Claude Code. Settled by LL.22 (3.6.0).** It carries the contract: the
+  version pins to `2024-11-05`, the pushed notifications share the socket through our own
+  writer, and requests run concurrently. One cost: rmcp requires a complete `initialize`
+  (`capabilities`, `clientInfo`) before any request, which the hand-written server never
+  checked. `mcp_ws_roundtrip.rs` sent a partial one and skipped it in the `openDiff` test;
+  both now send the real client's handshake rather than a shim keeping lattice lenient for
+  a test (Dhruva, 2026-11-08). The real `claude` session passed (recorded in the LL.22
+  slice plan and commit); it also exposed a pre-existing handshake bug, the unechoed `mcp`
+  subprotocol, fixed on its own.
 - **Reviewable writes from tools.** Lattice's edit tools need `read_text_file`-style reads
   and writes on `EditorAccess`, against unsaved buffer text rather than disk.

@@ -719,6 +719,11 @@ impl LlmChats {
 
     /// The `llm.exclude` glob `path` matches, if any: its text must not be sent.
     /// Without a registry (a bare test) the default list applies.
+    ///
+    /// Checked as given and as the file really is: a symlink named
+    /// `notes.txt` pointing at `.env`, or a `../` path into an excluded
+    /// directory, must not get past a glob that names the target. One
+    /// `canonicalize` per user action, not per frame.
     pub fn excluded(&self, path: &std::path::Path) -> Option<String> {
         let reg = self.registry.read().unwrap_or_else(|e| e.into_inner());
         let globs = reg
@@ -726,7 +731,12 @@ impl LlmChats {
             .and_then(|r| r.get_typed::<super::options::LlmExclude>())
             .map(|v| (*v).clone())
             .unwrap_or_default();
-        globs.matching(path).map(str::to_string)
+        drop(reg);
+        if let Some(glob) = globs.matching(path) {
+            return Some(glob.to_string());
+        }
+        let real = std::fs::canonicalize(path).ok()?;
+        globs.matching(&real).map(str::to_string)
     }
 
     /// Flip the menu's scope for `buffer` and return the new one.
@@ -2132,5 +2142,32 @@ mod tests {
             reg.ended_early
                 .contains_key(&RequestId(ENDED_EARLY_CAP as u64))
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_link_to_an_excluded_file_is_excluded() {
+        let handle = Handle::current();
+        let bus = Arc::new(lattice_runtime::EventBus::new());
+        let requests: RequestRegistryHandle = Arc::new(RequestRegistry::new(
+            handle.clone(),
+            Some(bus.clone()),
+            None,
+        ));
+        let chats = LlmChats::new(handle, requests, bus, LlmConfig::default());
+        let dir = std::env::temp_dir().join(format!("lattice-excl-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join(".env"), "KEY=1").unwrap();
+        std::os::unix::fs::symlink(dir.join(".env"), dir.join("notes.txt")).unwrap();
+        assert_eq!(
+            chats.excluded(&dir.join("notes.txt")).as_deref(),
+            Some(".env")
+        );
+        assert_eq!(
+            chats.excluded(&dir.join("sub/../.env")).as_deref(),
+            Some(".env")
+        );
+        assert_eq!(chats.excluded(&dir.join("sub")), None);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

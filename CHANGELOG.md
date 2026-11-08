@@ -125,6 +125,9 @@
   (`:set messages.filter=info,rmcp=debug` to see it).
 
 ### Fixed
+- **`llm.exclude` sees through links.** A file was checked by the name it
+  was opened or attached under, so a symlink `notes.txt` pointing at `.env`
+  could be sent. The file it really is is now checked as well.
 - **OpenAI-compatible servers:** a reply that was all reasoning no longer
   breaks the rest of the chat (it went back as an empty message servers
   reject), and a server that ends a tool-calling reply with `stop` instead of

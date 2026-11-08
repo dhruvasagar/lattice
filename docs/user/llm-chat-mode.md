@@ -256,7 +256,8 @@ waits, and `:ai-permission` brings the question back.
 
 The command runs in the project, in its own process group, so stopping
 the request (`<C-c>`, `:llm-stop`, closing the chat) ends everything it
-started. It stops after 120 seconds unless the model asks for longer (up
+started. Nothing outlives the command either: a `server &` it left
+running is stopped when the shell exits. It stops after 120 seconds unless the model asks for longer (up
 to 600), and the model sees at most the first 30 000 bytes of each of
 its output and error streams, with a note saying where it was cut.
 

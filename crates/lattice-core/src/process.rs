@@ -14,8 +14,10 @@
 //!   and a cancel then kills the whole group. A shell's grandchildren
 //!   otherwise outlive it and keep its pipes open, which is exactly how
 //!   compilation's re-run came to stream an old run's output into a new
-//!   one. [`ProcessGroup::Shared`] is for a child that may need the
-//!   terminal — see its docs.
+//!   one. The same holds when the child exits first: whatever of its group
+//!   still holds the pipes after [`LINGER`] is killed, so `server &` cannot
+//!   keep a finished run waiting. [`ProcessGroup::Shared`] is for a child
+//!   that may need the terminal — see its docs.
 //! - **Output is drained on reader threads**, so a child that fills a pipe
 //!   cannot wedge the wait loop that is watching the token; and a cancel
 //!   does not wait for them, so a grandchild still holding a pipe cannot
@@ -171,6 +173,13 @@ pub fn run_cancellable_capped(
             return Ok(RunOutcome::Cancelled);
         }
         if let Some(status) = child.try_wait()? {
+            // The child is done, but something it started in the background
+            // may still hold its pipes, and joining the readers would wait on
+            // that for ever, deaf to the token.
+            if !pipes_closed(&stdout, &stderr, group, child.id(), token) {
+                drop((stdout, stderr));
+                return Ok(RunOutcome::Cancelled);
+            }
             return Ok(RunOutcome::Finished(Output {
                 status,
                 stdout: stdout.join().unwrap_or_default(),
@@ -179,6 +188,41 @@ pub fn run_cancellable_capped(
         }
         thread::sleep(POLL);
     }
+}
+
+/// How long a finished child's pipes may stay open before what is left of
+/// its own process group is killed: long enough for the last of its output
+/// to drain, short enough that a stray `server &` does not hold the caller.
+pub const LINGER: Duration = Duration::from_millis(200);
+
+/// Wait for the readers of a child that has exited. Under
+/// [`ProcessGroup::Own`] nothing the child started may outlive it, so a group
+/// still holding the pipes after [`LINGER`] is killed. Either way the token is
+/// still watched: `false` when it was cancelled first (and the group, if its
+/// own, killed).
+fn pipes_closed(
+    stdout: &thread::JoinHandle<Vec<u8>>,
+    stderr: &thread::JoinHandle<Vec<u8>>,
+    group: ProcessGroup,
+    pid: u32,
+    token: &CancellationToken,
+) -> bool {
+    let deadline = std::time::Instant::now() + LINGER;
+    let mut killed = false;
+    while !(stdout.is_finished() && stderr.is_finished()) {
+        if token.is_cancelled() {
+            if group == ProcessGroup::Own {
+                kill_process_tree(pid);
+            }
+            return false;
+        }
+        if group == ProcessGroup::Own && !killed && std::time::Instant::now() >= deadline {
+            kill_process_tree(pid);
+            killed = true;
+        }
+        thread::sleep(POLL);
+    }
+    true
 }
 
 /// Read a pipe to its end on its own thread.
@@ -429,5 +473,44 @@ mod tests {
         assert!(out.status.success());
         assert_eq!(out.stdout.len(), 101);
         assert_eq!(out.stderr, b"done\n");
+    }
+
+    #[test]
+    fn a_background_child_does_not_hold_a_finished_run() {
+        let started = Instant::now();
+        let RunOutcome::Finished(out) = run_cancellable(
+            sh("sleep 30 & echo hi"),
+            None,
+            ProcessGroup::Own,
+            &CancellationToken::new(),
+        )
+        .unwrap() else {
+            panic!("nothing cancelled it");
+        };
+        assert_eq!(out.stdout, b"hi\n");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn a_cancel_still_lands_while_a_shared_grandchild_holds_the_pipes() {
+        let token = CancellationToken::new();
+        let cancel = token.clone();
+        thread::spawn(move || {
+            thread::sleep(Duration::from_millis(300));
+            cancel.cancel();
+        });
+        let started = Instant::now();
+        let outcome =
+            run_cancellable(sh("sleep 3 & echo hi"), None, ProcessGroup::Shared, &token).unwrap();
+        assert!(matches!(outcome, RunOutcome::Cancelled), "{outcome:?}");
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "{:?}",
+            started.elapsed()
+        );
     }
 }

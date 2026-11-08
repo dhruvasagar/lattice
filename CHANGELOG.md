@@ -125,6 +125,11 @@
   (`:set messages.filter=info,rmcp=debug` to see it).
 
 ### Fixed
+- **A command that starts something in the background no longer hangs.**
+  An LLM chat's `run_command` of `server &` (or a picker command that did
+  the same) waited for ever once the shell had exited, holding a thread,
+  and the background process outlived it. What the command left running is
+  now stopped shortly after it exits, and `<C-c>` or a timeout always lands.
 - **An org export keeps a reply's org syntax as text.** A reply line such
   as `#+INCLUDE:` or `#+SETUPFILE:`, or a link to `elisp:` or `shell:`, was
   copied into the `.org` file live, for org to act on when you opened or

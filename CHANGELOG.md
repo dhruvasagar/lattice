@@ -125,6 +125,9 @@
   (`:set messages.filter=info,rmcp=debug` to see it).
 
 ### Fixed
+- **An allowed tool call no longer reads `[denied]` in the transcript.**
+  After you answered an LLM chat's question, a clean-up step marked it denied
+  as well. The tool always ran; only the record was wrong.
 - **A proposed edit from Claude Code shows what changed, and what to do
   about it.** The review diff now marks the changed words inside a line,
   added on the right and removed on the left. Before, a one-word edit

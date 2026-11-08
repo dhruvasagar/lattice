@@ -689,6 +689,16 @@ impl ConversationStore {
     pub fn resolve_permission(&self, id: &str, option_id: &str) {
         let session = {
             let mut conv = self.inner.lock().expect("conversation mutex poisoned");
+            let mut pending = self
+                .pending_permissions
+                .lock()
+                .expect("pending_permissions mutex poisoned");
+            // Settled first: a second resolve (a withdrawal after the answer)
+            // must not rewrite the status the first one recorded.
+            let (session, sender) = match pending.remove(id) {
+                Some(entry) => entry,
+                None => return, // already resolved — no-op
+            };
             // Fail closed: an option whose kind we can't read (missing block, or
             // an unrecognised kind) marks the request Denied rather
             // than leaving it Pending or optimistically Allowed.
@@ -699,14 +709,6 @@ impl ConversationStore {
                 _ => PermissionStatus::Denied,
             };
             conv.update_permission_status(id, status);
-            let mut pending = self
-                .pending_permissions
-                .lock()
-                .expect("pending_permissions mutex poisoned");
-            let (session, sender) = match pending.remove(id) {
-                Some(entry) => entry,
-                None => return, // already resolved — no-op
-            };
             let _ = sender.send(option_id.to_string());
             session
         };
@@ -1104,6 +1106,36 @@ mod tests {
         let opt = test_permission_option("a1", "Allow once", PermissionKind::AllowOnce);
         store.resolve_permission("nonexistent", &opt.option_id);
         assert_eq!(published.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn a_resolve_after_the_answer_keeps_the_answered_status() {
+        let store = ConversationStore::new(Arc::new(|_| {}));
+        let session = SessionKey::new("llm", 1);
+        let (tx, _rx) = tokio::sync::oneshot::channel();
+        let allow = test_permission_option("a", "Allow once", PermissionKind::AllowOnce);
+        let deny = test_permission_option("d", "Deny", PermissionKind::RejectOnce);
+        store.push_permission_request(
+            &session,
+            "p".into(),
+            "t".into(),
+            None,
+            vec![allow, deny],
+            tx,
+        );
+        store.resolve_permission("p", "a");
+        // The tool loop's withdrawal guard resolves as denied when it drops.
+        store.resolve_permission("p", "d");
+        assert!(
+            matches!(
+                &store.snapshot().turns[0].blocks[0],
+                Block::Permission {
+                    status: PermissionStatus::Allowed,
+                    ..
+                }
+            ),
+            "an allowed call must not read as denied once its guard drops"
+        );
     }
 
     #[test]

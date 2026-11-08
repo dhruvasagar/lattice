@@ -125,6 +125,10 @@
   (`:set messages.filter=info,rmcp=debug` to see it).
 
 ### Fixed
+- **OpenAI-compatible servers:** a reply that was all reasoning no longer
+  breaks the rest of the chat (it went back as an empty message servers
+  reject), and a server that ends a tool-calling reply with `stop` instead of
+  `tool_calls` now gets its tools run.
 - **The Claude Code lock file is readable by you alone.** `~/.claude/ide/<port>.lock`
   holds the token that lets a client drive the editor, and was written with
   the default permissions, so other users on the machine could read it. It is

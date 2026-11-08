@@ -287,6 +287,19 @@ fn openai_eof_after_finish_reason_without_done_completes() {
 }
 
 #[test]
+fn openai_tool_calls_finished_with_stop_still_run() {
+    let ev = run(
+        &openai(),
+        concat!(
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"a\",\"function\":{\"name\":\"f\",\"arguments\":\"{}\"}}]}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+            "data: [DONE]\n\n",
+        ),
+    );
+    assert_eq!(ev.last(), Some(&StreamEvent::Done(StopReason::ToolUse)));
+}
+
+#[test]
 fn anthropic_tool_call_with_no_arguments() {
     let ev = run(
         &anthropic(),

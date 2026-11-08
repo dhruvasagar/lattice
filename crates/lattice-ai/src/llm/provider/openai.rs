@@ -133,10 +133,13 @@ fn message(m: &Message) -> Value {
                     _ => None,
                 })
                 .collect();
-            let mut v = json!({
-                "role": "assistant",
-                "content": if text.is_empty() { Value::Null } else { json!(text) },
-            });
+            // `null` content is valid only beside tool calls; a turn that was
+            // all reasoning sends an empty string, which servers accept.
+            let content = match (text.is_empty(), calls.is_empty()) {
+                (true, false) => Value::Null,
+                _ => json!(text),
+            };
+            let mut v = json!({"role": "assistant", "content": content});
             if !calls.is_empty() {
                 v["tool_calls"] = Value::Array(calls);
             }
@@ -157,6 +160,8 @@ struct OpenAiDecoder {
     anon: u64,
     last_anon: Option<u64>,
     finish: Option<StopReason>,
+    /// A tool call arrived this turn: some servers finish it with `stop`.
+    saw_call: bool,
     done: bool,
 }
 
@@ -246,6 +251,7 @@ impl OpenAiDecoder {
         }
         if let Some(r) = choice["finish_reason"].as_str() {
             self.finish = Some(match r {
+                "stop" if self.saw_call => StopReason::ToolUse,
                 "stop" => StopReason::EndTurn,
                 "length" => StopReason::MaxTokens,
                 "tool_calls" | "function_call" => StopReason::ToolUse,
@@ -294,6 +300,7 @@ impl OpenAiDecoder {
                 .unwrap_or_else(|| format!("call_{key}"));
             let name = c["function"]["name"].as_str().unwrap_or("").to_string();
             slot.insert(id.clone());
+            self.saw_call = true;
             out.push(StreamEvent::ToolCallStart { id, name });
         }
         if let (Some(id), Some(frag)) = (
@@ -387,6 +394,15 @@ mod tests {
             })
         );
         assert!(!String::from_utf8_lossy(&http.body).contains("sk-secret-123"));
+    }
+
+    #[test]
+    fn a_turn_of_only_reasoning_goes_back_with_empty_content() {
+        let m = Message::Assistant(vec![AssistantPart::Reasoning {
+            text: "thinking".into(),
+            data: None,
+        }]);
+        assert_eq!(message(&m), json!({"role": "assistant", "content": ""}));
     }
 
     #[test]

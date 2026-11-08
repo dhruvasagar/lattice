@@ -182,7 +182,7 @@ fn asker(store: ConversationStore, key: SessionKey, allowed: Arc<Mutex<HashSet<S
             if allowed
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
-                .contains(&q.tool)
+                .contains(&q.allow_key())
             {
                 return Answer::Once;
             }
@@ -197,7 +197,7 @@ fn asker(store: ConversationStore, key: SessionKey, allowed: Arc<Mutex<HashSet<S
                     PermissionOption::new(ALLOW_ONCE, "Allow once", PermissionKind::AllowOnce),
                     PermissionOption::new(
                         ALLOW_CHAT,
-                        "Allow for this chat",
+                        q.chat_allow_label(),
                         PermissionKind::AllowAlways,
                     ),
                     PermissionOption::new(DENY, "Deny", PermissionKind::RejectOnce),
@@ -214,7 +214,7 @@ fn asker(store: ConversationStore, key: SessionKey, allowed: Arc<Mutex<HashSet<S
                     allowed
                         .lock()
                         .unwrap_or_else(|e| e.into_inner())
-                        .insert(q.tool.clone());
+                        .insert(q.allow_key());
                     Answer::ForChat
                 }
                 _ => Answer::Deny,

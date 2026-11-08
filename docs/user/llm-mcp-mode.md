@@ -61,8 +61,8 @@ for what its tool does is not trusted, so `github.read` selects nothing
 unless the server has a tool called `read`. `:setlocal llm.tools=…` selects
 for one chat.
 
-**Every server tool asks before it runs**, with the same question
-`lattice.exec` asks: allow once, allow for this chat, or deny. A tool named
+**Every server tool asks before it runs**: allow once, allow for this
+chat (every later call of that tool in the chat), or deny. A tool named
 in `allow` runs without asking. A server that marks a tool read-only
 (`readOnlyHint`) gets that said in the question and in `*llm-mcp*`, and the
 tool asks all the same. A server tool's edits happen in its own process, so

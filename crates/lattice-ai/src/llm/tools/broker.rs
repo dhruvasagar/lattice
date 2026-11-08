@@ -23,7 +23,9 @@ use std::sync::{Arc, RwLock};
 
 use serde_json::Value;
 
-use super::{Answer, CallContext, Question, SourceTool, ToolError, ToolOutput, ToolSource};
+use super::{
+    Answer, CallContext, ChatAllow, Question, SourceTool, ToolError, ToolOutput, ToolSource,
+};
 use crate::conversation::ToolKind;
 use crate::llm::ToolDescriptor;
 
@@ -122,13 +124,19 @@ impl Offer {
                     "{shown} needs the user's approval, and nothing here can ask for it"
                 )));
             };
-            let detail = source
-                .describe(&tool.name, &input)
-                .or_else(|| Some(arguments_shown(&input)));
+            let described = source.describe(&tool.name, &input);
+            // A command is allowed for the chat only as itself: the exact
+            // text, uncut, not the shortened arguments the user is shown.
+            let chat_allow = if tool.kind == ToolKind::Execute {
+                ChatAllow::Call(described.clone().unwrap_or_else(|| input.to_string()))
+            } else {
+                ChatAllow::Tool
+            };
             let question = Question {
                 tool: shown.clone(),
                 title: format!("Allow {shown}?"),
-                detail,
+                detail: described.or_else(|| Some(arguments_shown(&input))),
+                chat_allow,
             };
             if let Some(f) = &ctx.on_review {
                 f(true);
@@ -443,5 +451,57 @@ mod tests {
         let q = asked.lock().unwrap()[0].clone();
         assert_eq!(q.tool, "github.create_issue");
         assert!(q.detail.unwrap().contains("\"bug\""));
+    }
+
+    /// An "allow for this chat" on a command covers that command only.
+    #[tokio::test]
+    async fn a_command_is_allowed_for_the_chat_only_as_itself() {
+        let b = ToolBroker::new();
+        b.add_source(
+            LATTICE,
+            Arc::new(Fixed(vec![tool("run_command", ToolKind::Execute)])),
+        );
+        b.add_source(
+            "github",
+            Arc::new(Fixed(vec![tool("create_issue", ToolKind::Edit)])),
+        );
+        let o = b.offer(&pick(&["lattice.exec", "github.*"])).await;
+        let asked: Arc<std::sync::Mutex<Vec<Question>>> = Arc::default();
+        let ctx = || {
+            let asked = asked.clone();
+            CallContext {
+                ask: Some(Arc::new(move |q| {
+                    asked.lock().unwrap().push(q);
+                    Box::pin(async { Answer::Once })
+                })),
+                ..CallContext::default()
+            }
+        };
+        for command in ["cargo test", "cargo test", "rm -rf ~"] {
+            o.call(
+                "lattice__run_command",
+                serde_json::json!({"command": command}),
+                ctx(),
+            )
+            .await
+            .unwrap();
+        }
+        o.call("github__create_issue", serde_json::json!({"t": 1}), ctx())
+            .await
+            .unwrap();
+        let keys: Vec<String> = asked
+            .lock()
+            .unwrap()
+            .iter()
+            .map(Question::allow_key)
+            .collect();
+        assert_eq!(keys[0], keys[1], "the same command, the same allow");
+        assert_ne!(keys[1], keys[2], "a different command asks again");
+        assert_eq!(
+            keys[3], "github.create_issue",
+            "other tools are allowed whole"
+        );
+        let q = asked.lock().unwrap()[0].clone();
+        assert_eq!(q.chat_allow_label(), "Allow this command for this chat");
     }
 }

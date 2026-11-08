@@ -249,7 +249,8 @@ Closing a chat closes any diff it still has open.
 | `run_command` | Runs a shell command in the project |
 
 **Every command asks first.** A menu shows the command and where it
-runs, with three answers: allow once, allow for this chat, or deny.
+runs, with three answers: allow once, allow this command for this chat,
+or deny.
 Move to one and press `<CR>`. A denial is passed to the model, which is
 told not to try again unless you ask. `<Esc>` decides later: the request
 waits, and `:ai-permission` brings the question back.
@@ -261,8 +262,9 @@ running is stopped when the shell exits. It stops after 120 seconds unless the m
 to 600), and the model sees at most the first 30 000 bytes of each of
 its output and error streams, with a note saying where it was cut.
 
-"Allow for this chat" covers that tool until the chat closes. It is never
-saved. `<C-t>` trusts edits only: commands still ask. A project's
+"Allow this command for this chat" covers that exact command, run in the
+same place, until the chat closes: the same `cargo test` runs again
+without asking, but any other command asks. It is never saved. `<C-t>` trusts edits only: commands still ask. A project's
 `.lattice/llm.toml` cannot turn `lattice.exec` on; only your own config,
 a profile, or `:setlocal` in the chat can.
 

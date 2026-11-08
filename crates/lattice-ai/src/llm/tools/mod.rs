@@ -90,11 +90,42 @@ pub struct CallContext {
 /// What the user is asked before a tool runs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Question {
-    /// `server.name`, the key an "allow for this chat" is remembered by.
+    /// `server.name`.
     pub tool: String,
     pub title: String,
     /// What it would do: the command, or the arguments.
     pub detail: Option<String>,
+    /// What an "allow for this chat" answer covers.
+    pub chat_allow: ChatAllow,
+}
+
+/// What an "allow for this chat" answer covers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ChatAllow {
+    /// Every later call of the tool.
+    Tool,
+    /// Later calls that do exactly this (the command and where it runs).
+    /// For a tool that runs commands: allowing `cargo test` must not allow
+    /// whatever a prompt-injected tool result asks for next.
+    Call(String),
+}
+
+impl Question {
+    /// The key an "allow for this chat" is remembered by.
+    pub fn allow_key(&self) -> String {
+        match &self.chat_allow {
+            ChatAllow::Tool => self.tool.clone(),
+            ChatAllow::Call(call) => format!("{}\n{call}", self.tool),
+        }
+    }
+
+    /// The menu's label for the "allow for this chat" answer.
+    pub fn chat_allow_label(&self) -> &'static str {
+        match self.chat_allow {
+            ChatAllow::Tool => "Allow for this chat",
+            ChatAllow::Call(_) => "Allow this command for this chat",
+        }
+    }
 }
 
 /// The user's answer.

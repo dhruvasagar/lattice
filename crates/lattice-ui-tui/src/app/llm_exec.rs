@@ -180,16 +180,33 @@ mod tests {
         );
     }
 
-    /// "Allow for this chat" covers the same tool's later calls in it.
+    /// "Allow this command for this chat" covers that command's later runs
+    /// in it, and nothing else: a different command asks again.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn allowing_for_the_chat_asks_once() {
-        let (mut a, log, _dir) = app(vec![run("echo one"), run("echo two")], "lattice.exec");
-        send(&mut a, "both").await;
+    async fn allowing_a_command_for_the_chat_asks_once_for_that_command() {
+        let (mut a, log, _dir) = app(
+            vec![run("echo one"), run("echo one"), run("echo two")],
+            "lattice.exec",
+        );
+        send(&mut a, "three").await;
+        assert!(
+            settle_woken(&mut a, |a| popup(a)
+                .is_some_and(|t| t.contains("Allow this command for this chat")))
+            .await,
+            "{:?}",
+            popup(&a)
+        );
         answer(&mut a, 2).await;
+        assert!(
+            settle_woken(&mut a, |a| popup(a).is_some_and(|t| t.contains("echo two"))).await,
+            "the other command never asked: {:?}",
+            popup(&a)
+        );
+        answer(&mut a, 1).await;
         second_request(&mut a, &log).await;
         let said = results(&log);
         assert!(
-            said[0].contains("one") && said[1].contains("two"),
+            said[0].contains("one") && said[1].contains("one") && said[2].contains("two"),
             "{said:?}"
         );
     }

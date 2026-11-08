@@ -513,8 +513,12 @@ first 30 000 bytes and drains the rest, so a noisy command can neither fill memo
 block on a full pipe. The result carries the exit status, both streams, and a line
 saying where each was cut.
 
-**"Allow for this chat"** is per tool and lives on the chat session, like `<C-t>`: never
-saved, never copied, cleared when the chat closes. `<C-t>` trusts edits only; it never
+**"Allow for this chat"** lives on the chat session, like `<C-t>`: never saved, never
+copied, cleared when the chat closes. For most tools it covers the tool. For a tool of
+the `Execute` kind it covers the exact call (the command and where it runs), offered as
+"Allow this command for this chat": allowing `cargo test` must not allow whatever a
+prompt-injected tool result asks for next, while re-running the same tests still asks
+once. `<C-t>` trusts edits only; it never
 lets a command run unasked, because a command's effects cannot be reviewed or undone.
 Exec is off unless the user's own config, a profile, or `:setlocal` selects it; §4's
 table already keeps a project file from widening `llm.tools`, and that holds for
@@ -533,7 +537,7 @@ Rejected for exec: running commands through the user's terminal buffer (the outp
 would be the user's scrollback, not a result, and a stop could not tell the model's
 process from the user's); trusting a command prefix ("always allow `cargo`") in this
 slice (prefix rules are a policy language, and getting one wrong runs arbitrary code;
-"allow for this chat" covers the repeated case without a parser); a second popup for
+the exact-command "allow for this chat" covers the repeated case without a parser); a second popup for
 llm questions (two menus for one decision, and only one could be focused when both
 fire).
 

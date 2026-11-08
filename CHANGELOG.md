@@ -115,6 +115,11 @@
   `.env`, `*.pem`, `*.key` and SSH keys.
 
 ### Changed
+- **"Allow for this chat" on a command covers that command only.** An LLM
+  chat's `run_command` question now offers "Allow this command for this
+  chat": the same command runs again without asking, and any other command
+  asks. Before, one answer let the chat run anything, including a command a
+  prompt-injected file or tool result asked for.
 - **The Claude Code connection runs on the official MCP SDK** (`rmcp`).
   `claude` sees the same tools and notifications as before. A client that
   sends a request before `initialize`, or an `initialize` without its

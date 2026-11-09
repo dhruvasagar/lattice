@@ -74,12 +74,52 @@ pub fn build_client() -> Result<reqwest::Client, String> {
 /// Covers the exact key value (which is also the whole `x-api-key` value) and
 /// `Bearer <token>` / `Basic <token>` in any case, because a proxy or provider
 /// may echo a header it was sent, or a differently-cased derivative of it.
+///
+/// A provider that rejects a key often echoes it masked (`sk-proj-****abcd`),
+/// which still gives away its prefix and last characters; anything shaped
+/// like that goes too.
 pub fn scrub(text: &str, key: &ApiKey) -> String {
     let mut out = text.to_string();
     if !key.is_empty() {
         out = out.replace(key.expose(), "[redacted]");
     }
-    redact_auth_schemes(&out)
+    redact_masked(&redact_auth_schemes(&out))
+}
+
+/// Words shaped like a masked secret, a run of three or more `*` with key
+/// characters on both sides (`sk-****abcd`), as `[redacted]`.
+fn redact_masked(text: &str) -> String {
+    let key_char = |c: char| c.is_ascii_alphanumeric() || c == '-' || c == '_';
+    let masked = |word: &str| {
+        let Some(star) = word.find("***") else {
+            return false;
+        };
+        let (before, after) = (&word[..star], word[star..].trim_start_matches('*'));
+        !before.is_empty()
+            && !after.is_empty()
+            && before.chars().all(key_char)
+            && after.chars().all(key_char)
+    };
+    let mut out = String::with_capacity(text.len());
+    let mut word = String::new();
+    let flush = |out: &mut String, word: &mut String| {
+        if masked(word) {
+            out.push_str("[redacted]");
+        } else {
+            out.push_str(word);
+        }
+        word.clear();
+    };
+    for c in text.chars() {
+        if key_char(c) || c == '*' {
+            word.push(c);
+        } else {
+            flush(&mut out, &mut word);
+            out.push(c);
+        }
+    }
+    flush(&mut out, &mut word);
+    out
 }
 
 fn redact_auth_schemes(text: &str) -> String {

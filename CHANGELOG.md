@@ -134,6 +134,10 @@
   (`:set messages.filter=info,rmcp=debug` to see it).
 
 ### Fixed
+- **A rejected LLM key is not half-shown in the error.** A provider that
+  echoes the key masked (`sk-proj-****abcd`) gave away its prefix and
+  last characters in the chat's error; anything shaped like a masked key
+  is now redacted too.
 - **An MCP server's tokens stay hidden in more places.** `*llm-mcp*` and
   logs no longer show a token passed as an argument (`--token X`,
   `--api-key=X`, or one shaped like a token) or in an HTTP server's URL

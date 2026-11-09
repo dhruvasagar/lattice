@@ -191,6 +191,16 @@ fn scrub_removes_the_key_and_auth_shaped_values() {
         scrub("the strongbearer thing", &k),
         "the strongbearer thing"
     );
+    // A key echoed masked still gives away its ends.
+    assert_eq!(
+        scrub(
+            "Incorrect API key provided: sk-proj-****abcd. See docs.",
+            &k
+        ),
+        "Incorrect API key provided: [redacted]. See docs."
+    );
+    // Stars that mask nothing are left alone.
+    assert_eq!(scrub("a *** b, **bold**", &k), "a *** b, **bold**");
 }
 
 #[tokio::test]

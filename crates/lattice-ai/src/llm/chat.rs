@@ -1262,7 +1262,19 @@ impl LlmChats {
         self: &Arc<Self>,
         session: &Arc<ChatSession>,
         text: String,
+        overrides: RequestOverrides,
+    ) {
+        self.submit_text(session, text, overrides, true);
+    }
+
+    /// [`submit_with`](Self::submit_with); `from_prompt` is false for text
+    /// sent into the chat from elsewhere, which must leave its prompt alone.
+    fn submit_text(
+        self: &Arc<Self>,
+        session: &Arc<ChatSession>,
+        text: String,
         mut overrides: RequestOverrides,
+        from_prompt: bool,
     ) {
         let buffer = self.buffer_of(session).unwrap_or(BufferId(0));
         let mut values = self
@@ -1286,6 +1298,9 @@ impl LlmChats {
             turn.pending.push_back(overrides);
             session.store.mutate(&session.key, |c| {
                 c.queued.push(text);
+                if !from_prompt {
+                    c.external_submissions += 1;
+                }
                 if !busy {
                     let next = c.queued.remove(0);
                     c.error = None;
@@ -1330,6 +1345,9 @@ impl LlmChats {
                 session.store.mutate(&session.key, |c| {
                     c.error = None;
                     c.push_user_source(source.clone(), &instruction);
+                    // A chat reused as a destination may have a prompt the
+                    // user is typing; this turn did not come from it.
+                    c.external_submissions += 1;
                     c.status = SessionStatus::Thinking;
                 });
                 turn.busy = true;
@@ -1350,7 +1368,7 @@ impl LlmChats {
                 }
                 _ => instruction,
             };
-            self.submit_with(session, text, overrides);
+            self.submit_text(session, text, overrides, false);
         }
     }
 

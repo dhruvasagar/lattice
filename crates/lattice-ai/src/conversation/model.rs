@@ -279,6 +279,10 @@ pub struct Conversation {
     /// the transcript as user turns when they are actually sent, so a streaming
     /// reply can never be split by a later question.
     pub queued: Vec<String>,
+    /// Submissions that did not come from this buffer's prompt: a source sent
+    /// into the chat from another buffer (`destination=`). They are not the
+    /// user pressing `<CR>` here, so they must not clear what is being typed.
+    pub external_submissions: usize,
 }
 
 impl Conversation {
@@ -287,11 +291,14 @@ impl Conversation {
         self.assistant_label.as_deref().unwrap_or("opencode")
     }
 
-    /// How many prompts have been submitted: sent as user turns, or queued.
-    /// Only a submission raises it (a queued prompt becoming a turn leaves it
-    /// unchanged), so an increase is the drain's "clear the prompt" signal.
+    /// How many prompts have been submitted from this buffer's prompt: sent
+    /// as user turns, or queued. Only such a submission raises it (a queued
+    /// prompt becoming a turn leaves it unchanged, and one sent from another
+    /// buffer is counted out), so an increase is the drain's "clear the
+    /// prompt" signal.
     pub fn submission_count(&self) -> usize {
-        self.turns.iter().filter(|t| t.role == Role::User).count() + self.queued.len()
+        (self.turns.iter().filter(|t| t.role == Role::User).count() + self.queued.len())
+            .saturating_sub(self.external_submissions)
     }
 
     /// LL.19: fork at `turn`: the history before the question `turn` belongs

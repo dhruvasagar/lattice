@@ -402,6 +402,22 @@ async fn destination_continues_an_open_chat() {
     let first = chat_buffer(&editor).unwrap();
     let name = editor.buffers.name_of(first).unwrap();
     assert!(settle_woken(&mut editor, |e| text_of(e, first).contains("It defines b.")).await);
+    // A draft in the chat's prompt: an ask sent into the chat from the
+    // source buffer is not the user sending it, so it stays.
+    let text = text_of(&editor, first);
+    let last = text.split('\n').count() as u32 - 1;
+    let col = text.rsplit('\n').next().unwrap().len() as u32;
+    let at = Position::new(last, col);
+    editor
+        .buffers
+        .document_handle(first)
+        .unwrap()
+        .apply_edit_batch(vec![lattice_protocol::edit::Edit::replace(
+            lattice_protocol::position::Range::new(at, at),
+            "half a thought".to_string(),
+        )])
+        .await
+        .unwrap();
 
     ex(&mut editor, &format!("2llm-ask destination={name} two"));
     assert_eq!(
@@ -429,6 +445,16 @@ async fn destination_continues_an_open_chat() {
         .filter(|n| n.starts_with("*llm:"))
         .collect();
     assert_eq!(names.len(), 1, "no second chat: {names:?}");
+    let answered = settle_woken(&mut editor, |e| {
+        text_of(e, first).matches("It defines b.").count() >= 2
+    })
+    .await;
+    assert!(answered, "{}", text_of(&editor, first));
+    assert!(
+        text_of(&editor, first).ends_with("half a thought"),
+        "the draft survives: {}",
+        text_of(&editor, first)
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

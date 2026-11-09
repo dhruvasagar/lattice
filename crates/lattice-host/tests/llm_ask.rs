@@ -461,3 +461,59 @@ async fn a_destination_not_built_yet_opens_a_new_buffer_and_says_so() {
         message(&editor)
     );
 }
+
+/// `dd` in `*llm-context*` removes the item the user sees on that row. When
+/// the list changed underneath (an item removed elsewhere) and the view has
+/// not repainted yet, the row no longer names the same item: nothing is
+/// removed and the user is told to look again.
+///
+/// `current_thread`, so the view's refresher cannot repaint between the
+/// change and the `dd`: the window the bug lived in is held open.
+#[tokio::test]
+async fn dd_on_a_stale_context_row_removes_nothing() {
+    let dir = scratch_dir("ctx-dd");
+    std::fs::write(dir.join("b.txt"), "bee\n").unwrap();
+    let mut editor = boot_at(&dir.join("a.txt"), "ay\n");
+    let owner = editor.active_buffer_id();
+    ex(&mut editor, "llm-context-add");
+    ex(
+        &mut editor,
+        &format!("llm-context-add {}", dir.join("b.txt").display()),
+    );
+    assert_eq!(
+        chats(&editor).context_of(owner).len(),
+        2,
+        "{}",
+        message(&editor)
+    );
+
+    ex(&mut editor, "llm-context");
+    let shows_both = |e: &Editor| {
+        let t = text_of(e, e.active_buffer_id());
+        t.contains("a.txt") && t.contains("b.txt")
+    };
+    assert!(settle(&mut editor, shows_both).await, "the list opens");
+
+    // The first item goes elsewhere; the view still shows it on row 1.
+    chats(&editor).detach(owner, 0);
+    editor.cursor = lattice_protocol::position::Position::new(1, 0);
+    // The action `dd` resolves to in this mode (the chord's binding is pinned
+    // by the mode's keymap; `dispatch_chord` does not compose two-key chords).
+    let remove = editor
+        .registry
+        .load()
+        .id_by_name("action:llm-context-remove")
+        .unwrap();
+    let out = editor.dispatch(lattice_host::action::Action::Invoke(
+        lattice_grammar::CommandInvocation::of(remove),
+    ));
+    for effect in out.effects {
+        let _ = editor.handle_effect(effect);
+    }
+    assert_eq!(
+        chats(&editor).context_of(owner).len(),
+        1,
+        "b.txt, not under the caret, stays"
+    );
+    assert!(message(&editor).contains("changed"), "{}", message(&editor));
+}

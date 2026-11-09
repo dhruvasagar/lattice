@@ -134,6 +134,10 @@
   (`:set messages.filter=info,rmcp=debug` to see it).
 
 ### Fixed
+- **`dd` in `*llm-context*` never removes an item you are not looking
+  at.** If the context changed elsewhere just before the list repainted,
+  `dd` went by row number and could drop a different item than the one on
+  its row. It now removes nothing and asks you to look again.
 - **`*llm-requests*`, `*llm-context*` and `*llm-mcp*` refresh without
   moving you.** A refresh rewrote the whole buffer, so a request
   finishing while you were moving to a row to `dd` sent the caret back to

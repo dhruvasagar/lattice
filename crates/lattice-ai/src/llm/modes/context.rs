@@ -217,6 +217,18 @@ fn remove_handler(chats: LlmChatsHandle) -> ActionHandler {
         let Some(index) = ctx.cursor.line.checked_sub(HEADER_LINES) else {
             return say("llm: no context item on this line".to_string());
         };
+        // The row index means the item the user sees only while the buffer
+        // shows the list as it is now. An item attached or removed elsewhere
+        // shifts the rows before the refresher repaints; removing by index
+        // then would drop a different item than the one under the caret.
+        if let Some(store) = ctx.services.get::<BufferStoreHandle>() {
+            let shown = store
+                .handle_for(lattice_core::BufferId(ctx.buffer_id.0 as u32))
+                .map(|h| h.snapshot().buffer.as_string());
+            if shown.is_some_and(|shown| shown != render_list(&chats, &store)) {
+                return say("llm: the list just changed; look again and retry".to_string());
+            }
+        }
         match chats.detach(owner, index as usize) {
             Some(removed) => say(format!("llm: removed {} from the context", removed.name)),
             None => say("llm: no context item on this line".to_string()),

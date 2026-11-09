@@ -77,8 +77,9 @@ is left out of the requests, and `*messages*` says so once.
 transcript as you see it, with every reasoning and tool block open. A
 `.org` file gets org instead: each turn a heading, code fences as
 `#+begin_src` blocks, and lines org would read as structure escaped. A
-reply's `#+` lines and links that run code (`elisp:`, `shell:`) stay
-text, so opening the export never acts on them. An export is for keeping,
+reply's `#+` lines and links that run code (`elisp:`, `shell:`, bracketed
+or not, in prose or in code) stay text, and so do a tool's or an agent's
+titles and descriptions, so opening the export never acts on them. An export is for keeping,
 not resuming; nothing reads it back.
 
 `:llm-save chat.json` saves the chat to **continue later**, and

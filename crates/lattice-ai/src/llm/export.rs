@@ -38,13 +38,13 @@ pub fn markdown(conv: &Conversation) -> String {
 /// The transcript as org, titled `title`. Each turn is a top-level heading;
 /// a markdown heading inside a reply sits one level below its turn.
 pub fn org(conv: &Conversation, title: &str) -> String {
-    let mut out = format!("#+title: {}\n", one_line(title));
+    let mut out = format!("#+title: {}\n", inert(&one_line(title)));
     for turn in &conv.turns {
         let who = match turn.role {
             Role::User => "you",
             Role::Assistant => conv.assistant_label(),
         };
-        out.push_str(&format!("\n* {}\n", one_line(who)));
+        out.push_str(&format!("\n* {}\n", inert(&one_line(who))));
         for block in &turn.blocks {
             match block {
                 Block::Text(text) => text_to_org(&mut out, text, 1),
@@ -61,10 +61,14 @@ pub fn org(conv: &Conversation, title: &str) -> String {
                 } => {
                     out.push_str("- \u{25b8} ");
                     if let Some(origin) = origin {
-                        out.push_str(&one_line(origin));
+                        out.push_str(&inert(&one_line(origin)));
                         out.push_str(" \u{b7} ");
                     }
-                    out.push_str(&format!("{} [{}]\n", one_line(title), status_tag(status)));
+                    out.push_str(&format!(
+                        "{} [{}]\n",
+                        inert(&one_line(title)),
+                        status_tag(status)
+                    ));
                     if let Some(body) = input {
                         push_block(&mut out, "src", "json", body);
                     }
@@ -75,13 +79,13 @@ pub fn org(conv: &Conversation, title: &str) -> String {
                 Block::Source {
                     label, lang, text, ..
                 } => {
-                    out.push_str(&format!("- \u{25b8} {}\n", one_line(label)));
+                    out.push_str(&format!("- \u{25b8} {}\n", inert(&one_line(label))));
                     push_block(&mut out, "src", lang, text);
                 }
                 Block::Edit { path, status } => {
                     out.push_str(&format!(
                         "- \u{270e} {} [{}]\n",
-                        one_line(path),
+                        inert(&one_line(path)),
                         edit_tag(status)
                     ));
                 }
@@ -93,11 +97,19 @@ pub fn org(conv: &Conversation, title: &str) -> String {
                 } => {
                     out.push_str(&format!(
                         "- {} [{}]\n",
-                        one_line(title),
+                        inert(&one_line(title)),
                         permission_tag(status)
                     ));
                     if let Some(desc) = description {
-                        out.push_str(&format!("  {}\n", one_line(desc)));
+                        // An agent's text: indented, `#+INCLUDE:` is still
+                        // a directive org acts on.
+                        let desc = inert(&one_line(desc));
+                        let lead = if desc.starts_with("#+") {
+                            "\u{200B}"
+                        } else {
+                            ""
+                        };
+                        out.push_str(&format!("  {lead}{desc}\n"));
                     }
                 }
             }
@@ -260,9 +272,17 @@ fn inline(s: &str) -> String {
             && let Some(end) = rest[1..].find('`')
             && end > 0
         {
-            out.push('~');
-            out.push_str(&rest[1..1 + end]);
-            out.push('~');
+            // A verbatim span ends at its own marker, so one the code holds
+            // would close it early and free what follows; pick a marker the
+            // code does not hold, or keep the backticks.
+            let code = &rest[1..1 + end];
+            let mark = ['~', '=']
+                .into_iter()
+                .find(|m| !code.contains(*m))
+                .unwrap_or('`');
+            out.push(mark);
+            out.push_str(&inert(code));
+            out.push(mark);
             rest = &rest[end + 2..];
             continue;
         }
@@ -283,17 +303,53 @@ fn inline(s: &str) -> String {
             && safe_link(&rest[mid + 2..mid + 2 + end])
         {
             let (text, url) = (&rest[1..mid], &rest[mid + 2..mid + 2 + end]);
-            out.push_str(&format!("[[{url}][{text}]]"));
+            out.push_str(&format!("[[{url}][{}]]", inert(text)));
             rest = &rest[mid + 3 + end..];
             continue;
         }
-        out.push(ch);
-        rest = &rest[ch.len_utf8()..];
-        if ch == '[' && rest.starts_with('[') {
-            out.push(ZWSP);
-        }
+        rest = inert_step(&mut out, rest);
     }
     out
+}
+
+/// `s` as written but never live: a `[[` cannot open a link, and a link
+/// type that runs code cannot be followed as a plain link (`shell:rm …`).
+fn inert(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while !rest.is_empty() {
+        rest = inert_step(&mut out, rest);
+    }
+    out
+}
+
+/// Org link types that run code when followed. Org reads one as a link
+/// anywhere in prose, bracketed or not.
+const RUNNING_LINKS: [&str; 2] = ["elisp", "shell"];
+
+/// Copy the first character of `rest` to `out`, breaking a `[[` or a
+/// code-running link type with a zero-width space; returns what is left.
+fn inert_step<'a>(out: &mut String, rest: &'a str) -> &'a str {
+    for kind in RUNNING_LINKS {
+        if rest
+            .get(..kind.len())
+            .is_some_and(|w| w.eq_ignore_ascii_case(kind))
+            && rest[kind.len()..].starts_with(':')
+        {
+            out.push_str(&rest[..kind.len()]);
+            out.push(ZWSP);
+            return &rest[kind.len()..];
+        }
+    }
+    let Some(ch) = rest.chars().next() else {
+        return rest;
+    };
+    out.push(ch);
+    let rest = &rest[ch.len_utf8()..];
+    if ch == '[' && rest.starts_with('[') {
+        out.push(ZWSP);
+    }
+    rest
 }
 
 #[cfg(test)]
@@ -357,12 +413,44 @@ mod tests {
             !org.lines().any(|l| l.trim_start().starts_with("#+")),
             "{org}"
         );
-        assert_eq!(
-            inline("[run](elisp:(delete-file \"x\"))"),
-            "[run](elisp:(delete-file \"x\"))"
-        );
-        assert_eq!(inline("[x](a][elisp:y)"), "[x](a][elisp:y)");
+        // A code-running link type is never followed, bracketed or plain.
+        for text in [
+            "[run](elisp:(delete-file \"x\"))",
+            "[x](a][elisp:y)",
+            "see shell:rm -rf ~ here",
+            "<ELISP:(kill-emacs)>",
+        ] {
+            let got = inline(text);
+            assert!(!got.to_lowercase().contains("elisp:"), "{got}");
+            assert!(!got.contains("shell:"), "{got}");
+        }
         assert!(!inline("[[shell:rm -rf ~][go]]").contains("[["));
         assert_eq!(inline("[docs](./notes.org)"), "[[./notes.org][docs]]");
+        // A `~` inside code cannot close the verbatim early and free a link.
+        let got = inline("`a~ [[file:x][go]] ~b`");
+        assert!(got.starts_with('=') && got.ends_with('='), "{got}");
+        assert!(!got.contains("[["), "{got}");
+        assert_eq!(inline("`=~`"), "`=~`");
+    }
+
+    /// The lines built from a tool's or agent's own text (a permission's
+    /// description, a call's title) are as inert as a reply's prose.
+    #[test]
+    fn tool_and_agent_text_is_never_live_org() {
+        let mut c = Conversation::default();
+        c.push_permission_block(
+            "p".into(),
+            "Allow [[shell:id][this]]?".into(),
+            Some("#+INCLUDE: \"~/.ssh/id_rsa\"".into()),
+            Vec::new(),
+        );
+        let org = org(&c, "chat");
+        assert!(
+            !org.lines()
+                .skip(1)
+                .any(|l| l.trim_start().starts_with("#+")),
+            "{org}"
+        );
+        assert!(!org.contains("[[") && !org.contains("shell:"), "{org}");
     }
 }

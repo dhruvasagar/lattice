@@ -134,6 +134,11 @@
   (`:set messages.filter=info,rmcp=debug` to see it).
 
 ### Fixed
+- **An org export of an LLM chat can't be tricked into live links.** A
+  `~` inside inline code no longer ends the code early and frees the
+  link after it; plain (unbracketed) `elisp:`/`shell:` links stay text;
+  and the lines built from a tool's or agent's own words (permission
+  descriptions, tool titles) get the same treatment as reply prose.
 - **`llm.exclude` holds in search results and multibuffers.** Asking from,
   or attaching, a view composed from several files counted as no file at
   all, so lines from an excluded file in it went to the model. Such a view

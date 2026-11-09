@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Added
+- **LLM allow and deny rules.** `llm.allow = ["run_command(cargo test *)"]` runs a command without asking when every command in its line matches (split on `&&`, `||`, `;`, `|`); a line with `$(…)`, backticks or a redirect into a file always asks. `llm.deny = ["run_command(git push *)", "edit_file(secrets/**)", "shell.*"]` refuses a call without asking and tells the model why. File tools take gitignore patterns, MCP tools are named `server.tool` or `server.*`, and a project may add `deny` rules but never `allow`.
 - **A project can add to the LLM exclude list.** `exclude = [...]` in `.lattice/llm.toml`, and the `.aiexclude`, `.aiignore` and `.agentignore` files other AI tools read, are added to your `llm.exclude` and matched on their own, so a project can never re-include one of your entries. A project `allow` is refused.
 - `:llm-send` (`<leader>as`) sends the buffer from its first line to the cursor's line as the prompt, with no instruction to type. Write a question in any buffer and send it; the answer opens beside you. In a chat it sends the prompt, as `<CR>` does.
 - `<leader>aR{motion}` rewrites text with `:llm-menu` opening first, the way `<leader>aA` does for an ask: change the model or temperature for this rewrite, then press `a` to type the instruction. **`:llm-requests` moves from `<leader>aR` to `<leader>aq`.**

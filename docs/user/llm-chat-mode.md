@@ -275,6 +275,14 @@ inherit the variables `api_key_env` names, so it cannot read a model key. It sto
 to 600), and the model sees at most the first 30 000 bytes of each of
 its output and error streams, with a note saying where it was cut.
 
+Rules in your config decide some commands before anything asks:
+`llm.allow = ["run_command(cargo test *)"]` runs a command line without
+asking when **every** command in it matches, and `llm.deny =
+["run_command(git push *)"]` refuses one when any does. A line with
+`$(…)`, backticks or a redirect into a file always asks. The rules, and
+the same for file tools and MCP tools, are in the
+[`llm-guide`](help:llm-guide).
+
 "Allow this command for this chat" covers that exact command, run in the
 same place, until the chat closes: the same `cargo test` runs again
 without asking, but any other command asks. It is never saved. `<C-t>`

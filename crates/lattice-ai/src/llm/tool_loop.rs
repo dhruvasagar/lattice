@@ -25,6 +25,7 @@ use lattice_agent::SessionKey;
 use tokio_util::sync::CancellationToken;
 
 use super::request::{Round, RoundStatus, Rounds};
+use super::tools::rules::ToolRules;
 use super::tools::{Answer, AskFn, BoxFuture, CallContext, Offer, Question, ToolError};
 use super::{LlmRequest, Message, history};
 use crate::conversation::{
@@ -49,6 +50,8 @@ pub struct ChatRounds {
     trusted: Arc<AtomicBool>,
     /// Tools allowed "for this chat" (LL.18): asked no more in it.
     allowed: Arc<Mutex<HashSet<String>>>,
+    /// `llm.allow` / `llm.deny`, fixed for the request.
+    rules: Option<Arc<ToolRules>>,
 }
 
 impl ChatRounds {
@@ -69,7 +72,15 @@ impl ChatRounds {
             origin: 0,
             trusted: Arc::default(),
             allowed: Arc::default(),
+            rules: None,
         }
+    }
+
+    /// The `llm.allow` / `llm.deny` rules every call of this request is held
+    /// to, compiled when it was prepared.
+    pub fn with_rules(mut self, rules: Arc<ToolRules>) -> Self {
+        self.rules = Some(rules);
+        self
     }
 
     /// The session the calls belong to (LL.17): its edits' diffs carry
@@ -134,6 +145,7 @@ impl ChatRounds {
                     self.key.clone(),
                     self.allowed.clone(),
                 )),
+                rules: self.rules.clone(),
             };
             let result = match &call.malformed {
                 Some(why) => Err(ToolError::InvalidArguments(why.clone())),

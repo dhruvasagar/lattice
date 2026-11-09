@@ -23,6 +23,7 @@ use std::sync::{Arc, RwLock};
 
 use serde_json::Value;
 
+use super::rules::Verdict;
 use super::{
     Answer, CallContext, ChatAllow, Question, SourceTool, ToolError, ToolOutput, ToolSource,
 };
@@ -117,7 +118,18 @@ impl Offer {
             .sources
             .get(&tool.server)
             .ok_or_else(|| ToolError::UnknownTool(wire.to_string()))?;
-        if tool.permission == Permission::Ask {
+        // `llm.deny` refuses before anything asks, whatever the tool; an
+        // `llm.allow` rule spares a tool that would ask (design §6).
+        let verdict = ctx
+            .rules
+            .as_ref()
+            .map_or(Verdict::Ask, |r| r.decide(&tool.server, &tool.name, &input));
+        if let Verdict::Deny(rule) = &verdict {
+            return Err(ToolError::Refused(format!(
+                "`{rule}` in llm.deny refuses this call; do not try it again unless the user asks"
+            )));
+        }
+        if tool.permission == Permission::Ask && verdict != Verdict::Allow {
             let shown = format!("{}.{}", tool.server, tool.name);
             let Some(ask) = &ctx.ask else {
                 return Err(ToolError::Refused(format!(

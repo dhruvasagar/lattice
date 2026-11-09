@@ -62,6 +62,72 @@ impl PathPatterns {
     }
 }
 
+/// `llm.allow` (`ALLOW = true`) or `llm.deny`: tool rules, `run_command(cargo
+/// test *)`, `github.search_issues`. See [`super::tools::rules`].
+///
+/// A TOML array arrives comma-joined, and a rule's pattern may hold a comma, so
+/// the text is split only on commas outside parentheses.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct RuleList<const ALLOW: bool>(pub Vec<String>);
+
+pub type AllowRules = RuleList<true>;
+pub type DenyRules = RuleList<false>;
+
+impl<const ALLOW: bool> RuleList<ALLOW> {
+    fn list() -> super::tools::rules::List {
+        if ALLOW {
+            super::tools::rules::List::Allow
+        } else {
+            super::tools::rules::List::Deny
+        }
+    }
+}
+
+/// `text` split on commas at parenthesis depth 0, each piece trimmed.
+pub fn split_rules(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut depth = 0usize;
+    let mut piece = String::new();
+    for c in text.chars() {
+        match c {
+            '(' => depth += 1,
+            ')' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => {
+                out.push(std::mem::take(&mut piece));
+                continue;
+            }
+            _ => {}
+        }
+        piece.push(c);
+    }
+    out.push(piece);
+    out.into_iter()
+        .map(|p| p.trim().to_string())
+        .filter(|p| !p.is_empty())
+        .collect()
+}
+
+impl<const ALLOW: bool> lattice_config::OptionType for RuleList<ALLOW> {
+    fn parse(s: &str) -> Result<Self, String> {
+        let rules = split_rules(s);
+        super::tools::rules::ToolRules::validate(&rules, Self::list())?;
+        Ok(Self(rules))
+    }
+
+    fn format(&self) -> String {
+        self.0.join(",")
+    }
+
+    fn type_label() -> &'static str {
+        "rules"
+    }
+
+    /// A TOML array joins into this (`allow = ["run_command(cargo test *)"]`).
+    fn accepts_list() -> bool {
+        true
+    }
+}
+
 /// What `llm.review` fences when nothing overrides it: the version-control
 /// and editor-config directories, whose files run code later (a hook, a
 /// `.lattice` config) and do not show in `git status`. An edit matching it
@@ -229,6 +295,20 @@ lattice_config::options! {
     /// a project may add to it. Replaces the default list rather than adding.
     #[name("llm.review")]
     pub LlmReview: PathPatterns = PathPatterns::of(DEFAULT_REVIEW);
+
+    /// Tool calls that run without asking: `run_command(cargo test *)`,
+    /// `github.search_issues`. A command line is allowed only when every
+    /// command in it (split on `&&`, `||`, `;`, `|`) matches a rule; one with
+    /// `$(…)`, backticks or a redirect into a file always asks. Global only:
+    /// a project cannot allow anything.
+    #[name("llm.allow")]
+    pub LlmAllow: AllowRules = AllowRules::default();
+
+    /// Tool calls refused without asking, and the model told:
+    /// `run_command(git push *)`, `edit_file(secrets/**)`, `github.*`. Beats
+    /// `llm.allow` and "allow for this chat". A project's `deny` adds to it.
+    #[name("llm.deny")]
+    pub LlmDeny: DenyRules = DenyRules::default();
 
     /// The provider a bare `llm.model` runs on. Optional when only one provider
     /// is configured. Global only.

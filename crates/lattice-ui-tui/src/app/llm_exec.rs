@@ -138,6 +138,53 @@ mod tests {
         assert_eq!(results(&log), ["exit status 0\n--- stdout ---\nhi\n"]);
     }
 
+    /// GR.3: `llm.allow` runs a command whose every part matches without
+    /// asking; `llm.deny` refuses one with any part matching, without asking
+    /// either; a chained command a rule covers only in part still asks.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn allow_and_deny_rules_decide_before_anything_asks() {
+        let (mut a, log, dir) = app(
+            vec![
+                run("echo hi && echo there"),
+                run("echo hi; touch denied"),
+                run("echo hi && touch asked"),
+            ],
+            "lattice.exec",
+        );
+        a.editor
+            .config
+            .set_typed::<lattice_ai::llm::options::LlmAllow>(lattice_ai::llm::options::RuleList::<
+                true,
+            >(vec![
+                "run_command(echo *)".to_string(),
+            ]))
+            .unwrap();
+        a.editor
+            .config
+            .set_typed::<lattice_ai::llm::options::LlmDeny>(lattice_ai::llm::options::RuleList::<
+                false,
+            >(vec![
+                "run_command(touch denied)".to_string(),
+            ]))
+            .unwrap();
+        send(&mut a, "go").await;
+        // Only the third asks: the first two were decided by the rules.
+        answer(&mut a, 3).await;
+        second_request(&mut a, &log).await;
+        let out = results(&log);
+        assert_eq!(
+            out[0], "exit status 0\n--- stdout ---\nhi\nthere\n",
+            "{out:?}"
+        );
+        assert!(
+            out[1].contains("`run_command(touch denied)` in llm.deny"),
+            "{out:?}"
+        );
+        assert!(out[2].contains("denied running"), "it asked: {out:?}");
+        assert!(!dir.path().join("denied").exists());
+        assert!(!dir.path().join("asked").exists());
+    }
+
     /// A denial is a result the model can act on, and nothing runs.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_denial_reaches_the_model_and_nothing_runs() {

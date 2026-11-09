@@ -13,6 +13,7 @@
 pub mod broker;
 pub mod lattice;
 pub mod mcp;
+pub mod rules;
 
 use std::future::Future;
 use std::pin::Pin;
@@ -90,6 +91,9 @@ pub struct CallContext {
     /// Asks the user whether a tool may run (LL.18). `None` where nothing
     /// can ask: a tool that must ask is then refused.
     pub ask: Option<AskFn>,
+    /// `llm.allow` and `llm.deny` as they were when the request was
+    /// prepared. `None` (a bare test) is no rules.
+    pub rules: Option<std::sync::Arc<rules::ToolRules>>,
 }
 
 /// What the user is asked before a tool runs.

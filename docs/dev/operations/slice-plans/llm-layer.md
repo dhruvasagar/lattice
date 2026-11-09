@@ -961,9 +961,17 @@ P.4, GR.1, P.2, GR.3, GR.4. Decided with it:
   `.aiexclude`, `.aiignore` and `.agentignore` are read as additional excludes. The matching half
   landed with R.4 and P.4: `llm/path_rules.rs` (`PathRules`, compiled once per list and root);
   reading the ignore files is part of GR.1's project additions.
-- 📝 GR.3 **`allow` / `deny` rules** use the shape Claude Code and OpenCode share:
+- ✅ GR.3 **`allow` / `deny` rules** use the shape Claude Code and OpenCode share:
   `run_command(git push *)`, `read_file(.env)`, `mcp_server.tool(...)`; deny beats ask
-  beats allow. The chat-scoped "allow for this chat" stays as it is.
+  beats allow. The chat-scoped "allow for this chat" stays as it is. Landed:
+  `llm/tools/rules.rs` (`ToolRules`, the quote-aware splitter, `Verdict`), the global
+  `llm.allow` / `llm.deny` options (`RuleList`, split on commas outside parentheses since a
+  TOML array arrives comma-joined), the project's `deny` validated in `ProjectRules::load`,
+  `LlmChats::tool_rules` built per request after the project re-read, `CallContext.rules`,
+  and the broker deciding before it asks. An MCP tool's rule names it whole: its arguments
+  are the server's schema, and matching them is not attempted. An `allow` naming a read or
+  edit tool is refused when set (reads never ask; edits are `<C-t>`'s). Tests: nine in
+  `rules`, plus `allow_and_deny_rules_decide_before_anything_asks` (TUI, end to end).
 - 📝 GR.4 **AGENTS.md** joins the system prompt as instructions (nearest file wins), trusted as
   a project's system prompt is: it instructs, never widens tools.
 - ✅ The default exclude list gains `.npmrc`, `.pgpass`, `credentials`, `credentials.json`,

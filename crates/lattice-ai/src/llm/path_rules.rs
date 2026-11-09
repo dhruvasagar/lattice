@@ -159,7 +159,20 @@ impl ProjectRules {
                 }
             });
         }
-        if exclude.is_empty() && review.is_empty() && lists.deny.is_empty() {
+        let mut deny = lists.deny.clone();
+        deny.retain(|r| {
+            match super::tools::rules::ToolRules::validate(
+                std::slice::from_ref(r),
+                super::tools::rules::List::Deny,
+            ) {
+                Ok(()) => true,
+                Err(e) => {
+                    problems.push(format!("llm: the project's deny list skips {e}"));
+                    false
+                }
+            }
+        });
+        if exclude.is_empty() && review.is_empty() && deny.is_empty() {
             return (None, problems);
         }
         // Every pattern was checked alone above, so these compile.
@@ -172,7 +185,7 @@ impl ProjectRules {
                     root: root.to_path_buf(),
                     exclude,
                     review,
-                    deny: lists.deny.clone(),
+                    deny,
                 }),
                 problems,
             ),

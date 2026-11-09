@@ -941,6 +941,38 @@ impl LlmChats {
         check(&real)
     }
 
+    /// `llm.allow` and `llm.deny`, with the project's deny additions, compiled
+    /// for the tools root. Built as a request is prepared (after the project
+    /// was re-read), on the runtime, and fixed for that request.
+    pub fn tool_rules(&self) -> Arc<super::tools::rules::ToolRules> {
+        let (allow, deny) = {
+            let reg = self.registry.read().unwrap_or_else(|e| e.into_inner());
+            let get = |r: &lattice_config::ConfigRegistry| {
+                (
+                    r.get_typed::<super::options::LlmAllow>()
+                        .map(|v| v.0.clone())
+                        .unwrap_or_default(),
+                    r.get_typed::<super::options::LlmDeny>()
+                        .map(|v| v.0.clone())
+                        .unwrap_or_default(),
+                )
+            };
+            reg.as_ref().map(|r| get(r)).unwrap_or_default()
+        };
+        let root = self.tools_root();
+        let project_deny = self
+            .project_rules()
+            .filter(|p| p.root == root)
+            .map(|p| p.deny.clone())
+            .unwrap_or_default();
+        let (rules, problems) =
+            super::tools::rules::ToolRules::new(&root, &allow, &deny, &project_deny);
+        for p in problems {
+            tracing::warn!(target: "lattice::llm", "{p}; the rule is skipped");
+        }
+        Arc::new(rules)
+    }
+
     /// The project's safety-list additions as last read, if any.
     pub fn project_rules(&self) -> Option<Arc<ProjectRules>> {
         self.project_rules
@@ -1859,7 +1891,8 @@ impl LlmChats {
                     session.origin,
                     session.trusted.clone(),
                     session.allowed_tools.clone(),
-                );
+                )
+                .with_rules(chats.tool_rules());
                 chats.requests.start_loop(
                     target,
                     req,

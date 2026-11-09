@@ -247,6 +247,14 @@ jobs:
         # a link-only failure in a bench target, which bench-baseline
         # still catches on every push to main.
         run: cargo check --workspace --benches --locked
+      - name: cargo check lattice-multibuffer without its default features
+        # Its providers are cargo features (`search`, `scan-view`), and the
+        # workspace build always turns them on, so nothing else builds the
+        # opt-out. A module that used a gated one without the gate (the clock
+        # report reads scan-view state) broke it unnoticed. One crate, type
+        # check only, on the cache this job already warmed.
+        if: runner.os == 'Linux'
+        run: cargo check -p lattice-multibuffer --no-default-features --tests --locked
 
   keystroke-ratchet:
     # Paramount goal #1's ratchet clause: "CI records the measured

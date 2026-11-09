@@ -853,4 +853,6 @@ Every finding is verified before it is reported.
 
 - 📝 Nothing publishes `Event::DocumentClosed` in production, so the multibuffer,
   LSP-references, magit and VCS close cleanups never run.
-- 📝 `lattice-multibuffer` does not build with `--no-default-features`.
+- ✅ `lattice-multibuffer` does not build with `--no-default-features`. `clock_report` read
+  scan-view state but was not gated with it; it is now, as is the scan-view test, and CI's
+  `bench-compile` job type-checks the opt-out build on Linux.

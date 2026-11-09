@@ -137,6 +137,7 @@
   (`:set messages.filter=info,rmcp=debug` to see it).
 
 ### Fixed
+- An LLM ask or rewrite still running is no longer forgotten once more than 32 other chats or asks have started since. Quitting warns about it, and `:llm-last` can reopen its answer.
 - The question before a model's command runs shows every character that draws nothing or a blank you cannot tell from a space (no-break and ideographic spaces, Hangul fillers, the braille blank, tag and variation characters) as `\u{..}`, so none can hide the rest of the command.
 - After `dd`, `x`, `p`, `u` or `<C-r>` while an LLM answer streams into the buffer, the next key lands where the caret is. Before, it could land inside the streamed text.
 - A long LLM chat no longer slows typing while a reply streams. The transcript is rebuilt on a background runtime, not on the thread that handles your keys; `:llm-context`, `:llm-requests` and `:llm-mcp` refresh there too.

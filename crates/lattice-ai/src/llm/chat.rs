@@ -1260,9 +1260,7 @@ impl LlmChats {
         {
             let mut reg = self.reg();
             reg.unbound.push(session.clone());
-            if reg.unbound.len() > UNBOUND_CAP {
-                reg.unbound.remove(0);
-            }
+            trim_unbound(&mut reg.unbound);
         }
         session
     }
@@ -1318,9 +1316,7 @@ impl LlmChats {
                 return;
             };
             reg.unbound.push(session.clone());
-            if reg.unbound.len() > UNBOUND_CAP {
-                reg.unbound.remove(0);
-            }
+            trim_unbound(&mut reg.unbound);
             session
         };
         session.closed.store(true, Ordering::Release);
@@ -2247,6 +2243,20 @@ async fn load_project(
     }
 }
 
+/// Hold `unbound` to [`UNBOUND_CAP`] by dropping the oldest session that is
+/// not busy. One with a request in flight stays past the cap: dropped, quitting
+/// would no longer warn about its turn, `:llm-last` could not reopen its reply,
+/// and a stop could not find it. So the list exceeds the cap only by the number
+/// of requests running, which is bounded by what the user started.
+fn trim_unbound(unbound: &mut Vec<Arc<ChatSession>>) {
+    while unbound.len() > UNBOUND_CAP {
+        let Some(idle) = unbound.iter().position(|s| !s.is_busy()) else {
+            break;
+        };
+        unbound.remove(idle);
+    }
+}
+
 /// Subscribe `chats` to request state changes. The listener runs on the
 /// runtime, off the editor thread; what it does is cheap model folds and a
 /// spawn, and the drain's wake (`ConversationProjected`) carries the result to
@@ -2310,6 +2320,35 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["gemini"]
         );
+    }
+
+    /// Past the cap the oldest IDLE session goes; one with a request in
+    /// flight is kept, so quitting still warns about it and its reply can be
+    /// reopened.
+    #[tokio::test]
+    async fn a_busy_hidden_session_is_not_evicted() {
+        let handle = Handle::current();
+        let bus = Arc::new(lattice_runtime::EventBus::new());
+        let requests: RequestRegistryHandle = Arc::new(RequestRegistry::new(
+            handle.clone(),
+            Some(bus.clone()),
+            None,
+        ));
+        let chats = Arc::new(LlmChats::new(handle, requests, bus, LlmConfig::default()));
+        let busy = chats.create();
+        busy.turn().busy = true;
+        let idle = chats.create();
+        for _ in 0..UNBOUND_CAP {
+            chats.create();
+        }
+        assert_eq!(chats.in_flight(), 1, "the busy session is still counted");
+        let reg = chats.reg();
+        assert!(reg.unbound.iter().any(|s| Arc::ptr_eq(s, &busy)), "kept");
+        assert!(
+            !reg.unbound.iter().any(|s| Arc::ptr_eq(s, &idle)),
+            "the oldest idle went"
+        );
+        assert_eq!(reg.unbound.len(), UNBOUND_CAP);
     }
 
     #[tokio::test]

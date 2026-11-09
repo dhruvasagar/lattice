@@ -43168,7 +43168,41 @@ impl Editor {
         Some(at)
     }
 
+    /// LL.12: untrack the anchors of panes that no longer exist. A pane
+    /// closes many ways (`<C-w>c`, `:only`, a tab closing, a popup or band
+    /// going), and each would otherwise leave its anchor tracked in its
+    /// buffer, adjusted on every later edit. Run where focus lands after
+    /// any of them; a pane in another tab is still a pane.
+    fn drop_closed_pane_anchors(&mut self) {
+        if self.pane_caret_anchors.is_empty() {
+            return;
+        }
+        let live: std::collections::HashSet<lattice_core::ui::pane::PaneId> = self
+            .pane_tree
+            .leaves()
+            .iter()
+            .chain(self.tabs.iter().flat_map(|t| t.panes.leaves().iter()))
+            .map(|p| p.id)
+            .collect();
+        let closed: Vec<_> = self
+            .pane_caret_anchors
+            .keys()
+            .filter(|id| !live.contains(id))
+            .copied()
+            .collect();
+        for pane in closed {
+            if let Some((buffer, id)) = self.pane_caret_anchors.remove(&pane)
+                && let Some(handle) = self.buffers.document_handle(buffer)
+            {
+                drop(handle.update_tracked_ranges(vec![
+                    lattice_core::tracked::TrackedRangeChange::Untrack(id),
+                ]));
+            }
+        }
+    }
+
     pub fn load_active_pane(&mut self) {
+        self.drop_closed_pane_anchors();
         let pane = *self.pane_tree.active();
         self.cursor = self.take_anchored_caret(&pane).unwrap_or(pane.cursor);
         self.scroll = pane.scroll;

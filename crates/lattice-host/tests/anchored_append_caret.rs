@@ -269,3 +269,32 @@ async fn an_append_moves_a_visual_selection_whole() {
     );
     assert_eq!(editor.cursor.line, 3, "head moved");
 }
+
+/// Closing a pane that was away drops its caret anchor: the buffer stops
+/// tracking a range nothing will ever read.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_closed_panes_anchor_is_untracked() {
+    let mut editor = boot("ab\ncd\n");
+    key(&mut editor, Action::None);
+    let tracked = |e: &Editor| e.document.snapshot().tracked_ranges.len();
+    let before = tracked(&editor);
+    let first = editor.pane_tree.active_index();
+    editor.do_split_pane(SplitOrientation::Vertical);
+    let second = (0..editor.pane_tree.leaves().len())
+        .find(|&i| i != first)
+        .expect("a second pane");
+    editor.activate_pane(second);
+    assert!(
+        !editor.pane_caret_anchors.is_empty(),
+        "the first pane is anchored"
+    );
+
+    editor.do_only_pane();
+    assert!(editor.pane_caret_anchors.is_empty());
+    // The untrack goes to the document's actor; wait for its turn.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while tracked(&editor) != before && std::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    assert_eq!(tracked(&editor), before);
+}

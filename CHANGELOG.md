@@ -134,6 +134,11 @@
   (`:set messages.filter=info,rmcp=debug` to see it).
 
 ### Fixed
+- **A closed split stops tracking its caret.** A split you left had its
+  caret anchored in the buffer so a stream writing above it would carry
+  it; closing that split (`<C-w>c`, `:only`, closing its tab) left the
+  anchor tracked, adjusted on every later edit, for the rest of the
+  session.
 - **A Visual selection stays on its text while output streams above it.**
   The caret moved with text an LLM answer or another stream inserted
   above it, but the selection's other end did not, so the selection

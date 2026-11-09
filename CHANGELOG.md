@@ -134,6 +134,11 @@
   (`:set messages.filter=info,rmcp=debug` to see it).
 
 ### Fixed
+- **Stopping an MCP server cannot kill an unrelated process (Linux).**
+  An MCP server is stopped by killing its process group. If the server
+  had already exited and the system had reused its id for another
+  process group, that group was killed instead; the kill is now skipped
+  when the id belongs to another process.
 - **Text sent into a plain (non-markdown) transcript folds at 8 lines,
   as in markdown.** It stayed open up to 10 lines, because the count
   allowed for code-fence lines that only a markdown transcript has.

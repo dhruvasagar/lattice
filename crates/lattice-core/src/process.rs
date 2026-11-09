@@ -289,6 +289,63 @@ pub fn kill_process_tree(pid: u32) {
     let _ = pid;
 }
 
+/// A process group to kill later, named by its leader's pid, for a caller
+/// that does not hold the leader's [`Child`] (the leader is reaped by
+/// someone else, so its pid can be reused by the time the kill runs).
+///
+/// A group id is a pid, and once the leader is reaped and the group empty,
+/// that number can be given to an unrelated process that leads a group of
+/// its own; `kill -- -pgid` would then kill it. So the leader's start time
+/// is recorded here, and [`Self::kill`] skips the kill when a process with
+/// that pid exists but started at a different time. A leader that is gone
+/// with members left keeps the group id reserved, so killing it then is
+/// safe. Linux only: elsewhere there is no cheap start time to read and the
+/// group is killed as before.
+#[derive(Debug)]
+pub struct GroupKill {
+    pid: u32,
+    started: Option<u64>,
+}
+
+impl GroupKill {
+    /// Remember `pid`'s group; call while the leader is known to be alive
+    /// (right after spawning it).
+    pub fn new(pid: u32) -> Self {
+        Self {
+            pid,
+            started: start_time(pid),
+        }
+    }
+
+    /// Kill the group with [`kill_process_tree`], unless its pid now
+    /// belongs to another process.
+    pub fn kill(&self) {
+        if let Some(then) = self.started
+            && start_time(self.pid).is_some_and(|now| now != then)
+        {
+            tracing::debug!(pid = self.pid, "process group id reused; not killing it");
+            return;
+        }
+        kill_process_tree(self.pid);
+    }
+}
+
+/// When `pid` started, in clock ticks since boot (`/proc/<pid>/stat` field
+/// 22); `None` when no such process exists or the file cannot be read.
+#[cfg(target_os = "linux")]
+fn start_time(pid: u32) -> Option<u64> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    // `comm` (field 2) is in parentheses and may itself hold `)` or spaces,
+    // so count fields from the last `)`: field 3 is the first after it.
+    let rest = &stat[stat.rfind(')')? + 1..];
+    rest.split_whitespace().nth(22 - 3)?.parse().ok()
+}
+
+#[cfg(not(target_os = "linux"))]
+fn start_time(_pid: u32) -> Option<u64> {
+    None
+}
+
 /// Kill the child and everything it started. The direct `Child::kill`
 /// afterwards covers a sandbox with no `kill` / `taskkill` on `PATH`.
 fn kill_tree(child: &mut Child) {
@@ -307,6 +364,38 @@ mod tests {
         let mut c = Command::new("sh");
         c.args(["-c", script]);
         c
+    }
+
+    /// A group whose pid now belongs to a process that started at another
+    /// time is left alone; one whose leader is still the process we started
+    /// is killed.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_reused_group_id_is_not_killed() {
+        let mut c = Command::new("sleep");
+        c.arg("30");
+        own_process_group(&mut c);
+        let mut child = c.spawn().unwrap();
+        let pid = child.id();
+        let started = start_time(pid).expect("a live process has a start time");
+
+        let reused = GroupKill {
+            pid,
+            started: Some(started + 1),
+        };
+        reused.kill();
+        thread::sleep(Duration::from_millis(100));
+        assert!(
+            child.try_wait().unwrap().is_none(),
+            "another process's group"
+        );
+
+        GroupKill::new(pid).kill();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while child.try_wait().unwrap().is_none() {
+            assert!(Instant::now() < deadline, "the group was killed");
+            thread::sleep(Duration::from_millis(10));
+        }
     }
 
     #[test]

@@ -395,12 +395,14 @@ lattice_protocol::register_event!(
     "lattice-ai",
 );
 
-/// A stdio child's process group, killed when this drops.
-pub struct ChildTree(u32);
+/// A stdio child's process group, killed when this drops. The child is
+/// reaped by the transport, so the kill checks the group id was not reused
+/// (see [`lattice_core::process::GroupKill`]).
+pub struct ChildTree(lattice_core::process::GroupKill);
 
 impl Drop for ChildTree {
     fn drop(&mut self) {
-        lattice_core::process::kill_process_tree(self.0);
+        self.0.kill();
     }
 }
 
@@ -1060,7 +1062,9 @@ async fn connect_stdio(
             std::io::ErrorKind::NotFound => format!("command not found: `{command}`"),
             _ => format!("could not start `{command}`: {e}"),
         })?;
-    let tree = process.id().map(ChildTree);
+    let tree = process
+        .id()
+        .map(|pid| ChildTree(lattice_core::process::GroupKill::new(pid)));
     let tail = StderrTail::default();
     let reader = stderr.map(|stderr| {
         let (tail, server) = (tail.clone(), name.to_string());

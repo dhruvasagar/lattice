@@ -106,6 +106,11 @@ inline system prompt, parameters, and tools **narrower** than yours. It may not 
 `destination`, or a `system` naming a file. Each refused key is reported in
 `:messages` once per chat, and the rest of the file still applies.
 
+It may **add** to `exclude` (`exclude = ["internal/"]`), and the patterns in
+`.aiexclude`, `.aiignore` and `.agentignore` at the project root are added too. It
+can never remove one of your entries: its patterns are matched on their own, so its
+`!pattern` re-includes only what it excluded itself. A project `allow` is refused.
+
 Because it may set the model, it may pick another of **your** providers
 (`model = "paid/big"`), and with it where your code and that provider's key
 go. When it does, `:messages` says so once per chat, naming the provider and

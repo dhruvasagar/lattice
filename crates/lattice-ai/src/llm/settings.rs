@@ -410,7 +410,23 @@ pub struct ProjectLayer {
     /// `(key, text)` in file order. A nested table is flattened to a dotted key
     /// (`providers.x.base_url`), an array to a comma list.
     pub entries: Vec<(String, String)>,
+    /// What the project adds to the safety lists (design §6 "Safety lists"):
+    /// lifted out whole, since a pattern or rule may hold a comma the flat
+    /// text would split on. Only additions: nothing here can remove an entry.
+    pub lists: ProjectLists,
 }
+
+/// A project's additions to the `exclude`, `review` and `deny` lists. There is
+/// no `allow`: a project may make the model more careful, never less.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ProjectLists {
+    pub exclude: Vec<String>,
+    pub review: Vec<String>,
+    pub deny: Vec<String>,
+}
+
+/// The keys [`ProjectLists`] takes from a project file.
+pub const PROJECT_LIST_KEYS: [&str; 3] = ["exclude", "review", "deny"];
 
 impl ProjectLayer {
     pub fn parse(source: &str, text: &str) -> Result<Self, String> {
@@ -420,11 +436,34 @@ impl ProjectLayer {
                 lattice_config::loader::describe_toml_error(text, &e)
             )
         })?;
+        let mut table = table;
+        let mut lists = ProjectLists::default();
+        for key in PROJECT_LIST_KEYS {
+            // Only a list of strings is lifted; anything else stays in the
+            // entries, where it is refused with a reason.
+            let Some(toml::Value::Array(items)) = table.get(key) else {
+                continue;
+            };
+            let Some(strings) = items
+                .iter()
+                .map(|v| v.as_str().map(str::to_string))
+                .collect::<Option<Vec<String>>>()
+            else {
+                continue;
+            };
+            table.remove(key);
+            match key {
+                "exclude" => lists.exclude = strings,
+                "review" => lists.review = strings,
+                _ => lists.deny = strings,
+            }
+        }
         let mut entries = Vec::new();
         flatten("", &table, &mut entries);
         Ok(Self {
             source: source.to_string(),
             entries,
+            lists,
         })
     }
 }
@@ -581,6 +620,13 @@ fn named_refusal(key: &str) -> Option<&'static str> {
             Some("providers (and their base_url and key sources) come from your own config only")
         }
         "profiles" | "profile" => Some("a project may not define profiles, which can widen tools"),
+        "allow" => Some(
+            "a project may not allow anything to run unasked; it can only add to exclude, \
+             review and deny",
+        ),
+        "exclude" | "review" | "deny" => {
+            Some("must be a list of strings (gitignore patterns or rules)")
+        }
         _ => None,
     }
 }
@@ -1147,6 +1193,42 @@ mod tests {
             assert!(r.values.tools.is_empty());
             assert_eq!(r.values.destination, None);
         }
+    }
+
+    /// GR.1: a project adds to `exclude`, `review` and `deny`, lifted whole
+    /// (a rule may hold a comma); it cannot `allow`, and a list that is not a
+    /// list of strings is refused with a reason.
+    #[test]
+    fn a_project_adds_to_the_safety_lists_and_cannot_allow() {
+        let l = ProjectLayer::parse(
+            ".lattice/llm.toml",
+            "model = \"m\"\nexclude = [\"notes/\", \"*.secret\"]\nreview = [\".github/\"]\n\
+             deny = [\"run_command(curl a, b)\"]\nallow = [\"run_command(make)\"]\n",
+        )
+        .unwrap();
+        assert_eq!(l.lists.exclude, ["notes/", "*.secret"]);
+        assert_eq!(l.lists.review, [".github/"]);
+        assert_eq!(
+            l.lists.deny,
+            ["run_command(curl a, b)"],
+            "the comma survives"
+        );
+        let r = run(&project_from(l), &RequestOverrides::default(), Trust::User);
+        assert_eq!(refused_keys(&r), vec!["allow"]);
+        let msg = r.refused[0].to_string();
+        assert!(msg.contains("may not allow"), "{msg}");
+        assert_eq!(r.values.model.as_deref(), Some("m"), "the rest applies");
+
+        let l = project("exclude = \"notes/\"\n");
+        let r = run(&l, &RequestOverrides::default(), Trust::User);
+        assert_eq!(refused_keys(&r), vec!["exclude"]);
+        assert!(r.refused[0].to_string().contains("list of strings"));
+    }
+
+    fn project_from(layer: ProjectLayer) -> Layers {
+        let mut l = layers();
+        l.project = Some(layer);
+        l
     }
 
     #[test]

@@ -35,6 +35,11 @@ impl PathRules {
             builder
                 .add_line(None, pattern)
                 .map_err(|e| format!("`{pattern}` is not a gitignore pattern ({e})"))?;
+            // Comments and blank lines (an ignore file has both) are for
+            // gitignore alone; they name nothing.
+            if pattern.trim().is_empty() || pattern.starts_with('#') {
+                continue;
+            }
             let bare = pattern.trim_end_matches('/');
             if !bare.is_empty()
                 && !bare.contains('/')
@@ -97,6 +102,81 @@ impl PathRules {
     }
 }
 
+/// The ignore files other harnesses read, taken as `exclude` additions.
+pub const IGNORE_FILES: [&str; 3] = [".aiexclude", ".aiignore", ".agentignore"];
+
+/// The most of one ignore file read; past it the rest is not read, and said so.
+const MAX_IGNORE_FILE: u64 = 256 * 1024;
+
+/// What a project adds to the safety lists, compiled for the root it was read
+/// under. Kept apart from the global lists and matched as its own set, so a
+/// project's `!pattern` can only re-include what the project itself excluded.
+#[derive(Debug)]
+pub struct ProjectRules {
+    pub root: PathBuf,
+    pub exclude: PathRules,
+    pub review: Vec<String>,
+    pub deny: Vec<String>,
+}
+
+impl ProjectRules {
+    /// Compile `lists` and the ignore files under `root`. Blocking file reads:
+    /// call it off the editor thread. A problem (an unreadable or oversized
+    /// ignore file, a pattern that will not compile) is returned beside what
+    /// could be built, never instead of it: a bad pattern is skipped alone, so
+    /// one typo cannot drop the project's other excludes.
+    pub fn load(root: &Path, lists: &super::settings::ProjectLists) -> (Option<Self>, Vec<String>) {
+        let mut problems = Vec::new();
+        let mut exclude = lists.exclude.clone();
+        for name in IGNORE_FILES {
+            let path = root.join(name);
+            match std::fs::metadata(&path) {
+                Ok(meta) if meta.is_file() => {
+                    use std::io::Read;
+                    let mut text = String::new();
+                    let read = std::fs::File::open(&path)
+                        .and_then(|f| f.take(MAX_IGNORE_FILE).read_to_string(&mut text));
+                    match read {
+                        Ok(_) => exclude.extend(text.lines().map(str::to_string)),
+                        Err(e) => problems.push(format!("llm: cannot read {name}: {e}")),
+                    }
+                    if meta.len() > MAX_IGNORE_FILE {
+                        problems.push(format!(
+                            "llm: {name} is over {MAX_IGNORE_FILE} bytes; the rest is not read"
+                        ));
+                    }
+                }
+                _ => {}
+            }
+        }
+        exclude.retain(|p| match PathRules::validate(std::slice::from_ref(p)) {
+            Ok(()) => true,
+            Err(e) => {
+                problems.push(format!("llm: the project's exclude list skips {e}"));
+                false
+            }
+        });
+        if exclude.is_empty() && lists.review.is_empty() && lists.deny.is_empty() {
+            return (None, problems);
+        }
+        match PathRules::new(root, &exclude) {
+            Ok(rules) => (
+                Some(Self {
+                    root: root.to_path_buf(),
+                    exclude: rules,
+                    review: lists.review.clone(),
+                    deny: lists.deny.clone(),
+                }),
+                problems,
+            ),
+            Err(e) => {
+                problems.push(format!("llm: the project's exclude list: {e}"));
+                (None, problems)
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
@@ -153,6 +233,31 @@ mod tests {
         assert_eq!(at(&r, "/home/u/.aws/credentials").as_deref(), Some(".aws/"));
         assert_eq!(at(&r, "/elsewhere/secrets/a.txt"), None);
         assert_eq!(at(&r, "/elsewhere/notes.txt"), None);
+    }
+
+    /// The vendor ignore files are read as excludes, comments and blank lines
+    /// skipped; a bad pattern is skipped alone, so the rest still holds.
+    #[test]
+    fn the_ignore_files_add_to_the_project_excludes() {
+        let dir = std::env::temp_dir().join(format!("lattice-ignore-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(".aiexclude"), "# keys\n*.secret\n\n").unwrap();
+        std::fs::write(dir.join(".agentignore"), "private/\na{b\n").unwrap();
+        let lists = crate::llm::settings::ProjectLists {
+            exclude: vec!["notes.md".to_string()],
+            ..Default::default()
+        };
+        let (rules, problems) = ProjectRules::load(&dir, &lists);
+        let rules = rules.unwrap();
+        let hit = |p: &str| rules.exclude.matching(&dir.join(p)).map(str::to_string);
+        assert_eq!(hit("notes.md").as_deref(), Some("notes.md"));
+        assert_eq!(hit("x/api.secret").as_deref(), Some("*.secret"));
+        assert_eq!(hit("private/a.txt").as_deref(), Some("private/"));
+        assert_eq!(hit("src/main.rs"), None);
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(problems[0].contains("a{b"), "{problems:?}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

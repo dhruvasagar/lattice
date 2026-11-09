@@ -28,7 +28,7 @@
 //! `submit` and in `end_turn`, so a send landing between a turn ending and the
 //! next being chosen cannot strand a prompt.
 
-use super::path_rules::PathRules;
+use super::path_rules::{PathRules, ProjectRules};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock};
@@ -397,6 +397,9 @@ pub struct LlmChats {
     /// thread, where no file may be read. Refreshed off-thread at chat start and
     /// by every request. `Arc` so a refresh task can write it.
     project_cache: Arc<RwLock<Option<ProjectLayer>>>,
+    /// The project's safety-list additions, compiled off-thread with the
+    /// layer above and refreshed with it (design §6 "Safety lists").
+    project_rules: Arc<RwLock<Option<Arc<ProjectRules>>>>,
     /// The latest ask's session, by name, for `:llm-last` (LL.14a). Every ask
     /// has one, shown or hidden: echo, register, `below` and rewrite answers
     /// keep theirs so the full reply can be seen and followed up.
@@ -455,6 +458,7 @@ impl LlmChats {
             menu_ask: RwLock::new(HashMap::new()),
             project_root: RwLock::new(None),
             project_cache: Arc::new(RwLock::new(None)),
+            project_rules: Arc::new(RwLock::new(None)),
             last_ask: Mutex::new(None),
             done_hook: std::sync::OnceLock::new(),
             store: std::sync::OnceLock::new(),
@@ -524,6 +528,8 @@ impl LlmChats {
 
     pub fn set_project_root(&self, root: std::path::PathBuf) {
         *self.project_root.write().unwrap_or_else(|e| e.into_inner()) = Some(root);
+        // The lists belong to the root: read the new one's now, off-thread.
+        self.refresh_project();
     }
 
     /// The names of the configured profiles.
@@ -868,11 +874,37 @@ impl LlmChats {
             Ok(rules) => rules,
             Err(e) => return Some(format!("llm.exclude does not compile: {e}")),
         };
-        if let Some(pattern) = rules.matching(path) {
-            return Some(pattern.to_string());
+        // The project's additions, a set of their own: its `!pattern` cannot
+        // re-include what the global list excludes. Only for the root they
+        // were read under; a root change refreshes them.
+        let project = self
+            .project_rules
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+            .filter(|p| p.root == self.tools_root());
+        let check = |p: &std::path::Path| -> Option<String> {
+            if let Some(pattern) = rules.matching(p) {
+                return Some(pattern.to_string());
+            }
+            project
+                .as_ref()
+                .and_then(|r| r.exclude.matching(p))
+                .map(|pattern| format!("{pattern} (project)"))
+        };
+        if let Some(why) = check(path) {
+            return Some(why);
         }
         let real = std::fs::canonicalize(path).ok()?;
-        rules.matching(&real).map(str::to_string)
+        check(&real)
+    }
+
+    /// The project's safety-list additions as last read, if any.
+    pub fn project_rules(&self) -> Option<Arc<ProjectRules>> {
+        self.project_rules
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// `globs` compiled against the tools root, from the cache when neither
@@ -1924,7 +1956,11 @@ impl LlmChats {
     /// must not stop the chat.
     async fn read_project(&self, session: &ChatSession) -> Option<ProjectLayer> {
         let root = self.configured_root();
-        let (layer, problem) = load_project(root).await;
+        let ProjectLoad {
+            layer,
+            rules,
+            problem,
+        } = load_project(root).await;
         if let Some((key, text)) = problem
             && session.first_report(key)
         {
@@ -1934,6 +1970,10 @@ impl LlmChats {
             .project_cache
             .write()
             .unwrap_or_else(|e| e.into_inner()) = layer.clone();
+        *self
+            .project_rules
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = rules;
         layer
     }
 
@@ -1944,18 +1984,27 @@ impl LlmChats {
             .clone()
     }
 
-    /// Refresh the cached project layer on the runtime, without waiting. A
-    /// problem is logged at debug: the request that follows reports it once.
-    fn refresh_project(&self) {
-        let root = self.configured_root();
-        let cache = self.project_cache.clone();
-        self.runtime.spawn(async move {
-            let (layer, problem) = load_project(root).await;
-            if let Some((_, text)) = problem {
-                tracing::debug!(target: "lattice::llm", "{text}");
-            }
-            *cache.write().unwrap_or_else(|e| e.into_inner()) = layer;
-        });
+    /// Refresh the cached project layer and its safety-list additions on the
+    /// runtime, without waiting. A problem is logged at debug: the request
+    /// that follows reports it once.
+    pub fn refresh_project(&self) {
+        let reload = reload_project(
+            self.configured_root(),
+            self.project_cache.clone(),
+            self.project_rules.clone(),
+        );
+        self.runtime.spawn(reload);
+    }
+
+    /// [`Self::refresh_project`], awaited: for a caller that must see the
+    /// project's lists before it goes on.
+    pub async fn reload_project(&self) {
+        reload_project(
+            self.configured_root(),
+            self.project_cache.clone(),
+            self.project_rules.clone(),
+        )
+        .await;
     }
 
     fn register_request(self: &Arc<Self>, id: RequestId, session: &Arc<ChatSession>) {
@@ -2261,9 +2310,39 @@ impl Sink for ChatSink {
 /// Read `.lattice/llm.toml` under `root` (or the project root of the working
 /// directory) on the blocking pool. The second value is a problem worth
 /// reporting: `(dedup key, message)`.
-async fn load_project(
+/// Read the project and store it in the two caches.
+async fn reload_project(
     root: Option<std::path::PathBuf>,
-) -> (Option<ProjectLayer>, Option<(String, String)>) {
+    cache: Arc<RwLock<Option<ProjectLayer>>>,
+    rules_cache: Arc<RwLock<Option<Arc<ProjectRules>>>>,
+) {
+    let ProjectLoad {
+        layer,
+        rules,
+        problem,
+    } = load_project(root).await;
+    if let Some((_, text)) = problem {
+        tracing::debug!(target: "lattice::llm", "{text}");
+    }
+    *cache.write().unwrap_or_else(|e| e.into_inner()) = layer;
+    *rules_cache.write().unwrap_or_else(|e| e.into_inner()) = rules;
+}
+
+/// What [`load_project`] read: the settings layer, the project's safety-list
+/// additions compiled for its root, and the first problem, keyed for
+/// once-per-session reporting.
+struct ProjectLoad {
+    layer: Option<ProjectLayer>,
+    rules: Option<Arc<ProjectRules>>,
+    problem: Option<(String, String)>,
+}
+
+async fn load_project(root: Option<std::path::PathBuf>) -> ProjectLoad {
+    let empty = ProjectLoad {
+        layer: None,
+        rules: None,
+        problem: None,
+    };
     let root = match root {
         Some(r) => r,
         None => match tokio::task::spawn_blocking(lattice_core::project::root_from_cwd)
@@ -2272,29 +2351,55 @@ async fn load_project(
             .flatten()
         {
             Some(r) => r,
-            None => return (None, None),
+            None => return empty,
         },
     };
     let path = root.join(".lattice").join("llm.toml");
-    let text = match tokio::fs::read_to_string(&path).await {
-        Ok(t) => t,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return (None, None),
-        Err(e) => {
-            return (
+    let (layer, mut problem) = match tokio::fs::read_to_string(&path).await {
+        Ok(text) => match ProjectLayer::parse(".lattice/llm.toml", &text) {
+            Ok(layer) => (Some(layer), None),
+            Err(e) => (
                 None,
-                Some((
-                    format!("read\u{0}{}", path.display()),
-                    format!("llm: cannot read {}: {}", path.display(), e.kind()),
-                )),
-            );
-        }
-    };
-    match ProjectLayer::parse(".lattice/llm.toml", &text) {
-        Ok(layer) => (Some(layer), None),
+                Some((format!("parse\u{0}{}", path.display()), format!("llm: {e}"))),
+            ),
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => (None, None),
         Err(e) => (
             None,
-            Some((format!("parse\u{0}{}", path.display()), format!("llm: {e}"))),
+            Some((
+                format!("read\u{0}{}", path.display()),
+                format!("llm: cannot read {}: {}", path.display(), e.kind()),
+            )),
         ),
+    };
+    // The safety lists and the ignore files compile here, on the runtime: the
+    // editor thread only ever reads the compiled result.
+    let lists = layer.as_ref().map(|l| l.lists.clone()).unwrap_or_default();
+    let compiled = {
+        let root = root.clone();
+        tokio::task::spawn_blocking(move || ProjectRules::load(&root, &lists)).await
+    };
+    let rules = match compiled {
+        Ok((rules, problems)) => {
+            if problem.is_none()
+                && let Some(first) = problems.first()
+            {
+                problem = Some((format!("rules\u{0}{first}"), first.clone()));
+            }
+            for p in problems.iter().skip(1) {
+                tracing::warn!(target: "lattice::llm", "{p}");
+            }
+            rules.map(Arc::new)
+        }
+        Err(e) => {
+            tracing::warn!(target: "lattice::llm", "llm: reading the project's lists failed: {e}");
+            None
+        }
+    };
+    ProjectLoad {
+        layer,
+        rules,
+        problem,
     }
 }
 

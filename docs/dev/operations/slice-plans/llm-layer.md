@@ -939,12 +939,18 @@ P.4, GR.1, P.2, GR.3, GR.4. Decided with it:
 - AGENTS.md is on by default, with `llm.agents_md = false` to turn it off.
 
 - ✅ GR.0 **Design**: `llm-layer.md` §6 "Safety lists, layered, in the formats other harnesses use".
-- 📝 GR.1 **Layering**: `exclude`, `review` (always diff, even when trusted; default `.git`,
+- 🚧 GR.1 **Layering**: `exclude`, `review` (always diff, even when trusted; default `.git`,
   `.hg`, `.jj`, `.lattice`), `deny` and `allow` are each settable in the global
   `~/.config/lattice` config and the project `./.lattice`. **The project only narrows:** its
   `exclude`, `review` and `deny` are added to the global lists, and it can neither remove an
   entry nor allow a command. A project `allow` is refused and named in `*messages*`.
-- 🚧 GR.2 **`llm.exclude` uses gitignore semantics** (relative to the project root, a leading
+  Landed for `exclude`: `ProjectLayer.lists` lifts `exclude`/`review`/`deny` whole; the ignore
+  files are read into the project's excludes; `ProjectRules` compiles them on the runtime at
+  install, at chat creation and at each request's prepare; `LlmChats::excluded` checks the
+  global set, then the project's as its own set. `review` and `deny` are parsed and cached
+  here, and enforced by P.2 and GR.3. The global `llm.review` / `llm.deny` / `llm.allow`
+  options arrive with those slices.
+- ✅ GR.2 **`llm.exclude` uses gitignore semantics** (relative to the project root, a leading
   `/` anchors, a bare name matches at any depth; this fixes R.4), and a project's
   `.aiexclude`, `.aiignore` and `.agentignore` are read as additional excludes. The matching half
   landed with R.4 and P.4: `llm/path_rules.rs` (`PathRules`, compiled once per list and root);

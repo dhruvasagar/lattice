@@ -630,6 +630,20 @@ profiles, `destination`, or a `system` naming a file. Each refused key is report
 `:messages` once per chat, and the rest of the file still applies. LLM keys in
 `.lattice/config.toml` are not read in any spelling, and a warning says so.
 
+A project can make the model **more careful**, never less. Its `exclude` list is added to
+yours, as are the patterns in the `.aiexclude`, `.aiignore` and `.agentignore` files at its
+root, the ignore files other AI tools read:
+
+```toml
+# .lattice/llm.toml
+exclude = ["internal/", "*.secret"]
+```
+
+A file refused this way is named with `(project)`. The project's patterns are matched on
+their own, so its `!pattern` re-includes only what the project itself excluded, never an
+entry of yours. A project `allow` is refused. The lists are read when the editor starts and
+again before each request, so an edit to them applies from the next request.
+
 One thing a project can still do is name **another of your providers** as its model
 (`model = "paid/big"`), which decides where your code and that provider's key go. When it
 does, `:messages` says so once per chat, naming the provider and your default. A resumed

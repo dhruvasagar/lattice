@@ -1146,6 +1146,38 @@ mod tests {
         assert!(!found.contains(".env"), "{found}");
     }
 
+    /// GR.1: a project's `.lattice/llm.toml` and `.aiignore` add excludes the
+    /// read tools honour, named as the project's; a project's `!.env` cannot
+    /// re-include what the global list excludes.
+    #[tokio::test]
+    async fn a_project_adds_excludes_and_cannot_remove_one() {
+        let dir = Scratch::new("project-lists");
+        std::fs::create_dir_all(dir.path().join(".lattice")).unwrap();
+        std::fs::write(
+            dir.path().join(".lattice/llm.toml"),
+            "exclude = [\"internal/\", \"!.env\"]\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join(".aiignore"), "*.secret\n").unwrap();
+        std::fs::create_dir_all(dir.path().join("internal")).unwrap();
+        std::fs::write(dir.path().join("internal/plan.md"), "plan\n").unwrap();
+        std::fs::write(dir.path().join("api.secret"), "k\n").unwrap();
+        std::fs::write(dir.path().join(".env"), "TOKEN=hunter2\n").unwrap();
+        let (tools, chats) = tools_over(dir.path());
+        chats.reload_project().await;
+
+        for (path, why) in [
+            ("internal/plan.md", "internal/ (project)"),
+            ("api.secret", "*.secret (project)"),
+            (".env", ".env"),
+        ] {
+            let err = call(&tools, "read_file", serde_json::json!({"path": path}))
+                .await
+                .unwrap_err();
+            assert!(err.contains(why), "{path}: {err}");
+        }
+    }
+
     /// `.git` is never read, listed or searched, whatever the exclude list
     /// says (P.4): `.git/config` can carry a credential in a remote URL.
     #[tokio::test]

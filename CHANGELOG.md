@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Added
+- **A project can add to the LLM exclude list.** `exclude = [...]` in `.lattice/llm.toml`, and the `.aiexclude`, `.aiignore` and `.agentignore` files other AI tools read, are added to your `llm.exclude` and matched on their own, so a project can never re-include one of your entries. A project `allow` is refused.
 - `:llm-send` (`<leader>as`) sends the buffer from its first line to the cursor's line as the prompt, with no instruction to type. Write a question in any buffer and send it; the answer opens beside you. In a chat it sends the prompt, as `<CR>` does.
 - `<leader>aR{motion}` rewrites text with `:llm-menu` opening first, the way `<leader>aA` does for an ask: change the model or temperature for this rewrite, then press `a` to type the instruction. **`:llm-requests` moves from `<leader>aR` to `<leader>aq`.**
 - `:help llm-guide`: a single guide to the LLM layer. It covers setup, chat, asking about text from any buffer, context, tools and their review gates, MCP servers, profiles and project config, watching requests, the privacy model, and troubleshooting. The website has a new "Language models" section for it.

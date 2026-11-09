@@ -915,9 +915,15 @@ Security policy (Dhruva decided 2026-11-09, the recommended option each time):
   `connect_stdio` (before the server's own `env` applies). Pinned end to end by
   `a_command_does_not_inherit_the_key_variables` and
   `a_stdio_server_does_not_inherit_the_key_variables`, both fail without the removal.
-- 📝 P.2 **Fence `.git`, `.hg`, `.jj` and `.lattice`.** A trusted chat (`<C-t>`) writes everything but `.git` unreviewed, including
+- ✅ P.2 **Fence `.git`, `.hg`, `.jj` and `.lattice`.** A trusted chat (`<C-t>`) writes everything but `.git` unreviewed, including
   `.lattice/llm.toml`, `.lattice/config.toml`, `.envrc`, `.cargo/config.toml`, CI
-  workflows and `.hg`/`.jj`.
+  workflows and `.hg`/`.jj`. Fixed: `llm.review` (gitignore patterns, default `.git/`,
+  `.hg/`, `.jj/`, `.lattice/`) plus a project's `review` additions, matched by
+  `LlmChats::reviewed` (global set, then project set) and checked by `LatticeTools::fenced`
+  beside the fixed `.git` rule. `.envrc` and CI workflows are not in the default: they are
+  ordinary project files a user edits often, and the user adds them if wanted. Tests:
+  `llm_review_fences_the_config_directories_and_the_projects_additions`,
+  `a_trusted_chat_reviews_what_llm_review_names`.
 - ✅ P.3 **Keep per-tool, and say so** in the answer's label and the docs. "Allow for this chat" on an MCP tool covers every later call with any arguments
   (`run_command` is exact-arguments). Fixed: the answer reads "Allow this tool for this chat (any arguments)",
   pinned in the broker test; the guide, its gate table and the design fragment say what it covers.

@@ -130,6 +130,13 @@ pub fn install(
                     .map_or(Some("(closing)".to_string()), |c| c.excluded(p))
             }),
         );
+        let fence_of = Arc::downgrade(&chats);
+        // Gone means the editor is closing; review rather than write.
+        tools = tools.fenced_by(Arc::new(move |p| {
+            fence_of
+                .upgrade()
+                .map_or(Some("(closing)".to_string()), |c| c.reviewed(p))
+        }));
         let keys_of = Arc::downgrade(&chats);
         tools = tools.without_variables(Arc::new(move || {
             keys_of

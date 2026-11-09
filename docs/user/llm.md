@@ -67,7 +67,9 @@ server's `github.*`; see [`llm-chat-mode`](help:llm-chat-mode) and
 name to continue it), `llm.fold.reasoning` and `llm.fold.tools` (`closed` `open`
 `hidden`, applied to open chats live), `llm.profile`, and the global-only
 `llm.default_profile`, `llm.default_provider`, `llm.exclude` (gitignore patterns
-naming files that are never sent; see [`llm-mode`](help:llm-mode)), `llm.tool_rounds` (how many
+naming files that are never sent; see [`llm-mode`](help:llm-mode)), `llm.review`
+(gitignore patterns whose edits open a diff even in a trusted chat; default `.git/`,
+`.hg/`, `.jj/`, `.lattice/`), `llm.tool_rounds` (how many
 rounds of tool calls one request may run) and `llm.prefix` (the keys every llm chord
 starts with).
 
@@ -106,7 +108,7 @@ inline system prompt, parameters, and tools **narrower** than yours. It may not 
 `destination`, or a `system` naming a file. Each refused key is reported in
 `:messages` once per chat, and the rest of the file still applies.
 
-It may **add** to `exclude` (`exclude = ["internal/"]`), and the patterns in
+It may **add** to `exclude` (`exclude = ["internal/"]`) and to `review`, and the patterns in
 `.aiexclude`, `.aiignore` and `.agentignore` at the project root are added too. It
 can never remove one of your entries: its patterns are matched on their own, so its
 `!pattern` re-includes only what it excluded itself. A project `allow` is refused.

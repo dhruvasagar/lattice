@@ -51,16 +51,25 @@ pub const DEFAULT_EXCLUDE: &[&str] = &[
 /// excludes nothing, deliberately.
 ///
 /// [`PathRules`]: super::path_rules::PathRules
+///
+/// The same type carries `llm.review`, whose default is [`DEFAULT_REVIEW`].
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ExcludeGlobs(pub Vec<String>);
+pub struct PathPatterns(pub Vec<String>);
 
-impl Default for ExcludeGlobs {
-    fn default() -> Self {
-        Self(DEFAULT_EXCLUDE.iter().map(|g| g.to_string()).collect())
+impl PathPatterns {
+    pub fn of(patterns: &[&str]) -> Self {
+        Self(patterns.iter().map(|g| g.to_string()).collect())
     }
 }
 
-impl lattice_config::OptionType for ExcludeGlobs {
+/// What `llm.review` fences when nothing overrides it: the version-control
+/// and editor-config directories, whose files run code later (a hook, a
+/// `.lattice` config) and do not show in `git status`. An edit matching it
+/// opens a diff even in a trusted chat. `.git` is fenced by a fixed rule as
+/// well, so replacing this list cannot unfence it.
+pub const DEFAULT_REVIEW: &[&str] = &[".git/", ".hg/", ".jj/", ".lattice/"];
+
+impl lattice_config::OptionType for PathPatterns {
     fn parse(s: &str) -> Result<Self, String> {
         let globs: Vec<String> = s
             .split(',')
@@ -68,7 +77,7 @@ impl lattice_config::OptionType for ExcludeGlobs {
             .filter(|g| !g.is_empty())
             .map(str::to_string)
             .collect();
-        super::path_rules::PathRules::validate(&globs).map_err(|e| format!("llm.exclude: {e}"))?;
+        super::path_rules::PathRules::validate(&globs)?;
         Ok(Self(globs))
     }
 
@@ -213,7 +222,13 @@ lattice_config::options! {
     /// `secrets/`. A bare name matches anywhere; one with a `/` is relative to
     /// the project root. Replaces the default list rather than adding to it.
     #[name("llm.exclude")]
-    pub LlmExclude: ExcludeGlobs = ExcludeGlobs::default();
+    pub LlmExclude: PathPatterns = PathPatterns::of(DEFAULT_EXCLUDE);
+
+    /// Files an llm edit always opens a diff for, even in a trusted chat, as
+    /// gitignore patterns. Defaults to `.git/`, `.hg/`, `.jj/`, `.lattice/`;
+    /// a project may add to it. Replaces the default list rather than adding.
+    #[name("llm.review")]
+    pub LlmReview: PathPatterns = PathPatterns::of(DEFAULT_REVIEW);
 
     /// The provider a bare `llm.model` runs on. Optional when only one provider
     /// is configured. Global only.

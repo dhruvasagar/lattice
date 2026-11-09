@@ -115,7 +115,7 @@ const MAX_IGNORE_FILE: u64 = 256 * 1024;
 pub struct ProjectRules {
     pub root: PathBuf,
     pub exclude: PathRules,
-    pub review: Vec<String>,
+    pub review: PathRules,
     pub deny: Vec<String>,
 }
 
@@ -149,28 +149,35 @@ impl ProjectRules {
                 _ => {}
             }
         }
-        exclude.retain(|p| match PathRules::validate(std::slice::from_ref(p)) {
-            Ok(()) => true,
-            Err(e) => {
-                problems.push(format!("llm: the project's exclude list skips {e}"));
-                false
-            }
-        });
-        if exclude.is_empty() && lists.review.is_empty() && lists.deny.is_empty() {
+        let mut review = lists.review.clone();
+        for (list, name) in [(&mut exclude, "exclude"), (&mut review, "review")] {
+            list.retain(|p| match PathRules::validate(std::slice::from_ref(p)) {
+                Ok(()) => true,
+                Err(e) => {
+                    problems.push(format!("llm: the project's {name} list skips {e}"));
+                    false
+                }
+            });
+        }
+        if exclude.is_empty() && review.is_empty() && lists.deny.is_empty() {
             return (None, problems);
         }
-        match PathRules::new(root, &exclude) {
-            Ok(rules) => (
+        // Every pattern was checked alone above, so these compile.
+        match (
+            PathRules::new(root, &exclude),
+            PathRules::new(root, &review),
+        ) {
+            (Ok(exclude), Ok(review)) => (
                 Some(Self {
                     root: root.to_path_buf(),
-                    exclude: rules,
-                    review: lists.review.clone(),
+                    exclude,
+                    review,
                     deny: lists.deny.clone(),
                 }),
                 problems,
             ),
-            Err(e) => {
-                problems.push(format!("llm: the project's exclude list: {e}"));
+            (Err(e), _) | (_, Err(e)) => {
+                problems.push(format!("llm: the project's lists: {e}"));
                 (None, problems)
             }
         }

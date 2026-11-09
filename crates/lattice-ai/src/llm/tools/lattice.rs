@@ -77,6 +77,9 @@ pub struct LatticeTools {
     exclude: ExcludeFn,
     review: Option<Review>,
     key_variables: Option<KeyVariablesFn>,
+    /// `llm.review`: an edit whose path it matches opens a diff even in a
+    /// trusted chat (P.2). `.git` is fenced whether or not this is set.
+    fence: Option<ExcludeFn>,
 }
 
 impl LatticeTools {
@@ -87,7 +90,20 @@ impl LatticeTools {
             exclude,
             review: None,
             key_variables: None,
+            fence: None,
         }
+    }
+
+    /// Fence the paths `fence` names: their edits are always reviewed.
+    pub fn fenced_by(mut self, fence: ExcludeFn) -> Self {
+        self.fence = Some(fence);
+        self
+    }
+
+    /// Whether an edit to `at` is reviewed even in a trusted chat: anything
+    /// under `.git` (a fixed rule), or a path `llm.review` names.
+    fn fenced(&self, at: &Resolved) -> bool {
+        in_git_dir(at) || self.fence.as_ref().is_some_and(|f| f(&at.path).is_some())
     }
 
     /// Withhold these variables from every command `run_command` starts.
@@ -556,7 +572,7 @@ impl LatticeTools {
         let review = self.review.as_ref().ok_or_else(|| {
             ToolError::Refused("edits need a diff review, which is not available here".into())
         })?;
-        let accepted = if ctx.trusted && !in_git_dir(at) {
+        let accepted = if ctx.trusted && !self.fenced(at) {
             if let Some(dropped) = &ctx.on_unreviewed_edit {
                 dropped();
             }
@@ -1144,6 +1160,28 @@ mod tests {
             .unwrap();
         assert!(!found.contains("hunter2"), "{found}");
         assert!(!found.contains(".env"), "{found}");
+    }
+
+    /// P.2: `llm.review` names the version-control and editor-config
+    /// directories by default, and a project's `review` list adds to it as a
+    /// set of its own.
+    #[tokio::test]
+    async fn llm_review_fences_the_config_directories_and_the_projects_additions() {
+        let dir = Scratch::new("review");
+        std::fs::create_dir_all(dir.path().join(".lattice")).unwrap();
+        std::fs::write(
+            dir.path().join(".lattice/llm.toml"),
+            "review = [\"deploy/\"]\n",
+        )
+        .unwrap();
+        let (_, chats) = tools_over(dir.path());
+        chats.reload_project().await;
+        let at = |p: &str| chats.reviewed(&dir.path().join(p));
+        assert_eq!(at(".lattice/config.toml").as_deref(), Some(".lattice/"));
+        assert_eq!(at(".jj/repo/store").as_deref(), Some(".jj/"));
+        assert_eq!(at("vendor/x/.hg/hgrc").as_deref(), Some(".hg/"));
+        assert_eq!(at("deploy/prod.yaml").as_deref(), Some("deploy/ (project)"));
+        assert_eq!(at("src/main.rs"), None);
     }
 
     /// GR.1: a project's `.lattice/llm.toml` and `.aiignore` add excludes the

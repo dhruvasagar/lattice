@@ -238,6 +238,40 @@ mod tests {
         assert_eq!(p.read(".git/hooks/pre-commit"), "");
     }
 
+    /// P.2: `llm.review` fences more than `.git`. Its default names
+    /// `.lattice/` (editor config that runs later), and a project's `review`
+    /// list adds to it; a trusted chat's edit to either still opens a diff.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_trusted_chat_reviews_what_llm_review_names() {
+        for (path, project) in [
+            (".lattice/config.toml", None),
+            ("deploy/prod.yaml", Some("review = [\"deploy/\"]\n")),
+        ] {
+            let (mut a, log, p) = app(vec![(
+                "write_file",
+                json!({"path": path, "content": "x = 1\n"}),
+            )]);
+            if let Some(toml) = project {
+                std::fs::create_dir_all(p.path(".lattice")).unwrap();
+                std::fs::write(p.path(".lattice/llm.toml"), toml).unwrap();
+            }
+            let chat = open_chat(&mut a).await;
+            ctrl(&mut a, 't');
+            let session = chats(&a).for_buffer(chat).unwrap();
+            assert!(session.trusted());
+            chats(&a).submit(&session, "change it".to_string());
+            assert!(
+                settle_woken(&mut a, |a| diffs_open(a) == 1).await,
+                "{path}: no review ({} requests)",
+                log.lock().unwrap().len()
+            );
+            assert_eq!(p.read(path), "", "{path}: nothing before the verdict");
+            submit_ex(&mut a, "diff-reject");
+            second_request(&mut a, &log).await;
+            assert_eq!(p.read(path), "", "{path}");
+        }
+    }
+
     /// The file changed on disk while the diff was open: accepting would
     /// overwrite that change, so nothing is written and the model is told to
     /// read again.

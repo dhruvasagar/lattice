@@ -350,9 +350,12 @@ pub struct MenuHeld {
     pub lines: String,
 }
 
-/// [`LlmChats::exclude_rules_for`]'s cache entry.
-struct CompiledExclude {
-    globs: super::options::ExcludeGlobs,
+/// One global path list, compiled for the root it was compiled against:
+/// rebuilt when either changes, never per check.
+type RulesCache = RwLock<Option<CompiledRules>>;
+
+struct CompiledRules {
+    patterns: super::options::PathPatterns,
     root: std::path::PathBuf,
     rules: Arc<PathRules>,
 }
@@ -364,7 +367,9 @@ pub struct LlmChats {
     config: RwLock<LlmConfig>,
     /// `llm.exclude` compiled against the tools root, with the list and root
     /// it was compiled from: rebuilt when either changes, never per check.
-    exclude_rules: RwLock<Option<CompiledExclude>>,
+    exclude_rules: RulesCache,
+    /// `llm.review`, likewise.
+    review_rules: RulesCache,
     /// The global registry, where `:set llm.*` and the config file's scalar
     /// settings land. Absent in tests that run without a host.
     registry: RwLock<Option<Arc<ConfigRegistry>>>,
@@ -449,6 +454,7 @@ impl LlmChats {
             bus,
             config: RwLock::new(config),
             exclude_rules: RwLock::new(None),
+            review_rules: RwLock::new(None),
             registry: RwLock::new(None),
             sessions: RwLock::new(HashMap::new()),
             read_only: RwLock::new(Default::default()),
@@ -861,23 +867,59 @@ impl LlmChats {
     /// directory, must not get past a glob that names the target. One
     /// `canonicalize` per user action, not per frame.
     pub fn excluded(&self, path: &std::path::Path) -> Option<String> {
-        let reg = self.registry.read().unwrap_or_else(|e| e.into_inner());
-        let globs = reg
+        let patterns =
+            self.global_patterns::<super::options::LlmExclude>(super::options::DEFAULT_EXCLUDE);
+        self.match_lists(path, "llm.exclude", patterns, &self.exclude_rules, |p| {
+            &p.exclude
+        })
+    }
+
+    /// The `llm.review` pattern `path` matches, if any: an edit to it opens a
+    /// diff even in a trusted chat (P.2). Global and project sets, as for
+    /// [`Self::excluded`], and checked through links the same way.
+    pub fn reviewed(&self, path: &std::path::Path) -> Option<String> {
+        let patterns =
+            self.global_patterns::<super::options::LlmReview>(super::options::DEFAULT_REVIEW);
+        self.match_lists(path, "llm.review", patterns, &self.review_rules, |p| {
+            &p.review
+        })
+    }
+
+    /// A global path list's value, or `default` without a registry (a bare
+    /// test).
+    fn global_patterns<O>(&self, default: &[&str]) -> super::options::PathPatterns
+    where
+        O: lattice_config::OptionDecl<Value = super::options::PathPatterns>,
+    {
+        self.registry
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
             .as_ref()
-            .and_then(|r| r.get_typed::<super::options::LlmExclude>())
+            .and_then(|r| r.get_typed::<O>())
             .map(|v| (*v).clone())
-            .unwrap_or_default();
-        drop(reg);
+            .unwrap_or_else(|| super::options::PathPatterns::of(default))
+    }
+
+    /// `path` against a global list (compiled through `cache`) and then the
+    /// project's own set for it (`project`), as given and as it really is.
+    fn match_lists(
+        &self,
+        path: &std::path::Path,
+        name: &str,
+        patterns: super::options::PathPatterns,
+        cache: &RulesCache,
+        project: impl Fn(&ProjectRules) -> &PathRules,
+    ) -> Option<String> {
         // A list that will not compile (it was validated when set, so only a
-        // hand-built registry can hold one) refuses every file: the safe side.
-        let rules = match self.exclude_rules_for(globs) {
+        // hand-built registry can hold one) matches every file: the safe side.
+        let rules = match self.compiled(cache, patterns) {
             Ok(rules) => rules,
-            Err(e) => return Some(format!("llm.exclude does not compile: {e}")),
+            Err(e) => return Some(format!("{name} does not compile: {e}")),
         };
         // The project's additions, a set of their own: its `!pattern` cannot
-        // re-include what the global list excludes. Only for the root they
-        // were read under; a root change refreshes them.
-        let project = self
+        // re-include what the global list names. Only for the root they were
+        // read under; a root change refreshes them.
+        let added = self
             .project_rules
             .read()
             .unwrap_or_else(|e| e.into_inner())
@@ -887,9 +929,9 @@ impl LlmChats {
             if let Some(pattern) = rules.matching(p) {
                 return Some(pattern.to_string());
             }
-            project
+            added
                 .as_ref()
-                .and_then(|r| r.exclude.matching(p))
+                .and_then(|r| project(r).matching(p))
                 .map(|pattern| format!("{pattern} (project)"))
         };
         if let Some(why) = check(path) {
@@ -907,28 +949,25 @@ impl LlmChats {
             .clone()
     }
 
-    /// `globs` compiled against the tools root, from the cache when neither
+    /// `patterns` compiled against the tools root, from `cache` when neither
     /// changed.
-    fn exclude_rules_for(
+    fn compiled(
         &self,
-        globs: super::options::ExcludeGlobs,
+        cache: &RulesCache,
+        patterns: super::options::PathPatterns,
     ) -> Result<Arc<PathRules>, String> {
         let root = self.tools_root();
-        if let Some(c) = self
-            .exclude_rules
+        if let Some(c) = cache
             .read()
             .unwrap_or_else(|e| e.into_inner())
             .as_ref()
-            .filter(|c| c.globs == globs && c.root == root)
+            .filter(|c| c.patterns == patterns && c.root == root)
         {
             return Ok(c.rules.clone());
         }
-        let rules = Arc::new(PathRules::new(&root, &globs.0)?);
-        *self
-            .exclude_rules
-            .write()
-            .unwrap_or_else(|e| e.into_inner()) = Some(CompiledExclude {
-            globs,
+        let rules = Arc::new(PathRules::new(&root, &patterns.0)?);
+        *cache.write().unwrap_or_else(|e| e.into_inner()) = Some(CompiledRules {
+            patterns,
             root,
             rules: rules.clone(),
         });

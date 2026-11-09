@@ -241,7 +241,8 @@ in the same line, and `:llm-requests` shows `awaiting review` meanwhile.
 **`<C-t>`** in the chat trusts its edits: they apply without a diff,
 and the headerline says `edits trusted` until you press `<C-t>` again or
 close the chat. It is never saved and never carried to another chat. An
-edit under `.git` still opens a diff: a hook there runs later, and `git
+edit to what `llm.review` names still opens a diff: by default `.git`,
+`.hg`, `.jj` and `.lattice`, where a hook or config runs later and `git
 status` would never show it.
 Closing a chat closes any diff it still has open.
 

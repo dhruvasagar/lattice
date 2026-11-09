@@ -449,8 +449,11 @@ still has open.
 - It covers edits only. Commands still ask, and an edit applied without review
   drops the commands allowed for the chat, so each asks again: what `cargo test`
   runs changes when `build.rs` or a test does.
-- An edit under `.git` still opens a diff, however the path is written. A hook there runs
-  later, and `git status` would never show it.
+- An edit to a path `llm.review` names still opens a diff, however the path is written.
+  The default is `.git/`, `.hg/`, `.jj/` and `.lattice/`: a hook or an editor config there
+  runs later, and `git status` would never show it. Add your own (`.envrc`,
+  `.github/workflows/`) with `:set llm.review`, or in a project's `.lattice/llm.toml`
+  (`review = ["deploy/"]`), which adds to yours. `.git` is reviewed whatever the list says.
 
 ### `lattice.exec`
 
@@ -611,6 +614,7 @@ asking. `@unknown` is just text.
 | `llm.profile` | The profile in use |
 | `llm.default_profile`, `llm.default_provider` | Global only |
 | `llm.exclude` | Gitignore patterns never sent; global only |
+| `llm.review` | Gitignore patterns whose edits always open a diff; global only |
 | `llm.tool_rounds` | Rounds of tool calls one request may run; global only |
 | `llm.prefix` | The keys every llm chord starts with; global only |
 
@@ -714,7 +718,7 @@ list, so copy the default to add to it; an empty list excludes nothing.
 
 | Action | Gate |
 |---|---|
-| Model edits a file | A diff you accept or reject. `<C-t>` skips it for one chat, except under `.git` |
+| Model edits a file | A diff you accept or reject. `<C-t>` skips it for one chat, except for what `llm.review` names |
 | Model runs a command | Asks, showing the whole command. Allow once, for this chat (exact command; dropped by an unreviewed edit), or deny |
 | MCP server tool | Asks unless named in that server's `allow`. Allow once, for this chat (the whole tool, any arguments), or deny |
 | Rewrite | A diff, never a direct write |

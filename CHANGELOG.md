@@ -134,6 +134,9 @@
   (`:set messages.filter=info,rmcp=debug` to see it).
 
 ### Fixed
+- **`:set` of a structured option no longer echoes malformed text.** Its
+  TOML error now names only the line and column, as the config loader's
+  does, so a token typed into it is not repeated back or logged.
 - **An org export of an LLM chat can't be tricked into live links.** A
   `~` inside inline code no longer ends the code early and frees the
   link after it; plain (unbracketed) `elisp:`/`shell:` links stay text;

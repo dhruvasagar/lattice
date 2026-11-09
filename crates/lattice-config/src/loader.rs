@@ -431,7 +431,8 @@ pub fn describe_toml_error(text: &str, e: &toml::de::Error) -> String {
     let Some(span) = e.span() else {
         return message;
     };
-    let before = &text[..span.start.min(text.len())];
+    // A span off a character boundary would panic a slice; count what can be.
+    let before = text.get(..span.start.min(text.len())).unwrap_or("");
     let line = before.matches('\n').count() + 1;
     let column = before.rsplit('\n').next().map_or(0, |l| l.chars().count()) + 1;
     format!("line {line}, column {column}: {message}")
@@ -1883,5 +1884,10 @@ mod tests {
         let said = describe_toml_error(text, &e);
         assert!(!said.contains("sk-secret-123"), "{said}");
         assert!(said.starts_with("line 2, column "), "{said}");
+        // Text the span does not fit (a span past a multi-byte character's
+        // first byte) still describes, not panics.
+        let e = "a".parse::<toml::Table>().expect_err("malformed");
+        assert_eq!(e.span().map(|s| s.start), Some(1));
+        assert!(describe_toml_error("é", &e).starts_with("line 1, column 1"));
     }
 }

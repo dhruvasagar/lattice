@@ -48,10 +48,19 @@ pub fn register_claude_code_ex_commands(
             accepts_range: false,
             parse_args: Arc::new(parse_no_args),
             apply: Arc::new(move |_ctx| {
-                start_server.start();
-                Ok(Effect::Echo {
-                    level: EchoLevel::Info,
-                    text: "claude-code: starting IDE server".to_string(),
+                // The reason is logged at debug where it is known (bind,
+                // socket option, token); say which way it went here.
+                Ok(match start_server.start() {
+                    Some(port) => Effect::Echo {
+                        level: EchoLevel::Info,
+                        text: format!("claude-code: IDE server on port {port}"),
+                    },
+                    None => Effect::Echo {
+                        level: EchoLevel::Error,
+                        text: "claude-code: failed to start the IDE server \
+                               (run with --log-level debug for why)"
+                            .to_string(),
+                    },
                 })
             }),
             args_schema: vec![],
@@ -272,6 +281,37 @@ mod tests {
             syntax: None,
             cancel: CancellationToken::new(),
         }
+    }
+
+    /// `:claude-code-start` says the server is up only once it is, naming
+    /// the port an agent connects to.
+    #[tokio::test]
+    async fn claude_code_start_names_the_port_it_bound() {
+        let mut registry = CommandRegistry::new();
+        let handle = server::spawn(
+            ServerConfig {
+                workspace_folders: vec![],
+                lock_dir: std::env::temp_dir(),
+            },
+            Arc::new(EventBus::new()),
+            &tokio::runtime::Handle::current(),
+        );
+        register_claude_code_ex_commands(&mut registry, handle.clone());
+        let id = registry.id_by_name("claude-code-start").unwrap();
+        let spec = registry.ex_command_spec(id).unwrap();
+        let port = match (spec.apply)(&empty_ctx()).unwrap() {
+            Effect::Echo {
+                level: EchoLevel::Info,
+                text,
+            } => text
+                .rsplit(' ')
+                .next()
+                .and_then(|p| p.parse::<u16>().ok())
+                .unwrap_or_else(|| panic!("no port in {text:?}")),
+            other => panic!("expected an info echo, got {other:?}"),
+        };
+        assert_eq!(handle.start(), Some(port), "the port the server holds");
+        handle.stop();
     }
 
     /// I5.1: `:claude` starts the IDE server and emits an `Effect::SpawnTerminal`

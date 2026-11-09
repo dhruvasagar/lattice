@@ -134,6 +134,10 @@
   (`:set messages.filter=info,rmcp=debug` to see it).
 
 ### Fixed
+- **`:claude-code-start` says when the IDE server failed to start.** It
+  always reported "starting IDE server", even when the server could not
+  bind; it now names the port on success and reports a failure as an
+  error.
 - **A chat's tool and reasoning folds survive its mode being
   re-activated.** When a chat or agent conversation buffer's mode was
   activated again, the old activation's cleanup, running late, removed

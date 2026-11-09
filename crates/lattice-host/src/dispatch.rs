@@ -5872,7 +5872,18 @@ impl Editor {
             self.activate_buffer(buf);
         }
         // Drop the throwaway baseline/proposed buffers from the registry,
-        // with the review headerline on the proposed side.
+        // with the review headerline on the proposed side, and their
+        // intra-line refinement: it is dropped only when a buffer is asked
+        // about again, and a removed buffer never is, so each review would
+        // otherwise leave its hunks and refined lines behind.
+        let mut refine = self
+            .diff_refine_cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        for buf in &info.diff_buffers {
+            refine.remove(buf);
+        }
+        drop(refine);
         for buf in &info.diff_buffers {
             self.virtual_row_providers
                 .unregister(*buf, REVIEW_HEADERLINE_PROVIDER_ID);
@@ -50951,6 +50962,14 @@ mod tests {
         // A buffer in no diff has none, and leaves nothing cached.
         let outside = editor.pane_tree.leaves()[0].buffer_id;
         assert!(editor.diff_refinement_for(outside).is_none());
+        // Ending the review takes both sides' refinement with it: a removed
+        // buffer is never asked about again, so nothing else would.
+        editor.do_diff_reject();
+        let cache = editor
+            .diff_refine_cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        assert!(!cache.contains_key(&proposed) && !cache.contains_key(&baseline));
     }
 
     /// A review diff says what it is and what ends it: a headerline on

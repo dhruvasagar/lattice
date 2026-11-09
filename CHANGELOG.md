@@ -134,6 +134,10 @@
   (`:set messages.filter=info,rmcp=debug` to see it).
 
 ### Fixed
+- **Ending a review diff frees its changed-word marks.** Each
+  `openDiff` review (Claude Code, an LLM edit, a rewrite) kept its hunks
+  and refined lines in memory after `:diff-accept` / `:diff-reject`
+  closed it.
 - **Closing the which-key band or a completion-docs popup ends its
   modes.** Their modes' cleanup ran only when the editor exited, as
   closing a popup's did before the earlier fix, and closing a popup left

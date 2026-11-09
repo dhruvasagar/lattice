@@ -134,6 +134,9 @@
   (`:set messages.filter=info,rmcp=debug` to see it).
 
 ### Fixed
+- **Text sent into a plain (non-markdown) transcript folds at 8 lines,
+  as in markdown.** It stayed open up to 10 lines, because the count
+  allowed for code-fence lines that only a markdown transcript has.
 - **Claude Code knows the open file as soon as it connects.** An agent
   started while you stayed in one buffer was told the active file only
   when you switched to another; it is now sent the active file and

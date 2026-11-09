@@ -186,8 +186,13 @@ fn folds_of_kind(
             let closed = match s.kind {
                 ConversationFoldKind::ToolCall => opts.tools != FoldDisplay::Open,
                 ConversationFoldKind::Reasoning => opts.reasoning != FoldDisplay::Open,
-                // The head and the two fence lines are not text.
-                ConversationFoldKind::Source => s.end_line - s.start_line > SOURCE_OPEN_LINES + 2,
+                // The span runs from the head line; in markdown the two
+                // fence lines are not text either. Plain text is indented,
+                // with no fences.
+                ConversationFoldKind::Source => {
+                    let fences = if opts.markdown { 2 } else { 0 };
+                    s.end_line - s.start_line > SOURCE_OPEN_LINES + fences
+                }
             };
             Fold {
                 start_line: s.start_line,
@@ -317,7 +322,7 @@ mod tests {
     fn a_source_block_folds_closed_only_when_long() {
         use crate::conversation::model::SourceLink;
         use crate::conversation::{ProjectionOptions, ProjectionSource};
-        let folds_for = |lines: usize| {
+        let folds_for = |lines: usize, markdown: bool| {
             let text = vec!["x"; lines].join("\n");
             let mut conv = Conversation::default();
             conv.push_user_source(
@@ -337,18 +342,21 @@ mod tests {
                 *c = conv.clone()
             });
             let opts = ProjectionOptions {
-                markdown: true,
+                markdown,
                 ..ProjectionOptions::default()
             };
             ToolCallFoldSource::new(store, BufferId(1))
                 .with_options(ProjectionSource::fixed(opts))
                 .compute_folds()
         };
-        let short = folds_for(SOURCE_OPEN_LINES as usize);
-        assert_eq!(short.len(), 1);
-        assert!(!short[0].closed, "{short:?}");
-        let long = folds_for(SOURCE_OPEN_LINES as usize + 1);
-        assert!(long[0].closed, "{long:?}");
+        // The same threshold with and without markdown's fence lines.
+        for markdown in [true, false] {
+            let short = folds_for(SOURCE_OPEN_LINES as usize, markdown);
+            assert_eq!(short.len(), 1);
+            assert!(!short[0].closed, "markdown={markdown}: {short:?}");
+            let long = folds_for(SOURCE_OPEN_LINES as usize + 1, markdown);
+            assert!(long[0].closed, "markdown={markdown}: {long:?}");
+        }
     }
 
     #[test]

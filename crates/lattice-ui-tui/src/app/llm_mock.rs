@@ -50,7 +50,7 @@ fn sse(events: &[Value]) -> String {
     out
 }
 
-/// Serve: the first reply calls lattice's `calls` (tool name, arguments), in
+/// Serve: the first reply (with any `calls`; a plain "done" without) calls lattice's `calls` (tool name, arguments), in
 /// order; every later reply says "done".
 pub(super) fn serve(calls: Vec<(&'static str, Value)>) -> (std::net::SocketAddr, Log) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -75,7 +75,8 @@ pub(super) fn serve(calls: Vec<(&'static str, Value)>) -> (std::net::SocketAddr,
                     g.push(body_of(&mut s).unwrap_or_default());
                     g.len()
                 };
-                let reply = if n == 1 {
+                // No calls: a plain answer from the start.
+                let reply = if n == 1 && !calls.is_empty() {
                     sse(&[
                         json!({"choices":[{"index":0,"delta":{"tool_calls":calls}}]}),
                         json!({"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}),

@@ -132,9 +132,9 @@ impl Mode for LlmRequestsMode {
             let Some(handle) = store.handle_for(buffer) else {
                 return Ok(None);
             };
-            let Ok(runtime) = tokio::runtime::Handle::try_current() else {
-                return Ok(None);
-            };
+            // The layer's runtime, not the editor thread's (see
+            // `LlmInline::runtime`).
+            let runtime = self.inline.runtime().clone();
             // Subscribed before the first paint, so a change between the two
             // is not missed: at worst it repaints the same text, which is
             // skipped.

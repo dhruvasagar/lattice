@@ -73,6 +73,15 @@ pub struct LlmInline {
 pub type LlmInlineHandle = Arc<LlmInline>;
 
 impl LlmInline {
+    /// The multi-thread runtime the layer's background work runs on.
+    ///
+    /// Not `Handle::try_current()` inside a mode's `on_activate`: activation is
+    /// polled on the editor thread first, so that returns the editor's
+    /// `current_thread` runtime, and work spawned there runs beside keystrokes.
+    pub fn runtime(&self) -> &Handle {
+        &self.runtime
+    }
+
     pub fn new(runtime: Handle) -> Self {
         Self {
             runtime,

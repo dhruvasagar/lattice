@@ -216,9 +216,10 @@ impl Mode for LlmChatMode {
             else {
                 return Ok(None);
             };
-            let Ok(runtime) = tokio::runtime::Handle::try_current() else {
-                return Ok(None);
-            };
+            // The layer's runtime: activation is polled on the editor thread,
+            // whose own runtime would run the transcript drain (O(transcript)
+            // per burst) beside keystrokes.
+            let runtime = self.chats.runtime().clone();
             // The chat is made by `:llm` before the buffer opens, keyed by the
             // buffer's name. No chat means this is not a buffer `:llm` made.
             let Some((session, generation)) = self.chats.bind(&name, buffer_id) else {

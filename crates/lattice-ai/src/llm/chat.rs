@@ -1504,6 +1504,12 @@ impl LlmChats {
     }
 
     /// The request registry, for listings.
+    /// The multi-thread runtime the layer's background work runs on (see
+    /// [`super::sink::LlmInline::runtime`] for why not `try_current`).
+    pub fn runtime(&self) -> &Handle {
+        &self.runtime
+    }
+
     pub fn requests(&self) -> &RequestRegistryHandle {
         &self.requests
     }

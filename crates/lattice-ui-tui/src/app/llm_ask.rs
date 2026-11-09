@@ -122,6 +122,38 @@ mod tests {
         assert_eq!(a.editor.active_buffer_id(), source, "focus stays");
     }
 
+    /// The transcript drain runs on the layer's runtime, not the editor's.
+    /// The editor here runs on this test's `current_thread` runtime, as the
+    /// real editor actor does; a drain spawned there would stall while the
+    /// thread is busy. Blocking it without yielding, the reply still lands.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_chat_reply_lands_while_the_editor_thread_is_busy() {
+        let (mut a, log) = app_with_model("scratch\n");
+        submit_ex(&mut a, "llm");
+        let chat = a.editor.active_buffer_id();
+        assert!(settle(&mut a, |a| chats(a).for_buffer(chat).is_some()).await);
+        let session = chats(&a).for_buffer(chat).unwrap();
+        chats(&a).submit(&session, "hi".to_string());
+
+        let text = |a: &App| {
+            a.editor
+                .buffers
+                .document_handle(chat)
+                .map(|h| h.text())
+                .unwrap_or_default()
+        };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !text(&a).contains("done") && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(
+            text(&a).contains("done"),
+            "the reply waited for the editor thread ({} sent): {}",
+            log.lock().unwrap().len(),
+            text(&a)
+        );
+    }
+
     /// In a chat, `:llm-send` sends its prompt, as `<CR>` does.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn send_in_a_chat_sends_its_prompt() {

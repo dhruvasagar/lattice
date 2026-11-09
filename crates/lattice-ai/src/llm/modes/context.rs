@@ -66,7 +66,7 @@ fn refresh(
     let buffer = lattice_core::BufferId(ctx.buffer_id().0 as u32);
     let store = ctx.service::<BufferStoreHandle>()?;
     let handle: Arc<dyn Document> = store.handle_for(buffer)?;
-    let runtime = tokio::runtime::Handle::try_current().ok()?;
+    let runtime = inline.runtime().clone();
     // Subscribed before the first paint, so a change between the two is not
     // missed: at worst it repaints the same text, which is skipped.
     let mut rx = watch.subscribe();

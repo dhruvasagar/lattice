@@ -849,6 +849,92 @@ Every finding is verified before it is reported.
 - 📝 Fix what the reviews find, one commit each, then a final docs gate.
 - 📝 Push; CI runs the full suite.
 
+#### Release review findings (2026-11-09, each verified in the code before listing)
+
+Fix now (clear defects, one commit each):
+
+- ✅ R.1 **Chat transcript work runs on the editor thread** (paramount #1). `on_activate` is
+  polled on the actor first, so `Handle::try_current()` there is the editor's
+  `current_thread` runtime, and the transcript drain (O(transcript) per burst) runs beside
+  keystrokes. The same pattern is in the context, requests and MCP listings. Use the
+  multi-thread runtime handle. Fixed: `LlmChats::runtime` / `LlmInline::runtime`; pinned by
+  `a_chat_reply_lands_while_the_editor_thread_is_busy` (fails on the old code). The ACP
+  conversation mode has the same pre-existing pattern (`acp/conversation_mode.rs`), outside
+  this layer.
+- 📝 R.2 **Chat streaming has no frame pacing** (design §9 promises at most one write per
+  frame). The drain coalesces only what is already queued.
+- 📝 R.3 **Operators, undo and redo do not record the seen text version**, so the next key's
+  rebase over streamed appends is skipped (LL.13a reopened after any `dd`). Also: the map
+  is never cleared when a buffer is removed.
+- 📝 R.4 **`llm.exclude` globs containing `/` never match** (globset anchors at the start of
+  the absolute path), so `secrets/*` excludes nothing.
+- 📝 R.5 **The command popup's invisible-character list is incomplete**: variation selectors,
+  tag characters, Hangul fillers, U+034F, U+2800 and the Unicode spaces pass through
+  unescaped and uncollapsed.
+- 📝 R.6 **A busy hidden session can be evicted** past `UNBOUND_CAP`, so quitting stops
+  warning about it and `:llm-last` cannot reopen it.
+- 📝 R.7 **`read_file` reads a FIFO or huge file whole** before its caps, hanging a blocking
+  thread that the cancel token cannot stop.
+- 📝 R.8 **A dismissed `<leader>aR` menu keeps its held rewrite** (and its tracked range) until
+  the next hold.
+- 📝 R.9 **Docs**: CHANGELOG still says `R` requests; the design chord table omits `C i q L k`;
+  the docs say nothing a command started outlives it, which `setsid` defeats.
+- 📝 R.10 **Test gaps**: `llm.exclude` on `read_file`/`list_directory`/`search`; symlink
+  confinement end to end; `exclude` refused from a project config; the `run_command`
+  timeout; `:llm-send` on an empty buffer; the `apply_if_unchanged` race (needs a seam);
+  rewrite-accept and `:llm-send` in the peer-conformance suite.
+
+Security policy (Dhruva decided 2026-11-09, the recommended option each time):
+
+- 📝 P.1 **Strip the key variables.** Child processes (`run_command`, stdio MCP servers) inherit the editor's whole
+  environment, including the variable `api_key_env` names. An allowed `env` sends the key
+  to the model and into saved sessions and exports. Remove every `api_key_env` variable
+  the config names from children; an MCP server's own `env` may still pass one.
+- 📝 P.2 **Fence `.git`, `.hg`, `.jj` and `.lattice`.** A trusted chat (`<C-t>`) writes everything but `.git` unreviewed, including
+  `.lattice/llm.toml`, `.lattice/config.toml`, `.envrc`, `.cargo/config.toml`, CI
+  workflows and `.hg`/`.jj`.
+- 📝 P.3 **Keep per-tool, and say so** in the answer's label and the docs. "Allow for this chat" on an MCP tool covers every later call with any arguments
+  (`run_command` is exact-arguments).
+- 📝 P.4 **Extend both**: add the globs, and `read_file` refuses `.git/**`. The default exclude list lacks `.npmrc`, `.pgpass`, `credentials*`, `.aws/**`,
+  `*.p12`, `*.pfx`; `read_file` can read `.git/config`.
+
+Layered safety lists, and the standards they follow (Dhruva decided 2026-11-09). These replace
+P.2 and P.4's hard-coded lists. No open standard exists for agent permissions; AGENTS.md
+(Agentic AI Foundation, Linux Foundation) is the one for instructions, and gitignore syntax
+is the shared convention of every vendor's ignore file.
+
+- 📝 GR.1 **Layering**: `exclude`, `review` (always diff, even when trusted; default `.git`,
+  `.hg`, `.jj`, `.lattice`), `deny` and `allow` are each settable in the global
+  `~/.config/lattice` config and the project `./.lattice`. **The project only narrows:** its
+  `exclude`, `review` and `deny` are added to the global lists, and it can neither remove an
+  entry nor allow a command. A project `allow` is refused and named in `*messages*`.
+- 📝 GR.2 **`llm.exclude` uses gitignore semantics** (relative to the project root, a leading
+  `/` anchors, a bare name matches at any depth; this fixes R.4), and a project's
+  `.aiexclude`, `.aiignore` and `.agentignore` are read as additional excludes.
+- 📝 GR.3 **`allow` / `deny` rules** use the shape Claude Code and OpenCode share:
+  `run_command(git push *)`, `read_file(.env)`, `mcp_server.tool(...)`; deny beats ask
+  beats allow. The chat-scoped "allow for this chat" stays as it is.
+- 📝 GR.4 **AGENTS.md** joins the system prompt as instructions (nearest file wins), trusted as
+  a project's system prompt is: it instructs, never widens tools.
+- The default exclude list gains `.npmrc`, `.pgpass`, `credentials*`, `.aws/**`, `*.p12` and
+  `*.pfx`, and `read_file` refuses `.git/**` (P.4).
+
+Verified and accepted (no change):
+
+- `Document::append_to_tracked` is a trait method with one production caller. It is a write
+  primitive that must resolve its range inside the actor's turn, like `apply_edit_batch`.
+  That makes it substrate, not mode data.
+- The host names `llm.providers`/`llm.profiles` as structural config prefixes, as it already
+  does for `lsp` and `plugin`. A registry-driven list would retire the pattern; that is not
+  specific to this branch.
+- `DisplaySyntheticBuffer` has no WIT mirror; documented in its doc comment.
+- Hard links and a TOCTOU between resolve and open need a concurrent process or an
+  approved command; a plain `http://` `base_url` comes only from the user's own config;
+  the session checksum is unkeyed by design (documented) and the trust table bounds a
+  forged file; a project-chosen model can only name the user's own providers (logged).
+- Rejected: "the trusted-edit test passes without the fix". It answers "for this chat"
+  (`answer(2)`) before the trusted edit, and it was shown failing without the fix.
+
 ### 4. Found outside the branch (not LLM work; Dhruva, 2026-11-09: fix on this branch)
 
 - ✅ Nothing publishes `Event::DocumentClosed` in production, so the multibuffer,

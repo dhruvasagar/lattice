@@ -134,6 +134,9 @@
   (`:set messages.filter=info,rmcp=debug` to see it).
 
 ### Fixed
+- **LLM streams whose lines end in a bare carriage return work.** The
+  SSE reader only split on line feeds, so a server ending lines with
+  `\r` alone (allowed by the spec) stalled until the idle timeout.
 - **An LLM answer cut short says so wherever it goes.** A reply the
   provider stopped early (Gemini's safety stops, a refusal, a content
   filter, the output token limit) was noted in a chat but handed to a

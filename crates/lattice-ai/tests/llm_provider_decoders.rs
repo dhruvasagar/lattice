@@ -527,3 +527,27 @@ fn gemini_unknown_chunks_are_skipped_and_other_finishes_are_named() {
         vec![StreamEvent::Done(StopReason::Other("safety".into()))]
     );
 }
+
+/// Lines may end in a bare `\r`, as the SSE spec allows; a `\r\n` split
+/// across chunks is still one line ending, not an empty line between.
+#[test]
+fn sse_lines_may_end_in_a_bare_cr_or_a_split_crlf() {
+    let body = "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\r\r\
+                data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\r\r\
+                data: [DONE]\r\r";
+    let ev = run(&openai(), body);
+    assert_eq!(ev.first(), Some(&StreamEvent::Text("hi".into())));
+    assert_eq!(ev.last(), Some(&StreamEvent::Done(StopReason::EndTurn)));
+
+    let mut d = openai().decoder();
+    let mut ev = d.push(b"data: {\"choices\":[{\"delta\":{\"content\":\"a\"}}]}\r");
+    ev.extend(d.push(b"\n\r\ndata: {\"choices\":[{\"delta\":{\"content\":\"b\"}}]}\r\n\r\n"));
+    let texts: Vec<_> = ev
+        .iter()
+        .filter_map(|e| match e {
+            StreamEvent::Text(t) => Some(t.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(texts, ["a", "b"]);
+}

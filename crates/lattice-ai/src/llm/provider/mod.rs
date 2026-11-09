@@ -40,9 +40,11 @@ pub(crate) struct SseEvent {
     pub data: String,
 }
 
-/// Incremental SSE parser. Lines end at an ASCII `\n`, which never occurs inside
-/// a multi-byte UTF-8 sequence, so decoding whole lines is safe however the
-/// network chunked the bytes.
+/// Incremental SSE parser. Lines end at `\r\n`, `\n` or a bare `\r`, as the
+/// SSE spec has it; both bytes are ASCII and never occur inside a multi-byte
+/// UTF-8 sequence, so decoding whole lines is safe however the network
+/// chunked the bytes. A `\r` that ends a chunk waits for the next, which may
+/// open with the `\n` of the same `\r\n`.
 #[derive(Default)]
 pub(crate) struct SseParser {
     buf: Vec<u8>,
@@ -65,10 +67,19 @@ impl SseParser {
         self.buf.extend_from_slice(bytes);
         let mut out = Vec::new();
         let mut start = 0;
-        while let Some(rel) = self.buf[start..].iter().position(|b| *b == b'\n') {
+        while let Some(rel) = self.buf[start..]
+            .iter()
+            .position(|b| *b == b'\n' || *b == b'\r')
+        {
             let end = start + rel;
+            let next = match (self.buf[end], self.buf.get(end + 1)) {
+                (b'\r', Some(b'\n')) => end + 2,
+                // A lone `\r` last in the buffer: wait to see what follows.
+                (b'\r', None) => break,
+                _ => end + 1,
+            };
             let line = self.buf[start..end].to_vec();
-            start = end + 1;
+            start = next;
             self.line(&line, &mut out);
         }
         self.buf.drain(..start);

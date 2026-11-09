@@ -48,6 +48,7 @@ on your machine, so it needs Rust and the `wasm32-wasip2` target —
 | **Git**               | A magit port — status, stage/unstage by hunk, commit, rebase, blame, log, branches, stashes                   |
 | **Extensibility**     | WASM Component Model plugin host; config is Rust compiled to WASM                                             |
 | **Two renderers**     | A GPU window by default; the terminal with `--tui`, and automatically over SSH                                |
+| **Language models**   | Anthropic, Gemini or any OpenAI-compatible server (local included), called directly: chat in a buffer, ask with a vim operator, every edit a diff |
 | **AI agents**         | Claude Code over MCP; opencode's own TUI in a terminal buffer, or an ACP conversation buffer with diff review |
 
 ## See it
@@ -62,6 +63,29 @@ on your machine, so it needs Rust and the `wasm32-wasip2` target —
 <td width="50%"><a href="./assets/media/screenshots/two-renderers.png"><img src="./assets/media/screenshots/two-renderers.png" alt="The same file open side by side in the terminal renderer and the GPU-rendered window" width="100%"></a><br><sub><b>Two first-class renderers.</b> The same core behind a terminal and a GPU window. Neither is the fallback.</sub></td>
 </tr>
 </table>
+
+## Language models, in the grammar
+
+Lattice calls a model's HTTP API itself — Anthropic, Gemini, or any
+OpenAI-compatible server, a local one included. There is no agent process in
+between, so the request is yours: `:llm-inspect` shows exactly what would be
+sent, and the model, system prompt, context and tools are settings you change
+per buffer.
+
+- **Asking is an operator.** `<leader>aaip` asks about a paragraph,
+  `<leader>aa` in Visual about the selection, from any buffer — a compiler
+  error, a terminal, a search result. The answer opens in a chat beside you,
+  streams under the text, goes to a register, or to the echo area.
+- **Every surface is a buffer.** The chat, the running requests, the attached
+  context, the MCP servers. Search, yank and split them like anything else.
+- **Nothing changes unseen.** A model's edit, or a rewrite, is a diff you
+  accept or reject; a shell command asks first, showing all of it.
+- **Keys never leak.** Not to logs, `:llm-inspect`, saved sessions, exports or
+  error text. `llm.exclude` keeps files like `.env` from ever being sent.
+- **Nothing blocks typing.** Requests run off the UI thread; replies stream.
+
+Tools (read, edit, run) and external MCP servers are opt-in. The whole story:
+[the language models guide](https://dhruvasagar.github.io/lattice/docs/llm/llm-guide/).
 
 ## Org-mode, and what a plugin can be
 

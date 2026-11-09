@@ -1,7 +1,8 @@
 # The LLM layer — models as a capability of every buffer
 
-> **Status: 📝 design, awaiting review.** Nothing here is implemented. Substrate
-> findings are verified against source; §11 names what only building can settle.
+> **Status: ✅ built** (LL.1–LL.24; LL.23 dropped). Two entry points below are designed
+> but not built: `:llm-send` / `<leader>as` and `<leader>aR` (marked 📝). The user guide is
+> [`../../user/llm-guide.md`](../../user/llm-guide.md).
 > Slice sequencing: [`../operations/slice-plans/llm-layer.md`](../operations/slice-plans/llm-layer.md).
 >
 > **Siblings:** [`agent-integration.md`](agent-integration.md) (the `EditorAccess`
@@ -41,7 +42,7 @@ The entry points differ only in their defaults.
 |---|---|---|
 | Have a conversation | `:llm [profile]` | New chat buffer |
 | Ask about text | ask operator + motion, or Visual | New dedicated buffer |
-| Send up to the cursor | `:llm-send` | New dedicated buffer; inside a chat, that chat |
+| Send up to the cursor 📝 | `:llm-send` (not built) | New dedicated buffer; inside a chat, that chat |
 | Change text | rewrite operator + motion, then an instruction | Diff review, never a direct write |
 | Script or bind it | `:'<,'>llm-ask explain this` | As ask |
 | Have it work on code | `:llm coding` | Chat with tools on |
@@ -56,9 +57,9 @@ Provisional default chords, on an `llm-mode` minor active on every document:
 |---|---|
 | `<leader>aa{motion}` | Ask |
 | `<leader>ar{motion}` | Rewrite |
-| `<leader>aA{motion}`, `<leader>aR{motion}` | The same, opening the menu first |
+| `<leader>aA{motion}`, `<leader>aR{motion}` 📝 | The same, opening the menu first (`aR` not built) |
 | `<leader>ac{motion}` | Add to context |
-| `<leader>as` | Send up to the cursor |
+| `<leader>as` 📝 | Send up to the cursor (not built) |
 | `<leader>am` | Menu |
 | `<leader>al` | Open a chat |
 

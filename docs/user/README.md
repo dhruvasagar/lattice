@@ -172,6 +172,7 @@ same surface).
 | Agent conversation         | [`ai-conversation-mode`](help:ai-conversation-mode) | ✅      |
 |   — permission prompts     | [`ai-permission-mode`](help:ai-permission-mode) | ✅      |
 |   — agent process log      | [`ai-log-mode`](help:ai-log-mode) | ✅      |
+| Language models: the guide | [`llm-guide`](help:llm-guide) | ✅      |
 | LLM chat                   | [`llm-chat-mode`](help:llm-chat-mode) | ✅      |
 | Ask about any text         | [`llm-mode`](help:llm-mode) | ✅      |
 |   — settings and profiles  | [`llm`](help:llm)                        | ✅      |

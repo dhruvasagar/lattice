@@ -134,6 +134,11 @@
   (`:set messages.filter=info,rmcp=debug` to see it).
 
 ### Fixed
+- **One bug in a conversation update no longer breaks every chat after
+  it.** A panic while a transcript was being updated left its lock
+  poisoned, and from then on every render, permission menu and request
+  that touched a conversation panicked as well. The store and the
+  permission menu now keep working from the transcript as it stood.
 - **The Claude Code IDE server counts only agents that signed in.** Any
   local socket opened to its port was counted in the status line before
   its token was checked, and one that never finished the handshake held

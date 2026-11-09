@@ -83,13 +83,13 @@ impl PermissionMenuCoordinator {
     fn defer(&self, id: &str) {
         self.deferred
             .lock()
-            .expect("permission deferred set poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .insert(id.to_string());
     }
     fn is_deferred(&self, id: &str) -> bool {
         self.deferred
             .lock()
-            .expect("permission deferred set poisoned")
+            .unwrap_or_else(|e| e.into_inner())
             .contains(id)
     }
 }
@@ -213,7 +213,7 @@ impl Mode for AiPermissionMode {
                 ),
             };
             full_replace(&handle, &text).await;
-            *menu.lock().expect("permission menu mutex poisoned") = state;
+            *menu.lock().unwrap_or_else(|e| e.into_inner()) = state;
             Ok(guard)
         })
     }

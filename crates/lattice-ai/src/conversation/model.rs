@@ -628,12 +628,27 @@ impl ConversationStore {
         }
     }
 
+    /// The conversation, locked. A panic while it was held (a fold that hit
+    /// a bug) poisons the lock; the transcript is still the best record
+    /// there is, so it is taken as it stands rather than failing every
+    /// later render, menu and request with it.
+    fn conv(&self) -> std::sync::MutexGuard<'_, Conversation> {
+        self.inner.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// The pending permission responders, locked; recovered as [`Self::conv`].
+    fn pending(&self) -> std::sync::MutexGuard<'_, PendingPermissions> {
+        self.pending_permissions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+
     /// Run `f` against the conversation for `session`, then publish. This is
     /// the hook protocol adapters fold their own updates through (ACP's
     /// `SessionUpdate` lives in `acp::conversation`).
     pub fn mutate(&self, session: &SessionKey, f: impl FnOnce(&mut Conversation)) {
         {
-            let mut conv = self.inner.lock().expect("conversation mutex poisoned");
+            let mut conv = self.conv();
             f(&mut conv);
         }
         (self.publish)(ConversationUpdated {
@@ -647,7 +662,7 @@ impl ConversationStore {
     /// turn appear in the transcript immediately.
     pub fn push_user_text(&self, session: &SessionKey, text: &str) {
         {
-            let mut conv = self.inner.lock().expect("conversation mutex poisoned");
+            let mut conv = self.conv();
             conv.push_user_text(text);
         }
         (self.publish)(ConversationUpdated {
@@ -668,12 +683,9 @@ impl ConversationStore {
         responder: oneshot::Sender<String>,
     ) {
         {
-            let mut conv = self.inner.lock().expect("conversation mutex poisoned");
+            let mut conv = self.conv();
             conv.push_permission_block(id.clone(), title, description, options);
-            self.pending_permissions
-                .lock()
-                .expect("pending_permissions mutex poisoned")
-                .insert(id, (session.clone(), responder));
+            self.pending().insert(id, (session.clone(), responder));
         }
         (self.publish)(ConversationUpdated {
             session: session.clone(),
@@ -688,11 +700,8 @@ impl ConversationStore {
     /// and re-resolved, or never registered).
     pub fn resolve_permission(&self, id: &str, option_id: &str) {
         let session = {
-            let mut conv = self.inner.lock().expect("conversation mutex poisoned");
-            let mut pending = self
-                .pending_permissions
-                .lock()
-                .expect("pending_permissions mutex poisoned");
+            let mut conv = self.conv();
+            let mut pending = self.pending();
             // Settled first: a second resolve (a withdrawal after the answer)
             // must not rewrite the status the first one recorded.
             let (session, sender) = match pending.remove(id) {
@@ -729,7 +738,7 @@ impl ConversationStore {
         &self,
         keep: impl Fn(&str) -> bool,
     ) -> Option<PendingPermissionView> {
-        let conv = self.inner.lock().expect("conversation mutex poisoned");
+        let conv = self.conv();
         conv.turns
             .iter()
             .flat_map(|t| t.blocks.iter())
@@ -754,7 +763,7 @@ impl ConversationStore {
     /// `ConversationUpdated` so the headerline re-renders.
     pub fn set_status(&self, session: &SessionKey, status: SessionStatus) {
         {
-            let mut conv = self.inner.lock().expect("conversation mutex poisoned");
+            let mut conv = self.conv();
             conv.status = status;
         }
         (self.publish)(ConversationUpdated {
@@ -764,10 +773,7 @@ impl ConversationStore {
 
     /// Cheap-ish clone of the current conversation for projection.
     pub fn snapshot(&self) -> Conversation {
-        self.inner
-            .lock()
-            .expect("conversation mutex poisoned")
-            .clone()
+        self.conv().clone()
     }
 }
 
@@ -799,6 +805,22 @@ fn user_turn_text(turn: &Turn) -> String {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
     use super::*;
+
+    /// A panic inside a fold poisons the lock; the store keeps working with
+    /// the transcript as it stands instead of panicking on every later use.
+    #[test]
+    fn a_panic_in_a_fold_does_not_take_the_store_down() {
+        let store = ConversationStore::new(Arc::new(|_| {}));
+        let key = SessionKey::new("opencode", 1);
+        store.push_user_text(&key, "before");
+        let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            store.mutate(&key, |_| panic!("a fold bug"));
+        }));
+        assert!(poisoned.is_err());
+        store.push_user_text(&key, "after");
+        assert_eq!(store.snapshot().turns.len(), 2);
+        assert!(store.oldest_pending_permission().is_none());
+    }
 
     fn test_permission_option(
         id: &'static str,

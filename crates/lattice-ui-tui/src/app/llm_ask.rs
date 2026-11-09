@@ -337,7 +337,7 @@ mod tests {
         key(&mut a, KeyCode::Esc);
 
         ctrl(&mut a, 'c');
-        press_chars(&mut a, ".R");
+        press_chars(&mut a, ".q");
         assert_eq!(
             active_name(&a),
             "*llm-requests*",

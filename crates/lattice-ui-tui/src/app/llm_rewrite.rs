@@ -97,6 +97,10 @@ mod tests {
         press(a, KeyEvent::new(code, KeyModifiers::NONE));
     }
 
+    fn chats(a: &App) -> LlmChatsHandle {
+        (*a.editor.services.get::<LlmChatsHandle>().unwrap()).clone()
+    }
+
     fn rewrites(a: &App) -> LlmRewritesHandle {
         (*a.editor.services.get::<LlmRewritesHandle>().unwrap()).clone()
     }
@@ -137,6 +141,43 @@ mod tests {
         press_chars(&mut a, " arj");
         assert!(a.editor.buffers.by_name("*llm-rewrite:1*").is_some());
         assert_eq!(rewrites(&a).pending_count(), 1);
+    }
+
+    /// `<leader>aR` opens the menu first, holding the rewrite; its `a` row
+    /// moves it on to the instruction prompt, and the rewrite then runs to
+    /// its diff exactly as `<leader>ar` does.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_menu_first_rewrite_opens_the_menu_then_the_prompt() {
+        let (mut a, _release) = app_answering("ALPHA BETA\nGAMMA DELTA", false);
+        let src = a.editor.document_buffer_id;
+        press_chars(&mut a, " aRj");
+        let title = a
+            .editor
+            .picker
+            .as_ref()
+            .map(|p| p.title.clone())
+            .unwrap_or_default();
+        assert!(
+            title.contains("LLM settings"),
+            "the menu is open: {title:?}"
+        );
+        let held = chats(&a).menu_ask(src).expect("holding the rewrite");
+        assert_eq!(held.kind, lattice_ai::llm::chat::MenuHold::Rewrite);
+        assert_eq!(rewrites(&a).pending_count(), 1);
+        press_chars(&mut a, "a");
+        assert!(
+            a.editor.buffers.by_name("*llm-rewrite:1*").is_some(),
+            "the rewrite prompt opened: {}",
+            message(&a)
+        );
+        assert!(chats(&a).menu_ask(src).is_none(), "moved on");
+        press_chars(&mut a, "uppercase it");
+        key(&mut a, KeyCode::Enter);
+        assert!(
+            settle_woken(&mut a, |a| diffs_open(a) == 1).await,
+            "the diff never opened: {}",
+            message(&a)
+        );
     }
 
     /// The operator changes text, so a read-only buffer refuses it.

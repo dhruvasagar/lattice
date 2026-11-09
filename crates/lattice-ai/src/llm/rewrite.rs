@@ -61,6 +61,8 @@ use super::operators::{AskSource, captured, echo, label_of, line_span, refusal, 
 use crate::conversation::{Block, SourceLink};
 
 pub const REWRITE_OPERATOR: &str = "operator:llm-rewrite";
+/// The rewrite operator that opens `:llm-menu` before the instruction prompt.
+pub const REWRITE_MENU_OPERATOR: &str = "operator:llm-rewrite-menu";
 /// The instruction prompt's submit action.
 pub const ACTION_REWRITE_SEND: &str = "action:llm-rewrite-send";
 
@@ -172,6 +174,15 @@ impl LlmRewrites {
         pending.remove(i).map(|(_, h)| h)
     }
 
+    /// Whether rewrite `token` still waits for its instruction.
+    pub fn holds(&self, token: u64) -> bool {
+        self.pending
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .any(|(t, _)| *t == token)
+    }
+
     /// How many rewrites wait for an instruction.
     #[doc(hidden)]
     pub fn pending_count(&self) -> usize {
@@ -244,46 +255,81 @@ fn operator_rewrite(
     store: &BufferStoreHandle,
     ctx: &mut OperatorContext,
 ) -> Result<Effect, CommandError> {
+    Ok(match hold_rewrite(chats, rewrites, store, ctx)? {
+        Ok((token, lines)) => instruction_prompt(token, &lines),
+        Err(why) => why,
+    })
+}
+
+/// `<leader>aR`: hold the rewrite and open `:llm-menu` first; its `a` row
+/// moves it on to the instruction prompt, as `<leader>aA` does an ask.
+fn operator_rewrite_menu(
+    chats: &LlmChats,
+    rewrites: &LlmRewrites,
+    store: &BufferStoreHandle,
+    ctx: &mut OperatorContext,
+) -> Result<Effect, CommandError> {
+    let buffer = ctx.buffer_id;
+    Ok(match hold_rewrite(chats, rewrites, store, ctx)? {
+        Ok((token, lines)) => {
+            chats.arm_menu_rewrite(buffer, token, lines);
+            Effect::OpenTransient {
+                source: super::menu::MENU_SOURCE.to_string(),
+                args: lattice_grammar::args::Args::None,
+            }
+        }
+        Err(why) => why,
+    })
+}
+
+/// Capture and hold the span a rewrite operator ran over: its token and the
+/// lines it covers, or the effect that refuses it.
+fn hold_rewrite(
+    chats: &LlmChats,
+    rewrites: &LlmRewrites,
+    store: &BufferStoreHandle,
+    ctx: &mut OperatorContext,
+) -> Result<Result<(u64, String), Effect>, CommandError> {
     if let Some(refused) = refusal(chats, Some(store), ctx.buffer_id) {
-        return Ok(refused);
+        return Ok(Err(refused));
     }
     if matches!(
         ctx.document.selections().primary().visual,
         Some(lattice_protocol::selection::VisualMode::Blockwise)
     ) {
-        return Ok(echo(
+        return Ok(Err(echo(
             EchoLevel::Error,
             "llm: a rewrite replaces one span; a block is a column of pieces, so select \
              it charwise or linewise"
                 .to_string(),
-        ));
+        )));
     }
     if store
         .handle_for(ctx.buffer_id)
         .is_some_and(|h| h.display_line_numbers().is_some())
     {
-        return Ok(echo(
+        return Ok(Err(echo(
             EchoLevel::Error,
             "llm: a rewrite changes a file's own text; this view is composed from several, \
              so rewrite in the file itself"
                 .to_string(),
-        ));
+        )));
     }
     let Some(source) = captured(ctx) else {
-        return Ok(echo(
+        return Ok(Err(echo(
             EchoLevel::Info,
             "llm: nothing to rewrite (the span is empty)".to_string(),
-        ));
+        )));
     };
     let buffer = ctx.document.buffer();
     let (Ok(start), Ok(end)) = (
         buffer.position_to_byte(source.range.start),
         buffer.position_to_byte(source.range.end),
     ) else {
-        return Ok(echo(
+        return Ok(Err(echo(
             EchoLevel::Error,
             "llm: the span is outside the buffer".to_string(),
-        ));
+        )));
     };
     // The span as captured: a linewise capture dropped its final newline from
     // the text, so the tracked bytes stop where the text does.
@@ -293,12 +339,17 @@ fn operator_rewrite(
         .update_tracked_ranges(|t| t.insert(tracked, start..end, Stickiness::NeverGrows));
     let lines = line_span(source.range);
     let token = rewrites.hold(Held { source, tracked });
-    Ok(Effect::OpenPrompt {
+    Ok(Ok((token, lines)))
+}
+
+/// The instruction prompt for held rewrite `token`, covering `lines`.
+pub(crate) fn instruction_prompt(token: u64, lines: &str) -> Effect {
+    Effect::OpenPrompt {
         prompt: format!("Rewrite {lines}: "),
         initial: String::new(),
         on_submit_action: ACTION_REWRITE_SEND.to_string(),
         buffer_name: Some(prompt_buffer_name(token)),
-    })
+    }
 }
 
 /// What the model is asked, around the user's instruction.
@@ -598,12 +649,20 @@ async fn apply_if_unchanged(
 }
 
 /// Register `operator:llm-rewrite` and the action its prompt fires.
+/// The rewrite operators `register` adds.
+#[derive(Debug, Clone, Copy)]
+pub struct RewriteOperators {
+    pub rewrite: OperatorId,
+    /// `<leader>aR`: the same, opening `:llm-menu` first.
+    pub rewrite_menu: OperatorId,
+}
+
 pub fn register(
     registry: &mut CommandRegistry,
     chats: LlmChatsHandle,
     rewrites: LlmRewritesHandle,
     store: BufferStoreHandle,
-) -> OperatorId {
+) -> RewriteOperators {
     registry.register_action(
         ACTION_REWRITE_SEND,
         "llm: send the rewrite the instruction prompt was opened for.",
@@ -612,7 +671,7 @@ pub fn register(
             args_schema: vec![],
         },
     );
-    registry.register_operator(
+    let rewrite = registry.register_operator(
         REWRITE_OPERATOR,
         "Rewrite the {motion}/{text-object} that follows with a language model: type an \
          instruction, and the answer opens as a diff against the text. Accepting applies it \
@@ -627,9 +686,30 @@ pub fn register(
             blockwise_per_row: false,
             post_motion_char: false,
             args_schema: vec![],
-            apply: Arc::new(move |ctx| operator_rewrite(&chats, &rewrites, &store, ctx)),
+            apply: Arc::new({
+                let (chats, rewrites, store) = (chats.clone(), rewrites.clone(), store.clone());
+                move |ctx| operator_rewrite(&chats, &rewrites, &store, ctx)
+            }),
         },
-    )
+    );
+    let rewrite_menu = registry.register_operator(
+        REWRITE_MENU_OPERATOR,
+        "Rewrite the {motion}/{text-object} that follows, opening `:llm-menu` first: change          the model, temperature or other settings for this rewrite, then `a` to type the          instruction.",
+        OperatorSpec {
+            mutates: true,
+            // The prompt opens from the menu's row, not from this effect, so
+            // there is no submit for `.` to remember; `<leader>ar` repeats.
+            repeatable: false,
+            blockwise_per_row: false,
+            post_motion_char: false,
+            args_schema: vec![],
+            apply: Arc::new(move |ctx| operator_rewrite_menu(&chats, &rewrites, &store, ctx)),
+        },
+    );
+    RewriteOperators {
+        rewrite,
+        rewrite_menu,
+    }
 }
 
 #[cfg(test)]

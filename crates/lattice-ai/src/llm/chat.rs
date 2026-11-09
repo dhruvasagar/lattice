@@ -331,6 +331,24 @@ const ENDED_EARLY_CAP: usize = 256;
 /// leave its chat there for good.
 const UNBOUND_CAP: usize = 32;
 
+/// What a menu-first operator holds while `:llm-menu` is open over its
+/// buffer: the menu's `a` row moves it on to its instruction prompt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MenuHold {
+    /// `<leader>aA`: an ask.
+    Ask,
+    /// `<leader>aR`: a rewrite.
+    Rewrite,
+}
+
+/// A held operation: which kind, its token, and the lines it covers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MenuHeld {
+    pub kind: MenuHold,
+    pub token: u64,
+    pub lines: String,
+}
+
 pub struct LlmChats {
     runtime: Handle,
     requests: RequestRegistryHandle,
@@ -360,7 +378,7 @@ pub struct LlmChats {
     /// ask's token and the lines it covers. The menu shows an `a` row for it,
     /// which opens the instruction prompt; opening the menu any other way
     /// disarms it, so a later `:llm-menu` offers no stale ask.
-    menu_ask: RwLock<HashMap<BufferId, (u64, String)>>,
+    menu_ask: RwLock<HashMap<BufferId, MenuHeld>>,
     /// Where `.lattice/llm.toml` is looked for. `None` finds the project root
     /// from the working directory when a request starts.
     project_root: RwLock<Option<std::path::PathBuf>>,
@@ -761,14 +779,38 @@ impl LlmChats {
 
     /// Hold ask `token` (covering `lines`) for the menu opened over `buffer`.
     pub fn arm_menu_ask(&self, buffer: BufferId, token: u64, lines: String) {
+        self.arm_menu(
+            buffer,
+            MenuHeld {
+                kind: MenuHold::Ask,
+                token,
+                lines,
+            },
+        );
+    }
+
+    /// Hold rewrite `token` (covering `lines`) for the menu opened over
+    /// `buffer` (`<leader>aR`).
+    pub fn arm_menu_rewrite(&self, buffer: BufferId, token: u64, lines: String) {
+        self.arm_menu(
+            buffer,
+            MenuHeld {
+                kind: MenuHold::Rewrite,
+                token,
+                lines,
+            },
+        );
+    }
+
+    fn arm_menu(&self, buffer: BufferId, held: MenuHeld) {
         self.menu_ask
             .write()
             .unwrap_or_else(|e| e.into_inner())
-            .insert(buffer, (token, lines));
+            .insert(buffer, held);
     }
 
-    /// The ask the menu over `buffer` is holding, if any.
-    pub fn menu_ask(&self, buffer: BufferId) -> Option<(u64, String)> {
+    /// The ask or rewrite the menu over `buffer` is holding, if any.
+    pub fn menu_ask(&self, buffer: BufferId) -> Option<MenuHeld> {
         self.menu_ask
             .read()
             .unwrap_or_else(|e| e.into_inner())
@@ -776,8 +818,8 @@ impl LlmChats {
             .cloned()
     }
 
-    /// Release the ask the menu over `buffer` was holding.
-    pub fn disarm_menu_ask(&self, buffer: BufferId) -> Option<(u64, String)> {
+    /// Release what the menu over `buffer` was holding.
+    pub fn disarm_menu_ask(&self, buffer: BufferId) -> Option<MenuHeld> {
         self.menu_ask
             .write()
             .unwrap_or_else(|e| e.into_inner())

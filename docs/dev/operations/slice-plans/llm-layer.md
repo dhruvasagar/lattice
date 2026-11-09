@@ -826,10 +826,19 @@ gate has run**: CI is the full suite once the branch is pushed.
 - ✅ Dedicated user guide `:help llm-guide`, a "Language models" site section, README and
   "Why Lattice?" sections (`e4e57d07`).
 - ✅ Design fragment status corrected; batch rebase designed in owner-write-caret §10.1.
-- ❓ `:llm-send` / `<leader>as` and `<leader>aR` are designed (llm-layer.md §2) but were never
-  built or recorded as dropped. Build them, or mark them ❌ with the reason.
+- ✅ `<leader>aR`: rewrite, opening `:llm-menu` first (the peer of `<leader>aA`). The menu now
+  holds an ask or a rewrite (`MenuHold`), and its `a` row opens the matching prompt.
+  `:llm-requests` moved from `<leader>aR` to `<leader>aq` to free the chord the design gave
+  the pair. Dhruva decided 2026-11-09.
+- 📝 `:llm-send` / `<leader>as`: send the buffer up to the cursor. Designed in §2, never built.
+  Dhruva, 2026-11-09: build it.
 
-### 3. Release review (after §1 and §2 close)
+### 3. Release review (after §1, §2 and §4 close; Dhruva approved the shape 2026-11-09)
+
+Five Sonnet reviewers over `main..feat/llm-layer`: two on design (paramount goals and the
+standing rules), three on code (security and privacy, async and correctness, tests and docs).
+Every finding is verified before it is reported.
+
 
 - 📝 Design review of the whole layer against the four paramount goals, UX as the higher
   court, and the standing rules (mode ownership, everything-is-a-buffer, no UI-thread work,
@@ -839,8 +848,8 @@ gate has run**: CI is the full suite once the branch is pushed.
 - 📝 Fix what the reviews find, one commit each, then a final docs gate.
 - 📝 Push; CI runs the full suite.
 
-### 4. Found outside the branch (not LLM work)
+### 4. Found outside the branch (not LLM work; Dhruva, 2026-11-09: fix on this branch)
 
-- ❓ Nothing publishes `Event::DocumentClosed` in production, so the multibuffer,
+- 📝 Nothing publishes `Event::DocumentClosed` in production, so the multibuffer,
   LSP-references, magit and VCS close cleanups never run.
-- ❓ `lattice-multibuffer` does not build with `--no-default-features`.
+- 📝 `lattice-multibuffer` does not build with `--no-default-features`.

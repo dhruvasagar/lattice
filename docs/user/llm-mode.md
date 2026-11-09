@@ -179,6 +179,7 @@ directly: the answer opens as a **diff** for you to accept or reject.
 | `<leader>arip` | The paragraph |
 | `<leader>arr` | This line |
 | `<leader>ar` in Visual | The selection |
+| `<leader>aR{motion}` | The same, opening [`:llm-menu`](help:llm) first: change the model or other settings for this rewrite, then `a` for the instruction |
 
 A prompt takes the instruction (`make this a match`, `fix the grammar`);
 `<CR>` sends, `<Esc>` sends nothing, and an empty instruction sends
@@ -244,12 +245,13 @@ or `:set llm.prefix=<C-c>.` for this session. The chords move at once:
 | `a{motion}` | Ask about the text |
 | `A{motion}` | Ask, opening `:llm-menu` first |
 | `r{motion}` | Rewrite the text |
+| `R{motion}` | Rewrite, opening `:llm-menu` first |
 | `c{motion}` | Attach the text to the context |
 | `l` | `:llm`, open a chat |
 | `m` | `:llm-menu` |
 | `C` | `:llm-context` |
 | `i` | `:llm-inspect` |
-| `R` | `:llm-requests` |
+| `q` | `:llm-requests` |
 | `L` | `:llm-last` |
 | `k` | `:llm-stop` |
 

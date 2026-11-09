@@ -64,7 +64,8 @@ pub struct MenuIds {
     edit: CommandId,
     scope: CommandId,
     clear: CommandId,
-    /// The `a` row a held ask adds (`<leader>aA`). `None` where the ask
+    /// The `a` row a held ask or rewrite adds (`<leader>aA`, `<leader>aR`).
+    /// `None` where the ask
     /// operators are not registered.
     ask: Option<CommandId>,
 }
@@ -168,16 +169,21 @@ pub fn build(
         Some(p) => format!("LLM settings for {session} -- {p}"),
         None => format!("LLM settings for {session}"),
     };
-    // `<leader>aA` holds its ask here until `a` moves it on to the prompt.
+    // `<leader>aA` / `<leader>aR` hold their operation here until `a` moves
+    // it on to its prompt.
     let held = ids.ask.zip(chats.menu_ask(buffer));
     let mut groups = Vec::with_capacity(4);
-    if let Some((ask, (_, lines))) = &held {
+    if let Some((ask, held)) = &held {
+        let (group, label, what) = match held.kind {
+            super::chat::MenuHold::Ask => ("Ask", "ask", "the instruction"),
+            super::chat::MenuHold::Rewrite => ("Rewrite", "rewrite", "the rewrite instruction"),
+        };
         groups.push(TransientGroup {
-            label: "Ask".to_string(),
+            label: group.to_string(),
             items: vec![TransientItem {
                 key: vec!["a".to_string()],
-                label: "ask".to_string(),
-                description: format!("type the instruction for {lines}"),
+                label: label.to_string(),
+                description: format!("type {what} for {}", held.lines),
                 kind: TransientItemKind::action(*ask),
             }],
         });

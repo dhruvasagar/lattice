@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Added
+- `<leader>aR{motion}` rewrites text with `:llm-menu` opening first, the way `<leader>aA` does for an ask: change the model or temperature for this rewrite, then press `a` to type the instruction. **`:llm-requests` moves from `<leader>aR` to `<leader>aq`.**
 - `:help llm-guide`: a single guide to the LLM layer. It covers setup, chat, asking about text from any buffer, context, tools and their review gates, MCP servers, profiles and project config, watching requests, the privacy model, and troubleshooting. The website has a new "Language models" section for it.
 - **MCP servers as tools in LLM chats.** An `[llm.mcp.<name>]` table in
   your `lattice.toml` (a stdio `command`, or an HTTP `url`) gives a chat

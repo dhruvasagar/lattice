@@ -93,7 +93,11 @@ impl Mode for LlmMode {
             },
             ActionHandlerContribution {
                 action_name: ACTION_ASK_CONTINUE,
-                handler: continue_handler(self.chats.clone(), self.asks.clone()),
+                handler: continue_handler(
+                    self.chats.clone(),
+                    self.asks.clone(),
+                    self.rewrites.clone(),
+                ),
             },
             ActionHandlerContribution {
                 action_name: ACTION_ASK_CONFIRMED,
@@ -150,7 +154,7 @@ pub const PREFIX_COMMANDS: [(&str, &str); 7] = [
     ("m", "llm-menu"),
     ("C", "llm-context"),
     ("i", "llm-inspect"),
-    ("R", "llm-requests"),
+    ("q", "llm-requests"),
     ("L", "llm-last"),
     ("k", "llm-stop"),
 ];

@@ -1,7 +1,7 @@
 # The LLM layer — models as a capability of every buffer
 
-> **Status: ✅ built** (LL.1–LL.24; LL.23 dropped). Two entry points below are designed
-> but not built: `:llm-send` / `<leader>as` and `<leader>aR` (marked 📝). The user guide is
+> **Status: ✅ built** (LL.1–LL.24; LL.23 dropped). One entry point below is designed
+> but not yet built: `:llm-send` / `<leader>as` (marked 📝). The user guide is
 > [`../../user/llm-guide.md`](../../user/llm-guide.md).
 > Slice sequencing: [`../operations/slice-plans/llm-layer.md`](../operations/slice-plans/llm-layer.md).
 >
@@ -57,7 +57,7 @@ Provisional default chords, on an `llm-mode` minor active on every document:
 |---|---|
 | `<leader>aa{motion}` | Ask |
 | `<leader>ar{motion}` | Rewrite |
-| `<leader>aA{motion}`, `<leader>aR{motion}` 📝 | The same, opening the menu first (`aR` not built) |
+| `<leader>aA{motion}`, `<leader>aR{motion}` | The same, opening the menu first |
 | `<leader>ac{motion}` | Add to context |
 | `<leader>as` 📝 | Send up to the cursor (not built) |
 | `<leader>am` | Menu |

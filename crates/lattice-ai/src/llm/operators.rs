@@ -561,23 +561,33 @@ pub fn send_handler(chats: LlmChatsHandle, asks: LlmAsksHandle) -> ActionHandler
     })
 }
 
-/// The menu's `a` row: move the ask the menu holds on to its instruction prompt.
-pub fn continue_handler(chats: LlmChatsHandle, asks: LlmAsksHandle) -> ActionHandler {
+/// The menu's `a` row: move the ask or rewrite the menu holds on to its
+/// instruction prompt.
+pub fn continue_handler(
+    chats: LlmChatsHandle,
+    asks: LlmAsksHandle,
+    rewrites: super::rewrite::LlmRewritesHandle,
+) -> ActionHandler {
     Arc::new(move |ctx: &ActionContext<'_>| -> Option<Effect> {
         let buffer = BufferId(ctx.buffer_id.0 as u32);
-        let Some((token, lines)) = chats.disarm_menu_ask(buffer) else {
+        let Some(held) = chats.disarm_menu_ask(buffer) else {
             return Some(echo(
                 EchoLevel::Error,
-                "llm: no ask is waiting; use <leader>aA again".to_string(),
+                "llm: nothing is waiting; use <leader>aA or <leader>aR again".to_string(),
             ));
         };
-        if !asks.holds(token) {
-            return Some(echo(
+        match held.kind {
+            super::chat::MenuHold::Ask if asks.holds(held.token) => {
+                Some(instruction_prompt(held.token, &held.lines))
+            }
+            super::chat::MenuHold::Rewrite if rewrites.holds(held.token) => {
+                Some(super::rewrite::instruction_prompt(held.token, &held.lines))
+            }
+            _ => Some(echo(
                 EchoLevel::Error,
-                "llm: that ask was dropped; ask again".to_string(),
-            ));
+                "llm: that request was dropped; start it again".to_string(),
+            )),
         }
-        Some(instruction_prompt(token, &lines))
     })
 }
 

@@ -271,7 +271,7 @@ pub fn install(
     super::operators::register_ex(boot.commands_mut(), chats.clone(), asks.clone(), store);
     boot.register_service::<super::rewrite::LlmRewritesHandle>(rewrites.clone());
     let store = boot.buffer_store().clone();
-    let rewrite_op =
+    let rewrite_ops =
         super::rewrite::register(boot.commands_mut(), chats.clone(), rewrites.clone(), store);
     super::commands::register(boot.commands_mut(), chats.clone());
     // LL.15b: every chord sits under `llm.prefix`; `llm-mode` binds them on
@@ -287,7 +287,8 @@ pub fn install(
         let operators = vec![
             operator("a", ops.ask),
             operator("A", ops.ask_menu),
-            operator("r", rewrite_op),
+            operator("r", rewrite_ops.rewrite),
+            operator("R", rewrite_ops.rewrite_menu),
             operator("c", attach_op),
         ];
         let commands = PREFIX_COMMANDS

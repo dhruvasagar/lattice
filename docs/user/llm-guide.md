@@ -319,6 +319,9 @@ text as it now is, so you see exactly what would be replaced. If you deleted the
 closed the buffer, nothing is applied and the answer opens in its chat so it is not
 lost. A reply that is one fenced block is unwrapped before the diff.
 
+`<leader>aR{motion}` does the same but opens `:llm-menu` first, as `<leader>aA` does for an
+ask: change the model or temperature for this rewrite, then press `a` to type the instruction.
+
 Rewrites queue: a second waits for the first diff to be settled, so a macro that
 rewrites several places shows them one at a time. A rewrite is refused, with the reason,
 in a read-only buffer, in a composed view (rewrite in the file), over a block selection,
@@ -344,12 +347,13 @@ prefix = "<C-c>."
 | `a{motion}` | Ask |
 | `A{motion}` | Ask, opening `:llm-menu` first |
 | `r{motion}` | Rewrite |
+| `R{motion}` | Rewrite, opening `:llm-menu` first |
 | `c{motion}` | Attach text to the context |
 | `l` | `:llm` |
 | `m` | `:llm-menu` |
 | `C` | `:llm-context` |
 | `i` | `:llm-inspect` |
-| `R` | `:llm-requests` |
+| `q` | `:llm-requests` |
 | `L` | `:llm-last` |
 | `k` | `:llm-stop` |
 
@@ -621,7 +625,7 @@ Reference: [`llm`](help:llm).
 
 A request keeps running when you move on, so you can see and stop any of them from anywhere.
 
-- `:llm-requests` (`<leader>aR`) opens `*llm-requests*`: every running request and the last
+- `:llm-requests` (`<leader>aq`) opens `*llm-requests*`: every running request and the last
   few that finished, with its model and where its answer is going (`below main.rs:4`, `echo`,
   `register "a`, a chat, a rewrite). It updates itself; `dd` on a row stops that request.
 - `:llm-stop` (`<leader>ak`) stops this buffer's request: the chat's, or the one an ask from

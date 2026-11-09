@@ -275,6 +275,9 @@ fn is_invisible(c: char) -> bool {
 #[derive(Default)]
 pub struct ToolBroker {
     sources: RwLock<Vec<(String, Arc<dyn ToolSource>)>>,
+    /// Servers whose tools were said to be unavailable, so a failed server
+    /// warns once, not on every request, until it lists again.
+    unavailable: std::sync::Mutex<std::collections::HashSet<String>>,
 }
 
 /// Shared by the llm layer and anything that adds a source.
@@ -330,13 +333,22 @@ impl ToolBroker {
             futures::future::join_all(wanted_sources.iter().map(|(_, source, _)| source.list()))
                 .await;
         for ((server, source, wanted), listed) in wanted_sources.into_iter().zip(listed) {
+            let mut unavailable = self.unavailable.lock().unwrap_or_else(|e| e.into_inner());
             let listed = match listed {
-                Ok(listed) => listed,
-                Err(e) => {
+                Ok(listed) => {
+                    unavailable.remove(server.as_str());
+                    listed
+                }
+                Err(e) if unavailable.insert(server.clone()) => {
                     tracing::warn!(target: "lattice::llm", "llm: tools from {server} are unavailable: {e}");
                     continue;
                 }
+                Err(e) => {
+                    tracing::debug!(target: "lattice::llm", "llm: tools from {server} still unavailable: {e}");
+                    continue;
+                }
             };
+            drop(unavailable);
             let mut any = false;
             for tool in &listed {
                 if selected(&wanted, tool, &listed, &server) {
@@ -628,6 +640,42 @@ mod tests {
             .map(Question::allow_key)
             .collect();
         assert_ne!(keys[0], keys[1]);
+    }
+
+    /// A server that cannot list is said once, not on every request, and
+    /// said again only after it has listed in between.
+    #[tokio::test]
+    async fn an_unavailable_server_is_reported_once() {
+        struct Flaky(std::sync::atomic::AtomicBool);
+        impl ToolSource for Flaky {
+            fn list(&self) -> BoxFuture<'_, Result<Vec<SourceTool>, ToolError>> {
+                let up = self.0.load(std::sync::atomic::Ordering::Relaxed);
+                Box::pin(async move {
+                    if up {
+                        Ok(Vec::new())
+                    } else {
+                        Err(ToolError::Failed("down".into()))
+                    }
+                })
+            }
+            fn call(
+                &self,
+                _: &str,
+                _: Value,
+                _: CallContext,
+            ) -> BoxFuture<'_, Result<ToolOutput, ToolError>> {
+                Box::pin(async { Err(ToolError::Failed("down".into())) })
+            }
+        }
+        let b = ToolBroker::new();
+        let flaky = Arc::new(Flaky(false.into()));
+        b.add_source("gh", flaky.clone());
+        let said = |b: &ToolBroker| b.unavailable.lock().unwrap().contains("gh");
+        b.offer(&pick(&["gh.*"])).await;
+        assert!(said(&b));
+        flaky.0.store(true, std::sync::atomic::Ordering::Relaxed);
+        b.offer(&pick(&["gh.*"])).await;
+        assert!(!said(&b), "listing again clears it");
     }
 
     /// A command's tail cannot be pushed out of the question by padding or

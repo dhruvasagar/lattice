@@ -497,7 +497,7 @@ impl LlmSessionFiles {
             }
             // A harness with no editor: the result still reaches the log.
             None => {
-                tracing::info!(target: "lattice::llm", "llm: a file task finished with no editor to tell")
+                tracing::debug!(target: "lattice::llm", "llm: a file task finished with no editor to tell")
             }
         }
     }

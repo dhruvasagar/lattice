@@ -134,6 +134,9 @@
   (`:set messages.filter=info,rmcp=debug` to see it).
 
 ### Fixed
+- **A failed MCP server warns once.** Every request that selected a
+  server that could not start logged the same warning to `*messages*`;
+  it now warns once, and again only if the server fails after working.
 - **Saved and exported LLM chats are private.** `:llm-save` and
   `:llm-export` wrote files anyone on the machine could read, though a
   chat holds file contents and tool output; a new file is now readable

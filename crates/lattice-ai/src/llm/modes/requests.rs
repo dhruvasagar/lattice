@@ -100,17 +100,12 @@ impl Mode for LlmRequestsMode {
     }
 
     fn options(&self) -> OptionOverrideSet {
-        lattice_config::overrides! {
-            lattice_config::ReadOnly = true,
-            lattice_config::NoFile = true,
-        }
+        super::read_only_options()
     }
 
-    /// The second declaration: `ReadOnly` gates typing only; `read-only-mode`
-    /// carries the runner that refuses `x`, `p` and the other operators.
+    /// Read-only by both declarations (see [`super::read_only_implied`]).
     fn implies(&self) -> &[ModeId] {
-        static IMPLIED: OnceLock<Vec<ModeId>> = OnceLock::new();
-        IMPLIED.get_or_init(|| vec![lattice_mode::modes::ReadOnlyMode::mode_id()])
+        super::read_only_implied()
     }
 
     fn required_capabilities(&self) -> CapabilitySet {

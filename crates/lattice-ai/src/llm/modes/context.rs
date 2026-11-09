@@ -85,19 +85,7 @@ fn refresh(
     })
 }
 
-fn read_only_options() -> OptionOverrideSet {
-    lattice_config::overrides! {
-        lattice_config::ReadOnly = true,
-        lattice_config::NoFile = true,
-    }
-}
-
-/// The second declaration: `ReadOnly` gates typing only; `read-only-mode`
-/// carries the runner that refuses `x`, `p` and the other operators.
-fn read_only_implied() -> &'static [ModeId] {
-    static IMPLIED: OnceLock<Vec<ModeId>> = OnceLock::new();
-    IMPLIED.get_or_init(|| vec![lattice_mode::modes::ReadOnlyMode::mode_id()])
-}
+use super::{read_only_implied, read_only_options};
 
 pub struct LlmContextMode {
     chats: LlmChatsHandle,

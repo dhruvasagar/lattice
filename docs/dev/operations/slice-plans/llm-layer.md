@@ -840,12 +840,12 @@ Five Sonnet reviewers over `main..feat/llm-layer`: two on design (paramount goal
 standing rules), three on code (security and privacy, async and correctness, tests and docs).
 Every finding is verified before it is reported.
 
-
-- 📝 Design review of the whole layer against the four paramount goals, UX as the higher
+- 🚧 Design review of the whole layer against the four paramount goals, UX as the higher
   court, and the standing rules (mode ownership, everything-is-a-buffer, no UI-thread work,
   TUI/GPUI parity, async results without a keypress).
-- 📝 Code review of the whole branch diff (`main..feat/llm-layer`), including the 45
-  fix commits above, which no review has yet read.
+- 🚧 Code review of the whole branch diff (`main..feat/llm-layer`, 111 commits), including
+  the fix commits above, which no review has yet read. All five reviewers launched
+  2026-11-09.
 - 📝 Fix what the reviews find, one commit each, then a final docs gate.
 - 📝 Push; CI runs the full suite.
 

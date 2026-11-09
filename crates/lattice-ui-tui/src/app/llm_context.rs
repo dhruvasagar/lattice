@@ -255,6 +255,31 @@ mod tests {
         assert_eq!(serde_json::to_vec(&value).unwrap(), received(&log)[0].body);
     }
 
+    /// The listings are read-only by both declarations: typing is refused
+    /// (`ReadOnly`) and so is an operator (`read-only-mode`), in each one.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_listings_refuse_typing_and_operators() {
+        let (mut a, _log) = app();
+        for (cmd, name) in [
+            ("llm-context", "*llm-context*"),
+            ("llm-requests", "*llm-requests*"),
+            ("llm-mcp", "*llm-mcp*"),
+        ] {
+            ex(&mut a, cmd);
+            assert!(
+                settle_woken(&mut a, |a| !buffer_text(a, name).is_empty()).await,
+                "{name} never drew"
+            );
+            let before = buffer_text(&a, name);
+            press_chars(&mut a, "gg");
+            press_chars(&mut a, "x");
+            assert_eq!(buffer_text(&a, name), before, "`x` edited {name}");
+            press_chars(&mut a, "iZZ");
+            key(&mut a, KeyCode::Esc);
+            assert_eq!(buffer_text(&a, name), before, "typing edited {name}");
+        }
+    }
+
     /// The list names what is attached; `dd` on a row removes it, and the
     /// next request goes without it.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

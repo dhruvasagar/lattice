@@ -134,6 +134,11 @@
   (`:set messages.filter=info,rmcp=debug` to see it).
 
 ### Fixed
+- **Closing a buffer drops what the LLM layer kept for it.** Attached
+  context, menu choices, buffer-local `llm.*` values, the last request
+  shown by `:llm-inspect` and similar per-buffer state stayed for the
+  whole session after the buffer closed. They are now dropped when the
+  next buffer opens or changes an option.
 - **An ask sent into a chat waits behind prompts a failure held.** After a
   failed reply the chat's queued prompts wait for your next send; an ask
   sent in with `destination=` skipped ahead of them instead of resuming

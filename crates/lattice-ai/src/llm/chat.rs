@@ -631,7 +631,55 @@ impl LlmChats {
                 chat.store.mutate(&chat.key, |_| {});
             }
         }
+        self.prune_closed();
         changed
+    }
+
+    /// Drop what is kept per buffer for buffers that have closed. Run on each
+    /// option snapshot (a buffer opening sends one), so what a closed buffer
+    /// left lasts until the next buffer opens or changes an option, never for
+    /// the rest of the session. Without the host's store nothing can be
+    /// told, and nothing is dropped.
+    fn prune_closed(&self) {
+        let Some(store) = self.store.get() else {
+            return;
+        };
+        let open = |b: &BufferId| store.contains_buffer(*b);
+        fn keep<V>(map: &RwLock<HashMap<BufferId, V>>, open: impl Fn(&BufferId) -> bool) {
+            map.write()
+                .unwrap_or_else(|e| e.into_inner())
+                .retain(|b, _| open(b));
+        }
+        keep(&self.sessions, open);
+        keep(&self.folds_seen, open);
+        keep(&self.next_request, open);
+        keep(&self.menu_scope, open);
+        keep(&self.menu_ask, open);
+        keep(&self.last_sent, open);
+        let gone = {
+            let mut ctx = self
+                .source_context
+                .write()
+                .unwrap_or_else(|e| e.into_inner());
+            let before = ctx.len();
+            ctx.retain(|b, _| open(b));
+            before != ctx.len()
+        };
+        self.read_only
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .retain(open);
+        let owner_gone = {
+            let mut owner = self.listing_owner.lock().unwrap_or_else(|e| e.into_inner());
+            let gone = owner.is_some_and(|b| !open(&b));
+            if gone {
+                *owner = None;
+            }
+            gone
+        };
+        if gone || owner_gone {
+            self.context_watch.bump();
+        }
     }
 
     /// How a chat buffer's transcript is projected right now. Fold values come

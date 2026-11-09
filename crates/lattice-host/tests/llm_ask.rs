@@ -543,3 +543,49 @@ async fn dd_on_a_stale_context_row_removes_nothing() {
     );
     assert!(message(&editor).contains("changed"), "{}", message(&editor));
 }
+
+/// A registry Document, not yet shown.
+fn add_document(editor: &mut Editor, raw_id: u32, name: &str) -> lattice_core::BufferId {
+    use lattice_host::buffer_registry::{BufferData, BufferEntry, DocumentEntry};
+    let id = lattice_core::BufferId(raw_id);
+    let handle: Arc<dyn lattice_runtime::Document> = Arc::new(lattice_runtime::spawn_document(
+        id,
+        CoreDocument::from_text("text\n"),
+        editor.registry.clone(),
+    ));
+    editor.buffers.insert(BufferEntry {
+        id,
+        flags: lattice_core::BufferFlags {
+            listed: true,
+            hidden: false,
+            ephemeral: false,
+        },
+        data: BufferData::Document(DocumentEntry { id, handle }),
+        name: Some(name.to_string()),
+    });
+    id
+}
+
+/// What the llm layer keeps per buffer (its attached context here) goes when
+/// the buffer closes, instead of staying for the rest of the session.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_closed_buffer_leaves_no_context_behind() {
+    let mut editor = Editor::boot(CoreDocument::from_text("keep\n"));
+    let gone = add_document(&mut editor, 950, "*gone*");
+    editor.activate_buffer(gone);
+    ex(&mut editor, "llm-context-add");
+    assert_eq!(
+        chats(&editor).context_of(gone).len(),
+        1,
+        "{}",
+        message(&editor)
+    );
+
+    let _ = editor.do_buffer_delete(false);
+    assert!(!editor.buffers.contains(gone), "{}", message(&editor));
+    // Another buffer showing is what sends the next option snapshot.
+    let next = add_document(&mut editor, 951, "*next*");
+    editor.activate_buffer(next);
+    let pruned = settle(&mut editor, |e| chats(e).context_of(gone).is_empty()).await;
+    assert!(pruned, "the closed buffer's context is still kept");
+}

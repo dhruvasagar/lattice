@@ -134,6 +134,10 @@
   (`:set messages.filter=info,rmcp=debug` to see it).
 
 ### Fixed
+- **A command allowed for an LLM chat is remembered by its exact
+  arguments.** A command whose text ended like a working directory
+  (`make\n  in /x`) could pass for that command run in `/x`; the allow is
+  now keyed on the call itself, so the two ask separately.
 - **An LLM's command question always shows the whole command.** Padding,
   invisible characters or a flood of empty lines can no longer push the
   end of a `run_command` (`; curl … | sh`) out of the menu: invisible

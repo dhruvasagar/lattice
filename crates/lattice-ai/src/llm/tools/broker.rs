@@ -125,19 +125,23 @@ impl Offer {
                 )));
             };
             let described = source.describe(&tool.name, &input);
-            // A command is allowed for the chat only as itself: the exact
-            // text, uncut, not the shortened arguments the user is shown.
+            // A command is allowed for the chat only as itself: its exact
+            // arguments, as JSON, so no text in one field can pass for
+            // another (a command ending `\n  in /x` is not the command run in
+            // `/x`), and not the shortened text the user is shown.
             let chat_allow = if tool.kind == ToolKind::Execute {
-                let call = described.clone().unwrap_or_else(|| input.to_string());
                 // The user approves a command by reading it, so one too long
                 // to read whole is never put to them.
-                if let Some(size) = too_long_to_review(&call) {
+                let read = described
+                    .as_deref()
+                    .map_or_else(|| input.to_string(), str::to_string);
+                if let Some(size) = too_long_to_review(&read) {
                     return Err(ToolError::Refused(format!(
                         "the command is {size}, too long to show the user for approval; \
                          write it to a script with write_file and run the script"
                     )));
                 }
-                ChatAllow::Call(call)
+                ChatAllow::Call(input.to_string())
             } else {
                 ChatAllow::Tool
             };
@@ -608,6 +612,22 @@ mod tests {
         );
         let q = asked.lock().unwrap()[0].clone();
         assert_eq!(q.chat_allow_label(), "Allow this command for this chat");
+
+        // Text in the command cannot pass for the place it runs.
+        asked.lock().unwrap().clear();
+        for input in [
+            serde_json::json!({"command": "make", "cwd": "/x"}),
+            serde_json::json!({"command": "make\n  in /x"}),
+        ] {
+            o.call("lattice__run_command", input, ctx()).await.unwrap();
+        }
+        let keys: Vec<String> = asked
+            .lock()
+            .unwrap()
+            .iter()
+            .map(Question::allow_key)
+            .collect();
+        assert_ne!(keys[0], keys[1]);
     }
 
     /// A command's tail cannot be pushed out of the question by padding or

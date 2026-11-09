@@ -104,8 +104,9 @@ pub struct Question {
 pub enum ChatAllow {
     /// Every later call of the tool.
     Tool,
-    /// Later calls that do exactly this (the command and where it runs).
-    /// For a tool that runs commands: allowing `cargo test` must not allow
+    /// Later calls that do exactly this: the call's arguments as JSON, so
+    /// the command and where it runs cannot pass for each other. For a tool
+    /// that runs commands: allowing `cargo test` must not allow
     /// whatever a prompt-injected tool result asks for next.
     Call(String),
 }

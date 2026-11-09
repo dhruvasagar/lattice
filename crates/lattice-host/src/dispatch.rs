@@ -8950,12 +8950,7 @@ impl Editor {
         let Some(prev) = self.band_buffer else {
             return;
         };
-        self.buffers.remove(prev);
-        self.active_modes.remove(&prev);
-        self.deferred_mode_activations.retain(|(b, _)| *b != prev);
-        self.buffer_locals.remove(&prev);
-        self.resolved_options.remove(&prev);
-        self.on_disk_fingerprints.remove(&prev);
+        self.forget_transient_buffer(prev);
         self.band_viewport_height = 0;
         self.band_viewport_width = 0;
     }
@@ -9062,17 +9057,28 @@ impl Editor {
         let Some(prev) = self.popup_buffer else {
             return;
         };
-        self.buffers.remove(prev);
-        self.active_modes.remove(&prev);
-        // And the guards its modes stashed, as `:bd` does: a popup mode's
-        // cleanup runs when the popup closes, not when the editor exits.
-        // `ai-permission-mode`'s guard is what tells its auto-open the menu
-        // closed; left in the store, every later question waited for a key.
+        self.forget_transient_buffer(prev);
+    }
+
+    /// Remove a buffer the editor made for itself (a popup, a band, an
+    /// ephemeral backing buffer) and
+    /// everything kept per buffer for it. One list, so the sites cannot
+    /// drift apart again: they had, and three of four left the guards
+    /// their modes stashed (so a mode's cleanup ran only at exit;
+    /// `ai-permission-mode`'s guard is what tells its auto-open the menu
+    /// closed) and one kept a deferred activation for a buffer that no
+    /// longer exists. `:e!`'s swap does not use it: see there.
+    fn forget_transient_buffer(&mut self, id: BufferId) {
+        self.buffers.remove(id);
+        self.active_modes.remove(&id);
+        self.deferred_mode_activations.retain(|(b, _)| *b != id);
         self.mode_guards
-            .purge_buffer(lattice_protocol::ids::BufferId::new(prev.0 as u64));
-        self.buffer_locals.remove(&prev);
-        self.resolved_options.remove(&prev);
-        self.on_disk_fingerprints.remove(&prev);
+            .purge_buffer(lattice_protocol::ids::BufferId::new(id.0 as u64));
+        self.buffer_locals.remove(&id);
+        self.resolved_options.remove(&id);
+        self.on_disk_fingerprints.remove(&id);
+        self.autoread_pending.remove(&id);
+        self.autoread_conflict_open.remove(&id);
     }
 
     /// Mode-owned syntax handle for `id`. For the active document
@@ -17235,8 +17241,13 @@ impl Editor {
                     .iter()
                     .any(|l| l.buffer_id == old_id);
                 if old_id != self.document_buffer_id && !still_referenced {
+                    // Not `forget_transient_buffer`: that drops the old
+                    // buffer's mode guards, and `lsp-mode`'s guard sends
+                    // `didClose` for its URI, which the reloaded buffer
+                    // has just opened on the same server.
                     self.buffers.remove(old_id);
                     self.active_modes.remove(&old_id);
+                    self.deferred_mode_activations.retain(|(b, _)| *b != old_id);
                     self.buffer_locals.remove(&old_id);
                     self.resolved_options.remove(&old_id);
                     self.on_disk_fingerprints.remove(&old_id);
@@ -18541,14 +18552,9 @@ impl Editor {
     }
 
     /// PU.5c: tear down an ephemeral popup-backing buffer + its per-buffer
-    /// state. Mirrors [`Self::dismiss_stale_popup_registry`]'s cleanup set.
+    /// state, through [`Self::forget_transient_buffer`].
     fn gc_ephemeral_buffer(&mut self, id: BufferId) {
-        self.buffers.remove(id);
-        self.active_modes.remove(&id);
-        self.deferred_mode_activations.retain(|(b, _)| *b != id);
-        self.buffer_locals.remove(&id);
-        self.resolved_options.remove(&id);
-        self.on_disk_fingerprints.remove(&id);
+        self.forget_transient_buffer(id);
     }
 
     fn build_cells_panes(

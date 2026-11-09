@@ -134,6 +134,10 @@
   (`:set messages.filter=info,rmcp=debug` to see it).
 
 ### Fixed
+- **Closing the which-key band or a completion-docs popup ends its
+  modes.** Their modes' cleanup ran only when the editor exited, as
+  closing a popup's did before the earlier fix, and closing a popup left
+  behind any activation still waiting to run for it.
 - **A closed split stops tracking its caret.** A split you left had its
   caret anchored in the buffer so a stream writing above it would carry
   it; closing that split (`<C-w>c`, `:only`, closing its tab) left the

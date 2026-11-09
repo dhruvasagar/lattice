@@ -210,7 +210,7 @@ tools = "lattice.read"
 
 | Tool | Does |
 |---|---|
-| `read_file` | Reads a file, up to 2000 lines at a time |
+| `read_file` | Reads a file, up to 2000 lines at a time (a regular file of at most 16 MiB) |
 | `list_directory` | Lists a directory |
 | `search` | Searches the project for a regular expression, skipping what `.gitignore` ignores |
 

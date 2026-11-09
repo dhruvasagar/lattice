@@ -877,8 +877,10 @@ Fix now (clear defects, one commit each):
 - ✅ R.6 **A busy hidden session can be evicted** past `UNBOUND_CAP`, so quitting stops
   warning about it and `:llm-last` cannot reopen it. Fixed: `trim_unbound` drops the oldest
   idle session; `a_busy_hidden_session_is_not_evicted` (fails on the old eviction).
-- 📝 R.7 **`read_file` reads a FIFO or huge file whole** before its caps, hanging a blocking
-  thread that the cancel token cannot stop.
+- ✅ R.7 **`read_file` reads a FIFO or huge file whole** before its caps, hanging a blocking
+  thread that the cancel token cannot stop. Fixed: `read_regular_file` checks the type before
+  opening and bounds the read at `MAX_READ_BYTES` (16 MiB); `only_a_regular_file_is_read` hangs on
+  the old read.
 - 📝 R.8 **A dismissed `<leader>aR` menu keeps its held rewrite** (and its tracked range) until
   the next hold.
 - 📝 R.9 **Docs**: CHANGELOG still says `R` requests; the design chord table omits `C i q L k`;

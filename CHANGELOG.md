@@ -134,6 +134,13 @@
   (`:set messages.filter=info,rmcp=debug` to see it).
 
 ### Fixed
+- **An LLM's command question always shows the whole command.** Padding,
+  invisible characters or a flood of empty lines can no longer push the
+  end of a `run_command` (`; curl … | sh`) out of the menu: invisible
+  characters show as `\u{..}`, long blank runs as `␣×N`, empty-line runs
+  as one counted line. A command over 40 lines or 4 000 characters is
+  refused without asking. A tool's arguments cut short say how much was
+  left out.
 - **The next permission question opens on its own.** After you answered
   one question from an agent or an LLM chat, later ones waited, unshown,
   until you pressed a key or ran `:ai-permission`. Closing a popup now

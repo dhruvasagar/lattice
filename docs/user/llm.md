@@ -71,7 +71,8 @@ naming files that are never sent; see [`llm-mode`](help:llm-mode)), `llm.review`
 (gitignore patterns whose edits open a diff even in a trusted chat; default `.git/`,
 `.hg/`, `.jj/`, `.lattice/`), `llm.allow` and `llm.deny` (tool rules such as
 `run_command(cargo test *)`: what runs without asking and what is refused; see
-[`llm-chat-mode`](help:llm-chat-mode)), `llm.tool_rounds` (how many
+[`llm-chat-mode`](help:llm-chat-mode)), `llm.agents_md` (read the project's nearest
+`AGENTS.md` into the system prompt; on by default), `llm.tool_rounds` (how many
 rounds of tool calls one request may run) and `llm.prefix` (the keys every llm chord
 starts with).
 

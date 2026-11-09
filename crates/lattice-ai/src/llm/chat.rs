@@ -973,6 +973,82 @@ impl LlmChats {
         Arc::new(rules)
     }
 
+    /// `system` with the project's nearest `AGENTS.md` joined after it (GR.4),
+    /// unless `llm.agents_md` is off, there is none, or `llm.exclude` names it.
+    /// Found and read on the blocking pool; a problem is reported once per
+    /// chat and the request goes on without the file.
+    async fn with_agents_md(
+        &self,
+        session: &ChatSession,
+        buffer: BufferId,
+        system: Option<String>,
+    ) -> Option<String> {
+        let on = self
+            .registry
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .and_then(|r| r.get_typed::<super::options::LlmAgentsMd>())
+            .is_none_or(|v| *v);
+        if !on {
+            return system;
+        }
+        let root = self.tools_root();
+        // The file the request is about, when it has one: an ask's source,
+        // else the buffer itself. A chat has none and reads the root's.
+        let start = self
+            .store
+            .get()
+            .and_then(|s| s.handle_for(session.source.unwrap_or(buffer)))
+            .and_then(|h| h.path());
+        let found = {
+            let root = root.clone();
+            tokio::task::spawn_blocking(move || {
+                let path = super::agents_md::find(start.as_deref(), &root)?;
+                let read = super::agents_md::read(&path);
+                Some((path, read))
+            })
+            .await
+            .ok()
+            .flatten()
+        };
+        let Some((path, read)) = found else {
+            return system;
+        };
+        let shown = path
+            .strip_prefix(&root)
+            .unwrap_or(&path)
+            .display()
+            .to_string();
+        if let Some(glob) = self.excluded(&path) {
+            if session.first_report(format!("agents\u{0}excluded\u{0}{shown}")) {
+                tracing::debug!(
+                    target: "lattice::llm",
+                    "llm: {shown} matches llm.exclude (`{glob}`) and is not sent"
+                );
+            }
+            return system;
+        }
+        match read {
+            Ok(read) => {
+                if read.cut && session.first_report(format!("agents\u{0}cut\u{0}{shown}")) {
+                    tracing::warn!(
+                        target: "lattice::llm",
+                        "llm: {shown} is over {} bytes; only the first part is sent",
+                        super::agents_md::MAX_BYTES
+                    );
+                }
+                Some(super::agents_md::join(system, &shown, &read))
+            }
+            Err(e) => {
+                if session.first_report(format!("agents\u{0}read\u{0}{shown}")) {
+                    tracing::warn!(target: "lattice::llm", "llm: cannot read {shown}: {}", e.kind());
+                }
+                system
+            }
+        }
+    }
+
     /// The project's safety-list additions as last read, if any.
     pub fn project_rules(&self) -> Option<Arc<ProjectRules>> {
         self.project_rules
@@ -1959,6 +2035,7 @@ impl LlmChats {
             Some(text) if system_is_path(text) => Some(read_system_file(text).await?),
             other => other.clone(),
         };
+        let system = self.with_agents_md(session, buffer, system).await;
         let mut params = Params {
             max_tokens: resolved.values.max_tokens,
             temperature: resolved.values.temperature,

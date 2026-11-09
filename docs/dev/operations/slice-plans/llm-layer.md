@@ -6,7 +6,8 @@
 
 Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred · ❌ dropped.
 
-**Status: ✅ LL.1–LL.9 built (first usable version); 📝 LL.10–LL.24 planned.**
+**Status: ✅ LL.1–LL.22 and LL.24 built; ❌ LL.23 dropped. The release checklist ("Release
+readiness" below) is closed through §3; what is left is the push and CI's full suite.**
 
 **Goal:** direct model access from any buffer, with a REPL chat, per-session overrides,
 reviewed tools, and MCP behind one tool interface.
@@ -840,13 +841,13 @@ Five Sonnet reviewers over `main..feat/llm-layer`: two on design (paramount goal
 standing rules), three on code (security and privacy, async and correctness, tests and docs).
 Every finding is verified before it is reported.
 
-- 🚧 Design review of the whole layer against the four paramount goals, UX as the higher
+- ✅ Design review of the whole layer against the four paramount goals, UX as the higher
   court, and the standing rules (mode ownership, everything-is-a-buffer, no UI-thread work,
   TUI/GPUI parity, async results without a keypress).
-- 🚧 Code review of the whole branch diff (`main..feat/llm-layer`, 111 commits), including
-  the fix commits above, which no review has yet read. All five reviewers launched
-  2026-11-09.
-- 📝 Fix what the reviews find, one commit each, then a final docs gate.
+- ✅ Code review of the whole branch diff (`main..feat/llm-layer`, 111 commits), including
+  the fix commits above, which no review had read. All five reviewers ran 2026-11-09.
+- ✅ Fix what the reviews find, one commit each, then a final docs gate. Every finding below
+  is ✅ or ❌ with its reason, and the GR series (layered safety lists) is ✅.
 - 📝 Push; CI runs the full suite.
 
 #### Release review findings (2026-11-09, each verified in the code before listing)
@@ -945,7 +946,7 @@ P.4, GR.1, P.2, GR.3, GR.4. Decided with it:
 - AGENTS.md is on by default, with `llm.agents_md = false` to turn it off.
 
 - ✅ GR.0 **Design**: `llm-layer.md` §6 "Safety lists, layered, in the formats other harnesses use".
-- 🚧 GR.1 **Layering**: `exclude`, `review` (always diff, even when trusted; default `.git`,
+- ✅ GR.1 **Layering**: `exclude`, `review` (always diff, even when trusted; default `.git`,
   `.hg`, `.jj`, `.lattice`), `deny` and `allow` are each settable in the global
   `~/.config/lattice` config and the project `./.lattice`. **The project only narrows:** its
   `exclude`, `review` and `deny` are added to the global lists, and it can neither remove an
@@ -954,8 +955,8 @@ P.4, GR.1, P.2, GR.3, GR.4. Decided with it:
   files are read into the project's excludes; `ProjectRules` compiles them on the runtime at
   install, at chat creation and at each request's prepare; `LlmChats::excluded` checks the
   global set, then the project's as its own set. `review` and `deny` are parsed and cached
-  here, and enforced by P.2 and GR.3. The global `llm.review` / `llm.deny` / `llm.allow`
-  options arrive with those slices.
+  here, and enforced by P.2 and GR.3, which also added the global `llm.review` /
+  `llm.deny` / `llm.allow` options.
 - ✅ GR.2 **`llm.exclude` uses gitignore semantics** (relative to the project root, a leading
   `/` anchors, a bare name matches at any depth; this fixes R.4), and a project's
   `.aiexclude`, `.aiignore` and `.agentignore` are read as additional excludes. The matching half
@@ -972,8 +973,14 @@ P.4, GR.1, P.2, GR.3, GR.4. Decided with it:
   are the server's schema, and matching them is not attempted. An `allow` naming a read or
   edit tool is refused when set (reads never ask; edits are `<C-t>`'s). Tests: nine in
   `rules`, plus `allow_and_deny_rules_decide_before_anything_asks` (TUI, end to end).
-- 📝 GR.4 **AGENTS.md** joins the system prompt as instructions (nearest file wins), trusted as
-  a project's system prompt is: it instructs, never widens tools.
+- ✅ GR.4 **AGENTS.md** joins the system prompt as instructions (nearest file wins), trusted as
+  a project's system prompt is: it instructs, never widens tools. Landed: `llm/agents_md.rs`
+  (`find` walks from the request's file up to the root and never past it, `read` caps at
+  32 KiB on a character boundary, `join`), `LlmChats::with_agents_md` in `prepare` (blocking
+  pool; `llm.exclude` checked; problems once per chat), and `llm.agents_md` (on). Because it
+  is in the prepared request, `:llm-inspect` shows it with no extra path. Tests: two in
+  `agents_md`, and `agents_md_joins_the_system_prompt_unless_turned_off_or_excluded`
+  (`llm_overrides.rs`, against the recorded wire request).
 - ✅ The default exclude list gains `.npmrc`, `.pgpass`, `credentials`, `credentials.json`,
   `credentials.db`, `.aws/`, `*.p12` and `*.pfx`, and the read tools refuse `.git/` (P.4).
   `credentials*` was narrowed to the names credential tools actually write, because it would

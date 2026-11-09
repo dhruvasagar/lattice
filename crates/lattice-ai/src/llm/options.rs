@@ -310,6 +310,13 @@ lattice_config::options! {
     #[name("llm.deny")]
     pub LlmDeny: DenyRules = DenyRules::default();
 
+    /// Read the project's `AGENTS.md` (the nearest one between the file and
+    /// the project root) into the system prompt, after the configured one.
+    /// Capped at 32 KiB, held to `llm.exclude`, and shown by `:llm-inspect`.
+    /// Global only.
+    #[name("llm.agents_md")]
+    pub LlmAgentsMd: bool = true;
+
     /// The provider a bare `llm.model` runs on. Optional when only one provider
     /// is configured. Global only.
     #[name("llm.default_provider")]

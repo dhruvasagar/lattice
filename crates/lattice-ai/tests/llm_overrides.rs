@@ -791,3 +791,53 @@ async fn the_system_row_applies_in_the_scope_it_was_opened_in() {
         Some("Be terse.")
     );
 }
+
+// ---------------------------------------------------------------------------
+// AGENTS.md (GR.4)
+// ---------------------------------------------------------------------------
+
+/// The project's `AGENTS.md` reaches the model after the configured system
+/// prompt; `llm.agents_md = false` leaves it out, and so does `llm.exclude`.
+#[tokio::test]
+async fn agents_md_joins_the_system_prompt_unless_turned_off_or_excluded() {
+    let (addr, seen) = recording_server(Duration::ZERO).await;
+    let chats = chats_with(config(addr, "[llm]\nsystem = \"Be brief.\"\n"));
+    let registry = Arc::new(lattice_config::ConfigRegistry::new());
+    registry.init_from_linkme();
+    chats.set_registry(registry.clone());
+    let root = std::env::temp_dir().join(format!("lattice-agents-md-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("AGENTS.md"), "Run cargo fmt before committing.\n").unwrap();
+    chats.set_project_root(root.clone());
+
+    let session = chats.create();
+    bind(&chats, &session, 60);
+    say(&chats, &session, "first").await;
+    registry
+        .parse_and_set_command("llm.agents_md=false")
+        .unwrap();
+    say(&chats, &session, "second").await;
+    registry
+        .parse_and_set_command("llm.agents_md=true")
+        .unwrap();
+    registry
+        .parse_and_set_command("llm.exclude=AGENTS.md")
+        .unwrap();
+    say(&chats, &session, "third").await;
+
+    let seen = seen.lock().unwrap();
+    assert!(
+        seen[0].contains(
+            "Be brief.\\n\\nThe project's instructions for AI tools, from AGENTS.md:\\n\\n\
+             Run cargo fmt before committing."
+        ),
+        "{}",
+        seen[0]
+    );
+    for (i, why) in [(1, "llm.agents_md=false"), (2, "llm.exclude")] {
+        assert!(!seen[i].contains("cargo fmt"), "{why}: {}", seen[i]);
+        assert!(seen[i].contains("Be brief."), "{why}: {}", seen[i]);
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}

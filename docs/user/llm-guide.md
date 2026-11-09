@@ -647,6 +647,7 @@ asking. `@unknown` is just text.
 | `llm.exclude` | Gitignore patterns never sent; global only |
 | `llm.review` | Gitignore patterns whose edits always open a diff; global only |
 | `llm.allow`, `llm.deny` | Tool rules that run without asking, or are refused; global only |
+| `llm.agents_md` | Read the project's `AGENTS.md` into the system prompt (on); global only |
 | `llm.tool_rounds` | Rounds of tool calls one request may run; global only |
 | `llm.prefix` | The keys every llm chord starts with; global only |
 
@@ -677,7 +678,14 @@ exclude = ["internal/", "*.secret"]
 
 A file refused this way is named with `(project)`. The project's patterns are matched on
 their own, so its `!pattern` re-includes only what the project itself excluded, never an
-entry of yours. A project `allow` is refused. The lists are read when the editor starts and
+entry of yours. A project `allow` is refused.
+
+**`AGENTS.md`.** A project's instructions for AI tools are read into the system prompt,
+after yours: the nearest `AGENTS.md` between the file you are asking about and the project
+root (a chat reads the root's). It is capped at 32 KiB, never sent if `llm.exclude` names
+it, and shown by `:llm-inspect`. It is trusted as a project's system prompt is: it can tell
+the model how the project works, and it can turn nothing on. `:set llm.agents_md=false`
+leaves it out. The lists are read when the editor starts and
 again before each request, so an edit to them applies from the next request.
 
 One thing a project can still do is name **another of your providers** as its model

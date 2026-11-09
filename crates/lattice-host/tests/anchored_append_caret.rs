@@ -319,3 +319,53 @@ async fn an_operator_run_while_a_chunk_lands_acts_on_the_carets_text() {
     let _ = editor.dispatch(Action::Invoke(dd));
     assert_eq!(text(&editor), "ab\nnew\nef\n");
 }
+
+/// The key after an operator: `dd` is the host's own edit, so the version it
+/// leaves is one the host has seen. A chunk lands, then a motion's caret is
+/// written through: it is rebased over the chunk, and the key lands where the
+/// caret is.
+/// The host did not record operators' versions, so the rebase failed and the
+/// document's stale selection was used instead of the caret.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_key_after_an_operator_still_follows_an_append() {
+    use lattice_grammar::{CommandInvocation, Range};
+    let mut editor = boot("ab\ncd\nef\n");
+    editor.set_cursor_clamped(Position::new(1, 0));
+    key(&mut editor, Action::None);
+    let id = anchor(&editor, 3).await;
+    let dd = CommandInvocation::of(editor.builtins.delete.0).with_range(Range::CurrentLine);
+    key(&mut editor, Action::Invoke(dd));
+    assert_eq!(text(&editor), "ab\nef\n");
+    editor
+        .document
+        .append_to_tracked(id, "new\n".to_string())
+        .await
+        .unwrap();
+    // A motion inside the window: to the `f` in the coordinates the host saw,
+    // written through after the append.
+    editor.set_cursor_clamped(Position::new(1, 1));
+    let _ = editor.dispatch(Action::None);
+    key(&mut editor, Action::Insert("X".to_string()));
+    assert_eq!(text(&editor), "ab\nnew\neXf\n");
+}
+
+/// The same after `u`: undo is the host's own edit too.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_key_after_an_undo_still_follows_an_append() {
+    let mut editor = boot("ab\ncd\n");
+    editor.set_cursor_clamped(Position::new(1, 0));
+    key(&mut editor, Action::None);
+    let id = anchor(&editor, 3).await;
+    key(&mut editor, Action::Insert("Z".to_string()));
+    key(&mut editor, Action::Undo);
+    assert_eq!(text(&editor), "ab\ncd\n");
+    editor
+        .document
+        .append_to_tracked(id, "new\n".to_string())
+        .await
+        .unwrap();
+    editor.set_cursor_clamped(Position::new(1, 0));
+    let _ = editor.dispatch(Action::None);
+    key(&mut editor, Action::Insert("X".to_string()));
+    assert_eq!(text(&editor), "ab\nnew\nXcd\n");
+}

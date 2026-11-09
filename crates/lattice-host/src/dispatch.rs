@@ -9083,6 +9083,7 @@ impl Editor {
     /// it back with no registry lookup, which a close could not do.
     fn remove_buffer(&mut self, id: BufferId) -> Option<crate::buffer_registry::BufferEntry> {
         let entry = self.buffers.remove(id)?;
+        self.last_seen_text_version.remove(&id);
         if entry.document().is_some() {
             self.event_bus
                 .publish(lattice_protocol::Event::DocumentClosed {
@@ -23385,6 +23386,7 @@ impl Editor {
     ) -> Result<Vec<lattice_core::buffer::AppliedEdit>, lattice_runtime::RuntimeError> {
         let result = block_on(self.document.undo());
         if let Ok(applied) = result.as_ref() {
+            self.record_seen_text_version();
             self.publish_document_changed(applied);
         }
         result
@@ -23397,6 +23399,7 @@ impl Editor {
     ) -> Result<Vec<lattice_core::buffer::AppliedEdit>, lattice_runtime::RuntimeError> {
         let result = block_on(self.document.redo());
         if let Ok(applied) = result.as_ref() {
+            self.record_seen_text_version();
             self.publish_document_changed(applied);
         }
         result
@@ -23568,6 +23571,9 @@ impl Editor {
         if edits.is_empty() {
             return;
         }
+        // The actor applied these for the host's own key (`dd`, `x`, `p`), so
+        // the version they leave is one the host has seen (LL.13a).
+        self.record_seen_text_version();
         let snap = self.document.snapshot();
         match snap.linked_edits.as_deref() {
             Some(linked) => {
@@ -24043,6 +24049,23 @@ impl Editor {
         // would put back the caret an append just moved.
         let seen = self.seen_text_version();
         let _ = block_on(self.document.set_selections_based_on(selections, seen));
+    }
+
+    /// Record that the active document's text, as it stands, came from the
+    /// host's own hand (an edit, an operator's edits, undo, redo), so the
+    /// caret it holds is in these coordinates.
+    ///
+    /// `pre_append_version`, not `text_version`: an append that landed just
+    /// after the edit is not one the host has seen, and must still be rebased
+    /// over and adopted (LL.13a). Every path that changes the text for the host
+    /// records it; one that does not leaves the version stale, and the next
+    /// rebase over an append is skipped (`appends_since` refuses a span with a
+    /// non-append edit in it), so the document's old selection wins over the
+    /// caret.
+    fn record_seen_text_version(&mut self) {
+        let pre_append = self.document.snapshot().pre_append_version;
+        self.last_seen_text_version
+            .insert(self.document_buffer_id, pre_append);
     }
 
     /// The active document's text version the host's caret is in: the one it

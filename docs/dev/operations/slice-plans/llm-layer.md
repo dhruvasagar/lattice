@@ -863,9 +863,11 @@ Fix now (clear defects, one commit each):
   this layer.
 - 📝 R.2 **Chat streaming has no frame pacing** (design §9 promises at most one write per
   frame). The drain coalesces only what is already queued.
-- 📝 R.3 **Operators, undo and redo do not record the seen text version**, so the next key's
+- ✅ R.3 **Operators, undo and redo do not record the seen text version**, so the next key's
   rebase over streamed appends is skipped (LL.13a reopened after any `dd`). Also: the map
-  is never cleared when a buffer is removed.
+  is never cleared when a buffer is removed. Fixed: `Editor::record_seen_text_version` on
+  every host-made change, and `remove_buffer` drops the entry; pinned by two caret tests that
+  fail on the old code (the key landed inside the streamed text).
 - 📝 R.4 **`llm.exclude` globs containing `/` never match** (globset anchors at the start of
   the absolute path), so `secrets/*` excludes nothing.
 - 📝 R.5 **The command popup's invisible-character list is incomplete**: variation selectors,

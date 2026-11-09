@@ -62,6 +62,11 @@ Provisional default chords, on an `llm-mode` minor active on every document:
 | `<leader>as` | Send up to the cursor |
 | `<leader>am` | Menu |
 | `<leader>al` | Open a chat |
+| `<leader>aC` | The context listing (`:llm-context`) |
+| `<leader>ai` | Inspect the last request (`:llm-inspect`) |
+| `<leader>aq` | The request queue (`:llm-requests`) |
+| `<leader>aL` | Reopen the last answer (`:llm-last`) |
+| `<leader>ak` | Stop this buffer's requests (`:llm-stop`) |
 
 **The prefix is an option, `llm.prefix`** (default `<leader>a`; `<C-c>.` is the emacs-style
 alternative), and every chord above is that prefix plus one key. One value, global: a prefix

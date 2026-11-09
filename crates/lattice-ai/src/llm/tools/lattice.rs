@@ -659,8 +659,10 @@ struct ExecArgs {
 impl LatticeTools {
     /// Run a command the user allowed (the broker asked). Its process group
     /// is killed when the call is dropped (the request stopped), times out, or
-    /// the shell exits leaving something in the background, so nothing it
-    /// started outlives it.
+    /// the shell exits leaving something in the background, so nothing left in
+    /// its group outlives it. A process that leaves the group on purpose
+    /// (`setsid`, a detaching daemon) is beyond a process-group kill; the user
+    /// approved the command text, which shows it.
     async fn run_command(&self, input: Value) -> Result<ToolOutput, ToolError> {
         let args: ExecArgs = parse(input)?;
         if args.command.trim().is_empty() {

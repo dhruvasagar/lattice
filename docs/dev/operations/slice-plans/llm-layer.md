@@ -881,10 +881,15 @@ Fix now (clear defects, one commit each):
   thread that the cancel token cannot stop. Fixed: `read_regular_file` checks the type before
   opening and bounds the read at `MAX_READ_BYTES` (16 MiB); `only_a_regular_file_is_read` hangs on
   the old read.
-- 📝 R.8 **A dismissed `<leader>aR` menu keeps its held rewrite** (and its tracked range) until
-  the next hold.
-- 📝 R.9 **Docs**: CHANGELOG still says `R` requests; the design chord table omits `C i q L k`;
-  the docs say nothing a command started outlives it, which `setsid` defeats.
+- ❌ R.8 **A dismissed `<leader>aR` menu keeps its held rewrite** (and its tracked range) until
+  the next hold. Dropped: nothing a user sees depends on it. Every fresh menu open
+  (`:llm-menu`, `<leader>am`, the chat menu) disarms the hold, so no stale `a` row can show
+  (`llm_ask.rs` pins it). The residue is one `NeverGrows` range, at most `PENDING_CAP` (16),
+  released on the next hold. Releasing it on `<Esc>` would need a new host-side
+  transient-dismiss callback, a host surface change with no visible gain.
+- ✅ R.9 **Docs**: CHANGELOG still says `R` requests; the design chord table omits `C i q L k`;
+  the docs say nothing a command started outlives it, which `setsid` defeats. Fixed: all three,
+  in the CHANGELOG, `llm-layer.md`, both user docs and the `run_command` doc comment.
 - 📝 R.10 **Test gaps**: `llm.exclude` on `read_file`/`list_directory`/`search`; symlink
   confinement end to end; `exclude` refused from a project config; the `run_command`
   timeout; `:llm-send` on an empty buffer; the `apply_if_unchanged` race (needs a seam);

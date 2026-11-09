@@ -474,8 +474,11 @@ runs again without asking; any other command asks. It is never saved.
 Limits on what runs:
 
 - The command runs in the project, in its own process group. Stopping the request
-  (`<C-c>`, `:llm-stop`, closing the chat) ends everything it started, and nothing
-  outlives the command: a `server &` it left running is stopped when the shell exits.
+  (`<C-c>`, `:llm-stop`, closing the chat) ends that group, and so does the shell
+  exiting: a `server &` it left running is stopped with it. A program that leaves
+  the group on purpose (`setsid`, `nohup … &` under some shells, a daemon that
+  detaches) is out of reach, as it is for any terminal; the question shows the
+  command, so read it for those.
 - It stops after 120 seconds unless the model asks for longer, up to 600.
 - The model sees at most the first 30 000 bytes of each of the output and error streams,
   with a note saying where it was cut.

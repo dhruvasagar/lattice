@@ -59,8 +59,8 @@
 - **The LLM chord prefix is configurable:** `llm.prefix` (default
   `<leader>a`), e.g. `prefix = "<C-c>."` under `[llm]` gives `<C-c>.aip`
   to ask about a paragraph. The commands have chords too now: `l` chat,
-  `m` menu, `C` context, `i` inspect, `R` requests, `L` last answer,
-  `k` stop; hold the prefix and which-key lists them all.
+  `s` send, `m` menu, `C` context, `i` inspect, `q` requests, `L` last
+  answer, `k` stop; hold the prefix and which-key lists them all.
 - **Context for LLM requests:** `<leader>ac{motion}` and
   `:llm-context-add [file…]` attach text that requests from a buffer
   carry, read when each request is sent; attached lines follow edits.

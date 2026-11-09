@@ -134,6 +134,11 @@
   (`:set messages.filter=info,rmcp=debug` to see it).
 
 ### Fixed
+- **A project or session file that switches the LLM provider says so.**
+  `.lattice/llm.toml` and a resumed session may choose the model, which
+  could quietly send a chat to another of your providers (a paid or
+  remote one) instead of your default. That is now reported: once per chat
+  for a project file, and in the resume message for a session file.
 - **LLM streams whose lines end in a bare carriage return work.** The
   SSE reader only split on line feeds, so a server ending lines with
   `\r` alone (allowed by the spec) stalled until the idle timeout.

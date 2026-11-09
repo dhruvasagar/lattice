@@ -610,24 +610,34 @@ impl LlmSessionFiles {
                 Ok(saved) => saved,
                 Err(e) => return this.report(Err(e)),
             };
+            // The file may choose the model, and with it another of your
+            // providers: say so, since your code would go there.
+            let model = saved
+                .settings
+                .iter()
+                .find(|(k, _)| k == "model")
+                .map(|(_, v)| v.clone());
+            let elsewhere = this.chats.other_provider(model.as_deref());
             let (session, refused) = this.chats.resume(saved, &shown);
             for refusal in &refused {
                 tracing::warn!(target: "lattice::llm", "{refusal}");
             }
-            let (level, text) = if refused.is_empty() {
-                (
-                    EchoLevel::Info,
-                    format!("llm: resumed {shown} as {}", session.name),
-                )
+            let mut text = format!("llm: resumed {shown} as {}", session.name);
+            if !refused.is_empty() {
+                text.push_str(&format!(
+                    "; {} of its settings refused (see *messages*)",
+                    refused.len()
+                ));
+            }
+            if let Some((other, usual)) = &elsewhere {
+                text.push_str(&format!(
+                    "; it uses provider `{other}`, not your default `{usual}`"
+                ));
+            }
+            let level = if refused.is_empty() && elsewhere.is_none() {
+                EchoLevel::Info
             } else {
-                (
-                    EchoLevel::Warn,
-                    format!(
-                        "llm: resumed {shown} as {}; {} of its settings refused (see *messages*)",
-                        session.name,
-                        refused.len()
-                    ),
-                )
+                EchoLevel::Warn
             };
             this.send(vec![
                 Effect::OpenSyntheticBuffer {

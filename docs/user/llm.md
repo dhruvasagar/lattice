@@ -106,6 +106,12 @@ inline system prompt, parameters, and tools **narrower** than yours. It may not 
 `destination`, or a `system` naming a file. Each refused key is reported in
 `:messages` once per chat, and the rest of the file still applies.
 
+Because it may set the model, it may pick another of **your** providers
+(`model = "paid/big"`), and with it where your code and that provider's key
+go. When it does, `:messages` says so once per chat, naming the provider and
+your default. A resumed session file is held to the same table, and the
+resume message says the same when its model is on another provider.
+
 LLM keys in `.lattice/config.toml` are not read, in any spelling; a warning says so.
 A profile named in a prompt follows the same table.
 

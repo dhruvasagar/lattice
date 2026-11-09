@@ -515,6 +515,20 @@ impl LlmChats {
         set
     }
 
+    /// When `model` names a configured provider (`name/model`) other than
+    /// the one requests go to by default, that provider's name and the
+    /// default's. A project file or a session file may choose the model, so
+    /// it may send your code, with that provider's key, somewhere you did not
+    /// pick; this is what lets that be said.
+    pub fn other_provider(&self, model: Option<&str>) -> Option<(String, String)> {
+        let config = self.config.read().unwrap_or_else(|e| e.into_inner());
+        let default = self.default_provider();
+        let chosen = config.choose(model, default.as_deref()).ok()?;
+        let usual = config.choose(None, default.as_deref()).ok()?;
+        (chosen.provider.name != usual.provider.name)
+            .then(|| (chosen.provider.name.clone(), usual.provider.name.clone()))
+    }
+
     fn default_provider(&self) -> Option<String> {
         let reg = self.registry.read().unwrap_or_else(|e| e.into_inner());
         reg.as_ref()
@@ -1659,6 +1673,15 @@ impl LlmChats {
                 resolved.values.model.as_deref(),
                 self.default_provider().as_deref(),
             )?;
+        if resolved.origins.get(&SettingKey::Model) == Some(&lattice_config::OptionOrigin::Project)
+            && let Some((other, usual)) = self.other_provider(resolved.values.model.as_deref())
+            && session.first_report(format!("provider\u{0}{other}"))
+        {
+            tracing::warn!(
+                target: "lattice::llm",
+                "llm: .lattice/llm.toml sends this chat to provider `{other}`, not your default `{usual}`"
+            );
+        }
         let system = match &resolved.values.system {
             Some(text) if system_is_path(text) => Some(read_system_file(text).await?),
             other => other.clone(),
@@ -2191,6 +2214,34 @@ mod tests {
         assert!(
             reg.ended_early
                 .contains_key(&RequestId(ENDED_EARLY_CAP as u64))
+        );
+    }
+
+    /// A model naming another configured provider is told apart from one
+    /// on the default, so where a project or session file sends a chat can
+    /// be said.
+    #[tokio::test]
+    async fn a_model_on_another_provider_is_named() {
+        let handle = Handle::current();
+        let bus = Arc::new(lattice_runtime::EventBus::new());
+        let requests: RequestRegistryHandle = Arc::new(RequestRegistry::new(
+            handle.clone(),
+            Some(bus.clone()),
+            None,
+        ));
+        let config = LlmConfig::from_table(
+            &"[llm]\ndefault_provider = \"local\"\n\
+              [llm.providers.local]\nkind = \"openai-compatible\"\nbase_url = \"http://127.0.0.1:1/v1\"\nmodel = \"m\"\n\
+              [llm.providers.paid]\nkind = \"anthropic\"\nmodel = \"big\"\napi_key_env = \"X\"\n"
+                .parse::<toml::Table>()
+                .unwrap(),
+        );
+        let chats = LlmChats::new(handle, requests, bus, config);
+        assert_eq!(chats.other_provider(Some("m2")), None);
+        assert_eq!(chats.other_provider(Some("local/m2")), None);
+        assert_eq!(
+            chats.other_provider(Some("paid/big")),
+            Some(("paid".to_string(), "local".to_string()))
         );
     }
 

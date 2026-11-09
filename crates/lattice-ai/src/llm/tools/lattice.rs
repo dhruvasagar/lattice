@@ -1036,6 +1036,161 @@ mod tests {
         );
     }
 
+    /// A fresh directory for one test, removed when dropped.
+    struct Scratch(PathBuf);
+    impl Scratch {
+        fn new(name: &str) -> Self {
+            let p =
+                std::env::temp_dir().join(format!("lattice-tools-{name}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&p);
+            std::fs::create_dir_all(&p).unwrap();
+            Self(p)
+        }
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// The read tools over a temp project, with the real `llm.exclude` check
+    /// (`LlmChats::excluded`, default globs) and root, as `install` wires them.
+    fn tools_over(root: &Path) -> (LatticeTools, Arc<crate::llm::chat::LlmChats>) {
+        use crate::llm::request::{RequestRegistry, RequestRegistryHandle};
+        let handle = tokio::runtime::Handle::current();
+        let bus = Arc::new(lattice_runtime::EventBus::new());
+        let requests: RequestRegistryHandle = Arc::new(RequestRegistry::new(
+            handle.clone(),
+            Some(bus.clone()),
+            None,
+        ));
+        let chats = Arc::new(crate::llm::chat::LlmChats::new(
+            handle,
+            requests,
+            bus,
+            crate::llm::config::LlmConfig::default(),
+        ));
+        chats.set_project_root(root.to_path_buf());
+        let access = EditorAccess::new(
+            Arc::new(std::sync::Mutex::new(
+                lattice_agent::state_cache::EditorStateCache::default(),
+            )),
+            None,
+            Vec::new(),
+            None,
+        );
+        let (root_of, exclude_of) = (chats.clone(), chats.clone());
+        let tools = LatticeTools::new(
+            access,
+            Arc::new(move || root_of.tools_root()),
+            Arc::new(move |p| exclude_of.excluded(p)),
+        );
+        (tools, chats)
+    }
+
+    async fn call(tools: &LatticeTools, name: &str, input: Value) -> Result<String, String> {
+        tools
+            .call(name, input, CallContext::default())
+            .await
+            .map(|o| o.text)
+            .map_err(|e| e.to_string())
+    }
+
+    /// `llm.exclude` holds for every read tool: `read_file` refuses by name,
+    /// `list_directory` leaves the file out, and `search` never matches
+    /// inside it, so a secret cannot be read sideways.
+    #[tokio::test]
+    async fn every_read_tool_honours_the_exclude_list() {
+        let dir = Scratch::new("exclude");
+        std::fs::write(dir.path().join(".env"), "TOKEN=hunter2\n").unwrap();
+        std::fs::write(
+            dir.path().join("main.rs"),
+            "// hunter2 is not here\nfn main() {}\n",
+        )
+        .unwrap();
+        let (tools, _chats) = tools_over(dir.path());
+
+        let read = call(&tools, "read_file", serde_json::json!({"path": ".env"})).await;
+        let why = read.unwrap_err();
+        assert!(why.contains("llm.exclude"), "{why}");
+        assert!(!why.contains("hunter2"), "{why}");
+
+        let listed = call(&tools, "list_directory", serde_json::json!({}))
+            .await
+            .unwrap();
+        assert!(listed.contains("main.rs"), "{listed}");
+        assert!(!listed.contains(".env"), "{listed}");
+
+        let found = call(&tools, "search", serde_json::json!({"pattern": "TOKEN"}))
+            .await
+            .unwrap();
+        assert!(!found.contains("hunter2"), "{found}");
+        assert!(!found.contains(".env"), "{found}");
+    }
+
+    /// A link is judged by where it leads: one out of the project is refused
+    /// as outside it, and one in the project that names an excluded file is
+    /// refused as excluded, whatever the link itself is called.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_link_cannot_lead_a_read_out_of_bounds() {
+        let base = Scratch::new("links");
+        let (project, outside) = (base.path().join("project"), base.path().join("outside"));
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("secret.txt"), "outside text\n").unwrap();
+        std::fs::write(project.join(".env"), "TOKEN=hunter2\n").unwrap();
+        std::os::unix::fs::symlink(&outside, project.join("out")).unwrap();
+        std::os::unix::fs::symlink(project.join(".env"), project.join("notes.txt")).unwrap();
+        let (tools, _chats) = tools_over(&project);
+
+        let out = call(
+            &tools,
+            "read_file",
+            serde_json::json!({"path": "out/secret.txt"}),
+        )
+        .await;
+        let why = out.unwrap_err();
+        assert!(why.contains("outside the project"), "{why}");
+        assert!(!why.contains("outside text"), "{why}");
+
+        let named = call(
+            &tools,
+            "read_file",
+            serde_json::json!({"path": "notes.txt"}),
+        )
+        .await;
+        let why = named.unwrap_err();
+        assert!(why.contains("llm.exclude"), "{why}");
+        assert!(!why.contains("hunter2"), "{why}");
+    }
+
+    /// A command past its timeout is stopped and the model told so, rather
+    /// than the request waiting on it.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_command_past_its_timeout_is_stopped() {
+        let dir = Scratch::new("timeout");
+        let (tools, _chats) = tools_over(dir.path());
+        let started = std::time::Instant::now();
+        let ran = call(
+            &tools,
+            "run_command",
+            serde_json::json!({"command": "sleep 30", "timeout_secs": 1}),
+        )
+        .await;
+        let why = ran.unwrap_err();
+        assert!(why.contains("still running after 1s"), "{why}");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(10),
+            "it waited {:?}",
+            started.elapsed()
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn a_new_file_under_a_linked_directory_resolves_through_the_link() {

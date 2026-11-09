@@ -202,21 +202,7 @@ pub fn a_chat_reply_lands_without_a_keypress<P: PeerUnderTest>() {
 pub fn an_ask_writes_its_answer_below<P: PeerUnderTest>() {
     let (mut peer, _log, _rt) =
         with_model::<P>("alpha beta\ngamma delta\nepsilon zeta\n", Vec::new(), "");
-    let keys = (*peer
-        .editor()
-        .services
-        .get::<lattice_ai::llm::modes::llm_mode::LlmKeysHandle>()
-        .expect("the llm keys"))
-    .clone();
-    // `llm-mode` binds its chords as it activates. The GUI peer's
-    // constructor leaves that activation to the actor's first
-    // `async_landed` wake, which fires right after boot; `settle` is that
-    // wake. Without it the first keys would arrive before any running peer
-    // could take them.
-    assert!(
-        settle(&mut peer, |_| keys.bound().is_some()),
-        "the llm chords were never bound"
-    );
+    chords_bound(&mut peer);
     press(&mut peer, "<Space>aaj");
     press(&mut peer, "destination=below explain<CR>");
     assert!(
@@ -225,6 +211,71 @@ pub fn an_ask_writes_its_answer_below<P: PeerUnderTest>() {
         text(&peer)
     );
     assert_eq!(text(&peer), "alpha beta\ngamma delta\ndone\nepsilon zeta\n");
+}
+
+/// Bind the llm chords before the first key. The GUI peer's constructor
+/// leaves `llm-mode`'s activation to the actor's first `async_landed` wake,
+/// which `settle` is.
+fn chords_bound<P: PeerUnderTest>(peer: &mut P) {
+    let keys = (*peer
+        .editor()
+        .services
+        .get::<lattice_ai::llm::modes::llm_mode::LlmKeysHandle>()
+        .expect("the llm keys"))
+    .clone();
+    assert!(
+        settle(peer, |_| keys.bound().is_some()),
+        "the llm chords were never bound"
+    );
+}
+
+/// `<leader>arj`, an instruction, then `:diff-accept`: the model's answer
+/// replaces the two lines, and focus is back in the source. The review opens
+/// on its own once the answer lands, through the peer's off-keystroke wake.
+pub fn an_accepted_rewrite_replaces_its_span<P: PeerUnderTest>() {
+    let (mut peer, _log, _rt) =
+        with_model::<P>("alpha beta\ngamma delta\nepsilon zeta\n", Vec::new(), "");
+    chords_bound(&mut peer);
+    let source = peer.editor().active_pane_buffer_id();
+    press(&mut peer, "<Space>arj");
+    press(&mut peer, "shorten it<CR>");
+    assert!(
+        settle(&mut peer, |p| p
+            .editor()
+            .programmatic_diff_accept_paths
+            .len()
+            == 1),
+        "the review never opened: {:?}",
+        peer.editor().last_message.as_ref().map(|m| m.text.clone())
+    );
+    press(&mut peer, ":diff-accept<CR>");
+    assert!(
+        settle(&mut peer, |p| buffer_text(p, source).starts_with("done")),
+        "not applied: {:?}",
+        buffer_text(&peer, source)
+    );
+    assert_eq!(buffer_text(&peer, source), "done\nepsilon zeta\n");
+    assert_eq!(
+        peer.editor().active_pane_buffer_id(),
+        source,
+        "back in the source"
+    );
+}
+
+/// `j<leader>as`: the buffer up to the cursor's line is sent as the
+/// question, with nothing typed first.
+pub fn send_sends_the_buffer_up_to_the_cursor<P: PeerUnderTest>() {
+    let (mut peer, log, _rt) = with_model::<P>("first\nsecond\nthird\n", Vec::new(), "");
+    chords_bound(&mut peer);
+    press(&mut peer, "j<Space>as");
+    assert!(
+        settle(&mut peer, |_| log.lock().unwrap().len() == 1),
+        "nothing was sent: {:?}",
+        peer.editor().last_message.as_ref().map(|m| m.text.clone())
+    );
+    let sent = log.lock().unwrap()[0].to_string();
+    assert!(sent.contains("first\\nsecond"), "{sent}");
+    assert!(!sent.contains("third"), "below the cursor stays: {sent}");
 }
 
 /// A command the model wants to run asks first: the question opens in its

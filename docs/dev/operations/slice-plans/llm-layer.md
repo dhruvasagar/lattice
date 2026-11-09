@@ -892,10 +892,17 @@ Fix now (clear defects, one commit each):
 - ✅ R.9 **Docs**: CHANGELOG still says `R` requests; the design chord table omits `C i q L k`;
   the docs say nothing a command started outlives it, which `setsid` defeats. Fixed: all three,
   in the CHANGELOG, `llm-layer.md`, both user docs and the `run_command` doc comment.
-- 📝 R.10 **Test gaps**: `llm.exclude` on `read_file`/`list_directory`/`search`; symlink
+- ✅ R.10 **Test gaps**: `llm.exclude` on `read_file`/`list_directory`/`search`; symlink
   confinement end to end; `exclude` refused from a project config; the `run_command`
   timeout; `:llm-send` on an empty buffer; the `apply_if_unchanged` race (needs a seam);
-  rewrite-accept and `:llm-send` in the peer-conformance suite.
+  rewrite-accept and `:llm-send` in the peer-conformance suite. Closed:
+  `every_read_tool_honours_the_exclude_list`, `a_link_cannot_lead_a_read_out_of_bounds`,
+  `a_command_past_its_timeout_is_stopped` (the real `LlmChats::excluded` wiring);
+  `send_in_an_empty_buffer_sends_nothing`; `a_key_between_the_read_and_the_write_is_never_overwritten`
+  through a `between` parameter on `apply_to`, which fails under `UseAsGiven`; and
+  `an_accepted_rewrite_replaces_its_span` + `send_sends_the_buffer_up_to_the_cursor` in both
+  peers. The exclude tests fail with the exclude check stubbed out. "A project cannot set
+  `exclude`" moves to GR.1, whose decided rule (a project adds, never removes) replaces it.
 
 Security policy (Dhruva decided 2026-11-09, the recommended option each time):
 

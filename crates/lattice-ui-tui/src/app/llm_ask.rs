@@ -122,6 +122,21 @@ mod tests {
         assert_eq!(a.editor.active_buffer_id(), source, "focus stays");
     }
 
+    /// `:llm-send` in an empty buffer sends nothing and says why: no request
+    /// for an empty question, and no chat pane opened for it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn send_in_an_empty_buffer_sends_nothing() {
+        let (mut a, log) = app_with_model("");
+        submit_ex(&mut a, "llm-send");
+        // The refusal is the proof: it is synchronous, and the path that says
+        // it returns before any request is built. Asserted first, so a send
+        // cannot pass by being slower than the checks after it.
+        let said = message(&a);
+        assert!(said.contains("nothing"), "{said}");
+        assert_eq!(chat_panes(&a), 0, "no pane for nothing");
+        assert!(log.lock().unwrap().is_empty(), "a request went out");
+    }
+
     /// The transcript drain runs on the layer's runtime, not the editor's.
     /// The editor here runs on this test's `current_thread` runtime, as the
     /// real editor actor does; a drain spawned there would stall while the

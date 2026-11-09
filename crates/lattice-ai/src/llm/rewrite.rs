@@ -573,6 +573,7 @@ impl Task {
 }
 
 /// How [`apply_if_unchanged`] ended, when the span still exists.
+#[cfg_attr(test, derive(Debug, PartialEq, Eq))]
 enum Applied {
     /// The span held the reviewed text, and now holds the accepted text.
     Yes,
@@ -601,6 +602,24 @@ async fn apply_if_unchanged(
     accepted: &str,
 ) -> Option<Applied> {
     let handle = store.handle_for(buffer)?;
+    apply_to(&*handle, tracked, baseline, accepted, || async {}).await
+}
+
+/// [`apply_if_unchanged`] on one document. `between` runs after each read and
+/// before its write: nothing in production, the window a key can land in.
+/// It is a parameter so a test can put an edit exactly there; the race it
+/// pins cannot be timed from outside.
+async fn apply_to<F, Fut>(
+    handle: &dyn lattice_runtime::Document,
+    tracked: TrackedRangeId,
+    baseline: &str,
+    accepted: &str,
+    mut between: F,
+) -> Option<Applied>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = ()>,
+{
     let mut now = String::new();
     for _ in 0..APPLY_ATTEMPTS {
         let snap = handle.snapshot();
@@ -624,6 +643,7 @@ async fn apply_if_unchanged(
         };
         let version = snap.text_version;
         drop(snap);
+        between().await;
         match handle
             .apply_edit_batch_based_on(
                 vec![Edit::replace(Range::new(start, end), accepted)],
@@ -716,6 +736,52 @@ pub fn register(
 mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
     use super::*;
+
+    /// A key typed after the span was read and before the write: the write
+    /// is refused, the span read again, and the change reported, so the
+    /// review is shown again instead of the key being overwritten.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_key_between_the_read_and_the_write_is_never_overwritten() {
+        use lattice_protocol::position::Position;
+        let handle = lattice_runtime::handle::spawn_document(
+            BufferId(1),
+            lattice_core::Document::from_text("alpha beta\n"),
+            Arc::new(arc_swap::ArcSwap::from_pointee(
+                lattice_grammar::registry::CommandRegistry::new(),
+            )),
+        );
+        let tracked = TrackedRangeId::next();
+        handle
+            .update_tracked_ranges(vec![TrackedRangeChange::Track {
+                id: tracked,
+                bytes: 0..10,
+                stickiness: Stickiness::NeverGrows,
+            }])
+            .await
+            .unwrap();
+        let mut typed = false;
+        let out = apply_to(&handle, tracked, "alpha beta", "NEW", || {
+            let first = !typed;
+            typed = true;
+            let handle = handle.clone();
+            async move {
+                if first {
+                    handle
+                        .apply_edit(Edit::insert(Position::new(0, 2), "X"))
+                        .await
+                        .unwrap();
+                }
+            }
+        })
+        .await;
+        assert_eq!(out, Some(Applied::Changed("alXpha beta".to_string())));
+        assert_eq!(handle.snapshot().buffer.as_string(), "alXpha beta\n");
+
+        // With nothing in the window it applies.
+        let out = apply_to(&handle, tracked, "alXpha beta", "NEW", || async {}).await;
+        assert_eq!(out, Some(Applied::Yes));
+        assert_eq!(handle.snapshot().buffer.as_string(), "NEW\n");
+    }
 
     #[test]
     fn a_fenced_reply_is_unwrapped() {

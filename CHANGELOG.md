@@ -134,6 +134,9 @@
   (`:set messages.filter=info,rmcp=debug` to see it).
 
 ### Fixed
+- **OpenAI-compatible servers that end with a bare `[DONE]` still run
+  tools.** Tool calls followed by `[DONE]` and no `finish_reason` ended
+  the request as a finished answer, and the calls never ran.
 - **`:set` of a structured option no longer echoes malformed text.** Its
   TOML error now names only the line and column, as the config loader's
   does, so a token typed into it is not repeated back or logged.

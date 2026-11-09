@@ -297,6 +297,15 @@ fn openai_tool_calls_finished_with_stop_still_run() {
         ),
     );
     assert_eq!(ev.last(), Some(&StreamEvent::Done(StopReason::ToolUse)));
+    // Nor are they lost when `[DONE]` comes with no finish_reason at all.
+    let ev = run(
+        &openai(),
+        concat!(
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"a\",\"function\":{\"name\":\"f\",\"arguments\":\"{}\"}}]}}]}\n\n",
+            "data: [DONE]\n\n",
+        ),
+    );
+    assert_eq!(ev.last(), Some(&StreamEvent::Done(StopReason::ToolUse)));
 }
 
 #[test]

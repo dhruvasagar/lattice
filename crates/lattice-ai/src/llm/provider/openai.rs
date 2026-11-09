@@ -206,9 +206,13 @@ impl OpenAiDecoder {
             if ev.data.trim() == "[DONE]" {
                 self.done = true;
                 self.end_calls(&mut out);
-                out.push(StreamEvent::Done(
-                    self.finish.take().unwrap_or(StopReason::EndTurn),
-                ));
+                // A `[DONE]` with no finish_reason after calls still runs them.
+                let unsaid = if self.saw_call {
+                    StopReason::ToolUse
+                } else {
+                    StopReason::EndTurn
+                };
+                out.push(StreamEvent::Done(self.finish.take().unwrap_or(unsaid)));
                 continue;
             }
             let Ok(v) = serde_json::from_str::<Value>(&ev.data) else {

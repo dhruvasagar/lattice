@@ -62,7 +62,7 @@ use lattice_protocol::CancellationToken;
 use lattice_protocol::Event;
 use lattice_protocol::edit::EditDelta;
 use lattice_runtime::{EventBus, MessagePushed, MessagesRing, SnapshotCache};
-use lattice_syntax::{LangRegistry, SyntaxHandle};
+use lattice_syntax::SyntaxHandle;
 
 use crate::action::{Action, EchoMessage};
 use crate::actions::ActionIds;
@@ -967,12 +967,6 @@ pub struct Editor {
     /// every keystroke to answer a question this vector answers directly.
     /// Cleared when a prompt arms, and on submit / dismiss.
     pub chord_capture_seq: Vec<lattice_protocol::chord::KeyChord>,
-    /// Tree-sitter language registry. Services the document
-    /// buffer's `Syntax` and every `HelpBuffer` constructed
-    /// by `:describe-*` / `:apropos` / `:keymap` (help
-    /// bodies render with markdown highlighting + fenced-
-    /// block injections sourced from this same registry).
-    pub lang_registry: Arc<LangRegistry>,
     /// Per-document tree-sitter state. `None` when the
     /// document's language is `Plain` (no grammar bundled).
     /// Reparses run on a worker task; reads against the

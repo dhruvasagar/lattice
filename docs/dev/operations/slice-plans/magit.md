@@ -3957,6 +3957,11 @@ only as a "highlighting is wired" gate take `standard()`.
   no spans). `a_language_registered_after_the_gate_was_built_is_highlighted`
   for hunks. The boot pin flips to `lang_registry_is_not_a_service`.
 - **No bench:** one `ArcSwap` load per refresh replaces an `Arc` clone.
-- **Not in this slice:** `Editor::lang_registry` is the same snapshot,
-  held as a field; it feeds the inline-diff overlay's deletion-block syntax
-  and the in-memory proposal buffers. Retired in its own commit.
+- **Second commit: `Editor::lang_registry` retired.** The same snapshot,
+  held as a field. It fed the inline-diff overlay's deletion-block syntax
+  and `install_inmemory_syntax` (the pathless baseline pane of a proposed
+  edit), so both were plain for org; the search / problems views took it
+  only as their gate. Every reader takes `standard()` at its own moment.
+  Test: `open_programmatic_diff_highlights_a_language_registered_after_boot`.
+  With the service and the field both gone, nothing in the host holds a
+  registry across time.

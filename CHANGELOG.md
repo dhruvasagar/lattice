@@ -144,6 +144,7 @@
 
 ### Fixed
 - An org file opened at a revision (`C-c f v`, `:magit-find-file`) is highlighted again, as are org hunks in magit status, diff and commit buffers. They were plain because magit read a copy of the grammar set taken before the org plugin loaded.
+- The same stale copy left org deletion blocks in an inline diff, and the original side of a proposed edit (`openDiff`), uncoloured. Both are highlighted now.
 - A trusted LLM chat (`<C-t>`) no longer writes `.hg`, `.jj` or `.lattice` (editor and LLM config) without a diff. The new `llm.review` option lists what is always reviewed, as gitignore patterns (default `.git/`, `.hg/`, `.jj/`, `.lattice/`); a project's `review` list adds to it, and `.git` is reviewed whatever the list says.
 - A fast-streaming chat reply (LLM or agent) writes its buffer at most once a frame, rather than once per token, so a long transcript no longer re-renders dozens of times a second.
 - A command an LLM runs, and an MCP server lattice starts, no longer inherit the variables your providers' `api_key_env` name. Before, an allowed `env` or `echo $ANTHROPIC_API_KEY` sent the key to the model and into saved chats. To give a key to an MCP server on purpose, name it in that server's `env`.

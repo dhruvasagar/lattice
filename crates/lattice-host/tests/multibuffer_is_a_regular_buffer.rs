@@ -594,7 +594,7 @@ fn syntax_highlights_per_excerpt_use_source_language() {
     use std::sync::Arc;
 
     let mut editor = lattice_host::editor::Editor::boot(CoreDocument::from_text("scratch\n"));
-    let lr = editor.lang_registry.clone();
+    let lr = lattice_syntax::LangRegistry::standard().expect("standard lang registry");
 
     // Source A: Rust file — lang_registry will detect Lang::Rust from the path.
     let rust_text = "fn main() {\n    let x = 1;\n}\n";

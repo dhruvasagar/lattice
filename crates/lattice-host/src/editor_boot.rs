@@ -1382,9 +1382,10 @@ impl Editor {
             crate::host_generators::HistoryKindsGenerator,
         );
 
-        // `lang_registry` (one per Editor, shared between the document
-        // buffer's `Syntax`, every `HelpBuffer`, and the grep preview
-        // highlighter) was created above with the picker registry.
+        // `lang_registry` is the live registry as of boot: right for the
+        // initial document, which is parsed now. It is not kept — a plugin
+        // grammar registers later by replacing the live registry, so every
+        // later reader takes `LangRegistry::standard()` at its own moment.
         let lang = Lang::detect_from_path(document.path());
         // Build the underlying `Syntax` synchronously + seed it
         // with one parse of the initial text so the renderer's
@@ -2222,7 +2223,6 @@ impl Editor {
             pending_message_event_rx: Some(message_event_rx),
             option_change_rx: Some(option_change_rx),
             pending_catalog_change_rx: Some(catalog_change_rx),
-            lang_registry: lang_registry.clone(),
             syntax,
             last_parsed_text_version,
             picker_registry: picker_registry.clone(),

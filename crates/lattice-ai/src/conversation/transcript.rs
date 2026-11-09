@@ -31,6 +31,12 @@ use crate::conversation::{
     project_conversation_with,
 };
 
+/// The shortest gap between two writes a stream makes into a buffer: one
+/// frame at 60 Hz. A model streams tokens faster than the screen repaints;
+/// writing each would re-project, re-highlight and repaint for frames nobody
+/// sees. The chat drain and inline answers both pace on it.
+pub const FRAME: std::time::Duration = std::time::Duration::from_millis(16);
+
 /// Provider id of the conversation headerline. A fixed tag so the guard can
 /// unregister it on teardown.
 pub const HEADERLINE_PROVIDER_ID: ProviderId = 0x4155_0002;
@@ -477,12 +483,19 @@ pub async fn bind(b: TranscriptBinding<'_>) -> TranscriptGuard {
 
     let drain_anchors = anchors.clone();
     runtime.spawn(async move {
+        // When the buffer was last written: the next write waits out the rest
+        // of the frame, and what arrives meanwhile joins it (design §9: at
+        // most one write per frame). The first write of a burst goes at once.
+        let mut last_write: Option<tokio::time::Instant> = None;
         let wanted = |ev: &ConversationUpdated| {
             only_session
                 .as_ref()
                 .is_none_or(|session| *session == ev.session)
         };
         while let Some(first) = rx.recv().await {
+            if let Some(at) = last_write {
+                tokio::time::sleep_until(at + FRAME).await;
+            }
             // Coalesce a burst of updates into one re-projection.
             let mut relevant = wanted(&first);
             while let Ok(ev) = rx.try_recv() {
@@ -514,6 +527,7 @@ pub async fn bind(b: TranscriptBinding<'_>) -> TranscriptGuard {
             // user's in-progress prompt is left untouched.
             let clear_prompt = submissions > last_submissions;
             let landed = reproject(&handle, &last, &new, clear_prompt).await;
+            last_write = Some(tokio::time::Instant::now());
             headerline_version.fetch_add(1, Ordering::Release);
 
             // Wake the editor actor now that the edit has LANDED, so the update

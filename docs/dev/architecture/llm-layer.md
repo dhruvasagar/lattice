@@ -645,7 +645,9 @@ otherwise. Amending a buried entry was rejected, because it breaks linear undo. 
 redo stack is cleared by a stream write, as by any edit.
 
 **Pacing.** Chunks coalesce to at most one write per frame interval on the off-thread
-task. Only the tail changes, so the keystroke contract holds; syntax may catch up. A
+task: `conversation::transcript::FRAME` (16 ms), shared by the chat drain (and so by ACP
+conversations) and inline answers. A burst's first write goes at once; what arrives
+within the frame after it joins the next. Only the tail changes, so the keystroke contract holds; syntax may catch up. A
 bench covers sustained streaming beside typing.
 
 ## 10. Shape (draft)

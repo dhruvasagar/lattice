@@ -53,8 +53,9 @@ use super::operators::{AskSource, echo};
 use super::settings::RequestOverrides;
 use crate::conversation::Block;
 
-/// The shortest gap between two writes into the buffer: one frame at 60 Hz.
-pub const FRAME: Duration = Duration::from_millis(16);
+/// The shortest gap between two writes into the buffer: one frame at 60 Hz,
+/// the same pace as the chat transcript.
+pub const FRAME: Duration = crate::conversation::transcript::FRAME;
 
 /// The line an interrupted answer ends with.
 pub const INTERRUPTED_MARKER: &str = "[interrupted]";

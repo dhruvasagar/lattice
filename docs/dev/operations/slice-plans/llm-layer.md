@@ -861,8 +861,10 @@ Fix now (clear defects, one commit each):
   `a_chat_reply_lands_while_the_editor_thread_is_busy` (fails on the old code). The ACP
   conversation mode has the same pre-existing pattern (`acp/conversation_mode.rs`), outside
   this layer.
-- 📝 R.2 **Chat streaming has no frame pacing** (design §9 promises at most one write per
-  frame). The drain coalesces only what is already queued.
+- ✅ R.2 **Chat streaming has no frame pacing** (design §9 promises at most one write per
+  frame). The drain coalesces only what is already queued. Fixed: the shared drain waits out the frame after
+  each write; one `FRAME` constant for chat and inline. `a_fast_stream_is_written_at_most_once_a_frame`
+  (60 writes in 130 ms without the wait).
 - ✅ R.3 **Operators, undo and redo do not record the seen text version**, so the next key's
   rebase over streamed appends is skipped (LL.13a reopened after any `dd`). Also: the map
   is never cleared when a buffer is removed. Fixed: `Editor::record_seen_text_version` on

@@ -154,6 +154,46 @@ mod tests {
         );
     }
 
+    /// A reply streaming faster than the screen repaints is written at most
+    /// once a frame (design §9): 60 deltas a millisecond apart become a
+    /// handful of writes, not 60 re-projections, and the text is all there.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_fast_stream_is_written_at_most_once_a_frame() {
+        use lattice_ai::conversation::Role;
+        use lattice_ai::conversation::transcript::FRAME;
+        let (mut a, _log) = app_with_model("scratch\n");
+        submit_ex(&mut a, "llm");
+        let chat = a.editor.active_buffer_id();
+        assert!(settle(&mut a, |a| chats(a).for_buffer(chat).is_some()).await);
+        let session = chats(&a).for_buffer(chat).unwrap();
+        let doc = a.editor.buffers.document_handle(chat).unwrap();
+        // Let activation's own writes land before counting.
+        assert!(settle(&mut a, |_| doc.text().contains("> ")).await);
+        tokio::time::sleep(FRAME * 2).await;
+        let before = doc.snapshot().text_version;
+
+        let started = std::time::Instant::now();
+        for i in 0..60 {
+            session.store.mutate(&session.key, |c| {
+                c.extend_text(Role::Assistant, &format!("t{i} "))
+            });
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+        let streamed = started.elapsed();
+        assert!(
+            settle(&mut a, |_| doc.text().contains("t59 ")).await,
+            "the last delta never landed: {}",
+            doc.text()
+        );
+        let writes = doc.snapshot().text_version - before;
+        let allowed = (streamed.as_millis() / FRAME.as_millis()) as u64 + 3;
+        assert!(
+            writes <= allowed,
+            "{writes} writes in {streamed:?}; at most one a frame allows {allowed}"
+        );
+        assert!(doc.text().contains("t0 t1 t2 "), "{}", doc.text());
+    }
+
     /// In a chat, `:llm-send` sends its prompt, as `<CR>` does.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn send_in_a_chat_sends_its_prompt() {

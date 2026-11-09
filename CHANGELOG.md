@@ -134,6 +134,11 @@
   (`:set messages.filter=info,rmcp=debug` to see it).
 
 ### Fixed
+- **A chat's tool and reasoning folds survive its mode being
+  re-activated.** When a chat or agent conversation buffer's mode was
+  activated again, the old activation's cleanup, running late, removed
+  the new activation's fold sources, so `za` and the folded blocks
+  stopped working in that buffer.
 - **`<Tab>` inside a `:/pattern` range no longer appends a command to the
   pattern.** Since `<Tab>` learned to complete after a range, `:/TODO<Tab>`
   took the open pattern for a finished range and offered every command

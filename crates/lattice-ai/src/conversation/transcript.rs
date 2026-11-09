@@ -359,16 +359,18 @@ pub struct TranscriptGuard {
 
 impl Drop for TranscriptGuard {
     fn drop(&mut self) {
+        // Only the activation that still owns the buffer tears down its
+        // buffer-level registrations. A re-activation seeded a newer anchor and
+        // registered its own headerline and fold sources, under the same ids
+        // (the headerline's is fixed, the fold sources' are per buffer and
+        // kind), and an old guard dropping late must not remove those.
+        if !self.anchors.remove_if(self.buffer_id, self.generation) {
+            return;
+        }
         for (svc, id) in self.fold_registrations.drain(..) {
             svc.remove_source(id);
         }
-        // Only the activation that still owns the buffer tears down its
-        // buffer-level registrations. A re-activation seeded a newer anchor and
-        // registered its own headerline (under the same fixed provider id), and
-        // an old guard dropping late must not unregister that one.
-        if self.anchors.remove_if(self.buffer_id, self.generation)
-            && let Some(registrar) = self.headerline.take()
-        {
+        if let Some(registrar) = self.headerline.take() {
             registrar.unregister(self.buffer_id, HEADERLINE_PROVIDER_ID);
         }
     }
@@ -606,6 +608,43 @@ mod tests {
             anchors.editable_tail(b).unwrap().first_editable_line,
             Some(9)
         );
+    }
+
+    /// The fold sources are registered under per-buffer ids, so a
+    /// re-activation's replace the old ones; the old guard dropping late
+    /// must not remove them. The owner's drop does.
+    #[test]
+    fn a_late_old_guard_leaves_the_new_fold_sources() {
+        #[derive(Default)]
+        struct Folds(std::sync::Mutex<Vec<lattice_core::ProviderId>>);
+        impl lattice_core::FoldOverlayService for Folds {
+            fn add_source(
+                &self,
+                _: Arc<dyn lattice_core::FoldSource>,
+                _: BufferId,
+            ) -> lattice_core::ProviderId {
+                lattice_core::ProviderId(0)
+            }
+            fn remove_source(&self, id: lattice_core::ProviderId) {
+                self.0.lock().unwrap().push(id);
+            }
+        }
+        let folds = Arc::new(Folds::default());
+        let anchors = PromptAnchors::default();
+        let b = BufferId(1);
+        let id = lattice_core::ProviderId(super::super::tool_fold::TOOL_FOLD_NAMESPACE | 1);
+        let guard = |generation| {
+            let mut g = TranscriptGuard::for_test(&anchors, b, generation);
+            g.fold_registrations
+                .push((folds.clone() as lattice_core::FoldOverlayServiceHandle, id));
+            g
+        };
+        let old = guard(anchors.seed(b, 3));
+        let new = guard(anchors.seed(b, 9));
+        drop(old);
+        assert!(folds.0.lock().unwrap().is_empty(), "the new sources stay");
+        drop(new);
+        assert_eq!(*folds.0.lock().unwrap(), [id], "the owner removes them");
     }
 
     /// The old activation's drain, still running, must not move the new anchor.

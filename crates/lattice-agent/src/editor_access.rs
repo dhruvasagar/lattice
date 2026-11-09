@@ -343,9 +343,51 @@ fn core_id(id: DocumentId) -> lattice_core::BufferId {
 }
 
 /// A `file://` URI for `path`. Used by adapters building a selection result
-/// (`lattice_ai::mcp::reads::selection_result`) alongside `file_path`.
+/// (`lattice_ai::mcp::reads::selection_result`) alongside `file_path`, and
+/// for the open-editor and workspace-folder lists.
+///
+/// The path is percent-encoded as a URI path (RFC 3986): every byte except
+/// the unreserved set, the sub-delimiters, `:`, `@` and `/` is written
+/// `%XX`, so a space, `#`, `?`, `%` or a non-ASCII name does not end the
+/// path early or read as a query or fragment. Windows separators become
+/// `/`, and a drive path gets the third slash (`file:///C:/x`).
 pub fn path_to_uri(path: &Path) -> String {
-    format!("file://{}", path.display())
+    let display = path.to_string_lossy().replace('\\', "/");
+    let mut uri = String::with_capacity(display.len() + 8);
+    uri.push_str(if display.starts_with('/') {
+        "file://"
+    } else {
+        "file:///"
+    });
+    for &b in display.as_bytes() {
+        let keep = b.is_ascii_alphanumeric()
+            || matches!(
+                b,
+                b'-' | b'.'
+                    | b'_'
+                    | b'~'
+                    | b'!'
+                    | b'$'
+                    | b'&'
+                    | b'\''
+                    | b'('
+                    | b')'
+                    | b'*'
+                    | b'+'
+                    | b','
+                    | b';'
+                    | b'='
+                    | b':'
+                    | b'@'
+                    | b'/'
+            );
+        if keep {
+            uri.push(b as char);
+        } else {
+            uri.push_str(&format!("%{b:02X}"));
+        }
+    }
+    uri
 }
 
 /// Absolute byte offset of `pos` within `text` (clamped to `text.len()`).

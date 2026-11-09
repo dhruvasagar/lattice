@@ -76,7 +76,7 @@ pub fn open_editors_result(editors: &[(String, bool)]) -> Value {
         .map(|(path, active)| {
             json!({
                 "filePath": path,
-                "uri": format!("file://{path}"),
+                "uri": path_to_uri(Path::new(path)),
                 "isActive": active,
             })
         })
@@ -91,7 +91,7 @@ pub fn workspace_folders_result(folders: &[String]) -> Value {
         .map(|f| {
             json!({
                 "path": f,
-                "uri": format!("file://{f}"),
+                "uri": path_to_uri(Path::new(f)),
                 "name": Path::new(f).file_name().and_then(|n| n.to_str()).unwrap_or(f),
             })
         })
@@ -243,6 +243,31 @@ mod tests {
         assert_eq!(editors.len(), 1, "synthetic (no-path) buffer excluded");
         assert_eq!(editors[0]["filePath"], "/a.rs");
         assert_eq!(editors[0]["isActive"], true);
+    }
+
+    /// A path with a space, `#`, `%` or a non-ASCII name is percent-encoded
+    /// in every URI the agent is sent, so the URI names the same file. Raw,
+    /// `#` read as a fragment and cut the path there.
+    #[test]
+    fn uris_are_percent_encoded() {
+        let odd = "/w/my proj/#1 50%/naïve.rs";
+        let want = "file:///w/my%20proj/%231%2050%25/na%C3%AFve.rs";
+        let sel = Selection {
+            anchor: Position::new(0, 0),
+            head: Position::new(0, 0),
+            visual: None,
+        };
+        let v = selection_result(Some(Path::new(odd)), "", Some(&sel));
+        assert_eq!(v["fileUrl"], want);
+        let v = open_editors_result(&[(odd.to_string(), true)]);
+        assert_eq!(v["editors"][0]["uri"], want);
+        assert_eq!(v["editors"][0]["filePath"], odd, "the path stays as it is");
+        let v = workspace_folders_result(&["/w/my proj".to_string()]);
+        assert_eq!(v["folders"][0]["uri"], "file:///w/my%20proj");
+        assert_eq!(
+            path_to_uri(Path::new("C:\\Users\\me\\a b.rs")),
+            "file:///C:/Users/me/a%20b.rs"
+        );
     }
 
     #[test]

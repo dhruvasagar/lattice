@@ -134,6 +134,10 @@
   (`:set messages.filter=info,rmcp=debug` to see it).
 
 ### Fixed
+- **Claude Code is sent valid file URIs for paths with spaces, `#`, `%`
+  or non-ASCII names.** The selection, open-editor and workspace-folder
+  replies wrote `file://` plus the raw path, so a `#` cut the path short
+  and a space made the URI invalid.
 - **The llm chords say when they could not be bound at all.** If the
   `leader` did not make a valid key sequence with `llm.prefix` when
   `llm-mode` first started, the warning said the chords "stay where they

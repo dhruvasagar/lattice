@@ -134,6 +134,11 @@
   (`:set messages.filter=info,rmcp=debug` to see it).
 
 ### Fixed
+- **Completion ranks a word that starts with what you typed above one
+  that merely contains it.** `:sor<Tab>` listed every
+  `absorb-operator-*` action before `table-sort`, because a match in the
+  middle of a word scored the same as one at the start of a word. This
+  applies to the command line, insert completion and pickers alike.
 - **A rate-limited or overloaded LLM request is retried.** HTTP 429, 502,
   503, 504 and 529 used to fail the request at once. It is now sent again
   up to twice, waiting as long as the provider asks (or a few seconds),

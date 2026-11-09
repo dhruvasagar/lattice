@@ -38,6 +38,9 @@ use crate::llm::settings::RequestOverrides;
 use lattice_grammar::args::{ArgValue, Args};
 
 /// `gf` on the text an ask sent: go back to where it came from.
+/// The chat prompt's send action (`<CR>`, and `:llm-send` in a chat).
+pub const ACTION_CHAT_SEND: &str = "action:llm-chat-send";
+
 const ACTION_GOTO_SOURCE: &str = "action:llm-chat-goto-source";
 
 /// The yes half of the confirm shown when `@profile` would widen tools.
@@ -145,7 +148,7 @@ impl Mode for LlmChatMode {
         let mut handlers = menu::handlers(&self.chats);
         handlers.extend([
             ActionHandlerContribution {
-                action_name: "action:llm-chat-send",
+                action_name: ACTION_CHAT_SEND,
                 handler: send_handler(self.chats.clone(), self.anchors.clone()),
             },
             ActionHandlerContribution {
@@ -465,7 +468,7 @@ fn interrupt_handler(chats: LlmChatsHandle) -> ActionHandler {
 pub fn register_actions(registry: &mut lattice_grammar::CommandRegistry) {
     use lattice_grammar::registry::ActionSpec;
     for (name, doc) in [
-        ("action:llm-chat-send", "llm-chat: send the prompt."),
+        (ACTION_CHAT_SEND, "llm-chat: send the prompt."),
         (
             "action:llm-chat-newline",
             "llm-chat: insert a newline in the prompt.",

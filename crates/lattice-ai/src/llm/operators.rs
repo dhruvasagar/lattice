@@ -724,6 +724,7 @@ pub fn register_ex(
     use lattice_grammar::command::LatencyClass;
     use lattice_grammar::registry::{ExCommandSpec, SurfaceForm};
     use lattice_protocol::position::Position;
+    let (send_chats, send_asks, send_store) = (chats.clone(), asks.clone(), store.clone());
     registry.register_ex_command(
         "llm-ask",
         "Ask a language model about the range's lines (the current line without a range), \
@@ -769,6 +770,53 @@ pub fn register_ex(
                     Some(&store),
                     source,
                     &instruction,
+                    false,
+                ))
+            }),
+            args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+    registry.register_ex_command(
+        "llm-send",
+        "Send the buffer from its first line to the cursor's line to a language model, as the \
+         prompt itself: write a question in any buffer, then `<leader>as`. The answer goes \
+         where `llm.destination` says (a chat beside this buffer by default). In a chat, \
+         sends its prompt, as `<CR>` does.",
+        ExCommandSpec {
+            latency_class: LatencyClass::Reflex,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Arc::new(lattice_agent::commands::parse_no_args),
+            apply: Arc::new(move |ctx| {
+                if send_chats.for_buffer(ctx.buffer_id).is_some() {
+                    return Ok(Effect::InvokeCommand {
+                        id: super::modes::chat::ACTION_CHAT_SEND.to_string(),
+                        args: Args::None,
+                    });
+                }
+                let last = ctx.cursor.line;
+                let text = super::commands::lines_text(ctx, 0, last);
+                if text.trim().is_empty() {
+                    return Ok(Effect::Echo {
+                        level: EchoLevel::Info,
+                        text: "llm: nothing to send (the buffer is empty up to the cursor)"
+                            .to_string(),
+                    });
+                }
+                let source = AskSource {
+                    buffer: ctx.buffer_id,
+                    range: Range::new(Position::new(0, 0), Position::new(last + 1, 0)),
+                    text,
+                    register: lattice_grammar::Register::Unnamed,
+                };
+                // No instruction: the text is the prompt.
+                Ok(ask_effect(
+                    &send_chats,
+                    &send_asks,
+                    Some(&send_store),
+                    source,
+                    "",
                     false,
                 ))
             }),

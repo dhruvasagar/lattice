@@ -169,6 +169,15 @@ The keys are `model`, `profile`, `temperature`, `max_tokens` and the other
 because a system prompt is a paragraph and has `:llm-system`. A bad value
 is named and nothing is sent.
 
+## Sending a buffer as the prompt
+
+`:llm-send` (`<leader>as`) sends the buffer from its first line to the line the cursor
+is on, and that text is the whole prompt: there is no instruction to type. Write a
+question in a notes file, a scratch buffer or a markdown draft, put the cursor on its
+last line, and send it. What is below the cursor is not sent. The answer goes where
+`llm.destination` says, a chat beside you by default, and the focus stays where it is.
+In a chat, `:llm-send` sends the chat's prompt, as `<CR>` does.
+
 ## Rewriting text
 
 `<leader>ar` is an operator that changes text, and it never changes it
@@ -248,6 +257,7 @@ or `:set llm.prefix=<C-c>.` for this session. The chords move at once:
 | `R{motion}` | Rewrite, opening `:llm-menu` first |
 | `c{motion}` | Attach the text to the context |
 | `l` | `:llm`, open a chat |
+| `s` | `:llm-send`, send the buffer up to the cursor |
 | `m` | `:llm-menu` |
 | `C` | `:llm-context` |
 | `i` | `:llm-inspect` |

@@ -88,6 +88,58 @@ mod tests {
         );
     }
 
+    /// An editor whose model is the mock, and what the mock was sent.
+    fn app_with_model(text: &str) -> (App, crate::app::llm_mock::Log) {
+        let (addr, log) = crate::app::llm_mock::serve(Vec::new());
+        let a = app_with(text, 10);
+        let toml = format!(
+            "[llm.providers.mock]\nkind = \"openai-compatible\"\nbase_url = \"http://{addr}/v1\"\nmodel = \"mock-model\"\n"
+        );
+        chats(&a).set_config(lattice_ai::llm::config::LlmConfig::from_table(
+            &toml.parse::<toml::Table>().unwrap(),
+        ));
+        (a, log)
+    }
+
+    /// `<leader>as`: the buffer from its first line to the cursor's is the
+    /// prompt, sent with no instruction prompt; what is below the cursor is
+    /// not sent, and the answer opens beside the buffer.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn send_sends_the_buffer_up_to_the_cursor() {
+        let (mut a, log) = app_with_model("first\nsecond\nthird\n");
+        let source = a.editor.document_buffer_id;
+        press_chars(&mut a, "j as");
+        assert!(!prompt_is_open(&a), "no instruction prompt");
+        assert!(
+            settle_woken(&mut a, |_| log.lock().unwrap().len() == 1).await,
+            "nothing was sent: {}",
+            message(&a)
+        );
+        let sent = log.lock().unwrap()[0].to_string();
+        assert!(sent.contains("first\\nsecond"), "{sent}");
+        assert!(!sent.contains("third"), "below the cursor stays: {sent}");
+        assert_eq!(chat_panes(&a), 1, "the answer has a pane");
+        assert_eq!(a.editor.active_buffer_id(), source, "focus stays");
+    }
+
+    /// In a chat, `:llm-send` sends its prompt, as `<CR>` does.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn send_in_a_chat_sends_its_prompt() {
+        let (mut a, log) = app_with_model("scratch\n");
+        submit_ex(&mut a, "llm");
+        let chat = a.editor.active_buffer_id();
+        assert!(settle(&mut a, |a| chats(a).for_buffer(chat).is_some()).await);
+        press_chars(&mut a, "ihello there");
+        key(&mut a, KeyCode::Esc);
+        submit_ex(&mut a, "llm-send");
+        assert!(
+            settle_woken(&mut a, |_| log.lock().unwrap().len() == 1).await,
+            "nothing was sent: {}",
+            message(&a)
+        );
+        assert!(log.lock().unwrap()[0].to_string().contains("hello there"));
+    }
+
     #[test]
     fn escape_from_the_prompt_sends_nothing() {
         let mut a = app_with(TEXT, 10);

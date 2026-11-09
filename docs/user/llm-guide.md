@@ -253,6 +253,10 @@ after their source, `*llm:main.rs:4*`.
 `.` does not repeat an ask (an ask is not a change, as `y` is not). It does repeat a
 rewrite.
 
+`:llm-send` (`<leader>as`) needs no motion and no instruction: the buffer from its first
+line to the cursor's line is the prompt. Write a question in any buffer and send it; what
+is below the cursor stays. In a chat it sends the prompt, as `<CR>` does.
+
 ### Destinations
 
 Where the answer goes is the `destination` setting. A chat is the default.
@@ -350,6 +354,7 @@ prefix = "<C-c>."
 | `R{motion}` | Rewrite, opening `:llm-menu` first |
 | `c{motion}` | Attach text to the context |
 | `l` | `:llm` |
+| `s` | `:llm-send` |
 | `m` | `:llm-menu` |
 | `C` | `:llm-context` |
 | `i` | `:llm-inspect` |

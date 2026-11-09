@@ -830,8 +830,9 @@ gate has run**: CI is the full suite once the branch is pushed.
   holds an ask or a rewrite (`MenuHold`), and its `a` row opens the matching prompt.
   `:llm-requests` moved from `<leader>aR` to `<leader>aq` to free the chord the design gave
   the pair. Dhruva decided 2026-11-09.
-- 📝 `:llm-send` / `<leader>as`: send the buffer up to the cursor. Designed in §2, never built.
-  Dhruva, 2026-11-09: build it.
+- ✅ `:llm-send` / `<leader>as`: the buffer from line 1 to the cursor's line is the prompt (an
+  ask with no instruction, so destinations, `llm.exclude` and the size confirm all apply); in
+  a chat, it fires the chat's send action. Dhruva decided 2026-11-09.
 
 ### 3. Release review (after §1, §2 and §4 close; Dhruva approved the shape 2026-11-09)
 

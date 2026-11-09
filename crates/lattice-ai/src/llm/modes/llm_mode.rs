@@ -149,8 +149,9 @@ pub struct PrefixBindings {
 }
 
 /// The commands under the prefix, by name, in which-key's order.
-pub const PREFIX_COMMANDS: [(&str, &str); 7] = [
+pub const PREFIX_COMMANDS: [(&str, &str); 8] = [
     ("l", "llm"),
+    ("s", "llm-send"),
     ("m", "llm-menu"),
     ("C", "llm-context"),
     ("i", "llm-inspect"),

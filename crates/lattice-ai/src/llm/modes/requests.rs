@@ -55,14 +55,36 @@ impl LlmRequestsMode {
     }
 }
 
-/// Stops the refresher when the buffer closes or the mode is replaced.
+/// Stops the refresher when the buffer closes or the mode is replaced, and
+/// takes its subscription off the bus.
 pub struct LlmRequestsGuard {
     task: tokio::task::AbortHandle,
+    _sub: BusSubscription,
 }
 
 impl Drop for LlmRequestsGuard {
     fn drop(&mut self) {
         self.task.abort();
+    }
+}
+
+/// A bus subscription taken off the bus when this drops. Without it each
+/// view opened left its entry behind until the next event happened to find
+/// the channel closed.
+pub(crate) struct BusSubscription {
+    bus: Arc<EventBus>,
+    id: lattice_runtime::SubscriptionId,
+}
+
+impl BusSubscription {
+    pub(crate) fn new(bus: Arc<EventBus>, id: lattice_runtime::SubscriptionId) -> Self {
+        Self { bus, id }
+    }
+}
+
+impl Drop for BusSubscription {
+    fn drop(&mut self) {
+        self.bus.unsubscribe(self.id);
     }
 }
 
@@ -122,7 +144,10 @@ impl Mode for LlmRequestsMode {
             // is not missed: at worst it repaints the same text, which is
             // skipped.
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<RequestStateChanged>();
-            self.bus.subscribe_typed::<RequestStateChanged>(tx);
+            let sub = BusSubscription::new(
+                self.bus.clone(),
+                self.bus.subscribe_typed::<RequestStateChanged>(tx),
+            );
             let chats = self.chats.clone();
             let inline = self.inline.clone();
             paint(&handle, &chats, &inline).await;
@@ -135,6 +160,7 @@ impl Mode for LlmRequestsMode {
             });
             Ok(Some(LlmRequestsGuard {
                 task: task.abort_handle(),
+                _sub: sub,
             }))
         })
     }
@@ -160,21 +186,68 @@ async fn paint(handle: &Arc<dyn Document>, chats: &LlmChatsHandle, inline: &LlmI
 
 /// Make `handle`'s whole text `text`, if it is not already. `true` when it
 /// changed, so the caller wakes the editor. Shared by the llm layer's
-/// self-refreshing views (this list, `*llm-context*`, `*llm-inspect*`).
+/// self-refreshing views (this list, `*llm-context*`, `*llm-mcp*`).
+///
+/// Only the lines that differ are replaced, so the caret on a row that did
+/// not change stays where it is (a refresh while the user is moving to a
+/// row to `dd` it does not throw them back to the top). A failed edit is
+/// reported as no change.
 pub(crate) async fn replace_text(handle: &Arc<dyn Document>, text: String) -> bool {
     let snap = handle.snapshot();
-    if snap.buffer.as_string() == text {
+    let old = snap.buffer.as_string();
+    let Some(change) = changed_lines(&old, &text) else {
         return false;
+    };
+    let end = match change.end_line {
+        Some(line) => Position::new(line, 0),
+        None => {
+            let last = snap.buffer.rope_line_count().saturating_sub(1);
+            Position::new(
+                last,
+                snap.buffer.line(last).unwrap_or_default().len() as u32,
+            )
+        }
+    };
+    let range = Range::new(Position::new(change.start_line, 0), end);
+    handle
+        .apply_edit_batch(vec![Edit::replace(range, change.text)])
+        .await
+        .is_ok()
+}
+
+/// The part of a view's text a refresh replaces: whole lines from
+/// `start_line` up to `end_line` (exclusive; `None` is the end of the text),
+/// with `text` in their place.
+#[derive(Debug, PartialEq, Eq)]
+struct LineChange {
+    start_line: u32,
+    end_line: Option<u32>,
+    text: String,
+}
+
+/// The lines `old` and `new` do not share at their start and end, or `None`
+/// when they are the same.
+fn changed_lines(old: &str, new: &str) -> Option<LineChange> {
+    if old == new {
+        return None;
     }
-    let last = snap.buffer.rope_line_count().saturating_sub(1);
-    let end = Position::new(
-        last,
-        snap.buffer.line(last).unwrap_or_default().len() as u32,
-    );
-    let _ = handle
-        .apply_edit_batch(vec![Edit::replace(Range::new(Position::ZERO, end), text)])
-        .await;
-    true
+    let a: Vec<&str> = old.split_inclusive('\n').collect();
+    let b: Vec<&str> = new.split_inclusive('\n').collect();
+    let head = a.iter().zip(&b).take_while(|(x, y)| x == y).count();
+    let tail = a[head..]
+        .iter()
+        .rev()
+        .zip(b[head..].iter().rev())
+        // A line without its newline is the text's last; it only matches
+        // the other text's last line, which `rev` pairs it with.
+        .take_while(|(x, y)| x == y && x.ends_with('\n'))
+        .count();
+    let end = a.len() - tail;
+    Some(LineChange {
+        start_line: head as u32,
+        end_line: (tail > 0).then_some(end as u32),
+        text: b[head..b.len() - tail].concat(),
+    })
 }
 
 /// The listing's text: running requests in start order, then finished ones,
@@ -293,6 +366,58 @@ mod tests {
     use super::*;
     use crate::llm::request::RequestTarget;
     use lattice_core::BufferId;
+
+    /// A refresh replaces only the lines that changed, so a caret on an
+    /// unchanged row stays put.
+    #[test]
+    fn a_refresh_replaces_only_the_changed_lines() {
+        assert_eq!(changed_lines("a\nb\n", "a\nb\n"), None);
+        assert_eq!(
+            changed_lines("a\nb\nc\n", "a\nB\nc\n"),
+            Some(LineChange {
+                start_line: 1,
+                end_line: Some(2),
+                text: "B\n".into()
+            })
+        );
+        // A row added at the end: everything above is kept.
+        assert_eq!(
+            changed_lines("a\nb\n", "a\nb\nc\n"),
+            Some(LineChange {
+                start_line: 2,
+                end_line: None,
+                text: "c\n".into()
+            })
+        );
+        // A last line without a newline matches only a last line.
+        assert_eq!(
+            changed_lines("a\nb", "a\nb\nb"),
+            Some(LineChange {
+                start_line: 1,
+                end_line: None,
+                text: "b\nb".into()
+            })
+        );
+        // A row removed from the middle.
+        assert_eq!(
+            changed_lines("a\nb\nc\n", "a\nc\n"),
+            Some(LineChange {
+                start_line: 1,
+                end_line: Some(2),
+                text: String::new()
+            })
+        );
+    }
+
+    /// Closing the view takes its subscription off the bus.
+    #[test]
+    fn dropping_the_subscription_unsubscribes() {
+        let bus = Arc::new(EventBus::new());
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<RequestStateChanged>();
+        let id = bus.subscribe_typed::<RequestStateChanged>(tx);
+        drop(BusSubscription::new(bus.clone(), id));
+        assert!(!bus.unsubscribe(id), "already gone");
+    }
 
     fn info(id: u64, state: RequestState, label: &str) -> RequestInfo {
         RequestInfo {

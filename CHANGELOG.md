@@ -134,6 +134,12 @@
   (`:set messages.filter=info,rmcp=debug` to see it).
 
 ### Fixed
+- **`*llm-requests*`, `*llm-context*` and `*llm-mcp*` refresh without
+  moving you.** A refresh rewrote the whole buffer, so a request
+  finishing while you were moving to a row to `dd` sent the caret back to
+  the top. Only the changed lines are rewritten now. Closing
+  `*llm-requests*` or `*llm-mcp*` also releases its event subscription
+  instead of leaving it behind.
 - **One bug in a conversation update no longer breaks every chat after
   it.** A panic while a transcript was being updated left its lock
   poisoned, and from then on every render, permission menu and request

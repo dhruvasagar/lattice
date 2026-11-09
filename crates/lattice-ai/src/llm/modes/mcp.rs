@@ -24,7 +24,7 @@ use lattice_mode::{
 };
 use lattice_runtime::{Document, EventBus};
 
-use super::requests::replace_text;
+use super::requests::{BusSubscription, replace_text};
 use crate::llm::sink::LlmInlineHandle;
 use crate::llm::tools::mcp::{McpServersChanged, McpServersHandle, ServerState, ServerStatus};
 
@@ -60,6 +60,7 @@ impl LlmMcpMode {
 /// Stops the refresher when the buffer closes or the mode is replaced.
 pub struct LlmMcpGuard {
     task: tokio::task::AbortHandle,
+    _sub: BusSubscription,
 }
 
 impl Drop for LlmMcpGuard {
@@ -129,7 +130,10 @@ impl Mode for LlmMcpMode {
             // Subscribed before the first paint, so a change between the two
             // is not missed.
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<McpServersChanged>();
-            self.bus.subscribe_typed::<McpServersChanged>(tx);
+            let sub = BusSubscription::new(
+                self.bus.clone(),
+                self.bus.subscribe_typed::<McpServersChanged>(tx),
+            );
             let servers = self.servers.clone();
             let inline = self.inline.clone();
             paint(&handle, &servers, &inline).await;
@@ -141,6 +145,7 @@ impl Mode for LlmMcpMode {
             });
             Ok(Some(LlmMcpGuard {
                 task: task.abort_handle(),
+                _sub: sub,
             }))
         })
     }

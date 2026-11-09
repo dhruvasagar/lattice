@@ -688,8 +688,10 @@ impl MultibufferDocumentHandle {
             }
         }
 
-        let id = next_multibuffer_document_id();
         let buffer_id = BufferId::next();
+        // The view's document is addressed by its buffer's id, as every
+        // spawned document is (`Document::set_id`).
+        let id = DocumentId::new(u64::from(buffer_id.0));
         let row_translation = RowTranslation::build(&excerpts);
         // M.11 (2026-06-02): build the composed Document LOCALLY
         // from source content at construction time. From here on,
@@ -3772,11 +3774,6 @@ pub fn default_header_cells(excerpt: &Excerpt) -> Arc<[Cell]> {
 // ─────────────────────────────────────────────────────────────────
 // Internals
 // ─────────────────────────────────────────────────────────────────
-
-fn next_multibuffer_document_id() -> DocumentId {
-    static NEXT: AtomicU64 = AtomicU64::new(0x1000_0000_0000_0000);
-    DocumentId::new(NEXT.fetch_add(1, Ordering::Relaxed))
-}
 
 /// M.11 (2026-06-02): build the composed text from sources at
 /// initialization time. The result feeds `Document::from_text`

@@ -338,9 +338,23 @@ impl Document {
     }
 
     /// The process-unique id assigned at construction. Never reused within
-    /// a process; not stable across restarts.
+    /// a process; not stable across restarts. A document the host's buffer
+    /// registry holds is re-stamped with its buffer's id as it is spawned
+    /// (see [`Self::set_id`]).
     pub fn id(&self) -> DocumentId {
         self.id
+    }
+
+    /// Give the document the id its owner addresses it by.
+    ///
+    /// `lattice_runtime::spawn_document` calls this with the buffer's id, so
+    /// a buffer and its document share one id: what `DocumentOpened`,
+    /// `DocumentChanged` and `DocumentClosed` carry is the same number, and a
+    /// subscriber can map it back to the buffer without a registry lookup
+    /// (which a close cannot do, since the entry is already gone). Ids are
+    /// unique because buffer ids are; call it before the document is shared.
+    pub fn set_id(&mut self, id: DocumentId) {
+        self.id = id;
     }
 
     /// The file this document is backed by, or `None` for a scratch /

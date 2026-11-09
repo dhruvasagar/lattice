@@ -851,8 +851,13 @@ Every finding is verified before it is reported.
 
 ### 4. Found outside the branch (not LLM work; Dhruva, 2026-11-09: fix on this branch)
 
-- 📝 Nothing publishes `Event::DocumentClosed` in production, so the multibuffer,
-  LSP-references, magit and VCS close cleanups never run.
+- ✅ Nothing publishes `Event::DocumentClosed` in production, so the multibuffer,
+  LSP-references, diff and VCS close cleanups never run. Worse than it looked: the
+  document events used two id spaces (`DocumentOpened` the buffer id, `DocumentChanged` the
+  core counter), and diff's resolver searched the registry, which a close cannot do (the
+  entry is gone first). Dhruva chose one id space, 2026-11-09: `spawn_document` stamps the
+  buffer id on the document (multibuffer views likewise), diff converts instead of looking
+  up, and `Editor::remove_buffer` (all seven removal sites) publishes the close.
 - ✅ `lattice-multibuffer` does not build with `--no-default-features`. `clock_report` read
   scan-view state but was not gated with it; it is now, as is the scan-view test, and CI's
   `bench-compile` job type-checks the opt-out build on Linux.

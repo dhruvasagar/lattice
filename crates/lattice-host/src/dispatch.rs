@@ -5887,7 +5887,7 @@ impl Editor {
         for buf in &info.diff_buffers {
             self.virtual_row_providers
                 .unregister(*buf, REVIEW_HEADERLINE_PROVIDER_ID);
-            self.buffers.remove(*buf);
+            self.remove_buffer(*buf);
         }
     }
 
@@ -7597,8 +7597,8 @@ impl Editor {
                 let buf = self.pane_tree.active().buffer_id;
                 self.activate_buffer(buf);
             }
-            self.buffers.remove(left_id);
-            self.buffers.remove(right_id);
+            self.remove_buffer(left_id);
+            self.remove_buffer(right_id);
             self.set_message(EchoLevel::Error, format!("openDiff: {msg}"));
             drop(response);
             return signals;
@@ -9071,6 +9071,27 @@ impl Editor {
         self.forget_transient_buffer(prev);
     }
 
+    /// Take `id` out of the buffer registry and, if it held a document,
+    /// publish [`lattice_protocol::Event::DocumentClosed`] for it.
+    ///
+    /// The one way the editor removes a buffer, so every removal tells the
+    /// close subscribers (diff sessions, VCS, multibuffer sources and views,
+    /// LSP reference views, the agent state cache). Nothing published the
+    /// event before, and each of them kept its state for every closed
+    /// buffer until exit. The id is the buffer's own: a document is stamped
+    /// with it as it is spawned (`Document::set_id`), so a subscriber maps
+    /// it back with no registry lookup, which a close could not do.
+    fn remove_buffer(&mut self, id: BufferId) -> Option<crate::buffer_registry::BufferEntry> {
+        let entry = self.buffers.remove(id)?;
+        if entry.document().is_some() {
+            self.event_bus
+                .publish(lattice_protocol::Event::DocumentClosed {
+                    id: lattice_protocol::ids::DocumentId::new(u64::from(id.0)),
+                });
+        }
+        Some(entry)
+    }
+
     /// Remove a buffer the editor made for itself (a popup, a band, an
     /// ephemeral backing buffer) and
     /// everything kept per buffer for it. One list, so the sites cannot
@@ -9080,7 +9101,7 @@ impl Editor {
     /// closed) and one kept a deferred activation for a buffer that no
     /// longer exists. `:e!`'s swap does not use it: see there.
     fn forget_transient_buffer(&mut self, id: BufferId) {
-        self.buffers.remove(id);
+        self.remove_buffer(id);
         self.active_modes.remove(&id);
         self.deferred_mode_activations.retain(|(b, _)| *b != id);
         self.mode_guards
@@ -17256,7 +17277,7 @@ impl Editor {
                     // buffer's mode guards, and `lsp-mode`'s guard sends
                     // `didClose` for its URI, which the reloaded buffer
                     // has just opened on the same server.
-                    self.buffers.remove(old_id);
+                    self.remove_buffer(old_id);
                     self.active_modes.remove(&old_id);
                     self.deferred_mode_activations.retain(|(b, _)| *b != old_id);
                     self.buffer_locals.remove(&old_id);
@@ -26184,7 +26205,7 @@ impl Editor {
             .unwrap_or(self.document_buffer_id);
         let _ = self.activate_buffer(successor);
         let signals = self.drain_pending_renderer_signals();
-        self.buffers.remove(tree_id);
+        self.remove_buffer(tree_id);
         let new_kind = self.active_buffer;
         let new_id = self.active_pane_buffer_id();
         for pane in self.pane_tree.leaves_mut() {
@@ -43831,7 +43852,7 @@ impl Editor {
         // entry so the supervisor sees the URI go away while the
         // BufferId is still mapped.
         self.lsp_close_buffer(to_remove);
-        self.buffers.remove(to_remove);
+        self.remove_buffer(to_remove);
         // Drop the buffer's mode state and the guards its modes stashed, so
         // a mode's cleanup (an in-flight request, a subscription) runs on
         // `:bd` / KillBuffer, not only on an explicit deactivate.

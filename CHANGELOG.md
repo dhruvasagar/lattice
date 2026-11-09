@@ -137,6 +137,7 @@
   (`:set messages.filter=info,rmcp=debug` to see it).
 
 ### Fixed
+- Closing a buffer now releases what other parts of the editor kept for it: its diff session, its git-HEAD gutter diff, its place in multibuffer views and LSP reference views. The close event they listen for was never sent, so each closed buffer's state stayed until exit. **For plugins:** every document event (`document-opened`, `document-changed`, `document-saved`, `document-closed`, `selections-changed`) now carries the same id for a buffer, its buffer id; `document-changed` used to carry a different one.
 - `lattice-multibuffer` builds again with `--no-default-features`: the clock report, which only scan views use, is now gated with them, and CI checks the opt-out build.
 - Accepting an llm rewrite can no longer overwrite a key typed in the rewritten text at the moment it applies. The check that the text is unchanged and the replacement now happen together, and a key landing between them makes the rewrite read the text again.
 - An operator (`dd`, `cw`, `>>`...) or a format run while an llm answer streams into the same buffer now acts on the text the cursor is on. It used to act on the line the cursor had been on before the latest chunk arrived, so `dd` could delete part of the answer.

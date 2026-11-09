@@ -87,8 +87,11 @@ pub enum Event {
     /// `id` (the LSP references provider, multibuffer excerpts, diff and VCS
     /// caches all do).
     ///
-    /// Note: the variant is subscribed to and mirrored in WIT, but no
-    /// production code path publishes it yet.
+    /// Published whenever the host removes a document buffer from its
+    /// registry (`:bd`, a mode killing its buffer, a dismissed popup, a
+    /// review's throwaway buffers). It arrives after the entry is gone, so a
+    /// subscriber maps `id` back from state it kept itself; `id` is the
+    /// buffer's id widened (see [`DocumentId`]).
     DocumentClosed {
         /// The closed document.
         id: DocumentId,

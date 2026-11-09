@@ -79,9 +79,16 @@ id!(
     /// undo history, selections and path — for its whole lifetime.
     ///
     /// Minted by `lattice-core` from a process-wide counter starting at 1, so
-    /// ids are unique within a process and never reused. This is the id
-    /// document events ([`Event::DocumentChanged`], [`Event::DocumentSaved`],
-    /// [`Event::SelectionsChanged`], ...) carry.
+    /// ids are unique within a process and never reused. A document the
+    /// host's buffer registry holds is re-stamped as it is spawned with its
+    /// buffer's id, widened (`DocumentId::new(buffer.0 as u64)`), so for those
+    /// a document and its buffer share one number. That is the id every
+    /// document event ([`Event::DocumentOpened`], [`Event::DocumentChanged`],
+    /// [`Event::DocumentSaved`], [`Event::DocumentClosed`],
+    /// [`Event::SelectionsChanged`], ...) carries.
+    ///
+    /// [`Event::DocumentOpened`]: crate::Event::DocumentOpened
+    /// [`Event::DocumentClosed`]: crate::Event::DocumentClosed
     ///
     /// [`Event::DocumentChanged`]: crate::Event::DocumentChanged
     /// [`Event::DocumentSaved`]: crate::Event::DocumentSaved

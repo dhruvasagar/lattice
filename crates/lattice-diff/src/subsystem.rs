@@ -391,6 +391,22 @@ pub trait DocumentBufferResolver: Send + Sync + 'static + std::fmt::Debug {
     fn buffer_id_for(&self, document_id: DocumentId) -> Option<BufferId>;
 }
 
+/// The production resolver: a buffer's document is addressed by the
+/// buffer's own id (`lattice_core::Document::set_id`, stamped as the
+/// document is spawned), so this is a conversion, not a lookup.
+///
+/// It was a search of the live buffer registry. That cannot resolve a
+/// close: the drain runs after the entry has been removed, so a closed
+/// buffer's session was never dropped.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct DocumentIdIsBufferId;
+
+impl DocumentBufferResolver for DocumentIdIsBufferId {
+    fn buffer_id_for(&self, document_id: DocumentId) -> Option<BufferId> {
+        u32::try_from(document_id.raw()).ok().map(BufferId)
+    }
+}
+
 // ──────────────────────────────────────────────────────────────
 // D.2.c: Lazy per-session Debouncer
 // ──────────────────────────────────────────────────────────────

@@ -116,9 +116,14 @@ impl Default for RopeDocumentHandle {
 /// actor's `recv` loop exits, and the task returns.
 pub fn spawn_document(
     buffer_id: lattice_core::BufferId,
-    document: Document,
+    mut document: Document,
     registry: CommandRegistryHandle,
 ) -> RopeDocumentHandle {
+    // One id space: a buffer's document is addressed by the buffer's id, in
+    // every document event (see `Document::set_id`).
+    document.set_id(lattice_protocol::ids::DocumentId::new(u64::from(
+        buffer_id.0,
+    )));
     let (tx, rx) = mpsc::unbounded_channel();
     let snapshot_cell = Arc::new(PublishedSnapshot::new(DocumentSnapshot::from_document(
         &document,

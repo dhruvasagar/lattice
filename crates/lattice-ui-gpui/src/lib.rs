@@ -1316,7 +1316,7 @@ impl GpuiApp {
     /// dispatched through the same entry a key takes, so undo, registers
     /// and macros see nothing new ([`edit_menu_actions`]).
     pub fn edit_menu(&mut self, item: EditMenuItem) {
-        let builtins = self.render_state.load().translator.builtins.clone();
+        let builtins = self.render_state.load().translator.builtins;
         for action in edit_menu_actions(item, self.ad().modal, &builtins) {
             self.dispatch_action(action);
         }
@@ -1492,6 +1492,8 @@ impl GpuiApp {
             | Effect::ShowDiagnosticsPopup { .. }
             // L7: LSP nav requests are host-applied (`editor.lsp_request`).
             | Effect::Lsp(_)
+            // help-mode's `<CR>`: host-applied (`do_help_follow_link`).
+            | Effect::FollowHelpLink
             | Effect::EchoRegisters
             | Effect::EchoMarks
             | Effect::ListBuffers
@@ -1668,7 +1670,9 @@ impl GpuiApp {
             }
             // 3W.4: host-applied in `handle_effect`, so a `Many` that opens
             // a synthetic buffer and then acts on it runs in order.
-            Effect::OpenSyntheticBuffer { .. } | Effect::OpenSyntheticBufferAt { .. } => {}
+            Effect::OpenSyntheticBuffer { .. }
+            | Effect::OpenSyntheticBufferAt { .. }
+            | Effect::DisplaySyntheticBuffer { .. } => {}
             Effect::OpenLspTraceLog { server_id } => {
                 self.mutate_editor(move |e| e.do_open_lsp_trace_log(server_id.as_deref()));
             }

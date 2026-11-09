@@ -33,12 +33,11 @@ use lattice_protocol::position::{Position, Range};
 use lattice_runtime::{EventBus, EventFilter, SubscriptionTarget};
 
 fn caps_with(kind: TextDocumentSyncKind, encoding: PositionEncodingKind) -> ServerCapabilities {
-    let c = ServerCapabilities {
+    ServerCapabilities {
         text_document_sync: Some(TextDocumentSyncCapability::Kind(kind)),
         position_encoding: Some(encoding),
         ..Default::default()
-    };
-    c
+    }
 }
 
 // M.5.5: fan_in subscribes to the typed `LspDocumentChanged`

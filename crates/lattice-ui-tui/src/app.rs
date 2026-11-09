@@ -145,6 +145,14 @@ mod comment_plugin;
 #[cfg(test)]
 mod keystroke_glyph_ratchet;
 mod lifecycle;
+mod llm_ask;
+mod llm_context;
+mod llm_edits;
+mod llm_exec;
+mod llm_inline;
+mod llm_mock;
+mod llm_rewrite;
+mod llm_tools;
 mod lsp;
 mod lsp_log_buffers;
 mod lsp_watcher;
@@ -157,6 +165,7 @@ mod mode;
 mod motion_composition;
 mod motions;
 mod oil;
+mod operator_seam;
 mod operators;
 mod options;
 pub(crate) mod picker;
@@ -1052,7 +1061,14 @@ impl App {
         // ad() loads a fresh Arc from the shared ArcSwap and can
         // observe a different snapshot, causing the cursorline
         // highlight and cursor blink position to disagree.
-        if let Some(pinned) = self.frame_ad.lock().unwrap().as_ref() {
+        // A poisoned pin still holds a whole `Option<Arc>` (every write is a
+        // single store), so recover it rather than panic mid-frame.
+        if let Some(pinned) = self
+            .frame_ad
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+        {
             return pinned.clone();
         }
         // Fall through to the live ArcSwap when no pin is active
@@ -1066,14 +1082,14 @@ impl App {
     /// (before `terminal.draw()` in the TUI, before the GPUI render).
     pub fn pin_render_state(&self) {
         let snap = self.render_state.load().active_document.load_full();
-        *self.frame_ad.lock().unwrap() = Some(snap);
+        *self.frame_ad.lock().unwrap_or_else(|e| e.into_inner()) = Some(snap);
     }
 
     /// Release the per-frame pin so the next [`ad()`](Self::ad) call
     /// loads a fresh snapshot from the actor. Call after each frame
     /// render completes.
     pub fn unpin_render_state(&self) {
-        *self.frame_ad.lock().unwrap() = None;
+        *self.frame_ad.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
 
     /// Phase 5.8.AF.5 / Slice 3c.final.B (group 1): wait-free
@@ -1730,12 +1746,12 @@ pub(crate) fn flatten_workspace_edit(
                     let raw_edits: Vec<lattice_lsp::lsp_types::TextEdit> = te_doc
                         .edits
                         .into_iter()
-                        .filter_map(|e| match e {
-                            lattice_lsp::lsp_types::OneOf::Left(te) => Some(te),
+                        .map(|e| match e {
+                            lattice_lsp::lsp_types::OneOf::Left(te) => te,
                             // AnnotatedTextEdit -- strip the
                             // annotation; v1 doesn't surface
                             // change-annotations to the user.
-                            lattice_lsp::lsp_types::OneOf::Right(ate) => Some(ate.text_edit),
+                            lattice_lsp::lsp_types::OneOf::Right(ate) => ate.text_edit,
                         })
                         .collect();
                     if !raw_edits.is_empty() {

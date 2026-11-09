@@ -81,7 +81,8 @@ For a position `p` and an applied edit replacing `original_range` with
 | Where `p` is | Result |
 |---|---|
 | strictly before `original_range.start` | unchanged |
-| at or after `original_range.end` | shifted by `inserted_range.end - original_range.end` |
+| at or after `original_range.end`, on its line | re-measured from `inserted_range.end` |
+| on a later line | line shifted by the edit's line delta; column unchanged |
 | strictly inside `original_range` | clamped to `inserted_range.end` |
 
 The third row is the only judgement call. Clamping to the *end* of the
@@ -246,3 +247,111 @@ Regression, in `lattice-host`:
 
 - a keystroke edit does not double-move the cursor
 - `apply_targeted_edit` still never moves the cursor
+
+## 9. Anchored appends and inactive panes (LL.12)
+
+Two gaps in §4.2 closed when streamed inline output needed them (design
+`llm-layer.md` §9).
+
+**Adoption beyond editable tails.** The adopt gate was "an editable tail, and the
+text moved underneath me", because a bulk owner rewrite of a read-only buffer (the
+dashboard populating) moved a deliberately placed caret to EOF. An anchored append
+(`Document::append_to_tracked`) is not that: it inserts at one point and moves the
+caret exactly as typing there would, in any buffer, the user's own file included.
+The document records `append_version`, the text version of its latest append, in the
+snapshot; the host adopts when that is newer than its own last write. Keyed to
+appends rather than to any change, the dashboard case stays unadopted; keyed to the
+host's last write, a caret the host placed after the append is not moved twice.
+
+**Inactive panes, through the anchor §4.3 deferred.** §4.2 promised adoption into
+the owning `PaneLeaf::cursor`; it was never built, and the document's single
+selection set cannot carry it (two splits on one buffer have two carets). Tracked
+ranges are the anchor primitive §4.3 named. When a pane loses focus its caret is
+anchored in its buffer as an empty `NeverGrows` range, which every edit moves with
+the same at-or-after shift as §4.1. Focusing the pane reads the caret back, drops
+the anchor, and marks the buffer seen, so the adopt that follows does not hand it
+whichever pane wrote through last. This moves a stored caret for every edit made
+while the pane was away, not only appends, which is what vim does for other windows.
+
+**Adoption off a keystroke (LL.13b).** §4.2 adopted at the start of a key, which is
+enough for a write the user is about to type after. A stream is not that: its text
+reaches the screen on the editor's wake, with no key, and a caret left in the old
+coordinates shows on text it was not on until the user presses something.
+`run_tick_pending`, which every wake and the tail of every key run, adopts too, and
+keeps the caret visible when it moved: a caret at the end of an answer takes the view
+with it, which is design `llm-layer.md` §7's "the view follows only if the caret is
+already at the end". After a key the tick finds nothing new.
+
+## 10. Writes positioned before an append (LL.13a)
+
+A stream writes from another thread, so an append can reach the document between
+the host adopting the caret at the start of a key and the key's own write. Two
+writes were then positioned in coordinates the text had already left: the Insert
+key itself (`Edit::insert(self.cursor, …)`), which went in above where the caret
+visibly was, possibly inside the response, and the write-through, which put back
+the caret the append had just moved. A third race hid in the host's bookkeeping:
+it recorded `text_version` after its own edit, which swallowed an append that
+landed just after it, so that append was never adopted.
+
+**The document actor rebases, because it is where every write is serialized.** The
+document keeps a short log of its appends with the version each produced. The host
+tags the two caret-positioned writes with the version its caret is in (the one it
+last adopted or wrote); the actor moves them over the appends since, in the turn
+that applies them. An insert at an append's point goes after it, where the caret
+visibly is; a deletion ending at that point keeps the appended text. If anything
+but an append changed the text since, the write is used as given, which is exactly
+the behaviour before. After its own edit the host records `pre_append_version`,
+the version before any trailing run of appends, instead of `text_version`.
+
+Rejected: routing stream writes through the editor thread as a host effect, which
+serializes them with keys trivially but puts every frame's write on that thread,
+needs an effect per kind of concurrent writer, and leaves a plugin writing straight
+to a document handle racy. The rebase covers any writer that appends, a plugin
+included, with no host code per writer.
+
+Not rebased: non-append owner writes.
+
+### 10.1 Batches
+
+**A batch is rebased too** (`Document::apply_edit_batch_based_on`). Each edit of a
+batch is in the coordinates the ones before it produce, so the appends cannot be
+applied to every edit as they stand: an append has to be carried through the batch
+alongside it. Each edit moves over the appends exactly as a single edit does; then
+each append moves over that edit, staying before it when it sits at the edit's start,
+so the next edit meets the appends where they now are. An append whose text an edit
+covers is gone after that edit and moves nothing further. It is operational transform
+restricted to the one case that arises (inserts against arbitrary replaces), and it is
+position arithmetic only: the buffer is never read, so the cost is flat in the number
+of appends (`rebase_batch_over_appends` in benchmarks.md).
+
+**What a mismatch means depends on the writer, so the caller says.** When something
+other than an append changed the text since the batch's version, the batch cannot be
+carried to where it was aimed. `BaseMismatch::UseAsGiven` applies it anyway, which is
+right for a key: the user pressed it, and refusing would drop it silently.
+`BaseMismatch::Refuse` applies nothing and returns `CoreError::Stale`, which is right
+for a write computed from text it must still match, such as a reviewed replacement:
+the caller reads again and decides again. The check and the write happen in one
+actor turn, so nothing can land between them.
+
+**Operators carry the version too.** Most operators never send the host a batch: the
+grammar runs in the actor, from the caret and Visual region the host passes in
+`DispatchEnv`, and those are in the coordinates the host last saw. `based_on` on the env
+tells the actor which version that was, and it moves both over the appends since before
+running the command, so `dd` deletes the line the caret was on rather than the chunk
+that took its line number. The batches the host does send (formatting, completion's
+extra edits, a block insert) go through `apply_edit_batch_based_on` with `UseAsGiven`.
+
+Rejected: a narrow "replace this tracked range if it still holds X" message for the
+reviewed-replacement case alone. It closes that race and leaves operators unrebased,
+so a second special case would follow; the version is the general precondition and
+the tracked range's text a consequence of it.
+
+Rejected: refusing on any change since the version, appends included. A reply
+streaming into the buffer would then refuse every reviewed replacement in it until
+the stream ended, though the appends are exactly what the rebase can carry.
+
+**The transform table was wrong on two rows until here.** The earlier code shifted
+the column of every later line when an edit kept the line count, and kept the column
+on the edit's own line when it did not. Both put a caret on different text; the
+first one moved a chat prompt caret sideways whenever a transcript line above it
+was rewritten in place. §4.1's table now states the rule the code implements.

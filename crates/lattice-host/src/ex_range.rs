@@ -28,6 +28,25 @@ impl Editor {
         &self,
         mut inv: CommandInvocation,
     ) -> Result<CommandInvocation, RangeError> {
+        // `:'<,'>name` reaches a keyword command as `Range::Selection`. The
+        // selection lives in the host, so it is made lines here, once, and
+        // every ranged command reads it as the plain span it is. Without a
+        // Visual selection to name, it is left for the command to refuse.
+        if matches!(inv.range, Some(Range::Selection))
+            && let Some((start, end)) = self.visual_marks()
+        {
+            let last = self
+                .document
+                .snapshot()
+                .buffer
+                .content_line_count()
+                .saturating_sub(1);
+            inv.range = Some(Range::Span {
+                start: RangeBound::Line(start.line.min(last)),
+                end: RangeBound::Line(end.line.min(last)),
+            });
+            return Ok(inv);
+        }
         let Some(range @ Range::Span { .. }) = inv.range.clone() else {
             return Ok(inv);
         };

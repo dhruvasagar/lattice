@@ -1,0 +1,519 @@
+//! The HTTP transport: executes an [`HttpRequest`], feeds the response body to a
+//! [`StreamDecoder`] and reports how it ended.
+//!
+//! Async on `reqwest` because dropping the future is what makes a cancel on a
+//! stalled stream immediate: the select below drops the response (and with it
+//! the socket) the instant the token fires, with no blocked read to wait out.
+//!
+//! The response *status* is checked before any decoding. A non-2xx answer, or a
+//! 2xx whose body is not an event stream (a proxy's HTML page, a bare JSON
+//! error), becomes a [`Outcome::Failed`] built from the status and a bounded,
+//! scrubbed excerpt of the body -- never fed to the SSE decoder, which would
+//! silently produce nothing and report a truncated stream.
+//!
+//! Every message that can leave this module passes through [`scrub`], so an API
+//! key cannot reach a user, a log or the registry snapshot through an error.
+
+use std::time::Duration;
+
+use futures::StreamExt;
+use reqwest::header::CONTENT_TYPE;
+use serde_json::Value;
+use tokio_util::sync::CancellationToken;
+
+use super::{ApiKey, HttpRequest, ProviderError, StreamDecoder, StreamEvent};
+
+/// How long a connection may take to establish.
+pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// How long a response may stay silent between chunks before it is declared
+/// dead. There is deliberately no *total* timeout (a long generation is
+/// legitimate), so this is what stops a half-open connection waiting forever.
+/// Providers send keep-alive pings well inside it.
+pub const IDLE_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// How much of an error body is read at all.
+const MAX_ERROR_BODY_BYTES: usize = 16 * 1024;
+
+/// How much of an error body is shown, in characters.
+pub const MAX_ERROR_EXCERPT_CHARS: usize = 300;
+
+/// How many times a request refused for now (see [`is_transient`]) is sent
+/// again before its failure is reported.
+pub const MAX_RETRIES: u32 = 2;
+
+/// The longest a retry waits. A provider asking (`Retry-After`) for longer
+/// than this is not waited for: the failure is reported with the wait it
+/// asked for, rather than the request sitting silent for minutes.
+pub const MAX_RETRY_WAIT: Duration = Duration::from_secs(30);
+
+/// Statuses that mean "not now" rather than "no": rate limited, overloaded,
+/// or a gateway that could not reach the provider. The request was not
+/// processed, so sending it again is safe. A plain 500 is not one of them:
+/// it may fail the same way every time.
+pub fn is_transient(code: u16) -> bool {
+    matches!(code, 429 | 502 | 503 | 504 | 529)
+}
+
+/// The wait before retry `n` (0-based) when the provider names none.
+fn backoff(n: u32) -> Duration {
+    Duration::from_secs(2u64 << n.min(4))
+}
+
+/// A `Retry-After` given in seconds. The HTTP-date form is not read; the
+/// default backoff applies then.
+fn retry_after(resp: &reqwest::Response) -> Option<Duration> {
+    resp.headers()
+        .get(reqwest::header::RETRY_AFTER)?
+        .to_str()
+        .ok()?
+        .trim()
+        .parse::<u64>()
+        .ok()
+        .map(Duration::from_secs)
+}
+
+/// Whether the sink wants more events.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SinkFlow {
+    Continue,
+    Stop,
+}
+
+/// How a request ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Outcome {
+    /// The provider signalled completion.
+    Done,
+    /// The sink asked to stop before the provider finished.
+    Stopped,
+    /// The cancellation token fired.
+    Cancelled,
+    /// A scrubbed, user-presentable reason.
+    Failed(String),
+}
+
+/// Build the shared client: a connect timeout and no total timeout.
+pub fn build_client() -> Result<reqwest::Client, String> {
+    // No redirects: a custom auth header (`x-api-key`) would be forwarded to a
+    // cross-origin target. A 3xx becomes a named failure instead.
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(CONNECT_TIMEOUT)
+        .build()
+        .map_err(|e| format!("could not create the HTTP client: {e}"))
+}
+
+/// Remove the key, and anything shaped like an auth header value, from `text`.
+///
+/// Covers the exact key value (which is also the whole `x-api-key` value) and
+/// `Bearer <token>` / `Basic <token>` in any case, because a proxy or provider
+/// may echo a header it was sent, or a differently-cased derivative of it.
+///
+/// A provider that rejects a key often echoes it masked (`sk-proj-****abcd`),
+/// which still gives away its prefix and last characters; anything shaped
+/// like that goes too.
+pub fn scrub(text: &str, key: &ApiKey) -> String {
+    let mut out = text.to_string();
+    if !key.is_empty() {
+        out = out.replace(key.expose(), "[redacted]");
+    }
+    redact_masked(&redact_auth_schemes(&out))
+}
+
+/// Words shaped like a masked secret, a run of three or more `*` with key
+/// characters on both sides (`sk-****abcd`), as `[redacted]`.
+fn redact_masked(text: &str) -> String {
+    let key_char = |c: char| c.is_ascii_alphanumeric() || c == '-' || c == '_';
+    let masked = |word: &str| {
+        let Some(star) = word.find("***") else {
+            return false;
+        };
+        let (before, after) = (&word[..star], word[star..].trim_start_matches('*'));
+        !before.is_empty()
+            && !after.is_empty()
+            && before.chars().all(key_char)
+            && after.chars().all(key_char)
+    };
+    let mut out = String::with_capacity(text.len());
+    let mut word = String::new();
+    let flush = |out: &mut String, word: &mut String| {
+        if masked(word) {
+            out.push_str("[redacted]");
+        } else {
+            out.push_str(word);
+        }
+        word.clear();
+    };
+    for c in text.chars() {
+        if key_char(c) || c == '*' {
+            word.push(c);
+        } else {
+            flush(&mut out, &mut word);
+            out.push(c);
+        }
+    }
+    flush(&mut out, &mut word);
+    out
+}
+
+fn redact_auth_schemes(text: &str) -> String {
+    let lower = text.to_ascii_lowercase();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < text.len() {
+        let rest = &lower[i..];
+        let scheme = ["bearer ", "basic "]
+            .into_iter()
+            .find(|s| rest.starts_with(s));
+        let at_word_start = i == 0 || !lower.as_bytes()[i - 1].is_ascii_alphanumeric();
+        match scheme {
+            Some(s) if at_word_start => {
+                let after = i + s.len();
+                let token_len = text[after..]
+                    .find(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | '<' | '>' | ','))
+                    .unwrap_or(text.len() - after);
+                if token_len > 0 {
+                    out.push_str(&text[i..after]);
+                    out.push_str("[redacted]");
+                    i = after + token_len;
+                    continue;
+                }
+                out.push_str(&text[i..after]);
+                i = after;
+            }
+            _ => {
+                let ch = text[i..].chars().next().unwrap_or(' ');
+                out.push(ch);
+                i += ch.len_utf8();
+            }
+        }
+    }
+    out
+}
+
+/// A bounded, scrubbed, single-line excerpt of an error body. Prefers the
+/// provider's JSON `message`; otherwise collapses whitespace in the raw text
+/// (so an HTML page reads as one line rather than a screenful).
+fn excerpt(body: &[u8], key: &ApiKey) -> String {
+    let text = String::from_utf8_lossy(body);
+    let chosen = json_message(&text).unwrap_or_else(|| text.to_string());
+    let one_line = chosen.split_whitespace().collect::<Vec<_>>().join(" ");
+    // Scrub BEFORE truncating, so the cut cannot leave a key prefix behind.
+    let scrubbed = scrub(&one_line, key);
+    if scrubbed.chars().count() > MAX_ERROR_EXCERPT_CHARS {
+        let cut: String = scrubbed.chars().take(MAX_ERROR_EXCERPT_CHARS).collect();
+        format!("{cut}...")
+    } else {
+        scrubbed
+    }
+}
+
+/// Both Anthropic (`{"error":{"type":..,"message":..}}`) and OpenAI-compatible
+/// servers (`{"error":{"message":..}}`, sometimes `{"error":"..."}` or a
+/// top-level `message`) put the human text in one of these places.
+fn json_message(text: &str) -> Option<String> {
+    let v: Value = serde_json::from_str(text.trim()).ok()?;
+    let found = v
+        .pointer("/error/message")
+        .or_else(|| v.get("error").filter(|e| e.is_string()))
+        .or_else(|| v.get("message"))?;
+    found.as_str().map(str::to_string)
+}
+
+/// Just the host[:port] of a `Location` value, never its path or query (which
+/// may carry secrets).
+fn redirect_host(location: &str) -> String {
+    let rest = location.split_once("://").map_or(location, |(_, r)| r);
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let host = authority.rsplit('@').next().unwrap_or("");
+    if host.is_empty() || !location.contains("://") {
+        "another location on the same host".into()
+    } else {
+        host.to_string()
+    }
+}
+
+fn status_label(code: u16) -> &'static str {
+    match code {
+        400 => "bad request",
+        401 => "authentication failed",
+        403 => "access denied",
+        404 => "not found",
+        408 => "request timed out",
+        413 => "request too large",
+        429 => "rate limited",
+        502..=504 => "provider unavailable",
+        529 => "provider overloaded",
+        _ if (400..500).contains(&code) => "request rejected",
+        _ if code >= 500 => "provider error",
+        _ => "unexpected response",
+    }
+}
+
+fn http_failure(code: u16, detail: &str) -> Outcome {
+    let label = status_label(code);
+    if detail.is_empty() {
+        Outcome::Failed(format!("{label} (HTTP {code})"))
+    } else {
+        Outcome::Failed(format!("{label} (HTTP {code}): {detail}"))
+    }
+}
+
+/// Read at most [`MAX_ERROR_BODY_BYTES`] of `resp`, giving up on a silent peer.
+async fn read_error_body(resp: reqwest::Response, idle: Duration) -> Vec<u8> {
+    let mut body = Vec::new();
+    let mut stream = resp.bytes_stream();
+    while body.len() < MAX_ERROR_BODY_BYTES {
+        match tokio::time::timeout(idle, stream.next()).await {
+            Ok(Some(Ok(chunk))) => body.extend_from_slice(&chunk),
+            _ => break,
+        }
+    }
+    body.truncate(MAX_ERROR_BODY_BYTES);
+    body
+}
+
+fn is_event_stream(resp: &reqwest::Response) -> bool {
+    resp.headers()
+        .get(CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.to_ascii_lowercase().starts_with("text/event-stream"))
+}
+
+/// Scrub every string an error event carries before the sink can render it.
+fn scrub_error(err: ProviderError, key: &ApiKey) -> ProviderError {
+    match err {
+        ProviderError::Api { kind, message } => ProviderError::Api {
+            kind: scrub(&kind, key),
+            message: scrub(&message, key),
+        },
+        ProviderError::InvalidRequest(m) => ProviderError::InvalidRequest(scrub(&m, key)),
+        other => other,
+    }
+}
+
+fn event_error_text(err: &ProviderError, key: &ApiKey) -> String {
+    scrub(&err.to_string(), key)
+}
+
+/// What one exchange needs besides the request itself.
+pub struct Exchange<'a> {
+    pub client: &'a reqwest::Client,
+    pub key: &'a ApiKey,
+    pub cancel: &'a CancellationToken,
+    /// Max silence between chunks; see [`IDLE_TIMEOUT`].
+    pub idle: Duration,
+}
+
+/// Execute `http`, decode the stream and hand each batch of events to
+/// `on_events` (which reports whether to continue). `on_streaming` is
+/// called once, when a healthy event-stream response begins.
+///
+/// A [transient](is_transient) refusal, which comes before any of the body,
+/// is retried up to [`MAX_RETRIES`] times, waiting what `Retry-After` asks
+/// (up to [`MAX_RETRY_WAIT`]) or a short backoff. `on_retry(n, why)` is
+/// called before retry `n` (1-based) starts waiting, so the request can be
+/// shown as retrying rather than silent. The token cuts a wait short.
+///
+/// Returns when the provider finishes, the sink stops, the token fires, or the
+/// request fails. Dropping the response on any exit closes the socket.
+pub async fn run(
+    ex: Exchange<'_>,
+    http: HttpRequest,
+    mut decoder: Box<dyn StreamDecoder>,
+    mut on_streaming: impl FnMut(),
+    mut on_retry: impl FnMut(u32, &'static str),
+    mut on_events: impl FnMut(Vec<StreamEvent>) -> SinkFlow,
+) -> Outcome {
+    let Exchange {
+        client,
+        key,
+        cancel,
+        idle,
+    } = ex;
+    let method = match reqwest::Method::from_bytes(http.method.as_bytes()) {
+        Ok(m) => m,
+        Err(_) => return Outcome::Failed(format!("invalid HTTP method {:?}", http.method)),
+    };
+    let mut retries = 0u32;
+    let mut asked_wait: Option<Duration> = None;
+    let resp = loop {
+        let mut builder = client
+            .request(method.clone(), &http.url)
+            .body(http.body.clone());
+        for (name, value) in &http.headers {
+            builder = builder.header(name, value);
+        }
+        let sent = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => return Outcome::Cancelled,
+            r = builder.send() => r,
+        };
+        let resp = match sent {
+            Ok(r) => r,
+            Err(e) => return Outcome::Failed(scrub(&describe_error(&e), key)),
+        };
+        let code = resp.status().as_u16();
+        if !is_transient(code) || retries >= MAX_RETRIES {
+            break resp;
+        }
+        let asked = retry_after(&resp);
+        let wait = asked.unwrap_or_else(|| backoff(retries));
+        if wait > MAX_RETRY_WAIT {
+            asked_wait = asked;
+            break resp;
+        }
+        // The refusal's body is not read: the next answer is what counts.
+        drop(resp);
+        retries += 1;
+        tracing::debug!(
+            code,
+            retries,
+            wait_ms = wait.as_millis() as u64,
+            "llm request retrying"
+        );
+        on_retry(retries, status_label(code));
+        tokio::select! {
+            biased;
+            _ = cancel.cancelled() => return Outcome::Cancelled,
+            _ = tokio::time::sleep(wait) => {}
+        }
+    };
+
+    let code = resp.status().as_u16();
+    if resp.status().is_redirection() {
+        let host = resp
+            .headers()
+            .get(reqwest::header::LOCATION)
+            .and_then(|v| v.to_str().ok())
+            .map(redirect_host)
+            .unwrap_or_else(|| "an unknown location".into());
+        return Outcome::Failed(scrub(
+            &format!(
+                "redirected (HTTP {code}) to {host}; redirects are not followed so the key is never sent there"
+            ),
+            key,
+        ));
+    }
+    if !resp.status().is_success() {
+        let body = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => return Outcome::Cancelled,
+            b = read_error_body(resp, idle) => b,
+        };
+        let failed = http_failure(code, &excerpt(&body, key));
+        return match (failed, asked_wait, retries) {
+            (Outcome::Failed(m), Some(wait), _) => Outcome::Failed(format!(
+                "{m} (the provider asks to wait {}s; send again then)",
+                wait.as_secs()
+            )),
+            (Outcome::Failed(m), None, n) if n > 0 => {
+                Outcome::Failed(format!("{m} (after {} attempts)", n + 1))
+            }
+            (other, ..) => other,
+        };
+    }
+    if !is_event_stream(&resp) {
+        let ctype = resp
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .map(|v| scrub(v, key))
+            .unwrap_or_else(|| "none".into());
+        let body = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => return Outcome::Cancelled,
+            b = read_error_body(resp, idle) => b,
+        };
+        let detail = excerpt(&body, key);
+        return Outcome::Failed(format!(
+            "unexpected response: not an event stream (content-type {ctype}): {detail}"
+        ));
+    }
+
+    on_streaming();
+    let mut stream = resp.bytes_stream();
+    loop {
+        let next = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => return Outcome::Cancelled,
+            n = tokio::time::timeout(idle, stream.next()) => n,
+        };
+        let mut eof = false;
+        let events = match next {
+            Err(_) => {
+                return Outcome::Failed(format!(
+                    "no data from the provider for {}s; connection abandoned",
+                    idle.as_secs()
+                ));
+            }
+            Ok(Some(Err(e))) => {
+                return Outcome::Failed(format!(
+                    "connection lost mid-stream: {}",
+                    scrub(&describe_error(&e), key)
+                ));
+            }
+            Ok(Some(Ok(chunk))) => {
+                tracing::debug!(bytes = chunk.len(), "llm chunk");
+                decoder.push(&chunk)
+            }
+            Ok(None) => {
+                eof = true;
+                decoder.finish()
+            }
+        };
+        let ended = matches!(
+            events.last(),
+            Some(StreamEvent::Done(_) | StreamEvent::Error(_))
+        );
+        let events: Vec<StreamEvent> = events
+            .into_iter()
+            .map(|ev| match ev {
+                StreamEvent::Error(e) => StreamEvent::Error(scrub_error(e, key)),
+                other => other,
+            })
+            .collect();
+        let failure = events.iter().find_map(|ev| match ev {
+            StreamEvent::Error(e) => Some(event_error_text(e, key)),
+            _ => None,
+        });
+        // The sink sees every event, errors included, before the request ends.
+        let flow = if events.is_empty() {
+            SinkFlow::Continue
+        } else {
+            on_events(events)
+        };
+        if let Some(msg) = failure {
+            return Outcome::Failed(msg);
+        }
+        if flow == SinkFlow::Stop {
+            return Outcome::Stopped;
+        }
+        if ended || eof {
+            return Outcome::Done;
+        }
+    }
+}
+
+/// `reqwest::Error`'s Display omits the root cause; walk the chain.
+fn describe_error(e: &reqwest::Error) -> String {
+    use std::error::Error;
+    let mut text = if e.is_timeout() {
+        "timed out".to_string()
+    } else if e.is_connect() {
+        "could not connect".to_string()
+    } else {
+        "request failed".to_string()
+    };
+    let mut src = e.source();
+    while let Some(s) = src {
+        text.push_str(": ");
+        text.push_str(&s.to_string());
+        src = s.source();
+    }
+    if let Some(url) = e.url() {
+        text.push_str(&format!(" ({})", super::redacted_url(url.as_str())));
+    }
+    text
+}

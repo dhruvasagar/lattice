@@ -225,8 +225,7 @@ impl lattice_mode::OperatorChordWirer for RecordingWirer {
         chord: &str,
         doubled: Option<char>,
         mode: lattice_mode::ModeId,
-        plugin_id: u32,
-        plugin_name: &str,
+        origin: lattice_mode::PluginOrigin<'_>,
         _post_motion_char: bool,
     ) -> Result<(), String> {
         self.wired.lock().unwrap().push((
@@ -237,13 +236,25 @@ impl lattice_mode::OperatorChordWirer for RecordingWirer {
             // PLUGIN's. Without the id the binding lands as host-sourced and
             // `:describe-key gc` names `keymap_normal.rs`, which is a lie about
             // a chord the plugin declared.
-            plugin_id,
+            origin.id,
             // The NAME is what `:help gc` shows. Stamped as `plugin:comment`
             // rather than `plugin:1`, which would make a reader resolve the
             // number by hand.
-            plugin_name.to_string(),
+            origin.name.to_string(),
         ));
         Ok(())
+    }
+
+    // The native seam is not exercised by the plugin loader.
+    fn bind_in(
+        &self,
+        _layer: lattice_keymap::KeymapLayer,
+        _source: lattice_grammar::SourceLocation,
+        _prefix: &[lattice_protocol::chord::KeyChord],
+        _op: lattice_grammar::registry::OperatorId,
+        _doubled: Option<lattice_protocol::chord::KeyChord>,
+        _post_motion_char: bool,
+    ) {
     }
 }
 

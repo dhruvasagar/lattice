@@ -69,8 +69,11 @@ pub trait Headerline: Send + Sync + 'static {
 pub struct SimpleHeaderline<S: Send + Sync + 'static> {
     state: Arc<RwLock<S>>,
     version: AtomicU64,
-    renderer: Arc<dyn Fn(&S) -> Option<HeaderlineRow> + Send + Sync>,
+    renderer: HeaderlineRenderer<S>,
 }
+
+/// Projects a mode's header state into the row it paints.
+type HeaderlineRenderer<S> = Arc<dyn Fn(&S) -> Option<HeaderlineRow> + Send + Sync>;
 
 impl<S: Send + Sync + 'static> std::fmt::Debug for SimpleHeaderline<S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

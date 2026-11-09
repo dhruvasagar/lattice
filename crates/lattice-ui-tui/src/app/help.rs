@@ -1988,4 +1988,75 @@ mod tests {
             "expected active=yes\n{body}",
         );
     }
+
+    // `<CR>` follow-link is `help-mode`'s keymap binding, not a host input
+    // gate on the buffer kind. These press the real key through translate and
+    // the keymap, so they fail if the binding goes missing; the tests above
+    // dispatch `Action::FollowLink` and would not notice.
+
+    fn enter() -> crossterm::event::KeyEvent {
+        crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+        )
+    }
+
+    #[test]
+    fn enter_in_a_help_popup_follows_the_link_through_help_modes_keymap() {
+        let mut a = app_with("hello", 10);
+        a.editor.set_command_line_text("describe-buffer");
+        a.editor.modal = ModalState::Command;
+        a.apply(Action::CommandLineSubmit);
+        let link = a
+            .popup_help_links()
+            .expect("help links seeded")
+            .iter()
+            .find(|l| {
+                matches!(
+                    &l.target,
+                    crate::help::HelpLinkTarget::Mode(name) if name == "text-mode"
+                )
+            })
+            .expect("text-mode link present")
+            .clone();
+        a.editor.cursor = link.range.start;
+        crate::app::test_helpers::press(&mut a, enter());
+        assert_eq!(
+            a.popup_help().expect("popup still open").title,
+            "describe-mode text-mode",
+            "<CR> should follow the link via help-mode's binding"
+        );
+    }
+
+    #[test]
+    fn enter_on_the_dashboard_follows_the_link_through_help_modes_keymap() {
+        let mut a = app_with("hello", 10);
+        a.editor.do_open_dashboard();
+        let id = a
+            .editor
+            .buffers
+            .by_name("*dashboard*")
+            .expect("dashboard open");
+        let link = a
+            .editor
+            .buffer_locals
+            .get(&id)
+            .and_then(|l| l.get::<crate::modes::HelpLinks>())
+            .and_then(|hl| {
+                hl.0.iter()
+                    .find(|l| matches!(l.target, crate::help::HelpLinkTarget::Topic(_)))
+                    .cloned()
+            })
+            .expect("the dashboard seeds a help-topic link");
+        a.editor.cursor = link.range.start;
+        crate::app::test_helpers::press(&mut a, enter());
+        let echoed = a.editor.last_message.as_ref().map(|m| m.text.clone());
+        assert_ne!(echoed.as_deref(), Some("no link under cursor"));
+        assert_ne!(
+            a.editor.active_buffer_id(),
+            id,
+            "following the topic link should leave the dashboard for the help page \
+             (echo: {echoed:?})"
+        );
+    }
 }

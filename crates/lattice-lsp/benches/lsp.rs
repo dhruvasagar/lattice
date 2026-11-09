@@ -389,11 +389,13 @@ fn lsp_edit_propagation_publish_to_recv(c: &mut Criterion) {
 /// keystroke burst. UTF-8 negotiated (the common case for
 /// rust-analyzer); per-actor, single-writer.
 fn lsp_didchange_flush_16_edits(c: &mut Criterion) {
-    let mut server_caps = lsp_types::ServerCapabilities::default();
-    server_caps.position_encoding = Some(PositionEncodingKind::UTF8);
-    server_caps.text_document_sync = Some(lsp_types::TextDocumentSyncCapability::Kind(
-        lsp_types::TextDocumentSyncKind::INCREMENTAL,
-    ));
+    let server_caps = lsp_types::ServerCapabilities {
+        position_encoding: Some(PositionEncodingKind::UTF8),
+        text_document_sync: Some(lsp_types::TextDocumentSyncCapability::Kind(
+            lsp_types::TextDocumentSyncKind::INCREMENTAL,
+        )),
+        ..Default::default()
+    };
     let caps = Capabilities::from_initialize(client_capabilities(), server_caps);
     let uri = lsp_types::Uri::from_str("file:///workspace/lib.rs").unwrap();
     c.bench_function("lsp_didchange_flush_16_edits", |b| {

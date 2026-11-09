@@ -60,13 +60,23 @@ use crate::snapshot::{DocumentSnapshot, PublishedSnapshot};
 /// `Shutdown` is here so tests can deterministically drain the
 /// actor; in production graceful shutdown happens by dropping the
 /// last handle (mailbox closes; `recv()` returns `None`).
+// `Dispatch` (~436 B, mostly `DispatchEnv`) is sent once per grammar
+// keystroke. Boxing it would add a heap allocation to every one of them to
+// save a memcpy into the mailbox slot — the wrong trade on paramount #1.
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum ActorMsg {
     ApplyEdit {
         edit: Edit,
+        /// LL.13a: the `text_version` the edit was positioned against, to be
+        /// rebased over appends since (`Document::apply_edit_based_on`).
+        based_on: Option<u64>,
         reply: oneshot::Sender<Result<lattice_core::buffer::AppliedEdit, RuntimeError>>,
     },
     ApplyEditBatch {
         edits: Vec<Edit>,
+        /// The `text_version` the batch was positioned against and what to
+        /// do if it cannot be rebased (`Document::apply_edit_batch_based_on`).
+        based_on: Option<(u64, lattice_core::document::BaseMismatch)>,
         reply: oneshot::Sender<Result<Vec<lattice_core::buffer::AppliedEdit>, RuntimeError>>,
     },
     Undo {
@@ -88,6 +98,8 @@ pub(crate) enum ActorMsg {
     },
     SetSelections {
         selections: SelectionSet,
+        /// LL.13a: as `ApplyEdit::based_on`.
+        based_on: Option<u64>,
         reply: oneshot::Sender<Result<(), RuntimeError>>,
     },
     /// GD.7d: declare the current text the clean baseline without
@@ -113,6 +125,14 @@ pub(crate) enum ActorMsg {
     UpdateTrackedRanges {
         changes: Vec<lattice_core::tracked::TrackedRangeChange>,
         reply: oneshot::Sender<Result<(), RuntimeError>>,
+    },
+    /// Append text at the end of a tracked range and grow it, resolving
+    /// the range in this mailbox turn so no edit can land between reading
+    /// it and writing at it (LL.12, streamed inline output).
+    AppendToTracked {
+        id: lattice_core::tracked::TrackedRangeId,
+        text: String,
+        reply: oneshot::Sender<Result<lattice_core::tracked::AppendOutcome, RuntimeError>>,
     },
     /// Run a [`lattice_grammar::execute`] dispatch against the
     /// document. The actor holds the only `&mut Document` so all
@@ -197,16 +217,32 @@ impl DocumentActor {
 
     fn handle(&mut self, msg: ActorMsg) {
         match msg {
-            ActorMsg::ApplyEdit { edit, reply } => {
-                let result = self.document.apply_edit(edit).map_err(RuntimeError::Core);
+            ActorMsg::ApplyEdit {
+                edit,
+                based_on,
+                reply,
+            } => {
+                let result = match based_on {
+                    Some(v) => self.document.apply_edit_based_on(edit, v),
+                    None => self.document.apply_edit(edit),
+                }
+                .map_err(RuntimeError::Core);
                 self.publish();
                 let _ = reply.send(result);
             }
-            ActorMsg::ApplyEditBatch { edits, reply } => {
-                let result = self
-                    .document
-                    .apply_edit_batch(edits)
-                    .map_err(RuntimeError::Core);
+            ActorMsg::ApplyEditBatch {
+                edits,
+                based_on,
+                reply,
+            } => {
+                let result = match based_on {
+                    Some((v, on_mismatch)) => {
+                        self.document
+                            .apply_edit_batch_based_on(edits, v, on_mismatch)
+                    }
+                    None => self.document.apply_edit_batch(edits),
+                }
+                .map_err(RuntimeError::Core);
                 self.publish();
                 let _ = reply.send(result);
             }
@@ -234,8 +270,15 @@ impl DocumentActor {
                 self.publish();
                 let _ = reply.send(result);
             }
-            ActorMsg::SetSelections { selections, reply } => {
-                self.document.set_selections(selections);
+            ActorMsg::SetSelections {
+                selections,
+                based_on,
+                reply,
+            } => {
+                match based_on {
+                    Some(v) => self.document.set_selections_based_on(selections, v),
+                    None => self.document.set_selections(selections),
+                }
                 self.publish();
                 let _ = reply.send(Ok(()));
             }
@@ -249,6 +292,16 @@ impl DocumentActor {
             // stack changes).
             ActorMsg::BeginUndoGroup => self.document.begin_undo_group(),
             ActorMsg::EndUndoGroup => self.document.end_undo_group(),
+            ActorMsg::AppendToTracked { id, text, reply } => {
+                let result = self
+                    .document
+                    .append_to_tracked(id, &text)
+                    .map_err(RuntimeError::Core);
+                if matches!(result, Ok(lattice_core::tracked::AppendOutcome::Appended)) {
+                    self.publish();
+                }
+                let _ = reply.send(result);
+            }
             ActorMsg::UpdateTrackedRanges { changes, reply } => {
                 self.document.update_tracked_ranges(|tracked| {
                     for change in changes {
@@ -284,6 +337,20 @@ impl DocumentActor {
                 // VM.3i: deref the owned fold handle, like `indent_resolver`.
                 let fold_resolver: Option<&dyn lattice_grammar::FoldResolver> =
                     env.fold_resolver.as_deref().map(|r| r as _);
+                // Read against the host's version; carried over any append
+                // since, as a typed key is.
+                let (cursor, selection) = match env.based_on {
+                    Some(v) => (
+                        self.document.rebase_position(cursor, v),
+                        env.selection.map(|r| {
+                            lattice_protocol::position::Range::new(
+                                self.document.rebase_position(r.start, v),
+                                self.document.rebase_position(r.end, v),
+                            )
+                        }),
+                    ),
+                    None => (cursor, env.selection),
+                };
                 let to_env = lattice_grammar::GrammarEnv {
                     scope_resolver,
                     comment_syntax: env.comment_syntax.as_deref(),
@@ -300,7 +367,7 @@ impl DocumentActor {
                     indent_resolver,
                     textwidth: env.textwidth,
                     native_format: env.native_format,
-                    selection: env.selection,
+                    selection,
                     last_find: env.last_find,
                     fold_resolver,
                     last_search: env.last_search.as_ref(),

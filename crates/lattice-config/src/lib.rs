@@ -176,6 +176,7 @@ pub mod schema;
 // With the cycle gone, the override types belong in lattice-
 // config alongside the resolver and the typed-options layer they
 // override against.
+mod buffer_options_event;
 pub mod overrides;
 mod parse;
 #[cfg(test)]
@@ -222,8 +223,8 @@ pub use core_options::{
 pub use erased::ErasedOption;
 pub use group::{
     Ai, Appearance, Completion, Diagnostics, Display, Editing, Editor, Filetree, GROUP_DECLS, Help,
-    Lsp, Magit, Messages, Modeline, Mouse, Notifications, Oil, OptionGroup, OptionGroupMetadata,
-    Pane, Picker, Plugin, Project, Search, Snippet, Tabline, Terminal, Window,
+    Llm, Lsp, Magit, Messages, Modeline, Mouse, Notifications, Oil, OptionGroup,
+    OptionGroupMetadata, Pane, Picker, Plugin, Project, Search, Snippet, Tabline, Terminal, Window,
     ends_with_mode_suffix,
 };
 pub use loader::{
@@ -271,6 +272,7 @@ pub use option_type::OptionType;
 pub use schema::{ConfigSchema, ConfigValue, ScalarKind, SchemaError, SchemaField};
 // Layer-input types live in this crate now (post M.4 dep
 // inversion). Modes pull them in via lattice-mode's re-export.
+pub use buffer_options_event::BufferOptionsResolved;
 pub use origin::OptionOrigin;
 pub use overrides::{OptionOverride, OptionOverrideSet, OverridePriority};
 pub use parse::{ParsedSet, parse_set};

@@ -73,6 +73,6 @@ pub mod programmatic;
 
 pub use compute::{DiffEngineError, compute_diff};
 pub use install::install;
-pub use programmatic::{ProgrammaticDiffBus, ProgrammaticDiffRequest};
+pub use programmatic::{DiffBaseline, OnAccept, ProgrammaticDiffBus, ProgrammaticDiffRequest};
 pub use refine::{RegionRefinement, refine_regions};
 pub use types::{DiffAlgorithm, Hunk, HunkIndex, HunkKind, LineRange};

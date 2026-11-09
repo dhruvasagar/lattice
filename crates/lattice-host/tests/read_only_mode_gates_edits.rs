@@ -71,11 +71,13 @@ fn boot_with_view() -> (Editor, BufferId) {
         &mut editor,
         sources,
         vec![Excerpt::new(BufferId(201), 0, 4)],
-        Some("*test:read-only*".into()),
-        BufferFlags::default(),
+        lattice_multibuffer::MultibufferViewConfig {
+            name: Some("*test:read-only*".into()),
+            flags: BufferFlags::default(),
+            fold_grouping: lattice_multibuffer::FoldGrouping::SourceFile,
+        },
         registry_for_view,
         None,
-        lattice_multibuffer::FoldGrouping::SourceFile,
     );
     editor.activate_document(view);
     (editor, view)
@@ -91,7 +93,7 @@ fn boot_plain() -> (Editor, BufferId) {
 fn press(editor: &mut Editor, chords: &[KeyChord]) {
     let mut partial = Vec::new();
     for c in chords {
-        let _ = editor.dispatch_chord(c.clone(), &mut partial);
+        let _ = editor.dispatch_chord(*c, &mut partial);
     }
 }
 

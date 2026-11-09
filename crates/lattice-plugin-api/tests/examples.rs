@@ -82,7 +82,9 @@ fn guests_built_in_ci() -> BTreeSet<String> {
         .split("build_guest(")
         .skip(1)
         .filter_map(|rest| {
-            let call = rest.split(");").next()?;
+            // Up to the statement's end, whether the call ends `);` or
+            // propagates with `)?;`.
+            let call = rest.split(';').next()?;
             let quoted: Vec<&str> = call.split('"').skip(1).step_by(2).collect();
             let [.., name, env] = quoted.as_slice() else {
                 return None;

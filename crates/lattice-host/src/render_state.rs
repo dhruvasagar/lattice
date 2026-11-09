@@ -59,6 +59,15 @@
 
 use std::sync::Arc;
 
+/// Per-buffer compilation gutter marks: `(line, severity)` per buffer,
+/// `Arc`-wrapped at both levels so the publish clone and the render read are O(1).
+pub type CompilationSeverityMap = std::sync::Arc<
+    std::collections::HashMap<
+        lattice_core::BufferId,
+        std::sync::Arc<Vec<(u32, lattice_mode::GutterSeverityLevel)>>,
+    >,
+>;
+
 /// The renderer's read contract with the host. Built fresh by
 /// [`crate::dispatch::Editor::build_render_state`] at the end of
 /// every dispatch tick and stored into the editor's
@@ -211,12 +220,7 @@ pub struct RenderState {
     /// depends on `lattice-compilation`. Empty when no compilation has
     /// produced marks. The value `Arc` makes both the publish clone and
     /// the render-path read O(1).
-    pub compilation_severity: std::sync::Arc<
-        std::collections::HashMap<
-            lattice_core::BufferId,
-            std::sync::Arc<Vec<(u32, lattice_mode::GutterSeverityLevel)>>,
-        >,
-    >,
+    pub compilation_severity: CompilationSeverityMap,
     /// CM.3c (2026-07-22): per-buffer compilation location-line index
     /// for theme-based highlighting of navigable lines in the
     /// `*compilation*` buffer. Written by the

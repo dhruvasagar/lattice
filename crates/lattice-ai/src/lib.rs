@@ -16,6 +16,19 @@
 // the ACP lifecycle commands live in `acp::commands`.
 pub mod commands;
 
+// LL.1: the protocol-neutral conversation model, its projection and fold
+// sources. Gated on `acp` or `llm`, its two producers.
+#[cfg(any(feature = "acp", feature = "llm"))]
+pub mod conversation;
+
+// LL.18: the permission popup every asking producer shares (moved from acp).
+#[cfg(any(feature = "acp", feature = "llm"))]
+pub mod permission;
+
+// LL.3: direct model-API layer (provider adapters; no I/O yet).
+#[cfg(feature = "llm")]
+pub mod llm;
+
 // AG-5: the ACP adapter, gated on `feature = "acp"`. Symmetric with `mcp`: both
 // transport adapters are self-contained submodules under this crate. Drives
 // `opencode acp` headlessly and owns the conversation as a buffer -- kept for

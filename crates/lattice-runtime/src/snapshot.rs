@@ -76,6 +76,15 @@ pub struct DocumentSnapshot {
     /// edit its caller asked for. `None` for the usual commit with none, so
     /// publishing allocates nothing.
     pub linked_edits: Option<Arc<[lattice_core::buffer::AppliedEdit]>>,
+    /// `text_version` after the latest anchored append
+    /// (`lattice_core::Document::append_to_tracked`); 0 if none. The host
+    /// adopts the caret an append moved when this is newer than its own last
+    /// write (LL.12).
+    pub append_version: u64,
+    /// LL.13a: `text_version` before the trailing run of appends
+    /// (`Document::pre_append_version`): what a writer that just edited has
+    /// seen, an append landing right after its edit excluded.
+    pub pre_append_version: u64,
 }
 
 impl DocumentSnapshot {
@@ -105,6 +114,8 @@ impl DocumentSnapshot {
             selections: Arc::new(doc.selections().clone()),
             tracked_ranges: Arc::clone(doc.tracked_ranges()),
             linked_edits: (!doc.linked_edits().is_empty()).then(|| Arc::from(doc.linked_edits())),
+            append_version: doc.append_version(),
+            pre_append_version: doc.pre_append_version(),
         }
     }
 

@@ -248,3 +248,58 @@ fn block_on_burst_lands_every_edit() {
     assert_eq!(accepted, 256);
     assert_eq!(handle.snapshot().text().len(), 256);
 }
+
+/// A batch positioned before a stream's chunk is carried over it in the
+/// actor turn that applies it, through the handle as a caller sends it; and
+/// one positioned before any other change is refused when asked to be.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_batch_positioned_before_an_append_is_rebased_in_the_actor() {
+    use lattice_core::document::BaseMismatch;
+    use lattice_core::tracked::{Stickiness, TrackedRangeChange, TrackedRangeId};
+    use lattice_protocol::position::Range;
+
+    let handle = spawn_document(
+        lattice_core::BufferId(1),
+        Document::from_text("ab\ncd\n"),
+        empty_registry(),
+    );
+    let id = TrackedRangeId::next();
+    handle
+        .update_tracked_ranges(vec![TrackedRangeChange::Track {
+            id,
+            bytes: 3..3,
+            stickiness: Stickiness::NeverGrows,
+        }])
+        .await
+        .unwrap();
+    let base = handle.snapshot().text_version;
+    handle.append_to_tracked(id, "new\n".into()).await.unwrap();
+
+    let dd = || {
+        vec![Edit::delete(Range::new(
+            Position::new(1, 0),
+            Position::new(2, 0),
+        ))]
+    };
+    handle
+        .apply_edit_batch_based_on(dd(), base, BaseMismatch::Refuse)
+        .await
+        .unwrap();
+    assert_eq!(handle.snapshot().buffer.as_string(), "ab\nnew\n");
+
+    handle
+        .apply_edit(Edit::insert(Position::new(0, 0), "Z"))
+        .await
+        .unwrap();
+    let refused = handle
+        .apply_edit_batch_based_on(dd(), base, BaseMismatch::Refuse)
+        .await;
+    assert!(
+        matches!(
+            refused,
+            Err(RuntimeError::Core(lattice_core::CoreError::Stale))
+        ),
+        "{refused:?}"
+    );
+    assert_eq!(handle.snapshot().buffer.as_string(), "Zab\nnew\n");
+}

@@ -70,11 +70,13 @@ fn boot_with_an_agenda_shaped_view() -> (Editor, BufferId, std::path::PathBuf) {
         &mut editor,
         sources,
         vec![Excerpt::new(SOURCE, 0, 0)],
-        Some("*test:agenda*".into()),
-        BufferFlags::default(),
+        lattice_multibuffer::MultibufferViewConfig {
+            name: Some("*test:agenda*".into()),
+            flags: BufferFlags::default(),
+            fold_grouping: lattice_multibuffer::FoldGrouping::SourceFile,
+        },
         cmd_registry,
         None,
-        lattice_multibuffer::FoldGrouping::SourceFile,
     );
     (editor, view_id, file)
 }

@@ -1,20 +1,20 @@
-//! Host-owned `BufferRegistry`-backed impls of the diff subsystem's
-//! resolver seams (DX.6, coupling C6).
+//! The host-owned `BufferRegistry`-backed impl of the diff subsystem's
+//! [`BufferTextProvider`] seam (DX.6, coupling C6).
 //!
 //! The diff subsystem (now `lattice-diff`) depends only on the
-//! abstractions [`BufferTextProvider`] / [`DocumentBufferResolver`].
-//! Their production impls bridge to [`crate::buffer_registry::BufferRegistry`]
-//! — a host type — so they CANNOT live in `lattice-diff`; they stay here.
-//! Re-exported under `crate::diff::subsystem::*` (see `diff/mod.rs`) so
-//! every existing call site reads
-//! `crate::diff::subsystem::BufferRegistry{TextProvider,DocumentResolver}`
-//! exactly as before the move.
+//! abstraction. Its production impl bridges to
+//! [`crate::buffer_registry::BufferRegistry`] — a host type — so it CANNOT
+//! live in `lattice-diff`; it stays here, re-exported under
+//! `crate::diff::subsystem::*` (see `diff/mod.rs`).
+//!
+//! The peer `DocumentBufferResolver` needs no registry: a document's id is
+//! its buffer's id, so `lattice_diff::subsystem::DocumentIdIsBufferId`
+//! converts one to the other.
 
 use lattice_core::BufferId;
-use lattice_protocol::ids::DocumentId;
 use ropey::Rope;
 
-use lattice_diff::subsystem::{BufferTextProvider, DocumentBufferResolver};
+use lattice_diff::subsystem::BufferTextProvider;
 
 /// D.3.a (2026-05-29): the production [`BufferTextProvider`]
 /// impl. Bridges the trait to the host's [`crate::buffer_registry::BufferRegistry`]:
@@ -43,28 +43,5 @@ impl BufferTextProvider for BufferRegistryTextProvider {
     fn buffer_rope(&self, id: BufferId) -> Option<Rope> {
         let handle = self.registry.document_handle(id)?;
         Some(handle.snapshot().buffer.to_rope())
-    }
-}
-
-/// D.3.a.1 (2026-05-29): production [`DocumentBufferResolver`]
-/// impl. Bridges `DocumentId` → `BufferId` via
-/// `BufferRegistry::buffer_id_for_document`. Stored on `Editor`
-/// for the editor's lifetime and handed to
-/// `DiffSubsystem::bind` so the drainer task can translate
-/// bus events.
-#[derive(Clone, Debug)]
-pub struct BufferRegistryDocumentResolver {
-    registry: crate::buffer_registry::BufferRegistry,
-}
-
-impl BufferRegistryDocumentResolver {
-    pub fn new(registry: crate::buffer_registry::BufferRegistry) -> Self {
-        Self { registry }
-    }
-}
-
-impl DocumentBufferResolver for BufferRegistryDocumentResolver {
-    fn buffer_id_for(&self, document_id: DocumentId) -> Option<BufferId> {
-        self.registry.buffer_id_for_document(document_id)
     }
 }

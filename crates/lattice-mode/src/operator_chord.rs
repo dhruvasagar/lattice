@@ -21,6 +21,18 @@
 
 use std::sync::Arc;
 
+/// The plugin an operator chord belongs to: its id, which the bindings are
+/// stamped with (`SourceLayer::Plugin(id)`), and its manifest name, so the
+/// stamp reads `plugin:comment` rather than `plugin:1`, a number the reader
+/// would have to resolve by hand.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PluginOrigin<'a> {
+    /// The plugin's id, as stamped in `SourceLayer::Plugin(id)`.
+    pub id: u32,
+    /// The plugin's manifest name.
+    pub name: &'a str,
+}
+
 /// Wires a plugin operator's chord into the universal operator-pending layer.
 pub trait OperatorChordWirer: Send + Sync {
     /// Bind `chord` to `op`, with the full operator-pending surface.
@@ -42,12 +54,35 @@ pub trait OperatorChordWirer: Send + Sync {
         // `SourceLayer::Plugin(id)`. Without it `:describe-key gc` names the
         // host file that happened to create the binding, which is a
         // provenance lie about a plugin's own chord.
-        plugin_id: u32,
-        // CM.4: the manifest name, so the stamp reads `plugin:comment` rather
-        // than `plugin:1` — a number the reader then has to resolve by hand.
-        plugin_name: &str,
+        origin: PluginOrigin<'_>,
         post_motion_char: bool,
     ) -> Result<(), String>;
+
+    /// LL.9: bind `prefix` to `op` in an arbitrary keymap `layer`, with the
+    /// same full operator-pending surface as [`wire`](Self::wire).
+    ///
+    /// The native peer of `wire`: a subsystem's own operator (`ask`) is bound
+    /// from `install(boot)` through
+    /// [`SubsystemBoot::bind_operator`](crate::SubsystemBoot::bind_operator),
+    /// which lands here. `doubled` is the trailing key of the linewise form.
+    fn bind_in(
+        &self,
+        layer: lattice_keymap::KeymapLayer,
+        source: lattice_grammar::SourceLocation,
+        prefix: &[lattice_protocol::chord::KeyChord],
+        op: lattice_grammar::registry::OperatorId,
+        doubled: Option<lattice_protocol::chord::KeyChord>,
+        post_motion_char: bool,
+    );
+
+    /// LL.10b: `chord` with `<leader>` replaced by the configured leader, as
+    /// the keymap does for every chord it registers. A subsystem names its
+    /// operator `<leader>aa`; the leader is known only once the keymap exists,
+    /// which is when [`bind_in`](Self::bind_in) runs. The default replaces
+    /// nothing, for binders with no keymap behind them.
+    fn expand_leader(&self, chord: &str) -> String {
+        chord.to_string()
+    }
 }
 
 /// The shared handle. Registered by the host under THIS alias, and looked up

@@ -157,7 +157,7 @@ fn dismissing_the_popup_restores_the_documents_modes() {
     open_describe_buffer_popup(&mut editor);
     assert!(!published_gate(&mut editor).contains(&mode));
 
-    let _ = editor.dismiss_popup();
+    editor.dismiss_popup();
     assert!(
         published_gate(&mut editor).contains(&mode),
         "the document's own mode must gate its keys again once the popup is gone"

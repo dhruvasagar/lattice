@@ -1148,10 +1148,14 @@ impl Element for EditorElement {
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
-        let mut style = Style::default();
-        style.flex_grow = 1.0;
-        style.size.width = Length::Definite(DefiniteLength::Fraction(1.0));
-        style.size.height = Length::Definite(DefiniteLength::Fraction(1.0));
+        let style = Style {
+            flex_grow: 1.0,
+            size: gpui::Size {
+                width: Length::Definite(DefiniteLength::Fraction(1.0)),
+                height: Length::Definite(DefiniteLength::Fraction(1.0)),
+            },
+            ..Style::default()
+        };
         let layout_id = window.request_layout(style, [], cx);
         (layout_id, EditorElementLayoutState)
     }
@@ -4135,55 +4139,54 @@ fn push_virtual_row(
     // cells, which is how the alt text becomes the placeholder rather than a
     // separate code path. (The TUI never reaches this function; it paints the
     // cells directly, which is its whole rendering of a block.)
-    if vrow.kind == lattice_cells::VirtualRowKind::MediaBlock {
-        if let Some(block) = vrow.media.as_ref() {
-            if block.height_lh.is_some() {
-                media_rows.push((shaped_text.len(), block.clone()));
-                let blank = window.text_system().shape_line(
-                    SharedString::from(" "),
-                    font_size,
-                    &[TextRun {
-                        len: 1,
-                        font: font.clone(),
-                        color: rgb(body_color).into(),
-                        background_color: None,
-                        underline: None,
-                        strikethrough: None,
-                    }],
-                    None,
-                );
-                // A media block reserves N whole display rows; each MUST push a
-                // gutter entry too, or `shaped_gutter` falls short of
-                // `shaped_text` and every line number after the image is painted
-                // at the wrong `row_top(i)` — drifting up by the block's row
-                // count. `gutter_line` is `None` for a media row, so this renders
-                // blank, exactly as the BrandingBlock and generic paths below do.
-                let blank_gutter: String = virtual_row_gutter_text(vrow.gutter_line, gutter_width);
-                let shaped_g = window.text_system().shape_line(
-                    SharedString::from(blank_gutter.clone()),
-                    font_size,
-                    &[TextRun {
-                        len: blank_gutter.len(),
-                        font: font.clone(),
-                        color: rgb(GUTTER_NORMAL_COLOR).into(),
-                        background_color: None,
-                        underline: None,
-                        strikethrough: None,
-                    }],
-                    None,
-                );
-                shaped_text.push(blank);
-                shaped_gutter.push(shaped_g);
-                row_meta.push(Default::default());
-                row_segment.push(0);
-                row_scale.push(1.0);
-                row_split.push(None);
-                inlay_offsets_per_row.push(RowCoords::default());
-                diagnostic_segments_per_row.push(Vec::new());
-                overlay_quads_per_row.push(Vec::new());
-                return;
-            }
-        }
+    if vrow.kind == lattice_cells::VirtualRowKind::MediaBlock
+        && let Some(block) = vrow.media.as_ref()
+        && block.height_lh.is_some()
+    {
+        media_rows.push((shaped_text.len(), block.clone()));
+        let blank = window.text_system().shape_line(
+            SharedString::from(" "),
+            font_size,
+            &[TextRun {
+                len: 1,
+                font: font.clone(),
+                color: rgb(body_color).into(),
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            }],
+            None,
+        );
+        // A media block reserves N whole display rows; each MUST push a
+        // gutter entry too, or `shaped_gutter` falls short of
+        // `shaped_text` and every line number after the image is painted
+        // at the wrong `row_top(i)` — drifting up by the block's row
+        // count. `gutter_line` is `None` for a media row, so this renders
+        // blank, exactly as the BrandingBlock and generic paths below do.
+        let blank_gutter: String = virtual_row_gutter_text(vrow.gutter_line, gutter_width);
+        let shaped_g = window.text_system().shape_line(
+            SharedString::from(blank_gutter.clone()),
+            font_size,
+            &[TextRun {
+                len: blank_gutter.len(),
+                font: font.clone(),
+                color: rgb(GUTTER_NORMAL_COLOR).into(),
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            }],
+            None,
+        );
+        shaped_text.push(blank);
+        shaped_gutter.push(shaped_g);
+        row_meta.push(Default::default());
+        row_segment.push(0);
+        row_scale.push(1.0);
+        row_split.push(None);
+        inlay_offsets_per_row.push(RowCoords::default());
+        diagnostic_segments_per_row.push(Vec::new());
+        overlay_quads_per_row.push(Vec::new());
+        return;
     }
     if vrow.kind == lattice_cells::VirtualRowKind::BrandingBlock {
         branding_rows.push((shaped_text.len(), vrow.cells.clone()));

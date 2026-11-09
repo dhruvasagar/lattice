@@ -271,6 +271,7 @@ docs = [
   "architecture/agent-ui",
   "architecture/acp-ux-enhancements",
   "architecture/pi",
+  "architecture/llm-layer",
   "notes/ai-assisted-development",
 ]
 

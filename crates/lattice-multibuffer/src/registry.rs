@@ -54,6 +54,11 @@ pub trait MultibufferRegistry: Send + Sync + std::fmt::Debug {
     /// Count of currently-registered views. Test-friendly probe.
     fn len(&self) -> usize;
 
+    /// No views registered.
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     /// OA.23b: every registered view id.
     ///
     /// What lets a bare SOURCE id be resolved back to the view that owns it.

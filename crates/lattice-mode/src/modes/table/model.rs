@@ -391,7 +391,7 @@ mod tests {
         let out = rendered("| 世界 | b |\n| xy | c |\n", 0);
         let widths: Vec<usize> = out
             .lines()
-            .map(|l| unicode_width::UnicodeWidthStr::width(l))
+            .map(unicode_width::UnicodeWidthStr::width)
             .collect();
         assert!(
             widths.windows(2).all(|w| w[0] == w[1]),

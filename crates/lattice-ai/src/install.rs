@@ -38,8 +38,14 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     // Always wired (no transport feature) -- same policy as opencode.
     crate::pi::install(boot);
 
+    // LL.18: the permission popup, before the producers that add their stores.
+    #[cfg(any(feature = "acp", feature = "llm"))]
+    let permissions = crate::permission::install(boot);
     #[cfg(feature = "acp")]
-    crate::acp::install::install(boot, &logger);
+    crate::acp::install::install(boot, &logger, &permissions);
+
+    #[cfg(feature = "llm")]
+    crate::llm::install::install(boot, &permissions);
 
     #[cfg(feature = "mcp")]
     crate::mcp::install::install(boot);

@@ -14,8 +14,10 @@
 //!   and a cancel then kills the whole group. A shell's grandchildren
 //!   otherwise outlive it and keep its pipes open, which is exactly how
 //!   compilation's re-run came to stream an old run's output into a new
-//!   one. [`ProcessGroup::Shared`] is for a child that may need the
-//!   terminal — see its docs.
+//!   one. The same holds when the child exits first: whatever of its group
+//!   still holds the pipes after [`LINGER`] is killed, so `server &` cannot
+//!   keep a finished run waiting. [`ProcessGroup::Shared`] is for a child
+//!   that may need the terminal — see its docs.
 //! - **Output is drained on reader threads**, so a child that fills a pipe
 //!   cannot wedge the wait loop that is watching the token; and a cancel
 //!   does not wait for them, so a grandchild still holding a pipe cannot
@@ -104,10 +106,30 @@ pub enum RunOutcome {
 /// # }
 /// ```
 pub fn run_cancellable(
+    command: Command,
+    input: Option<Vec<u8>>,
+    group: ProcessGroup,
+    token: &CancellationToken,
+) -> io::Result<RunOutcome> {
+    run_cancellable_capped(command, input, group, token, usize::MAX)
+}
+
+/// [`run_cancellable`], keeping at most `cap + 1` bytes of each of stdout and
+/// stderr (LL.18). The pipes are still read to the end, so a child writing
+/// more never blocks on a full pipe; what is past the cap is dropped as it
+/// arrives, so memory stays bounded however much it writes. A stream longer
+/// than `cap` comes back `cap + 1` bytes long, which is how the caller knows
+/// it was cut.
+///
+/// # Errors
+///
+/// As [`run_cancellable`].
+pub fn run_cancellable_capped(
     mut command: Command,
     input: Option<Vec<u8>>,
     group: ProcessGroup,
     token: &CancellationToken,
+    cap: usize,
 ) -> io::Result<RunOutcome> {
     if token.is_cancelled() {
         return Ok(RunOutcome::Cancelled);
@@ -132,8 +154,8 @@ pub fn run_cancellable(
             let _ = stdin.write_all(&bytes);
         });
     }
-    let stdout = drain(child.stdout.take());
-    let stderr = drain(child.stderr.take());
+    let stdout = drain(child.stdout.take(), cap);
+    let stderr = drain(child.stderr.take(), cap);
 
     loop {
         if token.is_cancelled() {
@@ -151,6 +173,13 @@ pub fn run_cancellable(
             return Ok(RunOutcome::Cancelled);
         }
         if let Some(status) = child.try_wait()? {
+            // The child is done, but something it started in the background
+            // may still hold its pipes, and joining the readers would wait on
+            // that for ever, deaf to the token.
+            if !pipes_closed(&stdout, &stderr, group, child.id(), token) {
+                drop((stdout, stderr));
+                return Ok(RunOutcome::Cancelled);
+            }
             return Ok(RunOutcome::Finished(Output {
                 status,
                 stdout: stdout.join().unwrap_or_default(),
@@ -161,49 +190,166 @@ pub fn run_cancellable(
     }
 }
 
+/// How long a finished child's pipes may stay open before what is left of
+/// its own process group is killed: long enough for the last of its output
+/// to drain, short enough that a stray `server &` does not hold the caller.
+pub const LINGER: Duration = Duration::from_millis(200);
+
+/// Wait for the readers of a child that has exited. Under
+/// [`ProcessGroup::Own`] nothing the child started may outlive it, so a group
+/// still holding the pipes after [`LINGER`] is killed. Either way the token is
+/// still watched: `false` when it was cancelled first (and the group, if its
+/// own, killed).
+fn pipes_closed(
+    stdout: &thread::JoinHandle<Vec<u8>>,
+    stderr: &thread::JoinHandle<Vec<u8>>,
+    group: ProcessGroup,
+    pid: u32,
+    token: &CancellationToken,
+) -> bool {
+    let deadline = std::time::Instant::now() + LINGER;
+    let mut killed = false;
+    while !(stdout.is_finished() && stderr.is_finished()) {
+        if token.is_cancelled() {
+            if group == ProcessGroup::Own {
+                kill_process_tree(pid);
+            }
+            return false;
+        }
+        if group == ProcessGroup::Own && !killed && std::time::Instant::now() >= deadline {
+            kill_process_tree(pid);
+            killed = true;
+        }
+        thread::sleep(POLL);
+    }
+    true
+}
+
 /// Read a pipe to its end on its own thread.
-fn drain(pipe: Option<impl Read + Send + 'static>) -> thread::JoinHandle<Vec<u8>> {
+fn drain(pipe: Option<impl Read + Send + 'static>, cap: usize) -> thread::JoinHandle<Vec<u8>> {
+    let keep = cap.saturating_add(1);
     thread::spawn(move || {
         let mut bytes = Vec::new();
         if let Some(mut pipe) = pipe {
-            let _ = pipe.read_to_end(&mut bytes);
+            let mut chunk = [0u8; 8192];
+            loop {
+                match pipe.read(&mut chunk) {
+                    Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        let room = keep.saturating_sub(bytes.len());
+                        bytes.extend_from_slice(&chunk[..n.min(room)]);
+                    }
+                }
+            }
         }
         bytes
     })
 }
 
 /// Start the child as the leader of its own process group, so the whole
-/// tree can be killed at once.
+/// tree can be killed at once with [`kill_process_tree`]. A no-op off Unix,
+/// where `taskkill /T` follows the tree without one.
+///
+/// Public for a child that outlives one call (LL.24: an MCP server over
+/// stdio), which cannot go through [`run_cancellable`].
 #[cfg(unix)]
-fn own_process_group(command: &mut Command) {
+pub fn own_process_group(command: &mut Command) {
     use std::os::unix::process::CommandExt as _;
     command.process_group(0);
 }
 
 #[cfg(not(unix))]
-fn own_process_group(_command: &mut Command) {}
+pub fn own_process_group(_command: &mut Command) {}
 
-/// Kill the child and everything it started. The direct `Child::kill`
-/// afterwards covers a sandbox with no `kill` / `taskkill` on `PATH`.
-fn kill_tree(child: &mut Child) {
+/// Kill process `pid` and everything it started: its process group on Unix
+/// (so it must have been started with [`own_process_group`]), its tree on
+/// Windows. Blocks for one short-lived `kill` / `taskkill`. Errors are
+/// logged at `debug` and otherwise ignored: the process may already be gone.
+pub fn kill_process_tree(pid: u32) {
     #[cfg(unix)]
     let tree = Command::new("kill")
-        .args(["-KILL", "--", &format!("-{}", child.id())])
+        .args(["-KILL", "--", &format!("-{pid}")])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status();
     #[cfg(windows)]
     let tree = Command::new("taskkill")
-        .args(["/T", "/F", "/PID", &child.id().to_string()])
+        .args(["/T", "/F", "/PID", &pid.to_string()])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status();
     #[cfg(any(unix, windows))]
     if let Err(error) = tree {
-        tracing::debug!(%error, "process-tree kill unavailable; killing the child alone");
+        tracing::debug!(%error, "process-tree kill unavailable");
     }
+    #[cfg(not(any(unix, windows)))]
+    let _ = pid;
+}
+
+/// A process group to kill later, named by its leader's pid, for a caller
+/// that does not hold the leader's [`Child`] (the leader is reaped by
+/// someone else, so its pid can be reused by the time the kill runs).
+///
+/// A group id is a pid, and once the leader is reaped and the group empty,
+/// that number can be given to an unrelated process that leads a group of
+/// its own; `kill -- -pgid` would then kill it. So the leader's start time
+/// is recorded here, and [`Self::kill`] skips the kill when a process with
+/// that pid exists but started at a different time. A leader that is gone
+/// with members left keeps the group id reserved, so killing it then is
+/// safe. Linux only: elsewhere there is no cheap start time to read and the
+/// group is killed as before.
+#[derive(Debug)]
+pub struct GroupKill {
+    pid: u32,
+    started: Option<u64>,
+}
+
+impl GroupKill {
+    /// Remember `pid`'s group; call while the leader is known to be alive
+    /// (right after spawning it).
+    pub fn new(pid: u32) -> Self {
+        Self {
+            pid,
+            started: start_time(pid),
+        }
+    }
+
+    /// Kill the group with [`kill_process_tree`], unless its pid now
+    /// belongs to another process.
+    pub fn kill(&self) {
+        if let Some(then) = self.started
+            && start_time(self.pid).is_some_and(|now| now != then)
+        {
+            tracing::debug!(pid = self.pid, "process group id reused; not killing it");
+            return;
+        }
+        kill_process_tree(self.pid);
+    }
+}
+
+/// When `pid` started, in clock ticks since boot (`/proc/<pid>/stat` field
+/// 22); `None` when no such process exists or the file cannot be read.
+#[cfg(target_os = "linux")]
+fn start_time(pid: u32) -> Option<u64> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    // `comm` (field 2) is in parentheses and may itself hold `)` or spaces,
+    // so count fields from the last `)`: field 3 is the first after it.
+    let rest = &stat[stat.rfind(')')? + 1..];
+    rest.split_whitespace().nth(22 - 3)?.parse().ok()
+}
+
+#[cfg(not(target_os = "linux"))]
+fn start_time(_pid: u32) -> Option<u64> {
+    None
+}
+
+/// Kill the child and everything it started. The direct `Child::kill`
+/// afterwards covers a sandbox with no `kill` / `taskkill` on `PATH`.
+fn kill_tree(child: &mut Child) {
+    kill_process_tree(child.id());
     let _ = child.kill();
 }
 
@@ -218,6 +364,38 @@ mod tests {
         let mut c = Command::new("sh");
         c.args(["-c", script]);
         c
+    }
+
+    /// A group whose pid now belongs to a process that started at another
+    /// time is left alone; one whose leader is still the process we started
+    /// is killed.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_reused_group_id_is_not_killed() {
+        let mut c = Command::new("sleep");
+        c.arg("30");
+        own_process_group(&mut c);
+        let mut child = c.spawn().unwrap();
+        let pid = child.id();
+        let started = start_time(pid).expect("a live process has a start time");
+
+        let reused = GroupKill {
+            pid,
+            started: Some(started + 1),
+        };
+        reused.kill();
+        thread::sleep(Duration::from_millis(100));
+        assert!(
+            child.try_wait().unwrap().is_none(),
+            "another process's group"
+        );
+
+        GroupKill::new(pid).kill();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while child.try_wait().unwrap().is_none() {
+            assert!(Instant::now() < deadline, "the group was killed");
+            thread::sleep(Duration::from_millis(10));
+        }
     }
 
     #[test]
@@ -367,6 +545,61 @@ mod tests {
         assert!(
             alive,
             "Shared kills the child alone; the grandchild is left to finish"
+        );
+    }
+
+    /// A child writing far past the cap finishes (its pipe never fills), and
+    /// only `cap + 1` bytes are kept.
+    #[test]
+    fn capped_output_keeps_cap_plus_one_and_lets_the_child_finish() {
+        let mut big = Command::new("sh");
+        big.args(["-c", "head -c 1000000 /dev/zero; echo done >&2"]);
+        let token = CancellationToken::new();
+        let outcome = run_cancellable_capped(big, None, ProcessGroup::Own, &token, 100).unwrap();
+        let RunOutcome::Finished(out) = outcome else {
+            panic!("finished");
+        };
+        assert!(out.status.success());
+        assert_eq!(out.stdout.len(), 101);
+        assert_eq!(out.stderr, b"done\n");
+    }
+
+    #[test]
+    fn a_background_child_does_not_hold_a_finished_run() {
+        let started = Instant::now();
+        let RunOutcome::Finished(out) = run_cancellable(
+            sh("sleep 30 & echo hi"),
+            None,
+            ProcessGroup::Own,
+            &CancellationToken::new(),
+        )
+        .unwrap() else {
+            panic!("nothing cancelled it");
+        };
+        assert_eq!(out.stdout, b"hi\n");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn a_cancel_still_lands_while_a_shared_grandchild_holds_the_pipes() {
+        let token = CancellationToken::new();
+        let cancel = token.clone();
+        thread::spawn(move || {
+            thread::sleep(Duration::from_millis(300));
+            cancel.cancel();
+        });
+        let started = Instant::now();
+        let outcome =
+            run_cancellable(sh("sleep 3 & echo hi"), None, ProcessGroup::Shared, &token).unwrap();
+        assert!(matches!(outcome, RunOutcome::Cancelled), "{outcome:?}");
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "{:?}",
+            started.elapsed()
         );
     }
 }

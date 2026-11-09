@@ -387,19 +387,6 @@ pub fn compute_code_block_lines(syntax: &SyntaxSnapshot) -> Option<Vec<u32>> {
     Some(lines.into_iter().collect())
 }
 
-/// Hash the user-visible signature of the current fold set.
-///
-/// Used as part of the highlights cache key
-/// ([`crate::render_state::VisibleHighlightsKey::fold_hash`]) so a
-/// fold toggle invalidates cached spans: collapsing / expanding a
-/// fold changes which physical lines are visible, which changes
-/// what `highlight_lines(start, end)` should produce.
-///
-/// Only `(start_line, end_line, closed)` are hashed —
-/// fold `identity` is excluded because two folds with the same
-/// range and state but different identities don't change which
-/// bytes are visible.
-///
 // ── FL.1: fold levels ─────────────────────────────────────────
 
 /// Nesting level of each fold, 1-based, in `folds` order.
@@ -504,7 +491,6 @@ pub enum FoldRecomputeCause {
 /// Close new folds that sit deeper than `foldlevel`, leaving folds
 /// whose state was carried over untouched.
 ///
-
 /// `carried[i]` is true when `folds[i]` inherited its `closed` flag from
 /// a previous fold with the same identity. Those keep whatever the user
 /// last did to them; the rest are new structure, and new structure obeys
@@ -536,6 +522,19 @@ pub fn max_fold_level(folds: &[Fold]) -> u32 {
     fold_levels(folds).into_iter().max().unwrap_or(0)
 }
 
+/// Hash the user-visible signature of the current fold set.
+///
+/// Used as part of the highlights cache key
+/// ([`crate::render_state::VisibleHighlightsKey::fold_hash`]) so a
+/// fold toggle invalidates cached spans: collapsing / expanding a
+/// fold changes which physical lines are visible, which changes
+/// what `highlight_lines(start, end)` should produce.
+///
+/// Only `(start_line, end_line, closed)` are hashed —
+/// fold `identity` is excluded because two folds with the same
+/// range and state but different identities don't change which
+/// bytes are visible.
+///
 /// Phase 5.8.AF.5 / Slice X2: hoisted host-side from
 /// `lattice-ui-tui::app::folds::compute_fold_hash` so dispatch's
 /// `publish_render_state` can populate

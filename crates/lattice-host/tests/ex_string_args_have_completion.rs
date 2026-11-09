@@ -23,6 +23,46 @@ use lattice_host::editor::Editor;
 /// shell history for `:terminal`, say — delete the row and wire a generator.
 const NO_CANDIDATE_SET: &[(&str, &str, &str)] = &[
     (
+        "multibuffer-keep",
+        "pattern",
+        "a free-form regex over the view's excerpts, as for `:g`",
+    ),
+    (
+        "action:multibuffer-keep",
+        "pattern",
+        "as `:multibuffer-keep`",
+    ),
+    (
+        "multibuffer-reject",
+        "pattern",
+        "a free-form regex over the view's excerpts, as for `:g`",
+    ),
+    (
+        "action:multibuffer-reject",
+        "pattern",
+        "as `:multibuffer-reject`",
+    ),
+    (
+        "action:llm-ask-confirmed",
+        "token",
+        "an opaque id the size-confirm prompt fills in; never typed",
+    ),
+    (
+        "action:llm-ask-confirmed",
+        "instruction",
+        "carried from the ask the confirm is for; never typed",
+    ),
+    (
+        "action:llm-chat-send-widened",
+        "profile",
+        "carried by the confirm that asked; never typed",
+    ),
+    (
+        "action:llm-chat-send-widened",
+        "prompt",
+        "carried by the confirm that asked; never typed",
+    ),
+    (
         "ex:put",
         "register",
         "a register is one character, typed as vim types it (`:put a`)",

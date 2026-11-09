@@ -1,0 +1,5 @@
+# `mutable_key_type`: `lsp_types::Uri` wraps `fluent_uri::Uri`, whose parsed
+# authority holds a `Cell`. Its `Hash` / `Eq` read only `as_str()`, so the
+# cell cannot change a key's identity — keying maps by `Uri` is sound.
+# `bytes::Bytes` is clippy's own default, restated because this list replaces it.
+ignore-interior-mutability = ["bytes::Bytes", "lsp_types::Uri"]

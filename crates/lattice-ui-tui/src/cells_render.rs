@@ -248,7 +248,7 @@ mod tests {
         };
         let refined = DisplayRun {
             refine: Some(lattice_cells::RefineKind::Removed),
-            ..plain.clone()
+            ..plain
         };
 
         let plain_style = display_run_to_style(&plain, &resolved, &ids, 0);

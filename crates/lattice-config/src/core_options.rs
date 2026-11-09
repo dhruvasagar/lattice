@@ -1131,6 +1131,9 @@ crate::options! {
     /// editor. Default `info`: every `info!` / `warn!` /
     /// `error!` event in the editor flows into `*messages*`,
     /// `debug!` and `trace!` are dropped at the filter.
+    /// Dependencies whose `info` is protocol chatter (`rmcp`)
+    /// are held at `warn` unless the directive names them;
+    /// `rmcp=debug` opts back in.
     #[name("messages.filter")]
     #[validate(validate_messages_filter)]
     pub MessagesFilter: String = String::from("info");

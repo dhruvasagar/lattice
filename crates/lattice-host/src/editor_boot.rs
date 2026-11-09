@@ -300,6 +300,9 @@ impl Editor {
         // Editor literal), which is the identity `<C-g>` depends on.
         let foreground_cancel: lattice_mode::ForegroundCancelHandle = Arc::default();
         boot.register_service::<lattice_mode::ForegroundCancelHandle>(foreground_cancel.clone());
+        // LL.14d: work that is not a buffer refuses `:q` through its owner's
+        // check. Phase A for the same reason: installs register checks.
+        boot.register_service::<lattice_mode::QuitGuardsHandle>(Arc::default());
 
         // Typed-options registry (DESIGN.md §5.12). Single source of truth
         // for every option's *current value*: each `Option<T>` owns a
@@ -664,6 +667,37 @@ impl Editor {
         }
         boot.register_service::<lattice_core::ProjectResolverHandle>(project_resolver);
 
+        // TR.1: the transient-menu registry — a `lattice-picker` mechanism the
+        // EDITOR owns, registered before any install that populates it.
+        // `lattice_ai::install` registers `llm-menu` into it, so it must precede
+        // that install too: registered after, the AI install found no service,
+        // built a private registry nobody reads, and `<M-m>` said "unknown source".
+        //
+        // It used to be constructed and registered by `lattice-magit::install`
+        // below, which made every transient menu in the editor conditional on
+        // magit having loaded. Magit was only the first user; a
+        // plugin-contributed menu (TR.2) would otherwise work or not depending
+        // on whether an unrelated feature crate happened to be present, with
+        // nothing at the point of failure to explain it. Magit now registers
+        // its sources into the service it looks up here.
+        boot.register_service::<lattice_picker::TransientSourceRegistryHandle>(
+            std::sync::Arc::new(lattice_picker::TransientSourceRegistry::new()),
+        );
+        // multibuffer (BC.7): `multibuffer-mode` + `narrow-mode` + the
+        // project-search mode, the excerpt-jump motions + `:multibuffer-*` /
+        // `:narrow` / `:widen` / `:search` ex-commands + the `zn` operator SPEC,
+        // the `MultibufferRegistryHandle` + project-search services, and the
+        // `MultibufferExcerptsReady` off-keystroke wake. The registry handle is
+        // crate-owned (no host-state dependency). Residue staying host-side
+        // (NOT mode-ownership violations): the universal `zn` operator BINDING
+        // at the `Builtin` operator-pending layer (resolved by name below —
+        // BC.7 decision A) and the `AppEffect::{Search,Narrow,MultibufferExpand}`
+        // dispatch arms (Effect-vocabulary-is-the-host-boundary) — see
+        // `lattice_multibuffer::install` for the full rationale.
+        // Before `lattice_ai::install`: `llm.exclude` looks through a composed
+        // view to its files with this registry, and the AI install takes it
+        // from the services as it runs. Nothing here looks anything up.
+        lattice_multibuffer::install(&mut boot);
         lattice_ai::install(&mut boot);
         // NOTIF.1a: the notification store + the inbound bus expiry
         // rides on. Installed early because it owns no modes and no
@@ -684,18 +718,6 @@ impl Editor {
         // is fully mode-owned (MO.x): `DiffMode::keymap()` + the K.2.4 pass —
         // see `lattice_diff::install` for the full rationale.
         lattice_diff::install(&mut boot);
-        // multibuffer (BC.7): `multibuffer-mode` + `narrow-mode` + the
-        // project-search mode, the excerpt-jump motions + `:multibuffer-*` /
-        // `:narrow` / `:widen` / `:search` ex-commands + the `zn` operator SPEC,
-        // the `MultibufferRegistryHandle` + project-search services, and the
-        // `MultibufferExcerptsReady` off-keystroke wake. The registry handle is
-        // crate-owned (no host-state dependency). Residue staying host-side
-        // (NOT mode-ownership violations): the universal `zn` operator BINDING
-        // at the `Builtin` operator-pending layer (resolved by name below —
-        // BC.7 decision A) and the `AppEffect::{Search,Narrow,MultibufferExpand}`
-        // dispatch arms (Effect-vocabulary-is-the-host-boundary) — see
-        // `lattice_multibuffer::install` for the full rationale.
-        lattice_multibuffer::install(&mut boot);
         // CM.1: native compilation subsystem — registers
         // `compilation-mode` (major, ReadOnly + NoFile), the
         // `:compile`/`:recompile`/`:make` ex-commands (return
@@ -736,19 +758,6 @@ impl Editor {
         // MG.1: Magit — git porcelain as a core plugin. Registers
         // `magit-core-mode` (minor), `magit-status-mode` (major),
         // and the `:magit-status` ex-command. See magit.md §5.
-        // TR.1: the transient-menu registry — a `lattice-picker` mechanism the
-        // EDITOR owns, registered before any install that populates it.
-        //
-        // It used to be constructed and registered by `lattice-magit::install`
-        // below, which made every transient menu in the editor conditional on
-        // magit having loaded. Magit was only the first user; a
-        // plugin-contributed menu (TR.2) would otherwise work or not depending
-        // on whether an unrelated feature crate happened to be present, with
-        // nothing at the point of failure to explain it. Magit now registers
-        // its sources into the service it looks up here.
-        boot.register_service::<lattice_picker::TransientSourceRegistryHandle>(
-            std::sync::Arc::new(lattice_picker::TransientSourceRegistry::new()),
-        );
         lattice_magit::install(&mut boot);
         // LSP (BC.8a — last + largest, sub-sliced BC.8a–e): registers the LSP
         // modes (`lsp-completion-mode` reads the supervisor handle via
@@ -1773,9 +1782,7 @@ impl Editor {
         let diff_subscription_guard = {
             let _enter = runtime_handle.enter();
             let resolver: std::sync::Arc<dyn crate::diff::subsystem::DocumentBufferResolver> =
-                std::sync::Arc::new(crate::diff::subsystem::BufferRegistryDocumentResolver::new(
-                    buffers.clone(),
-                ));
+                std::sync::Arc::new(crate::diff::subsystem::DocumentIdIsBufferId);
             diff_subsystem.bind(event_bus.clone(), resolver)
         };
         let diff_forwarders: std::sync::Arc<
@@ -2039,6 +2046,9 @@ impl Editor {
                 syntax_textobject_ids,
                 syntax_motion_ids,
             ));
+        // LL.9: the same wirer is the seam `SubsystemBoot::bind_operator`
+        // writes through; flush what the installs above queued.
+        boot.set_operator_binder(chord_wirer.clone());
         boot.register_service::<lattice_mode::OperatorChordWirerHandle>(chord_wirer);
         // WK.6: the other half of which-key's install. Must follow the two
         // registrations above: the gate handler resolves the keymap (to fold
@@ -2339,9 +2349,11 @@ impl Editor {
                     Some(lattice_protocol::chord::ChordPattern::Literal(
                         lattice_protocol::chord::KeyChord::char('n'),
                     )),
-                    &builtins,
-                    &syntax_textobject_ids,
-                    &syntax_motion_ids,
+                    crate::keymap_normal::OperatorVocabulary::new(
+                        &builtins,
+                        &syntax_textobject_ids,
+                        &syntax_motion_ids,
+                    ),
                     false,
                 );
                 // SI.10: `gS{motion|text-object}` wraps that span in a
@@ -2368,9 +2380,11 @@ impl Editor {
                     Some(lattice_protocol::chord::ChordPattern::Literal(
                         lattice_protocol::chord::KeyChord::char('S'),
                     )),
-                    &builtins,
-                    &syntax_textobject_ids,
-                    &syntax_motion_ids,
+                    crate::keymap_normal::OperatorVocabulary::new(
+                        &builtins,
+                        &syntax_textobject_ids,
+                        &syntax_motion_ids,
+                    ),
                     false,
                 );
                 // K.3.2 (2026-06-02): emacs-style <C-h> map at
@@ -2459,9 +2473,11 @@ impl Editor {
                     Some(lattice_protocol::chord::ChordPattern::Literal(
                         lattice_protocol::chord::KeyChord::char('s'),
                     )),
-                    &builtins,
-                    &syntax_textobject_ids,
-                    &syntax_motion_ids,
+                    crate::keymap_normal::OperatorVocabulary::new(
+                        &builtins,
+                        &syntax_textobject_ids,
+                        &syntax_motion_ids,
+                    ),
                     true, // post_motion_char
                 );
 
@@ -2650,6 +2666,7 @@ impl Editor {
             pending_programmatic_diff_rx: Some(programmatic_diff_rx),
             programmatic_diff_accept_paths: std::collections::HashMap::new(),
             programmatic_diff_panes: std::collections::HashMap::new(),
+            diff_refine_cache: std::sync::Mutex::default(),
             // D-fix.5: empty until the first diff-fold refresh observes a
             // session's published revision.
             diff_fold_seen_revisions: std::collections::HashMap::new(),
@@ -2772,7 +2789,9 @@ impl Editor {
         // editable-tail read-only gate otherwise only covered the
         // `apply_edit_blocking` char path, not the operator path.
         editor.register_invocation_runner(
-            lattice_ai::acp::conversation_mode::AiConversationMode::mode_id(),
+            // Keyed by the protocol-neutral id, not the ACP mode type, so
+            // the llm chat gets the runner whether or not `acp` is built.
+            lattice_ai::conversation::transcript::editable_tail_runner(),
             Editor::run_editable_tail_invocation,
         );
         // PD.4: the same gap, one layer more general. `read-only-mode`

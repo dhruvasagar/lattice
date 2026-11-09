@@ -216,10 +216,19 @@ impl Mode for MagitLogMode {
             // CG.7c: the first load is this view's first refresh — it paints
             // only if no refresh that started after it has painted since.
             let stamp = crate::buffer_state::RefreshStamp::begin(buffer_id);
-            let text =
-                tokio::task::spawn_blocking(move || run_log(&wd, path_for_task.as_deref(), &[]))
-                    .await
-                    .unwrap();
+            // A join error means the log task panicked: open the view empty
+            // (`gr` retries) rather than failing the activation.
+            let text = match tokio::task::spawn_blocking(move || {
+                run_log(&wd, path_for_task.as_deref(), &[])
+            })
+            .await
+            {
+                Ok(text) => text,
+                Err(e) => {
+                    tracing::warn!(target: "lattice_magit", "log task failed: {e}");
+                    return Ok(guard);
+                }
+            };
             if stamp.is_latest() {
                 headerline::publish(&hl, log_header_fields(&text, path.as_deref()));
                 let spans = crate::highlight::log_styled_spans(&text);

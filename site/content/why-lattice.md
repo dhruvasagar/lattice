@@ -50,6 +50,20 @@ Lattice implements strict vim semantics (operators, motions, text objects, regis
 
 One deliberate deviation: the `:` command line and the functional API are unified into a single typed `CommandRegistry` with one dispatcher. Every ex-command, plugin contribution, and palette entry flows through the same `execute(...)` call.
 
+## Language models, called directly and held to review
+
+Lattice talks to a model's HTTP API itself — Anthropic, Gemini, or any OpenAI-compatible server, a local one included. No agent process sits between you and the model, so the request is yours to inspect (`:llm-inspect`) and its settings are yours to change, per buffer.
+
+It follows the rest of the design rather than sitting beside it:
+
+- **Asking is a vim operator.** `<leader>aa` takes a motion or text object, so `<leader>aaip` asks about a paragraph — from a source file, a compiler error, a terminal. Grammar you already have is the interface.
+- **Every surface is a buffer.** Chats, running requests, attached context, MCP servers: navigable, searchable and splittable like any other buffer.
+- **Review is the default.** A model's edit or a rewrite opens as a diff you accept or reject; a shell command asks first and shows the whole command. Trust, when you grant it, is per chat, covers edits only, and is never saved.
+- **What leaves the machine is yours to control.** Keys never appear in logs, exports, session files or error text; `llm.exclude` keeps secrets from ever being sent; a cloned repository's config can narrow what the model may do but never widen it.
+- **Async, like everything else.** Requests run off the UI thread and stream; you keep editing.
+
+Read the [language models guide](@/docs/llm/llm-guide.md).
+
 ## Where Lattice is not (yet) for you
 
 Honest caveats — Lattice is in active development (Phase 1+):

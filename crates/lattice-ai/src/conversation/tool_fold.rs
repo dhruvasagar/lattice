@@ -42,8 +42,8 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 
 use lattice_core::{BufferId, Fold, FoldSource, ProviderId};
 
-use crate::acp::conversation::ConversationStore;
-use crate::acp::conversation_mode::project_conversation;
+use crate::conversation::ConversationStore;
+use crate::conversation::projection::{FoldDisplay, ProjectionSource, project_conversation_with};
 
 /// Namespace for the per-buffer tool-call fold provider id. OR'd with the
 /// buffer's id (low 32 bits) so the source is distinct in the registry —
@@ -63,7 +63,15 @@ pub const REASONING_FOLD_NAMESPACE: u64 = 0xA1F0_0002_0000_0000;
 pub enum ConversationFoldKind {
     ToolCall,
     Reasoning,
+    /// LL.10b: text sent from a buffer. Folded by the tool-call source, so a
+    /// chat registers no third source for it.
+    Source,
 }
+
+/// LL.10b: a source block of at most this many text lines starts open; a longer
+/// one starts closed, so the answer is not pushed off the screen by what was
+/// asked about. `za` opens or closes either.
+pub const SOURCE_OPEN_LINES: u32 = 8;
 
 /// TCF: one foldable region in the projected transcript, produced by
 /// [`project_conversation`]. `start_line` is the fold head (stays visible when
@@ -88,6 +96,15 @@ pub fn tool_fold_identity(tool_call_id: &str) -> u64 {
     h.finish()
 }
 
+/// LL.10b: stable identity for a source fold, keyed on the block's ordinal in
+/// document order, as reasoning's is. Namespaced with `"ai:source"`.
+pub fn source_fold_identity(ordinal: usize) -> u64 {
+    let mut h = DefaultHasher::new();
+    "ai:source".hash(&mut h);
+    ordinal.hash(&mut h);
+    h.finish()
+}
+
 /// Stable identity for a reasoning fold, keyed on the block's ordinal in
 /// document order (reasoning blocks carry no wire id). Namespaced with
 /// `"ai:reasoning"`.
@@ -98,20 +115,91 @@ pub fn reasoning_fold_identity(ordinal: usize) -> u64 {
     h.finish()
 }
 
-/// Snapshot the store, project it, and return the `closed`-by-default folds of
-/// `want` kind. Shared by both sources — the layout pass is the single source
-/// of truth for line ranges.
-fn folds_of_kind(store: &ConversationStore, want: ConversationFoldKind) -> Vec<Fold> {
-    let conv = store.snapshot();
-    let (_text, spans) = project_conversation(&conv);
+/// One projection's folds, taken together with its text. The drain makes it from
+/// the same conversation snapshot and options it rendered the text from, and the
+/// fold sources read it, so text and folds cannot disagree: a source that
+/// re-projected the live store on its own would see a later conversation, or
+/// later options, than the text the buffer holds.
+#[derive(Debug, Clone, Default)]
+pub struct ProjectionFrame {
+    pub options: crate::conversation::ProjectionOptions,
+    pub folds: Vec<ConversationFold>,
+}
+
+/// Where the drain publishes its latest [`ProjectionFrame`]. Shared by the drain
+/// and both fold sources of one buffer.
+#[derive(Debug, Clone, Default)]
+pub struct FrameCell(std::sync::Arc<std::sync::RwLock<Option<std::sync::Arc<ProjectionFrame>>>>);
+
+impl FrameCell {
+    pub fn publish(&self, frame: ProjectionFrame) {
+        *self.0.write().unwrap_or_else(|e| e.into_inner()) = Some(std::sync::Arc::new(frame));
+    }
+
+    pub fn latest(&self) -> Option<std::sync::Arc<ProjectionFrame>> {
+        self.0.read().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+}
+
+/// Where a fold source gets its spans: the live store (`:opencode-acp`, which
+/// has no drain-owned frame) or the drain's frame.
+#[derive(Clone)]
+enum FoldInput {
+    Live(ProjectionSource),
+    Frame(FrameCell),
+}
+
+impl Default for FoldInput {
+    fn default() -> Self {
+        Self::Live(ProjectionSource::default())
+    }
+}
+
+/// The folds of `want` kind, closed unless the options say `open`. Shared by
+/// both sources: the layout pass is the single source of truth for line ranges.
+/// A `hidden` kind has no spans in the projection, so it yields no folds.
+fn folds_of_kind(
+    store: &ConversationStore,
+    input: &FoldInput,
+    want: ConversationFoldKind,
+) -> Vec<Fold> {
+    let (opts, spans) = match input {
+        FoldInput::Live(options) => {
+            let conv = store.snapshot();
+            let opts = options.get();
+            let (_text, spans) = project_conversation_with(&conv, &opts);
+            (opts, spans)
+        }
+        FoldInput::Frame(cell) => match cell.latest() {
+            Some(frame) => (frame.options, frame.folds.clone()),
+            None => return Vec::new(),
+        },
+    };
     spans
         .into_iter()
-        .filter(|s| s.kind == want)
-        .map(|s| Fold {
-            start_line: s.start_line,
-            end_line: s.end_line,
-            closed: true,
-            identity: Some(s.identity),
+        .filter(|s| {
+            s.kind == want
+                || (want == ConversationFoldKind::ToolCall
+                    && s.kind == ConversationFoldKind::Source)
+        })
+        .map(|s| {
+            let closed = match s.kind {
+                ConversationFoldKind::ToolCall => opts.tools != FoldDisplay::Open,
+                ConversationFoldKind::Reasoning => opts.reasoning != FoldDisplay::Open,
+                // The span runs from the head line; in markdown the two
+                // fence lines are not text either. Plain text is indented,
+                // with no fences.
+                ConversationFoldKind::Source => {
+                    let fences = if opts.markdown { 2 } else { 0 };
+                    s.end_line - s.start_line > SOURCE_OPEN_LINES + fences
+                }
+            };
+            Fold {
+                start_line: s.start_line,
+                end_line: s.end_line,
+                closed,
+                identity: Some(s.identity),
+            }
         })
         .collect()
 }
@@ -120,6 +208,7 @@ fn folds_of_kind(store: &ConversationStore, want: ConversationFoldKind) -> Vec<F
 pub struct ToolCallFoldSource {
     id: ProviderId,
     store: ConversationStore,
+    input: FoldInput,
 }
 
 impl ToolCallFoldSource {
@@ -129,7 +218,21 @@ impl ToolCallFoldSource {
         Self {
             id: ProviderId(TOOL_FOLD_NAMESPACE | buffer_id.0 as u64),
             store,
+            input: FoldInput::default(),
         }
+    }
+
+    /// Read the display options from `options` on every recompute.
+    pub fn with_options(mut self, options: ProjectionSource) -> Self {
+        self.input = FoldInput::Live(options);
+        self
+    }
+
+    /// Read the spans and options from the drain's frame instead of
+    /// re-projecting the live store.
+    pub fn with_frame(mut self, frame: FrameCell) -> Self {
+        self.input = FoldInput::Frame(frame);
+        self
     }
 }
 
@@ -138,7 +241,7 @@ impl FoldSource for ToolCallFoldSource {
         self.id
     }
     fn compute_folds(&self) -> Vec<Fold> {
-        folds_of_kind(&self.store, ConversationFoldKind::ToolCall)
+        folds_of_kind(&self.store, &self.input, ConversationFoldKind::ToolCall)
     }
 }
 
@@ -146,6 +249,7 @@ impl FoldSource for ToolCallFoldSource {
 pub struct ReasoningFoldSource {
     id: ProviderId,
     store: ConversationStore,
+    input: FoldInput,
 }
 
 impl ReasoningFoldSource {
@@ -154,7 +258,21 @@ impl ReasoningFoldSource {
         Self {
             id: ProviderId(REASONING_FOLD_NAMESPACE | buffer_id.0 as u64),
             store,
+            input: FoldInput::default(),
         }
+    }
+
+    /// Read the display options from `options` on every recompute.
+    pub fn with_options(mut self, options: ProjectionSource) -> Self {
+        self.input = FoldInput::Live(options);
+        self
+    }
+
+    /// Read the spans and options from the drain's frame instead of
+    /// re-projecting the live store.
+    pub fn with_frame(mut self, frame: FrameCell) -> Self {
+        self.input = FoldInput::Frame(frame);
+        self
     }
 }
 
@@ -163,7 +281,7 @@ impl FoldSource for ReasoningFoldSource {
         self.id
     }
     fn compute_folds(&self) -> Vec<Fold> {
-        folds_of_kind(&self.store, ConversationFoldKind::Reasoning)
+        folds_of_kind(&self.store, &self.input, ConversationFoldKind::Reasoning)
     }
 }
 
@@ -171,7 +289,8 @@ impl FoldSource for ReasoningFoldSource {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
     use super::*;
-    use crate::acp::conversation::{Block, Conversation, Role, ToolStatus, Turn};
+    use crate::conversation::projection::project_conversation;
+    use crate::conversation::{Block, Conversation, Role, ToolStatus, Turn};
     use std::sync::Arc;
 
     /// A detailed tool call in an assistant turn preceded by `preamble` lines of
@@ -184,6 +303,7 @@ mod tests {
                     Block::Text(preamble.to_string()),
                     Block::ToolCall {
                         id: "tc-1".to_string(),
+                        origin: None,
                         title: "bash".to_string(),
                         status: ToolStatus::Ok,
                         kind: Default::default(),
@@ -193,6 +313,49 @@ mod tests {
                 ],
             }],
             ..Default::default()
+        }
+    }
+
+    /// LL.10b: what an ask sent starts open when short and closed when long,
+    /// so a long selection does not push the answer off the screen.
+    #[test]
+    fn a_source_block_folds_closed_only_when_long() {
+        use crate::conversation::model::SourceLink;
+        use crate::conversation::{ProjectionOptions, ProjectionSource};
+        let folds_for = |lines: usize, markdown: bool| {
+            let text = vec!["x"; lines].join("\n");
+            let mut conv = Conversation::default();
+            conv.push_user_source(
+                Block::Source {
+                    label: "a:1".into(),
+                    lang: "text".into(),
+                    text,
+                    link: Some(SourceLink {
+                        buffer: BufferId(1),
+                        line: 0,
+                    }),
+                },
+                "",
+            );
+            let store = ConversationStore::new(Arc::new(|_| {}));
+            store.mutate(&lattice_agent::SessionKey::new("t", 1), |c| {
+                *c = conv.clone()
+            });
+            let opts = ProjectionOptions {
+                markdown,
+                ..ProjectionOptions::default()
+            };
+            ToolCallFoldSource::new(store, BufferId(1))
+                .with_options(ProjectionSource::fixed(opts))
+                .compute_folds()
+        };
+        // The same threshold with and without markdown's fence lines.
+        for markdown in [true, false] {
+            let short = folds_for(SOURCE_OPEN_LINES as usize, markdown);
+            assert_eq!(short.len(), 1);
+            assert!(!short[0].closed, "markdown={markdown}: {short:?}");
+            let long = folds_for(SOURCE_OPEN_LINES as usize + 1, markdown);
+            assert!(long[0].closed, "markdown={markdown}: {long:?}");
         }
     }
 
@@ -229,17 +392,21 @@ mod tests {
     /// on the tool-call id.
     #[test]
     fn tool_source_emits_one_closed_fold_for_a_detailed_tool_call() {
-        // Drive the store through the wire path so `compute_folds` reads it.
-        use agent_client_protocol::schema::v1::{SessionUpdate, ToolCall as AcpToolCall};
+        // Drive the store through its mutate path so `compute_folds` reads it.
+        use crate::conversation::ToolKind;
         use lattice_agent::SessionKey;
         let store = ConversationStore::new(Arc::new(|_| {}));
-        let mut tc = AcpToolCall::new("tc-1", "bash");
-        tc.raw_input = Some(serde_json::json!({ "cmd": "echo hi" }));
-        tc.raw_output = Some(serde_json::json!("hi\n"));
-        store.apply(
-            &SessionKey::new("opencode", 1),
-            &SessionUpdate::ToolCall(tc),
-        );
+        store.mutate(&SessionKey::new("opencode", 1), |c| {
+            c.push_tool_call(
+                "tc-1".into(),
+                None,
+                "bash".into(),
+                ToolStatus::Ok,
+                ToolKind::Execute,
+                Some("{\n  \"cmd\": \"echo hi\"\n}".into()),
+                Some("\"hi\\n\"".into()),
+            );
+        });
 
         let tool = ToolCallFoldSource::new(store.clone(), BufferId(1));
         let folds = tool.compute_folds();
@@ -260,13 +427,20 @@ mod tests {
     /// region, which the `z*` grammar treats as a no-op.
     #[test]
     fn tool_source_skips_a_tool_call_without_detail() {
-        use agent_client_protocol::schema::v1::{SessionUpdate, ToolCall as AcpToolCall};
+        use crate::conversation::ToolKind;
         use lattice_agent::SessionKey;
         let store = ConversationStore::new(Arc::new(|_| {}));
-        store.apply(
-            &SessionKey::new("opencode", 1),
-            &SessionUpdate::ToolCall(AcpToolCall::new("tc-1", "think")),
-        );
+        store.mutate(&SessionKey::new("opencode", 1), |c| {
+            c.push_tool_call(
+                "tc-1".into(),
+                None,
+                "think".into(),
+                ToolStatus::Pending,
+                ToolKind::Other,
+                None,
+                None,
+            );
+        });
         let tool = ToolCallFoldSource::new(store, BufferId(1));
         assert!(tool.compute_folds().is_empty());
     }

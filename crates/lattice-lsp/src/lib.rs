@@ -88,7 +88,7 @@ pub mod supervisor;
 pub mod sync;
 pub mod transport;
 
-pub use actor::{ServerHandle, spawn, spawn_with_io};
+pub use actor::{ServerBuses, ServerHandle, spawn, spawn_with_io};
 pub use apply_edit::{ApplyEditBus, ApplyEditOutcome, InboundApplyEdit};
 pub use buffer_names::{
     LSP_SUBSYSTEM_LOG_NAME, lsp_server_log_name, lsp_server_trace_log_name,

@@ -833,9 +833,7 @@ pub fn register_normal_bindings(
         &[lit_char('d')],
         builtins.delete,
         Some(ChordPattern::Literal(KeyChord::char('d'))),
-        builtins,
-        syntax_textobjects,
-        syntax_motions,
+        OperatorVocabulary::new(builtins, syntax_textobjects, syntax_motions),
         false,
     );
     register_operator_bindings(
@@ -843,9 +841,7 @@ pub fn register_normal_bindings(
         &[lit_char('c')],
         builtins.change,
         Some(ChordPattern::Literal(KeyChord::char('c'))),
-        builtins,
-        syntax_textobjects,
-        syntax_motions,
+        OperatorVocabulary::new(builtins, syntax_textobjects, syntax_motions),
         false,
     );
     register_operator_bindings(
@@ -853,9 +849,7 @@ pub fn register_normal_bindings(
         &[lit_char('y')],
         builtins.yank,
         Some(ChordPattern::Literal(KeyChord::char('y'))),
-        builtins,
-        syntax_textobjects,
-        syntax_motions,
+        OperatorVocabulary::new(builtins, syntax_textobjects, syntax_motions),
         false,
     );
     register_operator_bindings(
@@ -863,9 +857,7 @@ pub fn register_normal_bindings(
         &[lit_char('>')],
         builtins.indent_right,
         Some(ChordPattern::Literal(KeyChord::char('>'))),
-        builtins,
-        syntax_textobjects,
-        syntax_motions,
+        OperatorVocabulary::new(builtins, syntax_textobjects, syntax_motions),
         false,
     );
     register_operator_bindings(
@@ -873,9 +865,7 @@ pub fn register_normal_bindings(
         &[lit_char('<')],
         builtins.indent_left,
         Some(ChordPattern::Literal(KeyChord::char('<'))),
-        builtins,
-        syntax_textobjects,
-        syntax_motions,
+        OperatorVocabulary::new(builtins, syntax_textobjects, syntax_motions),
         false,
     );
     // IN.7: vim's `=` -- reindent. Registered exactly like `>` / `<`
@@ -886,9 +876,7 @@ pub fn register_normal_bindings(
         &[lit_char('=')],
         builtins.reindent,
         Some(ChordPattern::Literal(KeyChord::char('='))),
-        builtins,
-        syntax_textobjects,
-        syntax_motions,
+        OperatorVocabulary::new(builtins, syntax_textobjects, syntax_motions),
         false,
     );
     // RF.2: reflow. TWO prefixes, ONE operator -- `gq` and `gw` are
@@ -908,9 +896,7 @@ pub fn register_normal_bindings(
             &[lit_char('g'), lit_char(prefix_char)],
             builtins.reflow,
             Some(ChordPattern::Literal(KeyChord::char(doubled))),
-            builtins,
-            syntax_textobjects,
-            syntax_motions,
+            OperatorVocabulary::new(builtins, syntax_textobjects, syntax_motions),
             false,
         );
     }
@@ -926,9 +912,7 @@ pub fn register_normal_bindings(
         &[lit_char('g'), lit_char('=')],
         builtins.reformat,
         Some(ChordPattern::Literal(KeyChord::char('='))),
-        builtins,
-        syntax_textobjects,
-        syntax_motions,
+        OperatorVocabulary::new(builtins, syntax_textobjects, syntax_motions),
         false,
     );
     // Case operators -- prefix is the two-key sequence registered
@@ -939,9 +923,7 @@ pub fn register_normal_bindings(
         &[lit_char('g'), lit_char('U')],
         builtins.upper,
         Some(ChordPattern::Literal(KeyChord::char('U'))),
-        builtins,
-        syntax_textobjects,
-        syntax_motions,
+        OperatorVocabulary::new(builtins, syntax_textobjects, syntax_motions),
         false,
     );
     register_operator_bindings(
@@ -949,9 +931,7 @@ pub fn register_normal_bindings(
         &[lit_char('g'), lit_char('u')],
         builtins.lower,
         Some(ChordPattern::Literal(KeyChord::char('u'))),
-        builtins,
-        syntax_textobjects,
-        syntax_motions,
+        OperatorVocabulary::new(builtins, syntax_textobjects, syntax_motions),
         false,
     );
     register_operator_bindings(
@@ -959,9 +939,7 @@ pub fn register_normal_bindings(
         &[lit_char('g'), lit_char('~')],
         builtins.toggle_case,
         Some(ChordPattern::Literal(KeyChord::char('~'))),
-        builtins,
-        syntax_textobjects,
-        syntax_motions,
+        OperatorVocabulary::new(builtins, syntax_textobjects, syntax_motions),
         false,
     );
     // `g/` search operator (Lattice extension) -- same operator-pending
@@ -973,9 +951,7 @@ pub fn register_normal_bindings(
         &[lit_char('g'), lit_char('/')],
         builtins.search,
         Some(ChordPattern::Literal(KeyChord::char('/'))),
-        builtins,
-        syntax_textobjects,
-        syntax_motions,
+        OperatorVocabulary::new(builtins, syntax_textobjects, syntax_motions),
         false,
     );
 
@@ -986,9 +962,7 @@ pub fn register_normal_bindings(
         &[lit_char('z'), lit_char('f')],
         builtins.create_fold,
         None,
-        builtins,
-        syntax_textobjects,
-        syntax_motions,
+        OperatorVocabulary::new(builtins, syntax_textobjects, syntax_motions),
         false,
     );
 
@@ -1420,6 +1394,30 @@ fn lit(chord: KeyChord) -> ChordPattern {
     ChordPattern::Literal(chord)
 }
 
+/// The vocabulary an operator composes with: the host-resolved builtin
+/// motions / text objects plus the syntax-driven ones, borrowed. Grouped
+/// because every operator binding pass needs all three together.
+#[derive(Clone, Copy)]
+pub struct OperatorVocabulary<'a> {
+    pub builtins: &'a Builtins,
+    pub syntax_textobjects: &'a SyntaxTextObjectIds,
+    pub syntax_motions: &'a SyntaxMotionIds,
+}
+
+impl<'a> OperatorVocabulary<'a> {
+    pub fn new(
+        builtins: &'a Builtins,
+        syntax_textobjects: &'a SyntaxTextObjectIds,
+        syntax_motions: &'a SyntaxMotionIds,
+    ) -> Self {
+        Self {
+            builtins,
+            syntax_textobjects,
+            syntax_motions,
+        }
+    }
+}
+
 /// Register the slice 8.g.iii operator-pending paths for one
 /// operator under `op_prefix`. Same shape across every operator:
 /// motion targets, the doubled-operator current-line shorthand,
@@ -1444,9 +1442,7 @@ pub fn register_operator_bindings(
     op_prefix: &[ChordPattern],
     op: lattice_grammar::registry::OperatorId,
     doubled_self: Option<ChordPattern>,
-    builtins: &Builtins,
-    syntax_textobjects: &SyntaxTextObjectIds,
-    syntax_motions: &SyntaxMotionIds,
+    vocabulary: OperatorVocabulary<'_>,
     post_motion_char: bool,
 ) {
     register_operator_bindings_in(
@@ -1456,9 +1452,7 @@ pub fn register_operator_bindings(
         op_prefix,
         op,
         doubled_self,
-        builtins,
-        syntax_textobjects,
-        syntax_motions,
+        vocabulary,
         post_motion_char,
     );
 }
@@ -1471,6 +1465,10 @@ pub fn register_operator_bindings(
 /// path: a plugin operator's chords belong to its minor mode, not to the
 /// universal grammar. Bound at `Builtin` a plugin's `gc` would outlive
 /// `:set <id>.enabled=false`, pointing at a handler that is gone.
+// Eight independent inputs: where the bindings land and who owns them, the
+// operator and its chords, and the vocabulary they compose with. The
+// vocabulary is already one struct; grouping the rest would only rename the
+// count.
 #[allow(clippy::too_many_arguments)]
 pub fn register_operator_bindings_in(
     layer: KeymapLayer,
@@ -1484,11 +1482,14 @@ pub fn register_operator_bindings_in(
     op_prefix: &[ChordPattern],
     op: lattice_grammar::registry::OperatorId,
     doubled_self: Option<ChordPattern>,
-    builtins: &Builtins,
-    syntax_textobjects: &SyntaxTextObjectIds,
-    syntax_motions: &SyntaxMotionIds,
+    vocabulary: OperatorVocabulary<'_>,
     post_motion_char: bool,
 ) {
+    let OperatorVocabulary {
+        builtins,
+        syntax_textobjects,
+        syntax_motions,
+    } = vocabulary;
     let mode = BindingMode::Normal;
 
     // ---- Motion targets. Each operator's `[op_prefix..., motion_chord]`
@@ -2075,24 +2076,6 @@ pub fn lookup_normal(
     }
 }
 
-/// Resolve the next key of a multi-chord Normal-mode sequence
-/// via the registry. The caller supplies the prefix chord
-/// sequence already absorbed; this helper appends the
-/// normalised current chord and looks the resulting path up in
-/// the trie. `Bound` -> the bound action; everything else
-/// (`Partial` / `Unbound`) -> `Action::None`
-/// to drop the pending state, matching every legacy
-/// `resolve_after_*`'s catchall.
-///
-/// Used by:
-/// - `Pending::AfterG` / `Pending::AfterZ` (slice 8.g.ii) --
-///   prefix `[g]` / `[z]`.
-/// - `Pending::AfterOperator(op)` (slice 8.g.iii) -- prefix
-///   `[d]` / `[c]` / `[y]` / `[>]` / `[<]` for the single-chord
-///   operators, or `[g, U]` / `[g, u]` / `[g, ~]` for the case
-///   operators (mapped via `operator_prefix`).
-/// - `Pending::AfterTextObject { op, around }` (slice 8.g.iii) --
-///   prefix `[op_prefix..., 'i' or 'a']`.
 /// The MODE layer whose binding won for `prefix + chord` under `layers`, or
 /// `None` when the winner came from the always-on Builtin / User layers (or
 /// nothing is bound at all).
@@ -2124,6 +2107,24 @@ pub fn binding_layer_mode(
     }
 }
 
+/// Resolve the next key of a multi-chord Normal-mode sequence
+/// via the registry. The caller supplies the prefix chord
+/// sequence already absorbed; this helper appends the
+/// normalised current chord and looks the resulting path up in
+/// the trie. `Bound` -> the bound action; everything else
+/// (`Partial` / `Unbound`) -> `Action::None`
+/// to drop the pending state, matching every legacy
+/// `resolve_after_*`'s catchall.
+///
+/// Used by:
+/// - `Pending::AfterG` / `Pending::AfterZ` (slice 8.g.ii) --
+///   prefix `[g]` / `[z]`.
+/// - `Pending::AfterOperator(op)` (slice 8.g.iii) -- prefix
+///   `[d]` / `[c]` / `[y]` / `[>]` / `[<]` for the single-chord
+///   operators, or `[g, U]` / `[g, u]` / `[g, ~]` for the case
+///   operators (mapped via `operator_prefix`).
+/// - `Pending::AfterTextObject { op, around }` (slice 8.g.iii) --
+///   prefix `[op_prefix..., 'i' or 'a']`.
 pub fn lookup_normal_with_prefix(
     handle: &KeymapHandle,
     prefix: &[KeyChord],

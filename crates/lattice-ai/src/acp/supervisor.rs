@@ -29,10 +29,11 @@ use lattice_diff::subsystem::DiffOutcome;
 
 use crate::Result;
 use crate::acp::connection::{Connection, PermissionRequest, SessionId, SessionNotification};
-use crate::acp::conversation::{ConversationStore, SessionStatus};
+use crate::acp::conversation::{ApplySessionUpdateToStore, permission_option_from_acp};
 use crate::acp::error::AiError;
 use crate::acp::handle::{AiClientHandle, AiCmd, AiState};
 use crate::acp::providers::ProviderConfig;
+use crate::conversation::{ConversationStore, SessionStatus};
 
 impl AiClientHandle {
     /// Spawn the supervisor task on `runtime` and return a handle onto it.
@@ -413,7 +414,7 @@ pub(crate) async fn drain_notifications(
     let mut tool_names: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
     while let Some(notification) = rx.recv().await {
-        conv_store.apply(&session, &notification.update);
+        conv_store.apply_update(&session, &notification.update);
         // AUX‑3: derive processing status from the update type.
         match &notification.update {
             SessionUpdate::AgentMessageChunk(_) | SessionUpdate::AgentThoughtChunk(_) => {
@@ -521,7 +522,11 @@ async fn handle_permission(
                 id,
                 title,
                 None,
-                request.options.clone(),
+                request
+                    .options
+                    .iter()
+                    .map(permission_option_from_acp)
+                    .collect(),
                 tx,
             );
             // PU-B.2: the menu resolves by the agent's actual `option_id`, so
@@ -533,7 +538,7 @@ async fn handle_permission(
                     respond(
                         responder,
                         RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(
-                            option_id,
+                            PermissionOptionId::new(option_id),
                         )),
                     );
                 }
@@ -997,7 +1002,7 @@ mod tests {
         assert_eq!(conv.turns.len(), 1);
         assert_eq!(
             conv.turns[0].blocks,
-            vec![crate::acp::conversation::Block::Text("pong".to_string())],
+            vec![crate::conversation::Block::Text("pong".to_string())],
             "expected a single assistant Text block \"pong\", got {conv:?}"
         );
     }
@@ -1393,10 +1398,10 @@ done
         loop {
             // AU-1: agent text lands in the structured conversation store.
             let has_agent_text = store.snapshot().turns.iter().any(|t| {
-                t.role == crate::acp::conversation::Role::Assistant
+                t.role == crate::conversation::Role::Assistant
                     && t.blocks
                         .iter()
-                        .any(|b| matches!(b, crate::acp::conversation::Block::Text(_)))
+                        .any(|b| matches!(b, crate::conversation::Block::Text(_)))
             });
             if has_agent_text {
                 break;

@@ -119,11 +119,13 @@ pub fn open_plugin_view(
             activator,
             HashMap::new(),
             Vec::new(),
-            Some(spec.buffer_name.clone()),
-            BufferFlags::default(),
+            crate::MultibufferViewConfig {
+                name: Some(spec.buffer_name.clone()),
+                flags: BufferFlags::default(),
+                fold_grouping: crate::FoldGrouping::SourceFile,
+            },
             (*registry).clone(),
             lang_registry,
-            crate::FoldGrouping::SourceFile,
         ),
     };
 

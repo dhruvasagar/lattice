@@ -101,11 +101,13 @@ fn boot_with_multibuffer() -> (Editor, BufferId) {
         &mut editor,
         sources,
         excerpts,
-        Some("*test:multibuffer*".into()),
-        BufferFlags::default(),
+        lattice_multibuffer::MultibufferViewConfig {
+            name: Some("*test:multibuffer*".into()),
+            flags: BufferFlags::default(),
+            fold_grouping: lattice_multibuffer::FoldGrouping::SourceFile,
+        },
         registry_for_view,
         None,
-        lattice_multibuffer::FoldGrouping::SourceFile,
     );
 
     (editor, view_id)
@@ -615,11 +617,13 @@ fn syntax_highlights_per_excerpt_use_source_language() {
         &mut editor,
         sources,
         excerpts,
-        Some("*test:syntax-k47*".into()),
-        BufferFlags::default(),
+        lattice_multibuffer::MultibufferViewConfig {
+            name: Some("*test:syntax-k47*".into()),
+            flags: BufferFlags::default(),
+            fold_grouping: lattice_multibuffer::FoldGrouping::SourceFile,
+        },
         registry_for_view,
         Some(lr),
-        lattice_multibuffer::FoldGrouping::SourceFile,
     );
 
     // 1. The typed handle must report at least one excerpt syntax entry

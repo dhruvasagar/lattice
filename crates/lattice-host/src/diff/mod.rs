@@ -11,12 +11,11 @@
 //! `lattice_diff::install(boot)` and begins retiring these shims.
 //!
 //! The one piece that stays host-side is [`resolver`]: the
-//! `BufferRegistry`-backed impls of the subsystem's
-//! `BufferTextProvider` / `DocumentBufferResolver` seams (coupling C6;
-//! they reference the host `BufferRegistry`, so they can't move). They
-//! are re-exported under [`subsystem`] so
-//! `crate::diff::subsystem::BufferRegistry{TextProvider,DocumentResolver}`
-//! still resolves everywhere.
+//! `BufferRegistry`-backed impl of the subsystem's `BufferTextProvider`
+//! seam (coupling C6; it references the host `BufferRegistry`, so it can't
+//! move). It is re-exported under [`subsystem`] so
+//! `crate::diff::subsystem::BufferRegistryTextProvider` still resolves
+//! everywhere.
 //!
 //! See `docs/dev/architecture/diff-extraction.md` for the cut and
 //! `docs/dev/operations/slice-plans/diff-extraction.md` for sequencing.
@@ -26,11 +25,10 @@ pub use lattice_diff::{filler, fold, mode, overlay, pane_group};
 pub mod resolver;
 
 /// `crate::diff::subsystem` — the moved `lattice_diff::subsystem`
-/// surface PLUS the host-owned `BufferRegistry`-backed resolver impls,
-/// so every `crate::diff::subsystem::*` call site (including
-/// `BufferRegistryTextProvider` / `BufferRegistryDocumentResolver`)
-/// resolves unchanged after the DX.6 move.
+/// surface PLUS the host-owned `BufferRegistryTextProvider`, so every
+/// `crate::diff::subsystem::*` call site resolves unchanged after the DX.6
+/// move.
 pub mod subsystem {
-    pub use crate::diff::resolver::{BufferRegistryDocumentResolver, BufferRegistryTextProvider};
+    pub use crate::diff::resolver::BufferRegistryTextProvider;
     pub use lattice_diff::subsystem::*;
 }

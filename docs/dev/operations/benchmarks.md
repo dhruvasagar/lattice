@@ -71,6 +71,267 @@ target rather than just a slower number.
 
 ---
 
+## LL.20 — session files and export (2026-11-08)
+
+`:llm-save`, `:llm-resume` and `:llm-export` encode, decode and render on the blocking pool,
+never on the editor thread (the editor's runtime is single-threaded, so a plain spawned task
+would run there; `resuming_a_long_session_does_not_stall_the_runtime_thread` fails with a
+217 ms stall if the decode moves back onto the task). `llm_session_file` is that work for a
+chat of N exchanges, each with reasoning, a tool call and a fenced answer (bench profile):
+
+| Bench | 20 | 200 | 1000 |
+|---|---|---|---|
+| `llm_session_file/encode` | 51 µs | 459 µs | 2.26 ms |
+| `llm_session_file/decode` | 93 µs | 805 µs | 4.04 ms |
+| `llm_session_file/export_org` | 10 µs | 104 µs | 484 µs |
+
+Linear, about 4 µs per exchange to decode (parse, checksum, rebuild the model). None of it is
+on a keystroke path; the numbers are here so a regression in the file format's cost shows.
+
+---
+
+## LL.19 — forking a chat (2026-11-08)
+
+`gb` finds the turn under the cursor by laying the transcript out once (the same pass `gf`
+makes), then `fork_at` copies the turns before the question. Both run on the editor thread,
+once per chord. `llm_fork` forks at the middle question of a chat of N exchanges, each with
+reasoning, a tool call and a fenced answer (bench profile):
+
+| Bench | 20 | 200 | 1000 |
+|---|---|---|---|
+| `llm_fork/turn_at_line` | 7.6 µs | 70 µs | 348 µs |
+| `llm_fork/fork_at` | 0.92 µs | 15 µs | 75 µs |
+
+Linear in the transcript, about 0.35 µs per exchange to lay out. A thousand-exchange chat
+forks in under half a millisecond, a twentieth of a 120 Hz frame, and only when `gb` is
+pressed: nothing here runs per keystroke.
+
+---
+
+## LL.18 — the permission popup's per-tick scan (2026-11-08)
+
+The `*ai-permission*` popup opens on its own when a request is waiting, so its tick asks every
+producer (`PermissionSources`: ACP's store, and every open chat's) for the oldest pending
+request. That runs on the editor thread on every tick, and the usual answer is "none".
+`llm_permission_scan` is that walk with nothing pending (bench profile):
+
+| Bench | Time |
+|---|---|
+| `llm_permission_scan/chats/1` | 64 ns |
+| `llm_permission_scan/chats/10` | 381 ns |
+| `llm_permission_scan/chats/100` | 3.63 µs |
+
+Linear in open chats, about 36 ns each (one uncontended lock and an empty map per store). A
+hundred chats cost under 1% of a 120 Hz frame. The command itself never touches the editor
+thread: it runs under `spawn_blocking`, and its capped drain is bounded by the 30 000-byte cap
+per stream.
+
+---
+
+## LL.17 — finding the span an accepted edit replaces (2026-11-08)
+
+An accepted edit to an open file is applied as the one span that differs, so the lines around
+it stay where they are on screen and one `u` undoes it. `differing_span` finds that span with
+one pass from each end; `llm_edit_span` changes one line mid-file (bench profile):
+
+| Bench | Time |
+|---|---|
+| `llm_edit_span/lines/1000` | 13.2 µs |
+| `llm_edit_span/lines/10000` | 131 µs |
+| `llm_edit_span/lines/100000` | 1.41 ms |
+
+Linear, once per accepted edit, on the tool's task: the editor thread sees only the resulting
+single-span `apply_edit_batch`. Nothing in LL.17 runs on the keystroke path; a review is paced
+by the user.
+
+---
+
+## LL.16 — building a tool loop's next request (2026-11-07)
+
+Each round of a tool loop builds its next request by projecting the chat's conversation through
+`history::messages`, on the request's task, never the editor thread. `llm_tool_history` measures
+that for a turn that has run `rounds` calls, each with a 2 KB result (bench profile):
+
+| Bench | Time |
+|---|---|
+| `llm_tool_history/rounds/10` | 2.00 µs |
+| `llm_tool_history/rounds/50` | 12.1 µs |
+| `llm_tool_history/rounds/200` | 50.2 µs |
+
+Linear in the calls, and far below a network round trip at the round limit (25 by default).
+Nothing in LL.16 runs on the keystroke path: the loop, the tools and their file reads run on the
+boot runtime, and the chat repaints through the existing conversation drain.
+
+---
+
+## LL.14d — recording which buffers are displayed, on the publish path (2026-11-07)
+
+`publish_render_state` now records the current tab's shown buffers for
+`BufferStore::is_displayed`, comparing against the stored set without allocating and storing only
+when the layout changed. `dispatch_publish` before and after:
+
+| Bench | Before | After |
+|---|---|---|
+| `keystroke_publish_2000` | 6.00 µs | 6.29 µs |
+| `keystroke_publish_100000` | 6.23 µs | 6.21 µs |
+| `steady_state` | 4.28 µs | 4.34 µs |
+
+Confidence intervals overlap in every row: a few compares over a handful of panes.
+
+---
+
+## LL.13b — a typed key while an answer streams (2026-11-07)
+
+`dispatch_publish::keystroke_while_streaming` (`lattice-host/benches/dispatch_publish.rs`), beside
+the keystroke ratchet: a character typed and deleted through `dispatch_fused`, then the publish, in
+a 2 000-line document, while another thread appends at the inline sink's pacing (one write a frame).
+
+| Variant | Time per type + delete + publish |
+|---|---|
+| `idle` (nothing streaming) | 508 µs |
+| `same_buffer` (inline output into the document typed in) | 512 µs |
+| `other_document` (a chat beside it) | 509 µs |
+
+The three overlap within their confidence intervals: a stream costs a key nothing measurable, in
+the buffer it writes into or beside it.
+
+---
+
+## LL.13a — rebasing a key over appends it had not seen (2026-11-07)
+
+`document_edit_p99_us::rebase_over_appends/{k}` (`lattice-core/benches/document_hotpath.rs`):
+a typed character in a 1 000-line document, positioned before `k` appends and rebased over them
+in the turn that applies it. Every key now goes through this path; `k = 0` is what that costs
+when nothing is streaming.
+
+| k | 0 | 1 | 8 | `insert_at_middle/1000` (reference) |
+|---|---|---|---|---|
+| time | 1.71 µs | 1.65 µs | 1.81 µs | 1.85 µs |
+
+Within noise of a plain insert at every `k`: the check is a version compare, and a rebase is a
+handful of position transforms against a log the actor already holds.
+
+---
+
+## Rebasing a batch over appends it had not seen (2026-11-09)
+
+`document_edit_p99_us::rebase_batch_over_appends/{k}` (`lattice-core/benches/document_hotpath.rs`):
+a two-edit batch (an operator's shape: delete a line, insert one) in a 1 000-line document,
+positioned before `k` appends and rebased over them in the turn that applies it.
+
+| k | 0 | 1 | 8 | `rebase_over_appends/0` (one edit, reference) |
+|---|---|---|---|---|
+| time | 2.45 µs | 2.35 µs | 2.66 µs | 1.78 µs |
+
+Flat in `k` within noise. The gap to the single-edit row is the second edit's rope work, not the
+rebase: moving each edit over each append and back is position arithmetic, with no buffer reads.
+
+---
+
+## LL.12 — anchored append, and a keystroke during a stream (2026-11-07)
+
+`document_edit_p99_us::append_to_tracked` (`lattice-core/benches/document_hotpath.rs`)
+appends one chunk at a tracked anchor mid-document, on the amend path a stream takes after
+its first write. `runtime::apply_edit_round_trip_during_appends`
+(`lattice-runtime/benches/actor.rs`) times the keystroke round trip while another thread
+appends into the same document once a millisecond, several times the sink's
+one-write-per-frame pacing.
+
+| Bench | 10 | 1k | 100k / 50k |
+|---|---|---|---|
+| `append_to_tracked` | 2.68 µs | 1.37 µs | 66 µs |
+| `insert_at_middle` (reference, §baseline) | 2.2 µs | 1.5 µs | 76 µs |
+| `apply_edit_round_trip` | 73.2 µs | 72.2 µs | 73.5 µs |
+| `apply_edit_round_trip_during_appends` | — | 78.9 µs | 71.2 µs |
+
+An append costs what a typed character does: the anchor is found by id, and the 100k-line
+term is the same one every edit pays. A stream at more than a write per millisecond moves the
+keystroke round trip by less than run-to-run noise (the 1k mean's interval is 71-94 µs,
+the median sits on the baseline), so streamed output does not tax typing in the same buffer.
+
+---
+
+## LL.24 — one external MCP tool call (2026-11-08)
+
+`crates/lattice-ai/benches/llm_mcp_call.rs`. A model's call to an allowed external tool as the
+tool loop makes it: the offer, `McpServer::call`, rmcp's client, an in-memory pipe, an
+in-process rmcp server, and back. The server does no work of its own.
+
+| Call | Round trip |
+|---|---|
+| `bench__echo` (allowed, so nothing asks) | 129 µs |
+
+About twice LL.22's server-side number, as expected: the client and the server each pay
+the decode, encode and task wakes. A real server adds its own process and its own work on
+top; this is the floor lattice sets. Off the editor thread, and three orders of magnitude
+below a model's turn.
+
+---
+
+## LL.22 — one MCP tool call through rmcp (2026-11-08)
+
+`crates/lattice-ai/benches/mcp_call.rs`. The Claude Code connection runs on rmcp; this is what
+the protocol adds to a tool call:
+a newline-delimited `tools/call` written to an in-memory pipe, decoded, handled on its own
+task, encoded and read back. The tool (`getWorkspaceFolders`) does no work of its own.
+
+| Call | Round trip |
+|---|---|
+| `getWorkspaceFolders` | 57.7 µs |
+
+Most of it is two cross-thread wakes (the request task, then the reply) on a two-worker
+runtime. Off the editor thread, and three orders of magnitude below a model's turn. It is
+also the cost LL.23 would have added to every chat tool call, one reason it was dropped.
+
+---
+
+## GR.2 — `llm.exclude` matching (2026-11-09)
+
+`crates/lattice-ai/benches/llm_exclude.rs`. Every read-tool call, every listed or
+searched file and every captured span is checked against the exclude list, and an
+ask's capture runs on the editor thread. The list is now compiled once per change
+(`PathRules`, gitignore semantics); before, every glob was recompiled on every
+check, so each check paid close to the full compile cost below. Debug-free release
+build, the 15-entry default list, a path five directories deep.
+
+| Case | Time |
+|---|---|
+| One check, no match (whole list walked) | 524 ns |
+| One check, matches `.env` | 144 ns |
+| Compiling the list (once per change) | 381 µs |
+
+---
+
+## LL.4 — LLM stream decode throughput (2026-11-01)
+
+`crates/lattice-ai/benches/llm_decode.rs`. The request task decodes every
+network chunk before the sink sees it, so decoder cost per byte bounds how fast
+a reply reaches a buffer. Recorded fixtures replayed 200 times, fed in 1 KiB
+chunks. Off the UI thread; recorded so a decoder regression shows.
+
+| Provider | Time per stream | Throughput |
+|---|---|---|
+| Anthropic | 754 µs | ~382 MiB/s |
+| OpenAI-compatible | 349 µs | ~474 MiB/s |
+
+LL.21 (2026-11-08) added Gemini; one run of all three, so the rows compare with each other
+rather than with the 2026-11-01 numbers above:
+
+| Provider | Time per stream | Throughput |
+|---|---|---|
+| Anthropic | 372 µs | ~774 MiB/s |
+| OpenAI-compatible | 179 µs | ~925 MiB/s |
+| Gemini | 712 µs | ~215 MiB/s |
+
+Gemini is the slowest per byte because every chunk is a whole JSON object with the
+candidate wrapper and usage repeated, parsed in full; its fixture is also the shortest, so
+the fixed per-event cost weighs more. Still four orders of magnitude above model output.
+
+Real model output is orders of magnitude slower than this, so the decoder is
+never the bottleneck.
+
+---
+
 ## LS.3 — listing a directory at a revision, per keystroke (2026-11-03)
 
 `-` from a file at a revision opens oil on its directory *at that
@@ -96,6 +357,8 @@ beside it (PC.9: ~55 µs for a one-directory read). The index row walks
 every staged path, so it grows with the repository rather than with the
 directory; revisit if a large monorepo makes `-` from a staged copy
 noticeable.
+
+---
 
 ## SI.12 — mode range highlights on the publish path (2026-10-24)
 

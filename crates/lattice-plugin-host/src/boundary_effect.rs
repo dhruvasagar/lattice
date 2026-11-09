@@ -958,6 +958,15 @@ fn effect_to_wit(e: &NativeEffect) -> Result<WitEffect, String> {
                 "Effect::ListErrors is host-only (`:clist` opens a host-owned picker)".to_string(),
             );
         }
+        // Host-only by intent: it follows a link in the host's per-buffer
+        // help link table, which a plugin has no view of. A plugin opens
+        // help by topic (`OpenHelpTopic`).
+        NativeEffect::FollowHelpLink => {
+            return Err(
+                "Effect::FollowHelpLink is host-only (it reads the host's help link table)"
+                    .to_string(),
+            );
+        }
         NativeEffect::OpenAiLog { session } => WitEffect::OpenAiLog(session.clone()),
         NativeEffect::OpenSyntheticBuffer { name, mode_id, .. } => {
             WitEffect::OpenSyntheticBuffer(WitOpenSyntheticBufferPayload {
@@ -1016,6 +1025,11 @@ fn effect_to_wit(e: &NativeEffect) -> Result<WitEffect, String> {
         NativeEffect::OpenOilSource { .. } => {
             return Err("Effect::OpenOilSource has no WIT mirror yet \
                         (host-only oil listing from a registered source)"
+                .to_string());
+        }
+        NativeEffect::DisplaySyntheticBuffer { .. } => {
+            return Err("Effect::DisplaySyntheticBuffer has no WIT mirror yet \
+                        (host-only pane placement that leaves focus put)"
                 .to_string());
         }
         NativeEffect::InTarget { .. } => {

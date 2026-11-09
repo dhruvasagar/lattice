@@ -38,6 +38,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use lattice_core::Document;
+use lattice_core::document::BaseMismatch;
 use lattice_grammar::{CancellationToken, CommandInvocation, CommandRegistryHandle, Effect};
 use lattice_protocol::edit::Edit;
 use lattice_protocol::ids::DocumentId;
@@ -115,9 +116,14 @@ impl Default for RopeDocumentHandle {
 /// actor's `recv` loop exits, and the task returns.
 pub fn spawn_document(
     buffer_id: lattice_core::BufferId,
-    document: Document,
+    mut document: Document,
     registry: CommandRegistryHandle,
 ) -> RopeDocumentHandle {
+    // One id space: a buffer's document is addressed by the buffer's id, in
+    // every document event (see `Document::set_id`).
+    document.set_id(lattice_protocol::ids::DocumentId::new(u64::from(
+        buffer_id.0,
+    )));
     let (tx, rx) = mpsc::unbounded_channel();
     let snapshot_cell = Arc::new(PublishedSnapshot::new(DocumentSnapshot::from_document(
         &document,
@@ -201,12 +207,47 @@ impl RopeDocumentHandle {
     /// Apply one edit. Resolves to the resulting `AppliedEdit`
     /// (range info + replaced text) once the actor commits.
     pub fn apply_edit(&self, edit: Edit) -> Pending<AppliedEdit> {
-        self.send(|reply| ActorMsg::ApplyEdit { edit, reply })
+        self.send(|reply| ActorMsg::ApplyEdit {
+            edit,
+            based_on: None,
+            reply,
+        })
+    }
+
+    /// [`Self::apply_edit`], rebased over appends made after
+    /// `text_version == based_on`. See
+    /// [`crate::document::Document::apply_edit_based_on`].
+    pub fn apply_edit_based_on(&self, edit: Edit, based_on: u64) -> Pending<AppliedEdit> {
+        self.send(|reply| ActorMsg::ApplyEdit {
+            edit,
+            based_on: Some(based_on),
+            reply,
+        })
     }
 
     /// Apply multiple edits as one undo unit.
     pub fn apply_edit_batch(&self, edits: Vec<Edit>) -> Pending<Vec<AppliedEdit>> {
-        self.send(|reply| ActorMsg::ApplyEditBatch { edits, reply })
+        self.send(|reply| ActorMsg::ApplyEditBatch {
+            edits,
+            based_on: None,
+            reply,
+        })
+    }
+
+    /// [`Self::apply_edit_batch`] for a batch positioned against
+    /// `text_version == based_on`. See
+    /// [`crate::document::Document::apply_edit_batch_based_on`].
+    pub fn apply_edit_batch_based_on(
+        &self,
+        edits: Vec<Edit>,
+        based_on: u64,
+        on_mismatch: BaseMismatch,
+    ) -> Pending<Vec<AppliedEdit>> {
+        self.send(|reply| ActorMsg::ApplyEditBatch {
+            edits,
+            based_on: Some((based_on, on_mismatch)),
+            reply,
+        })
     }
 
     pub fn undo(&self) -> Pending<Vec<AppliedEdit>> {
@@ -233,7 +274,21 @@ impl RopeDocumentHandle {
     }
 
     pub fn set_selections(&self, selections: SelectionSet) -> Pending<()> {
-        self.send(|reply| ActorMsg::SetSelections { selections, reply })
+        self.send(|reply| ActorMsg::SetSelections {
+            selections,
+            based_on: None,
+            reply,
+        })
+    }
+
+    /// [`Self::set_selections`], rebased as
+    /// [`Self::apply_edit_based_on`] is.
+    pub fn set_selections_based_on(&self, selections: SelectionSet, based_on: u64) -> Pending<()> {
+        self.send(|reply| ActorMsg::SetSelections {
+            selections,
+            based_on: Some(based_on),
+            reply,
+        })
     }
 
     /// Track, untrack or restick ranges the document keeps in place across
@@ -243,6 +298,16 @@ impl RopeDocumentHandle {
         changes: Vec<lattice_core::tracked::TrackedRangeChange>,
     ) -> Pending<()> {
         self.send(|reply| ActorMsg::UpdateTrackedRanges { changes, reply })
+    }
+
+    /// Append `text` at the end of tracked range `id` and grow it. See
+    /// [`crate::document::Document::append_to_tracked`].
+    pub fn append_to_tracked(
+        &self,
+        id: lattice_core::tracked::TrackedRangeId,
+        text: String,
+    ) -> Pending<lattice_core::tracked::AppendOutcome> {
+        self.send(|reply| ActorMsg::AppendToTracked { id, text, reply })
     }
 
     /// Open an undo-coalescing group on the actor so a run of edits (a
@@ -428,6 +493,23 @@ impl crate::document::Document for RopeDocumentHandle {
         RopeDocumentHandle::set_selections(self, selections)
     }
 
+    fn apply_edit_based_on(&self, edit: Edit, based_on: u64) -> Pending<AppliedEdit> {
+        RopeDocumentHandle::apply_edit_based_on(self, edit, based_on)
+    }
+
+    fn apply_edit_batch_based_on(
+        &self,
+        edits: Vec<Edit>,
+        based_on: u64,
+        on_mismatch: BaseMismatch,
+    ) -> Pending<Vec<AppliedEdit>> {
+        RopeDocumentHandle::apply_edit_batch_based_on(self, edits, based_on, on_mismatch)
+    }
+
+    fn set_selections_based_on(&self, selections: SelectionSet, based_on: u64) -> Pending<()> {
+        RopeDocumentHandle::set_selections_based_on(self, selections, based_on)
+    }
+
     fn mark_clean(&self) -> Pending<()> {
         RopeDocumentHandle::mark_clean(self)
     }
@@ -445,6 +527,14 @@ impl crate::document::Document for RopeDocumentHandle {
         changes: Vec<lattice_core::tracked::TrackedRangeChange>,
     ) -> Pending<()> {
         RopeDocumentHandle::update_tracked_ranges(self, changes)
+    }
+
+    fn append_to_tracked(
+        &self,
+        id: lattice_core::tracked::TrackedRangeId,
+        text: String,
+    ) -> Pending<lattice_core::tracked::AppendOutcome> {
+        RopeDocumentHandle::append_to_tracked(self, id, text)
     }
 
     fn dispatch_with_cancel(

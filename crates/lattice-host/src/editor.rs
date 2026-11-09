@@ -207,6 +207,29 @@ impl std::fmt::Debug for SessionBackedMinor {
     }
 }
 
+/// What a programmatic diff's Accept does with the proposed side
+/// ([`lattice_diff::OnAccept`], with the save path resolved).
+#[derive(Debug)]
+pub enum ProgrammaticAccept {
+    /// Write the right side's live text to this path.
+    Save(std::path::PathBuf),
+    /// Send the right side's live text back, unsaved.
+    ReturnText(tokio::sync::oneshot::Sender<String>),
+}
+
+/// The per-pane refinement cache: the `HunkIndex` it was built from (held,
+/// so pointer identity cannot be reused by a later session) and the
+/// refinement by absolute line.
+pub type DiffRefineCache = std::sync::Mutex<
+    std::collections::HashMap<
+        lattice_core::BufferId,
+        (
+            std::sync::Arc<lattice_diff::HunkIndex>,
+            std::sync::Arc<[Vec<lattice_cells::RefineSpan>]>,
+        ),
+    >,
+>;
+
 /// I4 (openDiff) D-fix.1: the pane/buffer bookkeeping needed to tear a
 /// programmatic side-by-side diff down cleanly — close the two transient diff
 /// panes and return focus to the pane the `openDiff` was launched from (the
@@ -483,12 +506,7 @@ pub struct Editor {
     /// producer-fed cache (compilation is the only producer today); the
     /// outer `Arc` lets the publish clone be O(1) and the inner
     /// per-buffer `Arc<Vec<..>>` lets the renderer read wait-free.
-    pub compilation_severity: std::sync::Arc<
-        std::collections::HashMap<
-            lattice_core::BufferId,
-            std::sync::Arc<Vec<(u32, lattice_mode::GutterSeverityLevel)>>,
-        >,
-    >,
+    pub compilation_severity: crate::render_state::CompilationSeverityMap,
     /// CM.3c (2026-07-22): per-buffer compilation location-line
     /// index for theme-based highlighting. Twin of
     /// `compilation_severity` above. Written by the
@@ -620,11 +638,23 @@ pub struct Editor {
     /// the selection extends or contracts as the user moves.
     pub visual_anchor: Option<Position>,
     /// Last operator-class invocation that mutated the
-    /// buffer. `.` re-dispatches it from the current cursor.
+    /// buffer, or that a `repeatable` operator ran and did something
+    /// with (LL.11c: a rewrite, whose change lands later through review).
+    /// `.` re-dispatches it from the current cursor.
     /// v1 records operator + motion / operator + range /
     /// Visual-mode operator; insert-mode text replay remains
     /// a §5.2.4 gap.
     pub last_change: Option<CommandInvocation>,
+    /// The text submitted to the prompt [`Self::last_change`] opened, keyed
+    /// by the prompt's submit action: `.` opens that prompt again pre-filled
+    /// with it, as `.` after `cw` replays the typed text (`last_insert`).
+    pub last_change_prompt: Option<(String, String)>,
+    /// The submit action of a prompt the last change opened and that is
+    /// still open, so its submit is recorded into
+    /// [`Self::last_change_prompt`]. Cleared on submit and on cancel.
+    pub change_prompt_open: Option<String>,
+    /// Set while `.` re-dispatches [`Self::last_change`].
+    pub repeating_change: bool,
     /// Last Visual-mode selection extents, captured on exit
     /// so `gv` can re-enter Visual with the same anchor /
     /// head / kind.
@@ -971,6 +1001,13 @@ pub struct Editor {
     /// `text_version` exceeds this, the host did not issue the edit
     /// and should adopt the document's primary selection head.
     pub last_seen_text_version: HashMap<BufferId, u64>,
+    /// LL.12: each inactive pane's caret, anchored in its buffer as an empty
+    /// `NeverGrows` tracked range when the pane lost focus, so edits made
+    /// while it was away (a stream appending above it, another split on the
+    /// same buffer) move it as they would the active caret. Read back and
+    /// dropped when the pane is focused again (`Editor::load_active_pane`).
+    pub pane_caret_anchors:
+        HashMap<lattice_core::ui::pane::PaneId, (BufferId, lattice_core::tracked::TrackedRangeId)>,
     /// LA.2: the `LanguagesRegistered` drain — a plugin whose load changed the
     /// mode/language catalog lands here, and `run_tick_pending` re-resolves the
     /// majors and languages of buffers that were opened against the old one.
@@ -2038,8 +2075,12 @@ pub struct Editor {
     /// honored in `tear_down_single_diff_session` (a `DiffOutcome::Accept` writes
     /// the buffer here before firing the bound oneshot — the openDiff
     /// `FILE_SAVED` contract: the review *is* the save). Removed on teardown.
+    ///
+    /// LL.11a: the value is what an Accept does — save to a path (openDiff), or
+    /// hand the right side's text back to a producer that applies it to a
+    /// buffer itself (a rewrite).
     pub programmatic_diff_accept_paths:
-        std::collections::HashMap<lattice_core::BufferId, std::path::PathBuf>,
+        std::collections::HashMap<lattice_core::BufferId, ProgrammaticAccept>,
     /// I4 (openDiff) D-fix.1: per programmatic-diff-session pane teardown info,
     /// keyed by the session's primary (proposed) `BufferId`. Recorded by
     /// `open_programmatic_diff`; consumed by `finish_programmatic_diff_panes`
@@ -2048,6 +2089,11 @@ pub struct Editor {
     /// lockstep with `programmatic_diff_accept_paths`.
     pub programmatic_diff_panes:
         std::collections::HashMap<lattice_core::BufferId, ProgrammaticDiffPanes>,
+    /// Intra-line refinement for each side-by-side diff pane, by absolute
+    /// line, built once per published `HunkIndex` and reused by every
+    /// publish until the hunks change. See
+    /// [`Editor::diff_refinement_for`](crate::editor::Editor).
+    pub diff_refine_cache: DiffRefineCache,
     /// D-fix.5: per diff-participant buffer, the last `HunkIndex`
     /// revision its folds were recomputed against. `refresh_diff_folds`
     /// (run each tick on the diff-publish wake) consults this to skip
@@ -2521,6 +2567,65 @@ impl Editor {
             .get::<lattice_grammar::CommandRegistryHandle>()
             .and_then(|reg| reg.load().id_by_name(lattice_mode::VIEW_FOLD_TOGGLE_ACTION))
             == Some(id)
+    }
+
+    /// Resolve the action a bare `:w` runs in `buffer_id`, by walking the
+    /// active modes (minors most-recently-activated first, then major) for the
+    /// first [`lattice_mode::Mode::write_action`] declared.
+    ///
+    /// The same walk as [`Self::resolve_refresh_action`], and for the same
+    /// reason: `:w` means one verb ("submit this") across every buffer that is a
+    /// form rather than a file, while the body stays each mode's own. `None`
+    /// when no active mode declares one, and `:w` writes the file as always.
+    pub fn resolve_write_action(
+        &self,
+        buffer_id: lattice_core::BufferId,
+    ) -> Option<lattice_protocol::ids::CommandId> {
+        let modes = self.active_modes.get(&buffer_id)?;
+        let registry = self.mode_registry.load();
+        let action = modes
+            .minors()
+            .iter()
+            .rev()
+            .copied()
+            .chain(modes.major())
+            .filter_map(|id| registry.get(id))
+            .find_map(|mode| mode.write_action())?;
+        let cmd_reg = self
+            .services
+            .get::<lattice_grammar::CommandRegistryHandle>()?;
+        let id = cmd_reg.load().id_by_name(action);
+        if id.is_none() {
+            tracing::debug!(
+                action,
+                "write_action names an unregistered command; `:w` will write the file"
+            );
+        }
+        id
+    }
+
+    /// Run the active buffer's write action, if its modes declare one, and
+    /// return the effect it asks for. The outer `None` means no mode claims
+    /// `:w` here, so the caller writes the file; `Some(Effect::None)` means a
+    /// mode claimed it and has nothing further to apply.
+    pub fn run_write_action(&mut self) -> Option<lattice_grammar::Effect> {
+        let buffer_id = self.document_buffer_id;
+        let command = self.resolve_write_action(buffer_id)?;
+        let handler = self
+            .services
+            .get::<lattice_mode::ActionHandlerRegistryHandle>()?
+            .lookup(command)?;
+        let ctx = lattice_mode::ActionContext {
+            buffer_id: lattice_protocol::ids::BufferId::new(buffer_id.0 as u64),
+            cursor: self.cursor,
+            selection: None,
+            services: &self.services,
+            events: &self.event_bus,
+            prompt_value: None,
+            args: lattice_grammar::Args::None,
+            buffer_locals: None,
+        };
+        Some(handler(&ctx).unwrap_or(lattice_grammar::Effect::None))
     }
 
     /// OA.4b: resolve the fold-toggle action for `buffer_id` by walking the

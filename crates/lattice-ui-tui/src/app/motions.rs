@@ -192,14 +192,14 @@ impl App {
     // 5.5.G.4: `do_jump_viewport`, `do_scroll_cursor_to`, `do_page`,
     // `do_scroll_line` migrated to [`lattice_host::dispatch::Editor`].
 
-    /// `<C-t>` -- pop the tag stack (vim's `:pop`). LIFO walk
-    /// back through the chain of `gd` / `gD` / `gy` / `gI`
-    /// drill-downs. Echoes "tag stack empty" with no entries.
-    /// Restores the recorded buffer (when cross-file) and
-    /// position; pushes the post-pop cursor onto the unified
-    /// position-history ring (PluginPush) so `<C-o>` continues
-    /// to walk the chronological jump record after a `<C-t>`
-    /// step.
+    // `<C-t>` -- pop the tag stack (vim's `:pop`). LIFO walk
+    // back through the chain of `gd` / `gD` / `gy` / `gI`
+    // drill-downs. Echoes "tag stack empty" with no entries.
+    // Restores the recorded buffer (when cross-file) and
+    // position; pushes the post-pop cursor onto the unified
+    // position-history ring (PluginPush) so `<C-o>` continues
+    // to walk the chronological jump record after a `<C-t>`
+    // step.
     // 5.5.G.7: `do_tag_stack_pop` migrated to
     // [`lattice_host::dispatch::Editor::do_tag_stack_pop`] (zero
     // App callers; deleted).

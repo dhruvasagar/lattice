@@ -367,6 +367,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "Delete the bytes covered by the target range; yank to the unnamed register.",
         OperatorSpec {
             repeatable: true,
+            mutates: true,
             apply: Arc::new(operator_delete),
             args_schema: vec![],
             blockwise_per_row: true,
@@ -378,6 +379,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "Delete the bytes covered by the target range and enter Insert mode (vim's `c`).",
         OperatorSpec {
             repeatable: true,
+            mutates: true,
             apply: Arc::new(operator_change),
             args_schema: vec![],
             blockwise_per_row: true,
@@ -388,7 +390,9 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "operator:yank",
         "Copy the bytes covered by the target range into the named register without modifying the buffer (vim's `y`).",
         OperatorSpec {
-            repeatable: true,
+            // `.` never repeats a yank: it changes nothing (vim).
+            repeatable: false,
+            mutates: false,
             apply: Arc::new(operator_yank),
             args_schema: vec![],
             blockwise_per_row: true,
@@ -400,6 +404,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "Strip leading indentation (4 spaces or one tab) from each line in the range (vim's `<`).",
         OperatorSpec {
             repeatable: true,
+            mutates: true,
             apply: Arc::new(operator_indent_left),
             args_schema: vec![],
             // Linewise effect -- one batched edit covers every line
@@ -414,6 +419,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
          adjusting leading whitespace only (vim's `=`).",
         OperatorSpec {
             repeatable: true,
+            mutates: true,
             apply: Arc::new(operator_reindent),
             args_schema: vec![],
             // Linewise: a blockwise visual collapses to one contiguous
@@ -429,6 +435,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
          formatter) over the range — the operator form of `:format` (`g=`).",
         OperatorSpec {
             repeatable: true,
+            mutates: true,
             apply: Arc::new(operator_reformat),
             args_schema: vec![],
             // Linewise, like `=` and `gq`: every formatter this can
@@ -444,6 +451,9 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         OperatorSpec {
             // Vim's `.` doesn't repeat fold creation.
             repeatable: false,
+            // Writes no text, but stays refused on a read-only buffer: its body
+            // acts on the main document, not on a help or tree view.
+            mutates: true,
             apply: Arc::new(operator_create_fold),
             args_schema: vec![],
             // A fold is whole lines, so a blockwise selection is one range.
@@ -457,6 +467,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
          and any comment leader (vim's `gq` and `gw`, which are one operator here).",
         OperatorSpec {
             repeatable: true,
+            mutates: true,
             apply: Arc::new(operator_reflow),
             args_schema: vec![],
             // Linewise, like `=`: filling is a property of whole lines,
@@ -471,6 +482,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "Prepend 4 spaces to each line in the range (vim's `>`).",
         OperatorSpec {
             repeatable: true,
+            mutates: true,
             apply: Arc::new(operator_indent_right),
             args_schema: vec![],
             blockwise_per_row: false,
@@ -482,6 +494,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "Uppercase ASCII letters in the range (vim's `gU`).",
         OperatorSpec {
             repeatable: true,
+            mutates: true,
             apply: Arc::new(operator_upper),
             args_schema: vec![],
             blockwise_per_row: false,
@@ -493,6 +506,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "Lowercase ASCII letters in the range (vim's `gu`).",
         OperatorSpec {
             repeatable: true,
+            mutates: true,
             apply: Arc::new(operator_lower),
             args_schema: vec![],
             blockwise_per_row: false,
@@ -504,6 +518,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "Toggle case of ASCII letters in the range (vim's `g~`).",
         OperatorSpec {
             repeatable: true,
+            mutates: true,
             apply: Arc::new(operator_toggle_case),
             args_schema: vec![],
             blockwise_per_row: false,
@@ -515,6 +530,9 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "Project-search for the text spanned by the motion / text object (Lattice's `g/`).",
         OperatorSpec {
             repeatable: false,
+            // Writes no text, but stays refused on a read-only buffer: its body
+            // reads the main document, not a help or tree view.
+            mutates: true,
             apply: Arc::new(operator_search),
             args_schema: vec![],
             blockwise_per_row: false,
@@ -526,6 +544,7 @@ pub fn populate(registry: &mut CommandRegistry) -> Builtins {
         "Overwrite each non-newline char in the range with the captured char (vim's `r{char}` and Visual `r`).",
         OperatorSpec {
             repeatable: true,
+            mutates: true,
             apply: Arc::new(operator_replace_char),
             // Args::Char(replacement) is folded in by the keymap's
             // wildcard capture (same shape as `f{char}`, which also
@@ -3939,6 +3958,33 @@ fn operator_search(ctx: &mut OperatorContext) -> Result<Effect, CommandError> {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
     use super::*;
+
+    /// LL.9: the read-only refusal reads `OperatorSpec::mutates`, so it has to
+    /// be right for the operators that decide it. `y` reads; every operator
+    /// that edits text is refused on a read-only buffer.
+    #[test]
+    fn mutates_is_declared_correctly_on_the_operators_that_decide_read_only() {
+        let mut registry = CommandRegistry::new();
+        let b = populate(&mut registry);
+        for (name, id, mutates) in [
+            ("yank", b.yank, false),
+            ("create-fold", b.create_fold, true),
+            ("search", b.search, true),
+            ("delete", b.delete, true),
+            ("change", b.change, true),
+            ("indent-right", b.indent_right, true),
+            ("upper", b.upper, true),
+            ("replace-char", b.replace_char, true),
+        ] {
+            assert_eq!(
+                registry.operator_mutates(id.0),
+                Some(mutates),
+                "operator:{name}"
+            );
+        }
+        // A motion is not an operator: no answer, so nothing reads it as one.
+        assert_eq!(registry.operator_mutates(b.word_forward.0), None);
+    }
     use crate::CancellationToken;
     use crate::command::{CommandInvocation, Count};
     use crate::dispatcher::execute;

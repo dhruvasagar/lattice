@@ -58,11 +58,13 @@ fn boot_diff_view(files: u32, hunks: u32) -> (Editor, BufferId) {
         &mut editor,
         sources,
         excerpts,
-        Some("*test:project-diff*".into()),
-        BufferFlags::default(),
+        lattice_multibuffer::MultibufferViewConfig {
+            name: Some("*test:project-diff*".into()),
+            flags: BufferFlags::default(),
+            fold_grouping: lattice_multibuffer::FoldGrouping::SourceFile,
+        },
         registry_for_view,
         None,
-        lattice_multibuffer::FoldGrouping::SourceFile,
     );
     editor.activate_document(view);
     editor.recompute_folds();

@@ -453,6 +453,25 @@ enum ActorCmd {
     },
 }
 
+/// The client-side buses a server's requests and notifications land on.
+///
+/// One value because every spawn site threads the same set from the
+/// supervisor. A `None` bus degrades its request to the default reply
+/// (headless / test harnesses wire none of them).
+#[derive(Clone, Default)]
+pub struct ServerBuses {
+    /// `workspace/applyEdit` requests.
+    pub apply_edit: Option<crate::apply_edit::ApplyEditBus>,
+    /// `workspace/configuration` requests.
+    pub configuration: Option<crate::configuration::ConfigurationBus>,
+    /// `window/showDocument` requests.
+    pub show_document: Option<crate::show_document::ShowDocumentBus>,
+    /// `window/showMessageRequest` requests.
+    pub show_message_request: Option<crate::show_message_request::ShowMessageRequestBus>,
+    /// Typed editor events (document changes the fan-in forwards).
+    pub events: Option<Arc<lattice_runtime::EventBus>>,
+}
+
 /// Spawn a language server from a [`ServerConfig`].
 ///
 /// Performs the initialize handshake before returning. Failures
@@ -465,11 +484,7 @@ pub async fn spawn(
     config: ServerConfig,
     workspace_root: std::path::PathBuf,
     logger: LspLogger,
-    apply_edit_bus: Option<crate::apply_edit::ApplyEditBus>,
-    configuration_bus: Option<crate::configuration::ConfigurationBus>,
-    show_document_bus: Option<crate::show_document::ShowDocumentBus>,
-    show_message_request_bus: Option<crate::show_message_request::ShowMessageRequestBus>,
-    event_bus: Option<Arc<lattice_runtime::EventBus>>,
+    buses: ServerBuses,
 ) -> LspResult<ServerHandle> {
     let transport = ChildTransport::spawn(&config.binary, &config.args, Some(&workspace_root))
         .await
@@ -483,11 +498,11 @@ pub async fn spawn(
         stderr,
         Some(child),
         logger,
-        apply_edit_bus,
-        configuration_bus,
-        show_document_bus,
-        show_message_request_bus,
-        event_bus,
+        buses.apply_edit,
+        buses.configuration,
+        buses.show_document,
+        buses.show_message_request,
+        buses.events,
     )
     .await
 }

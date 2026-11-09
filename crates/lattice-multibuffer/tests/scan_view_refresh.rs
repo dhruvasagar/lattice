@@ -11,6 +11,7 @@
 //! harness after it would put org's vocabulary in a crate that must not know
 //! what an agenda is.
 
+#![cfg(feature = "scan-view")]
 #![allow(clippy::unwrap_used)]
 
 use std::collections::HashMap;

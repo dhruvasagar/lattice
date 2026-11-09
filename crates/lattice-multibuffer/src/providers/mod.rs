@@ -30,7 +30,8 @@ pub mod scan_view;
 
 /// OA.16: clocked time, rolled up an outline — the report
 /// `scan-view-clockreport-mode` renders over any scan view whose source
-/// reports clock spans.
+/// reports clock spans. Only scan views use it, so it is gated with them.
+#[cfg(feature = "scan-view")]
 pub mod clock_report;
 
 /// N.1.1 (2026-06-10): narrow mode — a focused, editable one-excerpt

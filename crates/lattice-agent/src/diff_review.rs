@@ -44,6 +44,8 @@ pub async fn review_diff(bus: &ProgrammaticDiffBus, req: DiffReviewRequest) -> R
         new_contents: req.new_contents,
         tab_name: req.tab_name,
         origin_session: req.origin_session,
+        baseline: lattice_diff::DiffBaseline::Disk,
+        on_accept: lattice_diff::OnAccept::Save,
         response: tx,
     };
     if bus.send(request).is_err() {
@@ -51,6 +53,56 @@ pub async fn review_diff(bus: &ProgrammaticDiffBus, req: DiffReviewRequest) -> R
     }
     rx.await
         .map_err(|_| AgentError::Cancelled("diff review was dismissed".into()))
+}
+
+/// A proposed change to a buffer's text, reviewed against that text rather
+/// than a file on disk, and handed back rather than saved.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TextReviewRequest {
+    /// Names the language (and the label) of both sides. Need not exist.
+    pub path: PathBuf,
+    /// The text as it is: the read-only left side.
+    pub baseline: String,
+    /// The proposed text: the editable right side.
+    pub proposed: String,
+    /// Display label for the diff.
+    pub tab_name: String,
+    /// LL.17: the session the review belongs to, so closing that session
+    /// rejects it (`Effect::CloseSessionDiffs`). `0` is none.
+    pub origin_session: u64,
+}
+
+/// Review a change to buffer text: `Ok(Some(text))` is the right side as the
+/// user accepted it, edits included; `Ok(None)` is a reject. The caller applies
+/// the text itself, so the change lands in the buffer's own undo history and a
+/// buffer with unsaved edits, or no file, is never written to disk.
+pub async fn review_text(
+    bus: &ProgrammaticDiffBus,
+    req: TextReviewRequest,
+) -> Result<Option<String>> {
+    let (tx, rx) = oneshot::channel::<DiffOutcome>();
+    let (text_tx, text_rx) = oneshot::channel::<String>();
+    let request = ProgrammaticDiffRequest {
+        old_file_path: req.path.clone(),
+        baseline: lattice_diff::DiffBaseline::Text(req.baseline),
+        on_accept: lattice_diff::OnAccept::ReturnText(text_tx),
+        new_file_path: req.path,
+        new_contents: req.proposed,
+        tab_name: req.tab_name,
+        origin_session: req.origin_session,
+        response: tx,
+    };
+    if bus.send(request).is_err() {
+        return Err(AgentError::Bus("programmatic diff receiver is gone".into()));
+    }
+    match rx.await {
+        Ok(DiffOutcome::Accept) => text_rx
+            .await
+            .map(Some)
+            .map_err(|_| AgentError::Cancelled("the accepted text never arrived".into())),
+        Ok(_) => Ok(None),
+        Err(_) => Err(AgentError::Cancelled("diff review was dismissed".into())),
+    }
 }
 
 #[cfg(test)]
@@ -119,6 +171,55 @@ mod tests {
             review_diff(&bus, req(1)).await,
             Err(AgentError::Cancelled(_))
         ));
+    }
+
+    /// A text review carries its baseline and asks for the text back, and an
+    /// accept returns the right side as the host sent it.
+    #[tokio::test]
+    async fn a_text_review_returns_the_accepted_text() {
+        let (bus, mut rx) = make_inbound_raw::<ProgrammaticDiffRequest>(Arc::new(Notify::new()));
+        tokio::spawn(async move {
+            let request = rx.recv().await.expect("a request should arrive");
+            assert_eq!(
+                request.baseline,
+                lattice_diff::DiffBaseline::Text("old\n".into())
+            );
+            let lattice_diff::OnAccept::ReturnText(text) = request.on_accept else {
+                panic!("a text review asks for the text back");
+            };
+            let _ = text.send("new, edited\n".to_string());
+            let _ = request.response.send(DiffOutcome::Accept);
+        });
+        let got = review_text(
+            &bus,
+            TextReviewRequest {
+                path: PathBuf::from("a.rs"),
+                baseline: "old\n".into(),
+                proposed: "new\n".into(),
+                tab_name: "rewrite".into(),
+                origin_session: 0,
+            },
+        )
+        .await
+        .expect("accept");
+        assert_eq!(got.as_deref(), Some("new, edited\n"));
+    }
+
+    #[tokio::test]
+    async fn a_rejected_text_review_returns_nothing() {
+        let (bus, mut rx) = make_inbound_raw::<ProgrammaticDiffRequest>(Arc::new(Notify::new()));
+        tokio::spawn(async move {
+            let request = rx.recv().await.expect("a request should arrive");
+            let _ = request.response.send(DiffOutcome::Reject);
+        });
+        let req = TextReviewRequest {
+            path: PathBuf::from("a.rs"),
+            baseline: "old\n".into(),
+            proposed: "new\n".into(),
+            tab_name: "rewrite".into(),
+            origin_session: 0,
+        };
+        assert_eq!(review_text(&bus, req).await.expect("reject"), None);
     }
 
     /// No host draining the bus at all — a boot misconfiguration.

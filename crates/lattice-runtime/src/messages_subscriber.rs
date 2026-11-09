@@ -293,8 +293,11 @@ pub fn install_messages_subscriber(
     if GLOBAL_INSTALLED.get().is_some() {
         return false;
     }
-    let env_filter = EnvFilter::try_new(initial_filter)
-        .unwrap_or_else(|_| EnvFilter::try_new("info").expect("`info` is a valid EnvFilter spec"));
+    let env_filter =
+        EnvFilter::try_new(with_dependency_floor(initial_filter)).unwrap_or_else(|_| {
+            EnvFilter::try_new(with_dependency_floor("info"))
+                .expect("`info` with the dependency floor is a valid EnvFilter spec")
+        });
     let (filter_layer, handle) = reload::Layer::new(env_filter);
     let messages_layer = MessagesLayer::new(ring, bus);
     // The `*messages*` buffer ALWAYS captures every event.
@@ -343,15 +346,43 @@ pub fn install_messages_subscriber(
     }
 }
 
+/// Dependencies whose `info` is protocol chatter rather than news: rmcp logs
+/// every notification it receives and every connection it ends. Each is held
+/// at `warn` unless the directive names it, so `rmcp=debug` still opts in.
+const QUIET_DEPENDENCIES: &[&str] = &["rmcp"];
+
+/// `spec` with each of [`QUIET_DEPENDENCIES`] it does not name held at `warn`.
+fn with_dependency_floor(spec: &str) -> String {
+    let names = |dep: &str| {
+        spec.split(',').any(|d| {
+            let d = d.trim();
+            d.strip_prefix(dep).is_some_and(|rest| {
+                rest.is_empty() || rest.starts_with('=') || rest.starts_with("::")
+            })
+        })
+    };
+    let mut out = spec.trim().to_string();
+    for dep in QUIET_DEPENDENCIES.iter().filter(|d| !names(d)) {
+        if !out.is_empty() {
+            out.push(',');
+        }
+        out.push_str(dep);
+        out.push_str("=warn");
+    }
+    out
+}
+
 /// Live-swap the messages-layer filter directive. Returns
 /// `Err` when the directive fails to parse, when the global
 /// subscriber wasn't installed (test paths), or when the
 /// reload handle has been dropped. The App's option-change
 /// cascade calls this on `:set messages.filter=<spec>`.
 pub fn reload_messages_filter(spec: &str) -> Result<(), MessagesFilterReloadError> {
-    let new_filter = EnvFilter::try_new(spec).map_err(|e| MessagesFilterReloadError::Parse {
-        spec: spec.to_string(),
-        reason: e.to_string(),
+    let new_filter = EnvFilter::try_new(with_dependency_floor(spec)).map_err(|e| {
+        MessagesFilterReloadError::Parse {
+            spec: spec.to_string(),
+            reason: e.to_string(),
+        }
     })?;
     let handle = FILTER_HANDLE
         .get()
@@ -389,6 +420,22 @@ mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
     use tracing_subscriber::layer::SubscriberExt;
+
+    #[test]
+    fn quiet_dependencies_are_held_at_warn_unless_named() {
+        use super::with_dependency_floor as floor;
+        assert_eq!(floor("info"), "info,rmcp=warn");
+        assert_eq!(floor("debug,lsp=trace"), "debug,lsp=trace,rmcp=warn");
+        assert_eq!(floor("info,rmcp=debug"), "info,rmcp=debug");
+        assert_eq!(floor("rmcp::service=trace"), "rmcp::service=trace");
+        assert_eq!(
+            floor("rmcpx=info"),
+            "rmcpx=info,rmcp=warn",
+            "a prefix is not a name"
+        );
+        assert_eq!(floor(""), "rmcp=warn");
+        assert!(tracing_subscriber::EnvFilter::try_new(floor("info")).is_ok());
+    }
 
     /// Layer captures `tracing::info!` text + level + emits a
     /// `MessagePushed` event on the bus. Exercised against a

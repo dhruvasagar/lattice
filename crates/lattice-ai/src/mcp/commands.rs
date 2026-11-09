@@ -48,10 +48,19 @@ pub fn register_claude_code_ex_commands(
             accepts_range: false,
             parse_args: Arc::new(parse_no_args),
             apply: Arc::new(move |_ctx| {
-                start_server.start();
-                Ok(Effect::Echo {
-                    level: EchoLevel::Info,
-                    text: "claude-code: starting IDE server".to_string(),
+                // The reason is logged at debug where it is known (bind,
+                // socket option, token); say which way it went here.
+                Ok(match start_server.start() {
+                    Some(port) => Effect::Echo {
+                        level: EchoLevel::Info,
+                        text: format!("claude-code: IDE server on port {port}"),
+                    },
+                    None => Effect::Echo {
+                        level: EchoLevel::Error,
+                        text: "claude-code: failed to start the IDE server \
+                               (run with --log-level debug for why)"
+                            .to_string(),
+                    },
                 })
             }),
             args_schema: vec![],
@@ -102,9 +111,11 @@ pub fn register_claude_code_ex_commands(
     );
 
     // I6.2: `:claude-send` (the `@`-mention) — push the current file + selected
-    // line range into the attached agent's context. Reads the crate-owned read
-    // cache (the active selection + its path) and broadcasts an `at_mentioned`
-    // notification frame to every connection via the server handle.
+    // line range into the attached agent's context, broadcast as an
+    // `at_mentioned` frame to every connection via the server handle. With a
+    // range (`:'<,'>claude-send` from Visual, or `:3,9claude-send`) it names
+    // those lines of the buffer it fired in; without one, the active
+    // selection from the crate-owned read cache.
     let send_server = server.clone();
     registry.register_ex_command(
         "claude-send",
@@ -113,22 +124,18 @@ pub fn register_claude_code_ex_commands(
         ExCommandSpec {
             latency_class: LatencyClass::Reflex,
             accepts_bang: false,
-            accepts_range: false,
+            accepts_range: true,
             parse_args: Arc::new(parse_no_args),
-            apply: Arc::new(move |_ctx| {
-                let cache = send_server.read_cache();
-                let frame = {
-                    let guard = cache.lock().unwrap_or_else(|e| e.into_inner());
-                    guard.active.as_ref().map(|active| {
-                        let path = guard
-                            .open_buffers
-                            .get(&active.buffer)
-                            .and_then(|b| b.path.clone());
-                        crate::mcp::notifications::at_mentioned_frame(
-                            &active.selections,
-                            path.as_deref(),
-                        )
-                    })
+            apply: Arc::new(move |ctx| {
+                let frame = match mention_lines(ctx) {
+                    Ok(Some(frame)) => Some(frame),
+                    Ok(None) => cached_selection_mention(&send_server),
+                    Err(message) => {
+                        return Ok(Effect::Echo {
+                            level: EchoLevel::Error,
+                            text: message,
+                        });
+                    }
                 };
                 match frame {
                     Some(f) => {
@@ -195,6 +202,53 @@ pub fn register_claude_code_ex_commands(
     );
 }
 
+/// The at-mention for the lines a ranged `:claude-send` names, in the buffer
+/// it fired in; `None` without a range. The host has already turned a Visual
+/// selection into line addresses, so only lines arrive here.
+fn mention_lines(
+    ctx: &lattice_grammar::registry::ExCommandContext,
+) -> Result<Option<String>, String> {
+    use lattice_grammar::range::{RangeEnv, resolve_lines};
+    let Some(range) = &ctx.range else {
+        return Ok(None);
+    };
+    let marks: std::collections::HashMap<char, lattice_protocol::position::Position> =
+        std::collections::HashMap::new();
+    let search = |_: &str, _: u32, _: bool| -> Result<Option<u32>, String> { Ok(None) };
+    let env = RangeEnv {
+        cursor: ctx.cursor.line,
+        last: ctx.buffer.content_line_count().saturating_sub(1),
+        marks: &marks,
+        search: &search,
+    };
+    let Some((start, end)) =
+        resolve_lines(range, &env, true).map_err(|e| format!("claude-send: {}", e.0))?
+    else {
+        return Ok(None);
+    };
+    let Some(path) = ctx.path.as_deref() else {
+        return Err("claude-send: this buffer has no file to mention".to_string());
+    };
+    Ok(Some(crate::mcp::notifications::at_mentioned_lines_frame(
+        Some(path.as_path()),
+        start,
+        end,
+    )))
+}
+
+/// The at-mention for the active selection in the read cache.
+fn cached_selection_mention(server: &ClaudeCodeServerHandle) -> Option<String> {
+    let cache = server.read_cache();
+    let guard = cache.lock().unwrap_or_else(|e| e.into_inner());
+    guard.active.as_ref().map(|active| {
+        let path = guard
+            .open_buffers
+            .get(&active.buffer)
+            .and_then(|b| b.path.clone());
+        crate::mcp::notifications::at_mentioned_frame(&active.selections, path.as_deref())
+    })
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
@@ -227,6 +281,37 @@ mod tests {
             syntax: None,
             cancel: CancellationToken::new(),
         }
+    }
+
+    /// `:claude-code-start` says the server is up only once it is, naming
+    /// the port an agent connects to.
+    #[tokio::test]
+    async fn claude_code_start_names_the_port_it_bound() {
+        let mut registry = CommandRegistry::new();
+        let handle = server::spawn(
+            ServerConfig {
+                workspace_folders: vec![],
+                lock_dir: std::env::temp_dir(),
+            },
+            Arc::new(EventBus::new()),
+            &tokio::runtime::Handle::current(),
+        );
+        register_claude_code_ex_commands(&mut registry, handle.clone());
+        let id = registry.id_by_name("claude-code-start").unwrap();
+        let spec = registry.ex_command_spec(id).unwrap();
+        let port = match (spec.apply)(&empty_ctx()).unwrap() {
+            Effect::Echo {
+                level: EchoLevel::Info,
+                text,
+            } => text
+                .rsplit(' ')
+                .next()
+                .and_then(|p| p.parse::<u16>().ok())
+                .unwrap_or_else(|| panic!("no port in {text:?}")),
+            other => panic!("expected an info echo, got {other:?}"),
+        };
+        assert_eq!(handle.start(), Some(port), "the port the server holds");
+        handle.stop();
     }
 
     /// I5.1: `:claude` starts the IDE server and emits an `Effect::SpawnTerminal`
@@ -356,6 +441,56 @@ mod tests {
         // Now there's something to mention → Info echo.
         match (spec.apply)(&empty_ctx()).expect("apply ok") {
             Effect::Echo { level, .. } => assert_eq!(level, EchoLevel::Info),
+            other => panic!("expected an echo, got {other:?}"),
+        }
+        handle.stop();
+    }
+
+    /// `:'<,'>claude-send` (or `:3,5claude-send`) takes a range: it mentions
+    /// those lines of the buffer it fired in, rather than refusing with E481.
+    #[tokio::test]
+    async fn a_ranged_claude_send_mentions_those_lines_of_its_file() {
+        use lattice_grammar::range::{Range, RangeBound};
+
+        let mut registry = CommandRegistry::new();
+        let handle = server::spawn(
+            ServerConfig {
+                workspace_folders: vec![],
+                lock_dir: std::env::temp_dir(),
+            },
+            Arc::new(EventBus::new()),
+            &tokio::runtime::Handle::current(),
+        );
+        register_claude_code_ex_commands(&mut registry, handle.clone());
+        let id = registry.id_by_name("claude-send").expect("registered");
+        let spec = registry.ex_command_spec(id).expect("spec present");
+        assert!(spec.accepts_range, "a Visual `:` prefills a range");
+        let mut frames = handle.notify_sender().subscribe();
+
+        let mut ctx = empty_ctx();
+        ctx.range = Some(Range::Span {
+            start: RangeBound::Line(2),
+            end: RangeBound::Line(4),
+        });
+        ctx.buffer = lattice_core::Buffer::from_text("a\nb\nc\nd\ne\nf\n");
+        ctx.path = Some(Arc::new(std::path::PathBuf::from("/work/a.rs")));
+        match (spec.apply)(&ctx).expect("apply ok") {
+            Effect::Echo { level, .. } => assert_eq!(level, EchoLevel::Info),
+            other => panic!("expected an echo, got {other:?}"),
+        }
+        let frame: serde_json::Value = serde_json::from_str(&frames.try_recv().unwrap()).unwrap();
+        assert_eq!(frame["method"], "at_mentioned");
+        assert_eq!(frame["params"]["filePath"], "/work/a.rs");
+        assert_eq!(frame["params"]["lineStart"], 2);
+        assert_eq!(frame["params"]["lineEnd"], 4);
+
+        // A buffer with no file has nothing to mention, and says so.
+        ctx.path = None;
+        match (spec.apply)(&ctx).expect("apply ok") {
+            Effect::Echo { level, text } => {
+                assert_eq!(level, EchoLevel::Error);
+                assert!(text.contains("no file"), "{text}");
+            }
             other => panic!("expected an echo, got {other:?}"),
         }
         handle.stop();

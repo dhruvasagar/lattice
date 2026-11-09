@@ -12,6 +12,7 @@
 //! arg-schema declares the source per-arg, so the slot resolution
 //! pulls the right generator id straight from the registry.
 
+use lattice_grammar::range::parse_range_prefix;
 use lattice_grammar::{ArgSpec, CommandKind, CommandRegistry};
 
 /// What the cursor on the `:` line is pointing at.
@@ -50,6 +51,11 @@ pub enum CommandLineSlot {
     /// Couldn't resolve the command word to a registered command.
     /// No completion possible (we don't know the schema).
     UnknownCommand { word: String, replace_start: usize },
+    /// Inside a range's search pattern that is still open (`:/TODO`):
+    /// the text is a regex being typed, not a command word. No
+    /// completion; offering commands here would append one to the
+    /// pattern.
+    InPattern,
     /// Empty cmdline. Treated as command-name slot with empty
     /// prefix.
     Empty,
@@ -63,7 +69,7 @@ impl CommandLineSlot {
             Self::Arg { prefix, .. } => prefix,
             Self::UnknownCommand { word, .. } => word,
             Self::DelimiterBody { body, .. } => body,
-            Self::BeyondSchema { .. } | Self::Empty => "",
+            Self::BeyondSchema { .. } | Self::InPattern | Self::Empty => "",
         }
     }
 
@@ -73,7 +79,7 @@ impl CommandLineSlot {
             Self::Arg { replace_start, .. } => Some(*replace_start),
             Self::UnknownCommand { replace_start, .. } => Some(*replace_start),
             Self::Empty => Some(0),
-            Self::BeyondSchema { .. } | Self::DelimiterBody { .. } => None,
+            Self::BeyondSchema { .. } | Self::DelimiterBody { .. } | Self::InPattern => None,
         }
     }
 }
@@ -86,6 +92,12 @@ impl CommandLineSlot {
 /// short forms (`w` -> `ex:write`) before looking up the command
 /// in the registry. Living in the host means
 /// `lattice-completion` doesn't bake in TUI-specific aliases.
+///
+/// A leading range (`%`, `5,$`, `'<,'>`, `.+1`) is skipped with the
+/// ex parser's own lexer ([`parse_range_prefix`]), so completion
+/// agrees with execution on where the command word starts: `:'<,'>cl`
+/// completes `cl` exactly as `:cl` does, and the replace offsets point
+/// past the range so accepting a candidate keeps it.
 pub fn current_slot(
     line: &str,
     cursor: usize,
@@ -93,7 +105,98 @@ pub fn current_slot(
     alias_resolve: &dyn Fn(&str) -> Option<String>,
 ) -> CommandLineSlot {
     let line = &line[..cursor.min(line.len())];
+    // An address the lexer refuses (`:'` before the mark's name) is not a
+    // range yet; the line is then slotted as it stands and finds no
+    // command. An open pattern (`:/TODO`) is a whole range, as in vim.
+    let range_len = match parse_range_prefix(line) {
+        Ok((Some(_), rest)) => line.len() - rest.len(),
+        _ => 0,
+    };
+    let body = &line[range_len..];
+    if body.is_empty() && ends_in_open_pattern(&line[..range_len]) {
+        return CommandLineSlot::InPattern;
+    }
+    match slot_without_range(body, registry, alias_resolve) {
+        // A range and nothing after it: the command word starts here.
+        // Not `Empty`, whose replace offset 0 would overwrite the range.
+        CommandLineSlot::Empty if range_len > 0 => CommandLineSlot::CommandName {
+            prefix: String::new(),
+            replace_start: range_len,
+        },
+        slot => slot.shifted(range_len),
+    }
+}
 
+/// Whether `range` ends inside a search pattern not yet closed by its
+/// delimiter (`/TODO`, `5,?fn`), as the range lexer reads one: `/` or `?`
+/// opens it, `\` escapes the next character, and the same delimiter
+/// closes it. A mark's name (`'x`) is skipped, since it is any character.
+fn ends_in_open_pattern(range: &str) -> bool {
+    let mut open: Option<char> = None;
+    let mut chars = range.chars();
+    while let Some(c) = chars.next() {
+        match open {
+            Some(delim) => {
+                if c == '\\' {
+                    chars.next();
+                } else if c == delim {
+                    open = None;
+                }
+            }
+            None => match c {
+                '/' | '?' => open = Some(c),
+                '\'' => {
+                    chars.next();
+                }
+                _ => {}
+            },
+        }
+    }
+    open.is_some()
+}
+
+impl CommandLineSlot {
+    /// The same slot with its replace offset moved `by` bytes right.
+    fn shifted(self, by: usize) -> Self {
+        match self {
+            Self::CommandName {
+                prefix,
+                replace_start,
+            } => Self::CommandName {
+                prefix,
+                replace_start: replace_start + by,
+            },
+            Self::Arg {
+                command_name,
+                arg_index,
+                arg_spec,
+                prefix,
+                replace_start,
+            } => Self::Arg {
+                command_name,
+                arg_index,
+                arg_spec,
+                prefix,
+                replace_start: replace_start + by,
+            },
+            Self::UnknownCommand {
+                word,
+                replace_start,
+            } => Self::UnknownCommand {
+                word,
+                replace_start: replace_start + by,
+            },
+            other => other,
+        }
+    }
+}
+
+/// [`current_slot`] for a line with any range already removed.
+fn slot_without_range(
+    line: &str,
+    registry: &CommandRegistry,
+    alias_resolve: &dyn Fn(&str) -> Option<String>,
+) -> CommandLineSlot {
     // Empty / all-whitespace -> command-name slot, empty prefix.
     if line.trim().is_empty() {
         return CommandLineSlot::Empty;
@@ -101,14 +204,9 @@ pub fn current_slot(
 
     // Delimiter-syntax detection. The :s/.../.../ and :g/.../body
     // forms are flagged but not slot-typed deeply in v1 (Q9 from
-    // the design discussion).
+    // the design discussion). A range in front (`%s/`, `'<,'>s/`)
+    // has already been removed.
     if let Some(rest) = line.strip_prefix("s/") {
-        return CommandLineSlot::DelimiterBody {
-            command_name: "ex:substitute".into(),
-            body: rest.to_string(),
-        };
-    }
-    if let Some(rest) = line.strip_prefix("%s/") {
         return CommandLineSlot::DelimiterBody {
             command_name: "ex:substitute".into(),
             body: rest.to_string(),
@@ -263,6 +361,113 @@ mod tests {
         table
             .iter()
             .find_map(|(s, c)| (*s == short).then(|| (*c).to_string()))
+    }
+
+    /// A range in front of the command word is skipped: the word
+    /// completes as it would alone, and accepting keeps the range.
+    #[test]
+    fn a_range_prefix_is_skipped_before_the_command_word() {
+        let r = fixture();
+        for (line, range_len) in [
+            ("'<,'>wr", 5),
+            ("%wr", 1),
+            ("5,$wr", 3),
+            (".+1wr", 3),
+            ("  '<,'>  wr", 9),
+        ] {
+            match current_slot(line, line.len(), &r, &aliases) {
+                CommandLineSlot::CommandName {
+                    prefix,
+                    replace_start,
+                } => {
+                    assert_eq!(prefix, "wr", "{line}");
+                    assert_eq!(replace_start, range_len, "{line}");
+                }
+                other => panic!("{line}: expected a command name, got {other:?}"),
+            }
+        }
+    }
+
+    /// The command's arguments are slotted after a range too.
+    #[test]
+    fn a_ranged_command_slots_its_arguments() {
+        let r = fixture();
+        let line = "'<,'>write fo";
+        match current_slot(line, line.len(), &r, &aliases) {
+            CommandLineSlot::Arg {
+                command_name,
+                prefix,
+                replace_start,
+                ..
+            } => {
+                assert_eq!(command_name, "ex:write");
+                assert_eq!(prefix, "fo");
+                assert_eq!(&line[replace_start..], "fo");
+            }
+            other => panic!("expected an arg slot, got {other:?}"),
+        }
+    }
+
+    /// A range alone puts the cursor at the start of the command word:
+    /// not `Empty`, whose offset 0 would replace the range.
+    #[test]
+    fn a_range_alone_is_an_empty_command_name_after_it() {
+        let r = fixture();
+        assert_eq!(
+            current_slot("'<,'>", 5, &r, &aliases),
+            CommandLineSlot::CommandName {
+                prefix: String::new(),
+                replace_start: 5,
+            }
+        );
+    }
+
+    /// Delimiter commands after any range, not only `%`.
+    #[test]
+    fn a_ranged_substitute_is_a_delimiter_body() {
+        let r = fixture();
+        for line in ["'<,'>s/a/b", "%s/a/b", "1,5s/a/b"] {
+            assert!(
+                matches!(
+                    current_slot(line, line.len(), &r, &aliases),
+                    CommandLineSlot::DelimiterBody { ref body, .. } if body == "a/b"
+                ),
+                "{line}"
+            );
+        }
+    }
+
+    /// Inside an open search pattern the text is a regex being typed:
+    /// nothing is offered, so `<Tab>` cannot append a command to it. A
+    /// closed pattern is a range like any other.
+    #[test]
+    fn an_open_pattern_offers_nothing() {
+        let r = fixture();
+        for line in ["/TODO", "?fn", "5,/end", "/a\\/b", "'a,/x"] {
+            assert_eq!(
+                current_slot(line, line.len(), &r, &aliases),
+                CommandLineSlot::InPattern,
+                "{line}"
+            );
+        }
+        assert!(matches!(
+            current_slot("/TODO/", 6, &r, &aliases),
+            CommandLineSlot::CommandName { ref prefix, replace_start: 6 } if prefix.is_empty()
+        ));
+        assert!(matches!(
+            current_slot("/TODO/wr", 8, &r, &aliases),
+            CommandLineSlot::CommandName { ref prefix, replace_start: 6 } if prefix == "wr"
+        ));
+    }
+
+    /// An address the lexer refuses is left alone: no command is found.
+    #[test]
+    fn a_half_typed_mark_is_not_a_range() {
+        let r = fixture();
+        assert!(matches!(
+            current_slot("'", 1, &r, &aliases),
+            CommandLineSlot::CommandName { ref prefix, replace_start: 0 } if prefix == "'"
+        ));
     }
 
     #[test]

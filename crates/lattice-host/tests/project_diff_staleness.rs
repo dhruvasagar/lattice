@@ -68,11 +68,13 @@ fn boot_view(
         editor,
         sources,
         excerpts,
-        Some("*test:project-diff*".into()),
-        BufferFlags::default(),
+        lattice_multibuffer::MultibufferViewConfig {
+            name: Some("*test:project-diff*".into()),
+            flags: BufferFlags::default(),
+            fold_grouping: lattice_multibuffer::FoldGrouping::SourceFile,
+        },
         registry_for_view,
         None,
-        lattice_multibuffer::FoldGrouping::SourceFile,
     );
     editor.activate_document(view);
     (view, ids[0], ids[1], first.expect("file A was spawned"))

@@ -153,7 +153,12 @@ In `lattice-diff`, beside the hunk computation, **not** in
 `magit` is the first consumer but not the only future one:
 `diff-mode`'s side-by-side panes have exactly the same gap, and a
 refinement living in magit would have to be reimplemented or reached
-across for them. The computation is pure — two strings in, ranges out —
+across for them. (They now consume it: each pane of a live session takes
+its side of `Hunk.refine`, the proposed pane `added` and the baseline
+`removed`, through the same `extra_refine` cells input magit fills,
+built once per published `HunkIndex` and cached on the host. The added
+side had been computed since DR.4 and drawn nowhere; an insertion into a
+line, which removes nothing, therefore showed no refinement at all.) The computation is pure — two strings in, ranges out —
 which is what `lattice-diff` is for.
 
 Cost sits in the refresh task, which is already `spawn_blocking`.

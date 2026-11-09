@@ -215,6 +215,10 @@ pub trait ProjectSearchService: Send + Sync + std::fmt::Debug {
     fn add_hits(&self, view: BufferId, add: usize);
     fn set_status(&self, view: BufferId, status: SearchStatus);
     fn len(&self) -> usize;
+    /// No search views tracked.
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
     /// M.6.1: record the on-disk path for a source buffer the
     /// forwarder just attached to the view. Jump-to-source reads
     /// this map back to resolve excerpt → path.
@@ -902,13 +906,11 @@ pub fn project_search(
         activator,
         std::collections::HashMap::new(),
         Vec::new(),
-        Some(format!("*search:{query}*")),
-        BufferFlags::default(),
+        crate::MultibufferViewConfig { name: Some(format!("*search:{query}*")), flags: BufferFlags::default(), fold_grouping: // AF.1: search excerpts arrive grouped by file and every one carries
+        // its path as a header, so a file IS a contiguous run — the default.
+        crate::FoldGrouping::SourceFile },
         registry,
         lang_registry,
-        // AF.1: search excerpts arrive grouped by file and every one carries
-        // its path as a header, so a file IS a contiguous run — the default.
-        crate::FoldGrouping::SourceFile,
     );
 
     // CG.12: keyed per view (`cancellation.md` §9), so `<C-g>` reaches this

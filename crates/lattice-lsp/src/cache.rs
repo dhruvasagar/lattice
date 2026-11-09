@@ -340,26 +340,41 @@ pub enum SemanticTokensOutcome {
     },
 }
 
+/// A semantic-tokens delta edit addressed a range outside the previous
+/// token vec — a server bug; the caller re-requests the full set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SemanticEditOutOfRange;
+
+impl std::fmt::Display for SemanticEditOutOfRange {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("semantic-tokens edit outside the previous token vec")
+    }
+}
+
+impl std::error::Error for SemanticEditOutOfRange {}
+
 /// 4.4.i: apply a server-issued `SemanticTokensEdit` script
 /// to `raw_data` in place. Each edit specifies a start index
 /// (into the previous token vec), a count to delete, and a
 /// replacement slice. Edits are applied in order; the server
 /// constructs them against the index space of the input vec.
 ///
-/// Returns `Err(())` and leaves `raw_data` untouched when an
+/// Returns `Err(SemanticEditOutOfRange)` and leaves `raw_data` untouched when an
 /// edit references a range outside the current vec (defensive
 /// guard against server bugs; the host falls back to a fresh
 /// full request when this fires).
 pub fn apply_semantic_token_edits(
     raw_data: &mut Vec<lsp_types::SemanticToken>,
     edits: &[lsp_types::SemanticTokensEdit],
-) -> Result<(), ()> {
+) -> Result<(), SemanticEditOutOfRange> {
     for edit in edits {
         let start = edit.start as usize;
         let delete_count = edit.delete_count as usize;
-        let end = start.checked_add(delete_count).ok_or(())?;
+        let end = start
+            .checked_add(delete_count)
+            .ok_or(SemanticEditOutOfRange)?;
         if end > raw_data.len() {
-            return Err(());
+            return Err(SemanticEditOutOfRange);
         }
         let replacement = edit.data.clone().unwrap_or_default();
         raw_data.splice(start..end, replacement);
@@ -557,8 +572,10 @@ pub enum CodeActionOutcome {
     /// Fresh code-action result list. Drain opens a picker.
     Items(Vec<CodeActionRow>),
     /// Resolved action (post-`codeAction/resolve`). Drain
-    /// applies directly -- the picker is already gone.
-    Resolved(lsp_types::CodeAction),
+    /// applies directly -- the picker is already gone. Boxed: a
+    /// `CodeAction` is several hundred bytes and arrives once per
+    /// accepted action, so it should not size every outcome.
+    Resolved(Box<lsp_types::CodeAction>),
     NoProvider,
 }
 

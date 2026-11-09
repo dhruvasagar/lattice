@@ -6,25 +6,40 @@ rust-version.workspace = true
 license.workspace = true
 
 [features]
-default = ["acp", "mcp"]
+default = ["acp", "mcp", "llm"]
 # ACP agent-client transport (opencode et al): the JSON-RPC `connection`,
 # `session`, `providers`, the `supervisor` + `AiClientHandle`, and the
 # `:opencode` / `:ai-prompt` / `:ai-stop` ex-commands.
 acp = ["dep:agent-client-protocol", "dep:tokio-util", "dep:linkme", "tokio/process"]
+# Direct model-API layer: no-I/O provider adapters (LL.3), later the engine. Shares
+# the protocol-neutral `conversation` model with `acp`; never depends on it.
+# LL.24: external MCP servers are tool sources, through rmcp's client over a
+# stdio child or streamable HTTP (reqwest + rustls, as the providers use).
+llm = ["dep:linkme", "dep:tokio-util", "dep:reqwest", "dep:toml", "dep:regex", "dep:ignore", "tokio/net", "tokio/process", "dep:rmcp", "rmcp/client", "rmcp/transport-child-process", "rmcp/transport-streamable-http-client-reqwest", "rmcp/reqwest", "dep:lattice-multibuffer"]
 # MCP IDE-peer transport (Claude Code, folded in by AG-4): the loopback
 # WebSocket server + the read / write / diff tools it exposes.
-mcp = ["dep:tokio-tungstenite", "dep:dirs", "dep:getrandom", "dep:lattice-lsp", "tokio/net"]
+mcp = ["dep:rmcp", "dep:tokio-tungstenite", "dep:dirs", "dep:getrandom", "dep:lattice-lsp", "tokio/net"]
 
 [dependencies]
 lattice-protocol = { path = "../lattice-protocol" }
 lattice-mode = { path = "../lattice-mode" }
+lattice-keymap = { path = "../lattice-keymap" }
 lattice-grammar = { path = "../lattice-grammar" }
 lattice-runtime = { path = "../lattice-runtime" }
 lattice-core = { path = "../lattice-core" }
 lattice-diff = { path = "../lattice-diff" }
 lattice-config = { path = "../lattice-config" }
+# LL.10c: `llm.exclude` globs (the workspace pin the file watcher uses).
+globset = { workspace = true }
 lattice-cells = { path = "../lattice-cells" }
+# llm: `:llm-menu` is a `TransientSpec`, the one menu mechanism (magit, org). Picker
+# depends on neither this crate nor anything that does.
+lattice-picker = { path = "../lattice-picker" }
 lattice-agent = { path = "../lattice-agent" }
+# llm: `llm.exclude` looks through a composed view (search results, a
+# multibuffer) to the files it shows, via the view's sources. No cycle:
+# lattice-multibuffer depends on nothing here.
+lattice-multibuffer = { path = "../lattice-multibuffer", optional = true }
 # acp: the Agent Client Protocol schema + JSON-RPC types the connection speaks.
 agent-client-protocol = { version = "1.2.0", optional = true }
 # acp: adapts tokio's AsyncRead/AsyncWrite to the futures-io traits
@@ -40,6 +55,10 @@ linkme = { workspace = true, optional = true }
 lattice-lsp = { path = "../lattice-lsp", optional = true }
 # mcp: the loopback WebSocket transport the external `claude` CLI dials into.
 tokio-tungstenite = { workspace = true, optional = true }
+# mcp: the MCP protocol itself (LL.22): `LatticeServer` is an rmcp
+# `ServerHandler`, served over the WebSocket above. llm: the client side
+# (LL.24), for external servers.
+rmcp = { workspace = true, optional = true }
 # mcp: discovery-lockfile home dir + ephemeral auth-token entropy.
 dirs = { workspace = true, optional = true }
 getrandom = { workspace = true, optional = true }
@@ -53,12 +72,47 @@ futures = { workspace = true }
 arc-swap = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+# llm: the `[llm]` table of the user config (read here; settings layers come with LL.7).
+toml = { workspace = true, optional = true }
+# llm: the `search` read tool (LL.16): a regular expression over a
+# .gitignore-honouring walk of the project.
+regex = { workspace = true, optional = true }
+ignore = { workspace = true, optional = true }
+# llm: the HTTP transport (rustls, streaming body).
+reqwest = { workspace = true, optional = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "time", "macros", "rt", "net", "io-util"] }
 futures = { workspace = true }
+criterion = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[[bench]]
+name = "mcp_call"
+harness = false
+required-features = ["mcp"]
+
+[[bench]]
+name = "llm_mcp_call"
+harness = false
+required-features = ["llm"]
+
+[[bench]]
+name = "llm_decode"
+harness = false
+required-features = ["llm"]
+
+[[bench]]
+name = "llm_projection"
+harness = false
+required-features = ["llm"]
+
+[[bench]]
+name = "llm_exclude"
+harness = false
+required-features = ["llm"]
 
 [lints]
 workspace = true

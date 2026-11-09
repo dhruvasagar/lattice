@@ -352,7 +352,16 @@ help-style buffer:
 
 These are grouped-with-Help (identical behaviour, aligned by explicit
 enumeration + comment per the no-kind-branch rule), not divergent per-kind
-logic. The link *data* is seeded kind-agnostically: `do_open_dashboard` builds a
+logic.
+
+**Superseded for the keys (2026-11-08).** Gate 1 is gone. `<Esc>` and then
+`<CR>` moved into `help-mode`'s keymap (`action:help-dismiss`,
+`action:help-follow-link` → `Effect::FollowHelpLink`), and the dashboard
+activates `help-mode` as a companion minor, so it gets both chords from the
+mode rather than from its kind. The kind gate ran before every keymap, so a
+popup whose own major bound `<CR>` (the `*ai-permission*` menu) never received
+it. Gates 2 and 3 remain: they decide what following a link does once the
+mode asks for it. The link *data* is seeded kind-agnostically: `do_open_dashboard` builds a
 `HelpContent` from the composed `DashboardFragment`s, writes the text via
 `append_to_owned_buffer`, and seeds the `HelpLinks`/`HelpAnchors`/
 `ExtraHighlights` locals + markdown syntax via `seed_help_metadata_locals`

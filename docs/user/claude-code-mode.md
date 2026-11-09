@@ -126,7 +126,15 @@ two-pane diff** — the original file on the **left** and the agent's
 proposed change on the **right** — in fresh splits to the right of the
 `:claude` terminal, which stays put. This is the same diff engine
 described in [Diff & merge](help:diff-mode), so the sign column, both-pane
-hunk tints, and `]c` / `[c` hunk navigation all work as usual.
+hunk tints, and `]c` / `[c` hunk navigation all work as usual. Within a
+changed line, the words that changed are marked more strongly: added
+words on the right, removed words on the left, so a one-word edit does not
+read as two copies of the same line.
+
+Each pane has a header line: the left says `README.md as it is`, the right
+`proposed: :diff-accept keeps, :diff-reject discards`. The echo area says
+the same when the diff opens. Until you run one of the two, **the agent is
+waiting**: its edit is neither applied nor refused.
 
 To keep review fast, the diff opens **folded to just the changes**
 (unchanged code collapsed, both panes in lockstep) with the cursor

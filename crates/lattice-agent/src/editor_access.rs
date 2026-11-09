@@ -134,6 +134,121 @@ impl EditorAccess {
         .unwrap_or(false)
     }
 
+    /// LL.16: the text of the open buffer showing `path`, unsaved edits and
+    /// all; `None` when no buffer shows it (or there is no buffer store).
+    ///
+    /// A path matches when it is the same as the buffer's, or both resolve
+    /// to the same file, so `src/../src/a.rs` finds `src/a.rs`.
+    pub fn buffer_text(&self, path: &Path) -> Option<String> {
+        let store = self.buffer_store.as_ref()?;
+        let doc = store.handle_for(core_id(self.buffer_for(path)?))?;
+        let text = doc.snapshot().buffer.as_string();
+        Some(text)
+    }
+
+    /// LL.17: replace the text of the buffer showing `path` with `new`, if it
+    /// still holds `expected`. `Ok(false)` when it does not (it changed since
+    /// it was read) and nothing was applied; an error when no buffer shows
+    /// the path.
+    ///
+    /// Only the part that differs is replaced, as one edit: the lines around
+    /// it keep their place on screen, the caret outside it stays where it
+    /// was, and one `u` undoes the change.
+    pub async fn apply_buffer_text(&self, path: &Path, expected: &str, new: &str) -> Result<bool> {
+        let missing = || AgentError::Io(format!("{}: not open in a buffer", path.display()));
+        let store = self.buffer_store.as_ref().ok_or_else(missing)?;
+        let doc = store
+            .handle_for(core_id(self.buffer_for(path).ok_or_else(missing)?))
+            .ok_or_else(missing)?;
+        let edit = {
+            let snap = doc.snapshot();
+            let now = snap.buffer.as_string();
+            if now != expected {
+                return Ok(false);
+            }
+            let (start, end, middle) = differing_span(&now, new);
+            let at = |byte| {
+                snap.buffer
+                    .byte_to_position(byte)
+                    .map_err(|e| AgentError::Io(format!("{}: {e:?}", path.display())))
+            };
+            lattice_protocol::edit::Edit::replace(
+                lattice_protocol::position::Range::new(at(start)?, at(end)?),
+                middle,
+            )
+        };
+        doc.apply_edit_batch(vec![edit])
+            .await
+            .map_err(|e| AgentError::Io(format!("{}: {e:?}", path.display())))?;
+        Ok(true)
+    }
+
+    /// The open buffer showing `path`, matched as [`buffer_text`](Self::buffer_text) does.
+    fn buffer_for(&self, path: &Path) -> Option<DocumentId> {
+        let wanted = std::fs::canonicalize(path).ok();
+        {
+            let cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+            cache
+                .open_buffers
+                .iter()
+                .find(|(_, b)| {
+                    b.path.as_deref().is_some_and(|p| {
+                        p == path
+                            || wanted
+                                .as_ref()
+                                .is_some_and(|w| std::fs::canonicalize(p).ok().as_ref() == Some(w))
+                    })
+                })
+                .map(|(id, _)| *id)
+        }
+    }
+
+    /// LL.16: every open buffer that shows a file, as `(resolved path, text)`,
+    /// unsaved edits included. A search overlays these on what it reads from
+    /// disk, so it finds what the user sees.
+    pub fn open_texts(&self) -> Vec<(PathBuf, String)> {
+        let Some(store) = self.buffer_store.as_ref() else {
+            return Vec::new();
+        };
+        let open: Vec<(DocumentId, PathBuf)> = {
+            let cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+            cache
+                .open_buffers
+                .iter()
+                .filter_map(|(id, b)| b.path.clone().map(|p| (*id, p)))
+                .collect()
+        };
+        open.into_iter()
+            .filter_map(|(id, path)| {
+                let doc = store.handle_for(core_id(id))?;
+                let text = doc.snapshot().buffer.as_string();
+                Some((std::fs::canonicalize(&path).unwrap_or(path), text))
+            })
+            .collect()
+    }
+
+    /// LL.16: `path`'s text as the user sees it: the open buffer's, unsaved
+    /// edits included, or else the file on disk, read off the async runtime.
+    /// A file that is not UTF-8 is an error rather than lossy text, since a
+    /// model reasoning over replacement characters would edit the wrong bytes.
+    ///
+    /// Only a regular file is read, and only up to [`MAX_READ_BYTES`]: a FIFO
+    /// or device would block a runtime thread until something wrote to it (or
+    /// forever), and a multi-gigabyte log would be pulled whole into memory to
+    /// show its first lines.
+    pub async fn read_text_file(&self, path: &Path) -> Result<String> {
+        if let Some(text) = self.buffer_text(path) {
+            return Ok(text);
+        }
+        let owned = path.to_path_buf();
+        let read = tokio::task::spawn_blocking(move || read_regular_file(&owned))
+            .await
+            .map_err(|e| AgentError::Io(e.to_string()))?
+            .map_err(|e| AgentError::Io(format!("{}: {e}", path.display())))?;
+        String::from_utf8(read)
+            .map_err(|_| AgentError::Io(format!("{}: not UTF-8 text", path.display())))
+    }
+
     /// Open `path`, optionally forcing the cursor to `column` (a UTF-16
     /// position; `None` opens without moving the cursor — re-opening an
     /// already-open file keeps its position).
@@ -196,14 +311,88 @@ impl EditorAccess {
 
 /// `DocumentId` → the `BufferStore`'s core `BufferId` (same underlying id,
 /// distinct newtypes — mirrors `HostDiagnosticsQuery`).
+/// The byte span of `old` that differs from `new`, and what replaces it: the
+/// common prefix and suffix are left alone. Cut on char boundaries. Public
+/// for the bench only.
+#[doc(hidden)]
+pub fn differing_span(old: &str, new: &str) -> (usize, usize, String) {
+    let prefix = old
+        .char_indices()
+        .zip(new.chars())
+        .find(|((_, a), b)| a != b)
+        .map_or(old.len().min(new.len()), |((i, _), _)| i);
+    // Keep `prefix` and the common suffix from overlapping in either string.
+    let room = old.len().min(new.len()) - prefix;
+    let suffix = old[prefix..]
+        .chars()
+        .rev()
+        .zip(new[prefix..].chars().rev())
+        .take_while(|(a, b)| a == b)
+        .map(|(a, _)| a.len_utf8())
+        .scan(0usize, |acc, n| {
+            *acc += n;
+            Some(*acc)
+        })
+        .take_while(|n| *n <= room)
+        .last()
+        .unwrap_or(0);
+    (
+        prefix,
+        old.len() - suffix,
+        new[prefix..new.len() - suffix].to_string(),
+    )
+}
+
 fn core_id(id: DocumentId) -> lattice_core::BufferId {
     lattice_core::BufferId(id.raw() as u32)
 }
 
 /// A `file://` URI for `path`. Used by adapters building a selection result
-/// (`lattice_ai::mcp::reads::selection_result`) alongside `file_path`.
+/// (`lattice_ai::mcp::reads::selection_result`) alongside `file_path`, and
+/// for the open-editor and workspace-folder lists.
+///
+/// The path is percent-encoded as a URI path (RFC 3986): every byte except
+/// the unreserved set, the sub-delimiters, `:`, `@` and `/` is written
+/// `%XX`, so a space, `#`, `?`, `%` or a non-ASCII name does not end the
+/// path early or read as a query or fragment. Windows separators become
+/// `/`, and a drive path gets the third slash (`file:///C:/x`).
 pub fn path_to_uri(path: &Path) -> String {
-    format!("file://{}", path.display())
+    let display = path.to_string_lossy().replace('\\', "/");
+    let mut uri = String::with_capacity(display.len() + 8);
+    uri.push_str(if display.starts_with('/') {
+        "file://"
+    } else {
+        "file:///"
+    });
+    for &b in display.as_bytes() {
+        let keep = b.is_ascii_alphanumeric()
+            || matches!(
+                b,
+                b'-' | b'.'
+                    | b'_'
+                    | b'~'
+                    | b'!'
+                    | b'$'
+                    | b'&'
+                    | b'\''
+                    | b'('
+                    | b')'
+                    | b'*'
+                    | b'+'
+                    | b','
+                    | b';'
+                    | b'='
+                    | b':'
+                    | b'@'
+                    | b'/'
+            );
+        if keep {
+            uri.push(b as char);
+        } else {
+            uri.push_str(&format!("%{b:02X}"));
+        }
+    }
+    uri
 }
 
 /// Absolute byte offset of `pos` within `text` (clamped to `text.len()`).
@@ -240,6 +429,40 @@ pub fn ordered(sel: &Selection) -> (Position, Position) {
     }
 }
 
+/// The largest file [`EditorAccess::read_text_file`] reads from disk. A source
+/// file is far below it; a larger file is a log or a data dump, and the error
+/// says how large so the caller can choose another way to look at it.
+pub const MAX_READ_BYTES: u64 = 16 * 1024 * 1024;
+
+/// `path`'s bytes, if it is a regular file of at most [`MAX_READ_BYTES`]. The
+/// type is checked before opening (opening a FIFO for reading blocks until a
+/// writer appears), and the read is bounded too, so a file that grows after
+/// the check still cannot be read past the limit.
+fn read_regular_file(path: &Path) -> std::io::Result<Vec<u8>> {
+    use std::io::{Error, ErrorKind, Read};
+    let meta = std::fs::metadata(path)?;
+    if !meta.is_file() {
+        return Err(Error::new(ErrorKind::InvalidInput, "not a regular file"));
+    }
+    if meta.len() > MAX_READ_BYTES {
+        return Err(Error::new(
+            ErrorKind::InvalidInput,
+            format!("{} bytes, over the {MAX_READ_BYTES}-byte limit", meta.len()),
+        ));
+    }
+    let mut out = Vec::with_capacity(usize::try_from(meta.len()).unwrap_or(0));
+    std::fs::File::open(path)?
+        .take(MAX_READ_BYTES + 1)
+        .read_to_end(&mut out)?;
+    if out.len() as u64 > MAX_READ_BYTES {
+        return Err(Error::new(
+            ErrorKind::InvalidInput,
+            format!("grew past the {MAX_READ_BYTES}-byte limit while being read"),
+        ));
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
@@ -251,6 +474,43 @@ mod tests {
 
     fn access(state: EditorStateCache, workspace: Vec<String>) -> EditorAccess {
         EditorAccess::new(Arc::new(Mutex::new(state)), None, workspace, None)
+    }
+
+    /// A FIFO is refused at once instead of blocking a runtime thread until a
+    /// writer appears; a regular file still reads.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn only_a_regular_file_is_read() {
+        let dir = std::env::temp_dir().join(format!("lattice-read-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let ea = access(EditorStateCache::default(), vec![]);
+        let file = dir.join("a.txt");
+        std::fs::write(&file, "hi\n").unwrap();
+        assert_eq!(ea.read_text_file(&file).await.unwrap(), "hi\n");
+
+        let fifo = dir.join("pipe");
+        let made = std::process::Command::new("mkfifo").arg(&fifo).status();
+        if made.map(|s| s.success()).unwrap_or(false) {
+            let read = tokio::time::timeout(Duration::from_secs(5), ea.read_text_file(&fifo))
+                .await
+                .expect("a FIFO read must not block");
+            let err = read.unwrap_err().to_string();
+            assert!(err.contains("not a regular file"), "{err}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A file over the limit is refused with its size, not read whole.
+    #[test]
+    fn a_file_over_the_limit_is_refused() {
+        let dir = std::env::temp_dir().join(format!("lattice-big-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let big = dir.join("big.log");
+        let f = std::fs::File::create(&big).unwrap();
+        f.set_len(MAX_READ_BYTES + 1).unwrap();
+        let err = read_regular_file(&big).unwrap_err().to_string();
+        assert!(err.contains("over the"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -365,5 +625,14 @@ mod tests {
             matches!(err, AgentError::Io(ref m) if m == "write failed: editor did not respond"),
             "expected Io(\"write failed: editor did not respond\"), got {err:?}"
         );
+    }
+
+    #[test]
+    fn only_the_differing_span_is_replaced() {
+        assert_eq!(differing_span("abcdef", "abXYef"), (2, 4, "XY".into()));
+        assert_eq!(differing_span("a\nb\n", "a\nB\nc\n"), (2, 3, "B\nc".into()));
+        assert_eq!(differing_span("same", "same"), (4, 4, String::new()));
+        assert_eq!(differing_span("aaa", "aa"), (2, 3, String::new()));
+        assert_eq!(differing_span("é→x", "é←x"), (2, 5, "←".into()));
     }
 }

@@ -87,10 +87,12 @@ async fn one_component_provides_grammar_modes_and_config() {
             &manifest,
             TrustTier::Bundled,
             PluginBudget::event(),
-            &mut mode_registry,
-            &commands,
-            &keymap,
-            None,
+            lattice_plugin_host::mode_host::ModeTargets {
+                modes: &mut mode_registry,
+                commands: &commands,
+                keymap: &keymap,
+                config: None,
+            },
         )
         .await
         .expect("modes drain instantiates the combined component (async linker)");

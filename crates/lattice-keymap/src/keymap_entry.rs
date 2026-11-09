@@ -553,13 +553,12 @@ fn build_default_keymap() -> Vec<KeymapEntry> {
         // entries above; describe-key in Help mode reports them
         // through the `Normal` rows.
         //
-        // `<Esc>` is NOT here: it is owned by `help-mode`'s own keymap
-        // (`action:help-dismiss`), the LM.4 file-tree pattern, so its
-        // descriptor comes from the mode layer rather than this host catalog
-        // (the drift guard resolves catalog chords through `translate`, which
-        // no longer intercepts help's Esc).
+        // `<Esc>` and `<CR>` are NOT here: `help-mode`'s own keymap owns them
+        // (`action:help-dismiss`, `action:help-follow-link`), the LM.4
+        // file-tree pattern, so their descriptors come from the mode layer
+        // rather than this host catalog (the drift guard resolves catalog
+        // chords through `translate`, which no longer intercepts either).
         keymap_entry! { mode: Help, chord: "q", doc: "Dismiss help" },
-        keymap_entry! { mode: Help, chord: "<CR>", doc: "Follow link under cursor" },
     ]
 }
 

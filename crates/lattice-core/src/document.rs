@@ -8,18 +8,19 @@
 //! starting empty and populated by the `lattice_mode::ModeRegistry`
 //! when M.3 lands the per-buffer-kind major modes.
 
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use lattice_protocol::edit::{Edit, EditKind};
 use lattice_protocol::ids::DocumentId;
-use lattice_protocol::position::Range;
+use lattice_protocol::position::{Position, Range};
 use lattice_protocol::selection::{Selection, SelectionSet};
 
 use crate::buffer::{AppliedEdit, Buffer, transform_position};
 use crate::error::{CoreError, CoreResult};
-use crate::tracked::TrackedRanges;
+use crate::tracked::{AppendOutcome, TrackedRangeId, TrackedRanges};
 use crate::undo::{UndoEntry, UndoStack};
 
 /// An editable document: a [`Buffer`] plus the bookkeeping every edit needs
@@ -130,6 +131,27 @@ pub struct Document {
     /// [`Self::begin_undo_group`] / [`Self::end_undo_group`].
     coalescing: bool,
     group_has_entry: bool,
+    /// The stream whose undo entry is the top of the stack, while it is:
+    /// its next [`Self::append_to_tracked`] amends that entry rather than
+    /// pushing. Any other edit, an undo or a redo seals it (sets `None`), so
+    /// one `u` removes a whole response when nothing interleaved and the
+    /// latest segment otherwise. A buried entry is never amended: that
+    /// would break linear undo (design `llm-layer.md` §9).
+    stream_top: Option<TrackedRangeId>,
+    /// `text_version` after the latest [`Self::append_to_tracked`]. The host
+    /// adopts the caret an append moved when this is newer than its own
+    /// last write, in any buffer, not only one with an editable tail.
+    append_version: u64,
+    /// LL.13a: the latest appends, each with the `text_version` it produced,
+    /// so a write positioned against an older version can be rebased over
+    /// them ([`Self::apply_edit_based_on`]). Appends only, newest last,
+    /// bounded by [`APPEND_LOG_CAP`].
+    append_log: VecDeque<(u64, AppliedEdit)>,
+    /// LL.13a: bumped by every undo and redo; each stream remembers the value
+    /// at its previous append (`stream_fences`), and a stream that sees it
+    /// moved is refused with [`AppendOutcome::Undone`].
+    undo_seq: u64,
+    stream_fences: HashMap<TrackedRangeId, u64>,
     // M.4 follow-up: `modes: ActiveModes` removed. The canonical
     // active-modes map is `App.active_modes: HashMap<BufferId,
     // ActiveModes>` (M.2.1) -- per-buffer, not per-document, and
@@ -234,6 +256,11 @@ impl DocumentBuilder {
             // No undo group open at construction; the first edit pushes.
             coalescing: false,
             group_has_entry: false,
+            stream_top: None,
+            append_version: 0,
+            append_log: VecDeque::new(),
+            undo_seq: 0,
+            stream_fences: HashMap::new(),
         }
     }
 }
@@ -311,9 +338,23 @@ impl Document {
     }
 
     /// The process-unique id assigned at construction. Never reused within
-    /// a process; not stable across restarts.
+    /// a process; not stable across restarts. A document the host's buffer
+    /// registry holds is re-stamped with its buffer's id as it is spawned
+    /// (see [`Self::set_id`]).
     pub fn id(&self) -> DocumentId {
         self.id
+    }
+
+    /// Give the document the id its owner addresses it by.
+    ///
+    /// `lattice_runtime::spawn_document` calls this with the buffer's id, so
+    /// a buffer and its document share one id: what `DocumentOpened`,
+    /// `DocumentChanged` and `DocumentClosed` carry is the same number, and a
+    /// subscriber can map it back to the buffer without a registry lookup
+    /// (which a close cannot do, since the entry is already gone). Ids are
+    /// unique because buffer ids are; call it before the document is shared.
+    pub fn set_id(&mut self, id: DocumentId) {
+        self.id = id;
     }
 
     /// The file this document is backed by, or `None` for a scratch /
@@ -491,6 +532,315 @@ impl Document {
         Ok(applied_set)
     }
 
+    /// Append `text` at the end of tracked range `id` and grow the range over
+    /// it: streamed inline output (design `llm-layer.md` §9, LL.12).
+    ///
+    /// The anchor is resolved here, in the same turn as the write, so no
+    /// user edit can land between reading the range and writing at it. The
+    /// stream's range is normally `NeverGrows`: text the user types at its
+    /// edges stays outside it, so the response stays one contiguous span and
+    /// the user's text stays after it, pushed down as it grows. The caret
+    /// goes with it: a caret at or after the insertion point shifts, as for
+    /// any edit.
+    ///
+    /// Undo: the append amends its own entry while that entry is the top of
+    /// the stack, and starts a new one otherwise. It never uses the
+    /// coalescing group an Insert session holds, so the user's `<Esc>` does
+    /// not close it and the stream does not absorb the user's typing; an
+    /// append during an Insert session makes the session's next keystroke
+    /// start a fresh entry above it. A stream write clears redo, as any
+    /// edit does.
+    ///
+    /// Linked ranges are not mirrored: a stream writes text, the user does
+    /// not type it.
+    ///
+    /// # Errors
+    ///
+    /// Those of [`Buffer::apply_edit`]; nothing is written on error.
+    pub fn append_to_tracked(
+        &mut self,
+        id: TrackedRangeId,
+        text: &str,
+    ) -> CoreResult<AppendOutcome> {
+        let Some(range) = self.tracked.get(id) else {
+            return Ok(AppendOutcome::Unknown);
+        };
+        if self
+            .stream_fences
+            .get(&id)
+            .is_some_and(|seen| *seen != self.undo_seq)
+        {
+            return Ok(AppendOutcome::Undone);
+        }
+        if range.collapsed {
+            return Ok(AppendOutcome::Collapsed);
+        }
+        if text.is_empty() {
+            return Ok(AppendOutcome::Appended);
+        }
+        // Fences of streams whose range is gone are dropped as we go, so the
+        // map holds at most the streams still tracked.
+        if self.stream_fences.len() > 8 {
+            let tracked = &self.tracked;
+            self.stream_fences.retain(|f, _| tracked.get(*f).is_some());
+        }
+        self.stream_fences.insert(id, self.undo_seq);
+        self.linked_edits.clear();
+        let at = self.buffer.byte_to_position(range.end)?;
+        let applied = self.buffer.apply_edit(&Edit::insert(at, text))?;
+        self.transform_for_edit(&applied);
+        Arc::make_mut(&mut self.tracked).set_span(id, range.start, range.end + text.len());
+        let inverse = vec![inverse_edit(&applied)];
+        if self.stream_top == Some(id) {
+            // Still the top: amend. Redo is already clear (the push that
+            // made this the top cleared it, and an undo would have sealed
+            // it). Depth is unchanged, so a save made since the last
+            // append no longer describes the text: the document is dirty.
+            if self.clean_position == Some(self.undo.undo_depth()) {
+                self.clean_position = None;
+            }
+            self.undo.amend_top(inverse);
+        } else {
+            let pre_push_depth = self.undo.undo_depth();
+            self.undo.push(UndoEntry {
+                inverse_edits: inverse,
+                label: String::new(),
+            });
+            self.invalidate_clean_if_lost(pre_push_depth);
+            self.stream_top = Some(id);
+            // An open Insert group's entry is now buried; its next edit
+            // must push, not amend the stream's entry.
+            self.group_has_entry = false;
+        }
+        self.version += 1;
+        self.text_version += 1;
+        self.append_version = self.text_version;
+        if self.append_log.len() == APPEND_LOG_CAP {
+            self.append_log.pop_front();
+        }
+        self.append_log.push_back((self.text_version, applied));
+        Ok(AppendOutcome::Appended)
+    }
+
+    /// `text_version` after the latest [`Self::append_to_tracked`]; 0 if none.
+    pub fn append_version(&self) -> u64 {
+        self.append_version
+    }
+
+    /// The `text_version` before the current trailing run of appends:
+    /// [`Self::text_version`] itself when the latest change was not an
+    /// append. A writer that reads the version after its own edit uses this,
+    /// not `text_version`, as the version it has seen, so an append that
+    /// landed just after the edit still reads as unseen (LL.13a).
+    pub fn pre_append_version(&self) -> u64 {
+        let mut v = self.text_version;
+        for (version, _) in self.append_log.iter().rev() {
+            if *version != v {
+                break;
+            }
+            v -= 1;
+        }
+        v
+    }
+
+    /// The appends applied after `text_version == based_on`, oldest first,
+    /// or `None` when something other than an append changed the text since,
+    /// or the log no longer reaches back that far.
+    fn appends_since(&self, based_on: u64) -> Option<Vec<&AppliedEdit>> {
+        if based_on >= self.text_version {
+            return Some(Vec::new());
+        }
+        let needed = usize::try_from(self.text_version - based_on).ok()?;
+        let start = self.append_log.len().checked_sub(needed)?;
+        let mut out = Vec::with_capacity(needed);
+        for (i, (version, applied)) in self.append_log.iter().skip(start).enumerate() {
+            if *version != based_on + 1 + i as u64 {
+                return None;
+            }
+            out.push(applied);
+        }
+        Some(out)
+    }
+
+    /// `edit`, positioned against `text_version == based_on`, moved over the
+    /// appends since so it lands on the text it was aimed at (LL.13a).
+    ///
+    /// A stream writes from another thread, so an edit the host positioned
+    /// from its caret can reach the actor after an append it has not seen.
+    /// Rebasing here, in the turn that applies the edit, is what keeps a key
+    /// typed during a stream at the caret. An insert at an append's point
+    /// goes after it, where the caret visibly is; a deletion ending at that
+    /// point does not take the appended text with it. When the text changed
+    /// by anything other than an append since `based_on`, the edit is used
+    /// as given, as before.
+    pub fn rebase_edit(&self, mut edit: Edit, based_on: u64) -> Edit {
+        let Some(appends) = self.appends_since(based_on) else {
+            return edit;
+        };
+        let empty = edit.range.start == edit.range.end;
+        for applied in appends {
+            edit.range.start = transform_position(edit.range.start, applied);
+            edit.range.end = if empty {
+                edit.range.start
+            } else {
+                transform_end(edit.range.end, applied)
+            };
+        }
+        edit
+    }
+
+    /// `edits`, a batch positioned against `text_version == based_on` (each
+    /// edit in the coordinates the ones before it produce), carried over the
+    /// appends since so the batch lands on the text it was aimed at. `Err`
+    /// gives the batch back untouched when something other than an append
+    /// changed the text since, or the append log no longer reaches back.
+    ///
+    /// Each edit moves over the appends as [`Self::rebase_edit`] moves one,
+    /// and the appends then move over that edit (an append at the edit's
+    /// start stays before it), so the next edit meets them where they now
+    /// are. An append whose text an edit covers is gone after it and moves
+    /// nothing further. Positions only: the buffer is never read.
+    ///
+    /// # Errors
+    ///
+    /// The batch itself, returned when it cannot be rebased.
+    pub fn rebase_edit_batch(
+        &self,
+        edits: Vec<Edit>,
+        based_on: u64,
+    ) -> Result<Vec<Edit>, Vec<Edit>> {
+        let Some(appends) = self.appends_since(based_on) else {
+            return Err(edits);
+        };
+        if appends.is_empty() {
+            return Ok(edits);
+        }
+        let mut regions: Vec<Shift> = appends
+            .iter()
+            .map(|a| Shift {
+                original: a.original_range,
+                inserted: a.inserted_range,
+            })
+            .collect();
+        let mut out = Vec::with_capacity(edits.len());
+        for mut edit in edits {
+            let text = match &edit.kind {
+                EditKind::Replace { text } => text.as_str(),
+            };
+            let mut next = Vec::with_capacity(regions.len());
+            for region in regions {
+                // `edit` and `region` are positioned against the same text.
+                let before = edit.range;
+                let empty = before.start == before.end;
+                let start = shift_position(before.start, &region);
+                let end = if empty {
+                    start
+                } else {
+                    shift_end(before.end, &region)
+                };
+                edit.range = Range::new(start, end);
+                let appended = region.inserted.start != region.inserted.end;
+                let covered = appended
+                    && !empty
+                    && start <= region.inserted.start
+                    && end >= region.inserted.end;
+                if covered || !appended {
+                    continue;
+                }
+                // The append, moved over `before` (pre-region coordinates).
+                let at = region.original.start;
+                let over = Shift {
+                    original: before,
+                    inserted: Range::new(before.start, end_after(before.start, text)),
+                };
+                let moved = if at <= before.start {
+                    at
+                } else {
+                    shift_position(at, &over)
+                };
+                next.push(Shift {
+                    original: Range::empty(moved),
+                    inserted: Range::new(
+                        moved,
+                        offset(moved, region.original.start, region.inserted.end),
+                    ),
+                });
+            }
+            regions = next;
+            out.push(edit);
+        }
+        Ok(out)
+    }
+
+    /// [`Self::apply_edit_batch`] for a batch positioned against
+    /// `text_version == based_on`: rebased over the appends since
+    /// ([`Self::rebase_edit_batch`]) in the turn that applies it. When the
+    /// text changed by anything else, `on_mismatch` decides: apply the batch
+    /// as given, or refuse it with [`CoreError::Stale`].
+    ///
+    /// # Errors
+    ///
+    /// [`CoreError::Stale`] when refused; otherwise those of
+    /// [`Self::apply_edit_batch`].
+    pub fn apply_edit_batch_based_on(
+        &mut self,
+        edits: Vec<Edit>,
+        based_on: u64,
+        on_mismatch: BaseMismatch,
+    ) -> CoreResult<Vec<AppliedEdit>> {
+        let edits = match (self.rebase_edit_batch(edits, based_on), on_mismatch) {
+            (Ok(edits), _) | (Err(edits), BaseMismatch::UseAsGiven) => edits,
+            (Err(_), BaseMismatch::Refuse) => return Err(CoreError::Stale),
+        };
+        self.apply_edit_batch(edits)
+    }
+
+    /// `pos`, read against `text_version == based_on`, moved over the appends
+    /// since by the rule a caret the document holds is moved by. As given
+    /// when something else changed the text since.
+    pub fn rebase_position(&self, pos: Position, based_on: u64) -> Position {
+        match self.appends_since(based_on) {
+            Some(appends) => appends.into_iter().fold(pos, transform_position),
+            None => pos,
+        }
+    }
+
+    /// [`Self::apply_edit`] after [`Self::rebase_edit`].
+    ///
+    /// # Errors
+    ///
+    /// Those of [`Self::apply_edit`].
+    pub fn apply_edit_based_on(&mut self, edit: Edit, based_on: u64) -> CoreResult<AppliedEdit> {
+        let edit = self.rebase_edit(edit, based_on);
+        self.apply_edit(edit)
+    }
+
+    /// [`Self::set_selections`] with every position moved over the appends
+    /// since `text_version == based_on`, the same rule a caret the document
+    /// already held was moved by (LL.13a). The host writes its caret through
+    /// after each key; one positioned before an append it had not seen would
+    /// otherwise overwrite the caret the append moved.
+    pub fn set_selections_based_on(&mut self, selections: SelectionSet, based_on: u64) {
+        let Some(appends) = self.appends_since(based_on) else {
+            self.set_selections(selections);
+            return;
+        };
+        let primary = selections.primary_index();
+        let moved = selections
+            .all()
+            .iter()
+            .map(|s| {
+                let mut s = *s;
+                for applied in &appends {
+                    s.anchor = transform_position(s.anchor, applied);
+                    s.head = transform_position(s.head, applied);
+                }
+                s
+            })
+            .collect();
+        self.set_selections(SelectionSet::from_parts(moved, primary));
+    }
+
     /// Open an undo-coalescing group: every edit applied until
     /// [`Self::end_undo_group`] folds into a single undo entry rather
     /// than pushing its own. This is how a vim insert session
@@ -602,6 +952,8 @@ impl Document {
     /// (reverse-application), matching [`UndoStack::push`] /
     /// [`UndoStack::amend_top`].
     fn record_inverses(&mut self, inverses: Vec<Edit>) {
+        // Any other edit seals the stream's entry.
+        self.stream_top = None;
         if self.coalescing && self.group_has_entry {
             // Fold into the group's existing entry. Depth is unchanged
             // and redo stays cleared (the group's first push cleared it),
@@ -629,6 +981,8 @@ impl Document {
     /// [`CoreError::NothingToUndo`] if the undo stack is empty.
     pub fn undo(&mut self) -> CoreResult<Vec<AppliedEdit>> {
         self.linked_edits.clear();
+        self.stream_top = None;
+        self.undo_seq += 1;
         let entry = self.undo.pop_for_undo().ok_or(CoreError::NothingToUndo)?;
         let mut applied = Vec::with_capacity(entry.inverse_edits.len());
         let mut redo_inverses = Vec::with_capacity(entry.inverse_edits.len());
@@ -657,6 +1011,8 @@ impl Document {
     /// last new edit.
     pub fn redo(&mut self) -> CoreResult<Vec<AppliedEdit>> {
         self.linked_edits.clear();
+        self.stream_top = None;
+        self.undo_seq += 1;
         let entry = self.undo.pop_for_redo().ok_or(CoreError::NothingToRedo)?;
         let mut applied = Vec::with_capacity(entry.inverse_edits.len());
         let mut undo_inverses = Vec::with_capacity(entry.inverse_edits.len());
@@ -738,6 +1094,85 @@ impl Document {
         {
             self.clean_position = None;
         }
+    }
+}
+
+/// How many appends a write positioned against an older version can be
+/// rebased over ([`Document::rebase_edit`]). A stream writes at most once a
+/// frame and a key's dispatch takes well under one, so one entry is the
+/// common case; the cap only bounds memory.
+const APPEND_LOG_CAP: usize = 64;
+
+/// What [`Document::apply_edit_batch_based_on`] does when the text changed
+/// after the batch's version by something other than an append, so the batch
+/// cannot be carried to where it was aimed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BaseMismatch {
+    /// Apply it as given: what every write did before rebasing existed. Right
+    /// for a key, which the user pressed and expects to take effect.
+    UseAsGiven,
+    /// Refuse with [`CoreError::Stale`]. Right for a write computed from text
+    /// it must still match, such as a reviewed replacement: the caller reads
+    /// again and decides again.
+    Refuse,
+}
+
+/// An applied change, as positions only: what [`transform_position`] reads.
+#[derive(Debug, Clone, Copy)]
+struct Shift {
+    original: Range,
+    inserted: Range,
+}
+
+fn shift_position(pos: Position, shift: &Shift) -> Position {
+    crate::buffer::transform_position_over(pos, shift.original, shift.inserted)
+}
+
+/// [`transform_end`] over a [`Shift`].
+fn shift_end(end: Position, shift: &Shift) -> Position {
+    if shift.original.start == shift.original.end && end <= shift.original.start {
+        end
+    } else {
+        shift_position(end, shift)
+    }
+}
+
+/// Where `text` ends when inserted at `start`.
+fn end_after(start: Position, text: &str) -> Position {
+    match text.rfind('\n') {
+        Some(nl) => Position::new(
+            start.line + u32::try_from(text.matches('\n').count()).unwrap_or(u32::MAX),
+            u32::try_from(text.len() - nl - 1).unwrap_or(u32::MAX),
+        ),
+        None => Position::new(
+            start.line,
+            start.byte + u32::try_from(text.len()).unwrap_or(u32::MAX),
+        ),
+    }
+}
+
+/// `end`, an insertion's end measured from `from`, measured from `to` instead.
+fn offset(to: Position, from: Position, end: Position) -> Position {
+    if end.line == from.line {
+        Position::new(to.line, to.byte + (end.byte - from.byte))
+    } else {
+        Position::new(to.line + (end.line - from.line), end.byte)
+    }
+}
+
+/// The end of a non-empty range, moved over an insertion `applied`. Unlike
+/// [`transform_position`], an end exactly at the insertion point stays: the
+/// inserted text is after the range, not in it.
+fn transform_end(
+    end: lattice_protocol::position::Position,
+    applied: &AppliedEdit,
+) -> lattice_protocol::position::Position {
+    if applied.original_range.start == applied.original_range.end
+        && end <= applied.original_range.start
+    {
+        end
+    } else {
+        transform_position(end, applied)
     }
 }
 

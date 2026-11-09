@@ -385,6 +385,16 @@ impl OptionGroup for Ai {
     const DOC: &'static str = "AI-agent (ACP client) options: per-process log capture + level.";
 }
 
+/// LLM-layer options (`llm.*`): the session values a chat or request
+/// resolves (`llm.model`, `llm.system`, `llm.temperature`, ...). Declared by
+/// `lattice-ai`'s `llm` module; this group is the customize/listing umbrella.
+pub struct Llm;
+impl OptionGroup for Llm {
+    const NAME: &'static str = "llm";
+    const DOC: &'static str =
+        "LLM layer: model, system prompt, parameters, tools and destination for a session.";
+}
+
 // linkme submissions for the built-in groups.
 // Each submission registers one group's metadata; the registry's
 // startup loader walks GROUP_DECLS and panics on duplicate names.
@@ -456,6 +466,9 @@ static WINDOW_GROUP_LINK: &OptionGroupMetadata = &OptionGroupMetadata::for_group
 #[linkme::distributed_slice(GROUP_DECLS)]
 static AI_GROUP_LINK: &OptionGroupMetadata = &OptionGroupMetadata::for_group::<Ai>();
 
+#[linkme::distributed_slice(GROUP_DECLS)]
+static LLM_GROUP_LINK: &OptionGroupMetadata = &OptionGroupMetadata::for_group::<Llm>();
+
 // Compile-time naming-rule assertions for the built-in groups.
 // Verifies the `groups!` macro convention even though these
 // groups are hand-written: no built-in group's name ends in
@@ -480,6 +493,7 @@ const _: () = {
     assert!(!ends_with_mode_suffix(Diagnostics::NAME));
     assert!(!ends_with_mode_suffix(Window::NAME));
     assert!(!ends_with_mode_suffix(Ai::NAME));
+    assert!(!ends_with_mode_suffix(Llm::NAME));
 };
 
 #[cfg(test)]

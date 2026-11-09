@@ -272,7 +272,8 @@ impl Keymap {
     #[track_caller]
     pub fn bind_chord(self, mode: BindingMode, chord: &str, command: CommandInvocation) -> Self {
         let chords = lattice_protocol::parse_chord_sequence(chord)
-            .unwrap_or_else(|e| panic!("bind_chord: chord {chord:?} failed to parse: {e}"))
+            .map_err(|e| format!("chord {chord:?}: {e}"))
+            .expect("bind_chord: a compile-time-static chord string must parse")
             .into_iter()
             .map(ChordPattern::Literal)
             .collect();
@@ -298,7 +299,8 @@ impl Keymap {
         command: CommandInvocation,
     ) -> Self {
         let chords: Vec<ChordPattern> = lattice_protocol::parse_chord_sequence(chord)
-            .unwrap_or_else(|e| panic!("bind_chord_modes: chord {chord:?} failed to parse: {e}"))
+            .map_err(|e| format!("chord {chord:?}: {e}"))
+            .expect("bind_chord_modes: a compile-time-static chord string must parse")
             .into_iter()
             .map(ChordPattern::Literal)
             .collect();

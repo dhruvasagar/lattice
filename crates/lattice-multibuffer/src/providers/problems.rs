@@ -179,17 +179,22 @@ pub fn create_problems_view(
         activator,
         sources,
         excerpts,
-        Some("*problems*".to_string()),
-        BufferFlags::default(),
+        crate::MultibufferViewConfig {
+            name: Some("*problems*".to_string()),
+            flags: BufferFlags::default(),
+            fold_grouping: crate::FoldGrouping::SourceFile,
+        },
         registry,
         lang_registry,
-        crate::FoldGrouping::SourceFile,
     );
 
     set_problems_headerline(activator, view_id, n_entries, n_files);
     activator.activate_minor_by_id(view_id, ProblemsMinorMode::mode_id());
     Some(view_id)
 }
+
+/// `(source documents by id, excerpts, distinct file count)`.
+type ProblemsExcerpts = (HashMap<BufferId, Arc<dyn Document>>, Vec<Excerpt>, usize);
 
 /// RV.3 (2026-08-10): the source-loading + excerpt-grouping step,
 /// shared by [`create_problems_view`] and [`refresh_problems_view`].
@@ -198,9 +203,7 @@ pub fn create_problems_view(
 /// empty or every referenced file proved unreadable — the two cases
 /// where there is nothing to show. Extracted rather than duplicated so
 /// a refresh cannot drift from the grouping an open produces.
-fn build_problems_excerpts(
-    entries: &[ErrorEntry],
-) -> Option<(HashMap<BufferId, Arc<dyn Document>>, Vec<Excerpt>, usize)> {
+fn build_problems_excerpts(entries: &[ErrorEntry]) -> Option<ProblemsExcerpts> {
     if entries.is_empty() {
         return None;
     }

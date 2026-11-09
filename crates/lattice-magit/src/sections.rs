@@ -117,6 +117,17 @@ pub struct SectionIndex {
     pub upstream: Option<String>,
 }
 
+/// A formatted section buffer: `(text, per-line spans, expansion key ->
+/// line count, per-line refinement)`. The refinement is DR.3's intra-line
+/// diff, indexed by the SAME line numbers as the spans and produced by the
+/// same walk — so an inline expansion shifts both by construction.
+pub type StyledSectionBuffer = (
+    String,
+    Vec<Vec<lattice_cells::style::StyledSpan>>,
+    Vec<(String, usize)>,
+    Vec<Vec<lattice_cells::RefineSpan>>,
+);
+
 impl SectionIndex {
     pub fn format_buffer(&self) -> String {
         self.format_buffer_styled().0
@@ -151,16 +162,7 @@ impl SectionIndex {
         &self,
         inline: impl Fn(&SectionEntry, SectionKind) -> Option<(String, String)>,
         lang_registry: Option<&std::sync::Arc<lattice_syntax::LangRegistry>>,
-    ) -> (
-        String,
-        Vec<Vec<lattice_cells::style::StyledSpan>>,
-        Vec<(String, usize)>,
-        // DR.3: intra-line refinement, indexed by the SAME line numbers
-        // as `spans` and produced by the same walk — so an inline
-        // expansion shifts both by construction, never one without the
-        // other.
-        Vec<Vec<lattice_cells::RefineSpan>>,
-    ) {
+    ) -> StyledSectionBuffer {
         let mut out = String::new();
         let mut spans: Vec<Vec<lattice_cells::style::StyledSpan>> = Vec::new();
         let mut refine: Vec<Vec<lattice_cells::RefineSpan>> = Vec::new();

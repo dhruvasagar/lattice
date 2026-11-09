@@ -118,6 +118,10 @@ and `host-platform` / `data-dir` — and plugin API 0.2.0, on crates.io since
 2026-10-11 (LH.3). Deferred: `zip` archives and package-manager installs.
 See [`slice-plans/lighthouse.md`](slice-plans/lighthouse.md).
 
+**LLM layer (designed 2026-11-01, 📝 nothing built):** direct model access from any
+buffer, native in `lattice-ai`. Design: [`../architecture/llm-layer.md`](../architecture/llm-layer.md).
+See [`slice-plans/llm-layer.md`](slice-plans/llm-layer.md).
+
 **Gutter signs (2026-09-08, SG.1–SG.4b landed).** A generic sign mechanism —
 vim's `:sign define` / `:sign place`, with the host owning what a sign IS and
 no built-in opinion about what any sign MEANS, so a provider's marks, a

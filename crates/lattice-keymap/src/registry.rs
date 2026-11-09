@@ -280,6 +280,12 @@ struct RegistryLayer {
     modes: HashMap<BindingMode, KeymapTrie>,
 }
 
+/// Per-minor-mode trie sets, keyed by the mode that gates them.
+type GatedModeTries = HashMap<ModeId, Arc<HashMap<BindingMode, KeymapTrie>>>;
+
+/// Normal-mode chords per command, with the layer each came from (MARG.2).
+pub type ReverseCache = HashMap<CommandId, Vec<(KeyChord, KeymapLayer)>>;
+
 /// Wait-free read cell. The current merged-across-layers
 /// per-mode trie set. Rebuilt by writers; read by every
 /// keystroke.
@@ -371,7 +377,7 @@ impl RegistryInner {
     /// last-wins) when composing the merged trie. A `ModeId`
     /// identifies exactly one registered mode, which has exactly
     /// one kind, so major and minor entries never collide.
-    fn build_gated_mode_tries(&self) -> HashMap<ModeId, Arc<HashMap<BindingMode, KeymapTrie>>> {
+    fn build_gated_mode_tries(&self) -> GatedModeTries {
         let mut out = HashMap::new();
         for layer in &self.layers {
             let mode_id = match layer.layer {
@@ -418,7 +424,7 @@ pub struct KeymapRegistry {
     /// order, last-wins) by
     /// [`KeymapHandle::lookup_with_context`]. Rebuilt by
     /// writers alongside `merged`.
-    gated_mode_tries: Arc<ArcSwap<HashMap<ModeId, Arc<HashMap<BindingMode, KeymapTrie>>>>>,
+    gated_mode_tries: Arc<ArcSwap<GatedModeTries>>,
     /// (C′) Set by a write that only touched its own layer's trie,
     /// cleared by [`Self::ensure_derived_fresh`] on the next read.
     /// See that method for the measurement that motivated it.
@@ -466,7 +472,7 @@ pub struct KeymapRegistry {
     ///   [`KeymapLayer`] alongside the chord so the completion
     ///   margin can show which mode provides the binding and
     ///   filter by active modes (MARG.3).
-    pub(crate) reverse_cache: Arc<ArcSwap<HashMap<CommandId, Vec<(KeyChord, KeymapLayer)>>>>,
+    pub(crate) reverse_cache: Arc<ArcSwap<ReverseCache>>,
 }
 
 impl KeymapRegistry {
@@ -613,10 +619,8 @@ impl Default for KeymapRegistry {
 /// First-binding-wins on collisions. The [`KeymapLayer`] from
 /// each [`BoundCommand`](crate::BoundCommand) is preserved for
 /// MARG.3 mode-aware filtering and provenance display.
-fn build_reverse_cache_from_merged(
-    merged: &MergedKeymap,
-) -> HashMap<CommandId, Vec<(KeyChord, KeymapLayer)>> {
-    let mut out: HashMap<CommandId, Vec<(KeyChord, KeymapLayer)>> = HashMap::new();
+fn build_reverse_cache_from_merged(merged: &MergedKeymap) -> ReverseCache {
+    let mut out: ReverseCache = HashMap::new();
     let Some(trie) = merged.by_mode.get(&BindingMode::Normal) else {
         return out;
     };
@@ -969,9 +973,7 @@ impl KeymapHandle {
     /// cache through this accessor. Reads through it skip the lazy
     /// derived-state refresh, so they can lag a `bind` until the next
     /// lookup-style call freshens it.
-    pub fn reverse_cache_arc(
-        &self,
-    ) -> Arc<ArcSwap<HashMap<CommandId, Vec<(KeyChord, KeymapLayer)>>>> {
+    pub fn reverse_cache_arc(&self) -> Arc<ArcSwap<ReverseCache>> {
         Arc::clone(&self.registry.reverse_cache)
     }
 

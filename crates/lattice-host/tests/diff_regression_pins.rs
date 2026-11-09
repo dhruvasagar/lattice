@@ -27,7 +27,7 @@
 //!   invisible (inactive) on non-diff buffers (the K.1.c gating).
 //! - **subsystem bound to the editor's bus** — DX.7 rewires `diff_subsystem.bind`
 //!   with a host-provided resolver; the end-to-end `DocumentClosed` pin proves
-//!   the bind targets `editor.event_bus` + the real registry resolver, which a
+//!   the bind targets `editor.event_bus` + the production resolver, which a
 //!   plain `guard.is_some()` could not (it would pass even if bound to the wrong
 //!   bus). The drain *mechanism* itself is unit-pinned in `diff/subsystem.rs`
 //!   (`bind_routes_document_changed_to_debounced_recompute` /
@@ -315,6 +315,6 @@ async fn boot_wired_document_closed_drains_to_subsystem() {
     assert!(
         editor.diff_subsystem.lookup(bid).is_none(),
         "boot-wired DocumentClosed drain must drop the session — proves bind() \
-         targets the editor's bus + the real registry resolver"
+         targets the editor's bus + the production resolver"
     );
 }

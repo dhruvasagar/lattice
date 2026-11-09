@@ -245,8 +245,114 @@ fn insert_into_linked_range(c: &mut Criterion) {
     g.finish();
 }
 
+/// LL.12: one streamed chunk appended at a tracked anchor mid-document, on
+/// the amend path a stream takes after its first write (the entry is still
+/// the top of the undo stack). Compare with `insert_at_middle` at the same
+/// size: the anchor is resolved by id, not by scanning, so an append should
+/// cost what a typed character does and nothing more.
+fn append_to_tracked(c: &mut Criterion) {
+    use lattice_core::tracked::{Stickiness, TrackedRangeId};
+    let mut g = c.benchmark_group("document_edit_p99_us::append_to_tracked");
+    for size in [10usize, 1_000, 100_000] {
+        g.throughput(Throughput::Elements(1));
+        g.bench_with_input(BenchmarkId::from_parameter(size), &size, |bencher, &sz| {
+            bencher.iter_with_setup(
+                || {
+                    let mut d = build_doc(sz);
+                    let at = (d.buffer().byte_len() / 2) as usize;
+                    let id = TrackedRangeId::next();
+                    d.update_tracked_ranges(|t| t.insert(id, at..at, Stickiness::NeverGrows));
+                    d.append_to_tracked(id, "warm ").unwrap();
+                    (d, id)
+                },
+                |(mut d, id)| {
+                    d.append_to_tracked(id, black_box("token ")).unwrap();
+                },
+            );
+        });
+    }
+    g.finish();
+}
+
+/// LL.13a: a typed character positioned before `k` appends it had not seen,
+/// rebased over them in the turn that applies it. `k = 0` is the cost every
+/// key now pays for the check; one append is the case a stream produces.
+fn rebase_over_appends(c: &mut Criterion) {
+    use lattice_core::tracked::{Stickiness, TrackedRangeId};
+    let mut g = c.benchmark_group("document_edit_p99_us::rebase_over_appends");
+    for k in [0usize, 1, 8] {
+        g.throughput(Throughput::Elements(1));
+        g.bench_with_input(BenchmarkId::from_parameter(k), &k, |bencher, &k| {
+            bencher.iter_with_setup(
+                || {
+                    let mut d = build_doc(1_000);
+                    let at = (d.buffer().byte_len() / 2) as usize;
+                    let id = TrackedRangeId::next();
+                    d.update_tracked_ranges(|t| t.insert(id, at..at, Stickiness::NeverGrows));
+                    let base = d.text_version();
+                    for _ in 0..k {
+                        d.append_to_tracked(id, "token ").unwrap();
+                    }
+                    (d, base)
+                },
+                |(mut d, base)| {
+                    d.apply_edit_based_on(
+                        Edit::insert(black_box(Position::new(900, 0)), "x"),
+                        base,
+                    )
+                    .unwrap();
+                },
+            );
+        });
+    }
+    g.finish();
+}
+
+/// A two-edit batch (an operator's shape) positioned before `k` appends and
+/// rebased over them in the turn that applies it. `k = 0` is what every
+/// operator now pays for the check; compare `rebase_over_appends`.
+fn rebase_batch_over_appends(c: &mut Criterion) {
+    use lattice_core::document::BaseMismatch;
+    use lattice_core::tracked::{Stickiness, TrackedRangeId};
+    use lattice_protocol::position::Range;
+    let mut g = c.benchmark_group("document_edit_p99_us::rebase_batch_over_appends");
+    for k in [0usize, 1, 8] {
+        g.throughput(Throughput::Elements(1));
+        g.bench_with_input(BenchmarkId::from_parameter(k), &k, |bencher, &k| {
+            bencher.iter_with_setup(
+                || {
+                    let mut d = build_doc(1_000);
+                    let at = (d.buffer().byte_len() / 2) as usize;
+                    let id = TrackedRangeId::next();
+                    d.update_tracked_ranges(|t| t.insert(id, at..at, Stickiness::NeverGrows));
+                    let base = d.text_version();
+                    for _ in 0..k {
+                        d.append_to_tracked(id, "token\n").unwrap();
+                    }
+                    (d, base)
+                },
+                |(mut d, base)| {
+                    d.apply_edit_batch_based_on(
+                        black_box(vec![
+                            Edit::delete(Range::new(Position::new(900, 0), Position::new(901, 0))),
+                            Edit::insert(Position::new(900, 0), "x\n"),
+                        ]),
+                        base,
+                        BaseMismatch::UseAsGiven,
+                    )
+                    .unwrap();
+                },
+            );
+        });
+    }
+    g.finish();
+}
+
 criterion_group!(
     benches,
+    rebase_over_appends,
+    rebase_batch_over_appends,
+    append_to_tracked,
     viewport_walk,
     insert_at_middle,
     delete_at_middle,

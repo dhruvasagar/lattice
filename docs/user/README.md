@@ -172,6 +172,15 @@ same surface).
 | Agent conversation         | [`ai-conversation-mode`](help:ai-conversation-mode) | ✅      |
 |   — permission prompts     | [`ai-permission-mode`](help:ai-permission-mode) | ✅      |
 |   — agent process log      | [`ai-log-mode`](help:ai-log-mode) | ✅      |
+| Language models: the guide | [`llm-guide`](help:llm-guide) | ✅      |
+| LLM chat                   | [`llm-chat-mode`](help:llm-chat-mode) | ✅      |
+| Ask about any text         | [`llm-mode`](help:llm-mode) | ✅      |
+|   — settings and profiles  | [`llm`](help:llm)                        | ✅      |
+|   — system prompt          | [`llm-system-mode`](help:llm-system-mode) | ✅      |
+|   — MCP servers as tools   | [`llm-mcp-mode`](help:llm-mcp-mode) | ✅      |
+|   — attached context       | [`llm-context-mode`](help:llm-context-mode) | ✅      |
+|   — what a request sends   | [`llm-inspect-mode`](help:llm-inspect-mode) | ✅      |
+|   — running requests       | [`llm-requests-mode`](help:llm-requests-mode) | ✅      |
 | Languages                  | [`languages`](help:languages)            | ✅      |
 | Plain text (fallback)      | [`text-mode`](help:text-mode) | ✅      |
 | Rust                       | [`rust-mode`](help:rust-mode) | ✅      |

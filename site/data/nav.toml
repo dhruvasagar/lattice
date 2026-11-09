@@ -151,6 +151,23 @@ docs = [
 ]
 
 [[section]]
+slug = "llm"
+title = "Language models"
+description = "Call a model directly from the editor: chat in a buffer, ask about any text with a vim operator, review every edit, and control exactly what is sent."
+[[section.group]]
+docs = [
+  "llm-guide",
+  "llm",
+  "llm-chat-mode",
+  "llm-mode",
+  "llm-mcp-mode",
+  "llm-system-mode",
+  "llm-context-mode",
+  "llm-inspect-mode",
+  "llm-requests-mode",
+]
+
+[[section]]
 slug = "terminal"
 title = "Terminal & AI agents"
 description = "Shells as buffers, one-off shell commands, coding agents wired to the editor, and background-work notifications."

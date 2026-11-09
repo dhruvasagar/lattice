@@ -293,7 +293,7 @@ fn a_hover_request_inside_a_popup_does_not_ask_about_the_file() {
 #[test]
 fn opening_a_search_from_a_popup_does_not_move_the_file_behind_it() {
     let mut editor = Editor::boot(CoreDocument::from_text(
-        &(0..200).map(|n| format!("line {n}\n")).collect::<String>(),
+        (0..200).map(|n| format!("line {n}\n")).collect::<String>(),
     ));
     editor.cursor.line = 120;
     editor.scroll = 100;

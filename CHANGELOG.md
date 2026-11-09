@@ -3,6 +3,92 @@
 ## Unreleased
 
 ### Added
+- `:help llm-context-mode`, `:help llm-inspect-mode` and `:help llm-requests-mode`: pages for the `*llm-context*`, `*llm-inspect*` and `*llm-requests*` views.
+- **LLM requests read `AGENTS.md`.** The nearest `AGENTS.md` between the file you are asking about and the project root joins the system prompt after yours, capped at 32 KiB, held to `llm.exclude` and shown by `:llm-inspect`. It instructs the model and can turn nothing on. `:set llm.agents_md=false` leaves it out.
+- **LLM allow and deny rules.** `llm.allow = ["run_command(cargo test *)"]` runs a command without asking when every command in its line matches (split on `&&`, `||`, `;`, `|`); a line with `$(…)`, backticks or a redirect into a file always asks. `llm.deny = ["run_command(git push *)", "edit_file(secrets/**)", "shell.*"]` refuses a call without asking and tells the model why. File tools take gitignore patterns, MCP tools are named `server.tool` or `server.*`, and a project may add `deny` rules but never `allow`.
+- **A project can add to the LLM exclude list.** `exclude = [...]` in `.lattice/llm.toml`, and the `.aiexclude`, `.aiignore` and `.agentignore` files other AI tools read, are added to your `llm.exclude` and matched on their own, so a project can never re-include one of your entries. A project `allow` is refused.
+- `:llm-send` (`<leader>as`) sends the buffer from its first line to the cursor's line as the prompt, with no instruction to type. Write a question in any buffer and send it; the answer opens beside you. In a chat it sends the prompt, as `<CR>` does.
+- `<leader>aR{motion}` rewrites text with `:llm-menu` opening first, the way `<leader>aA` does for an ask: change the model or temperature for this rewrite, then press `a` to type the instruction. **`:llm-requests` moves from `<leader>aR` to `<leader>aq`.**
+- `:help llm-guide`: a single guide to the LLM layer. It covers setup, chat, asking about text from any buffer, context, tools and their review gates, MCP servers, profiles and project config, watching requests, the privacy model, and troubleshooting. The website has a new "Language models" section for it.
+- **MCP servers as tools in LLM chats.** An `[llm.mcp.<name>]` table in
+  your `lattice.toml` (a stdio `command`, or an HTTP `url`) gives a chat
+  that server's tools: select them with `llm.tools = ["<name>.*"]`. Each
+  asks before it runs unless named in the table's `allow`; a server's
+  "read-only" claim is shown, not trusted. A server starts when a request
+  first needs it, and one that fails never holds a request up.
+  `:llm-mcp` lists every server, its state and tools; `r` restarts one,
+  `dd` stops it, and stopping kills its whole process tree. Tokens can
+  come from `$VARIABLES` and are never shown. A project file cannot
+  declare a server.
+- **Gemini in LLM chats.** A provider with `kind = "gemini"` (or simply
+  named `gemini`) talks to Google's Gemini API, tools included; the key
+  comes from `api_key_env` or `api_key_command` and is sent in a header,
+  never in the URL. Thinking models keep working across a tool loop.
+- **Keep an LLM chat, and pick it up again.** `:llm-save file` saves a
+  chat and `:llm-resume file` opens it again, history and tool calls
+  included; `:llm-export file.md` (or `.org`) writes it out for reading.
+  A session file never holds a key, and one from elsewhere can choose the
+  model but cannot turn on tools, redirect requests or run a key command.
+  A file edited after it was saved, or from a newer lattice, is refused.
+- **Fork an LLM chat, or retry its last question.** `gb` on a past
+  question in a chat (or `:llm-fork`) opens a new chat with everything
+  before it and the question in the prompt, ready to edit; the original is
+  left as it was. `:llm-retry` sends the last question again in place of
+  its answer, with the current settings, so `:setlocal llm.model=…` then
+  `:llm-retry` tries another model. Retry is refused while a reply is
+  coming. Moving to another provider leaves out the reasoning only the
+  first could check, and says so once.
+- **LLM chats can run commands, asking first.** With `lattice.exec` in
+  `llm.tools`, a model may call `run_command`. Each command opens the
+  permission menu showing what will run: allow once, allow for this chat,
+  or deny (the model is told). `<Esc>` decides later; `:ai-permission`
+  reopens it. Commands run in the project in their own process group, so
+  stopping the request kills everything they started; they time out after
+  120 s (600 s at most) and the model sees at most 30 000 bytes of each
+  stream. A project's config cannot turn exec on.
+- **LLM chats can edit your files, through review.** With `lattice.edit`
+  in `llm.tools`, a model may call `edit_file` and `write_file`; each
+  change opens as a diff against the file as you have it, and the model is
+  told whether you accepted, changed or rejected it. Open files change in
+  their buffer, unsaved, as one undoable edit; a file that changed during
+  the review is never overwritten. Diffs open one at a time. `<C-t>` in a
+  chat trusts its edits (no diff) until pressed again or the chat closes;
+  closing a chat closes its open diffs.
+- **LLM chats can read your project.** With `llm.tools = "lattice.read"`,
+  a model may call `read_file`, `list_directory` and `search` while it
+  answers; each call shows as a tool block. Reads see unsaved edits, stay
+  inside the project and skip `llm.exclude` files. One request runs at
+  most `llm.tool_rounds` rounds of tools (25), and `:llm-stop` stops it
+  mid-tool without breaking the chat's history.
+- **The LLM chord prefix is configurable:** `llm.prefix` (default
+  `<leader>a`), e.g. `prefix = "<C-c>."` under `[llm]` gives `<C-c>.aip`
+  to ask about a paragraph. The commands have chords too now: `l` chat,
+  `s` send, `m` menu, `C` context, `i` inspect, `q` requests, `L` last
+  answer, `k` stop; hold the prefix and which-key lists them all.
+- **Context for LLM requests:** `<leader>ac{motion}` and
+  `:llm-context-add [file…]` attach text that requests from a buffer
+  carry, read when each request is sent; attached lines follow edits.
+  `:llm-context` lists it (`dd` removes), and `:llm-inspect` shows exactly
+  what a request sends, key redacted; in a chat, before it is sent.
+- **The modeline shows when an LLM request is running:** `llm`, or
+  `llm 3` for three, wherever you are. A chat whose window you closed
+  says when it has answered, and `:q` with a request running asks for
+  `!` rather than dropping it.
+- **See and stop running LLM requests from anywhere.** `:llm-requests`
+  lists every request with its model and where its answer is going, and
+  updates itself; `dd` stops one. `:llm-stop` stops this buffer's request,
+  or opens the list when several are running.
+- **LLM answers can go to the echo area or a register.**
+  `destination=echo` shows the answer's first line when it is complete;
+  `destination=register` puts all of it in the register named before
+  the operator (`"a<leader>aaj`). `:llm-last` opens the latest answer's
+  chat, for the full text and a follow-up.
+- **LLM answers can stream into the buffer, under the text you asked
+  about.** `destination=below` on an ask (`:llm-ask destination=below …`,
+  or the menu's destination row) writes the answer on new lines beneath
+  the selection while you keep typing: your text never splits it, your
+  caret stays put, and `u` stops it and takes it back. A read-only buffer
+  gets the answer in a new chat instead.
 - **Search results can be narrowed.** In `:search` results, and in any other
   multibuffer view, `:multibuffer-keep /pat/` shows only the results whose
   line or file path matches, `:multibuffer-reject /pat/` hides them, and
@@ -11,8 +97,312 @@
   streaming in, and survive `gr`, and the header says which are active. They
   never edit a file, unlike `:v/pat/d`, which in an editable results view
   deletes the lines from your files.
+- **Ask a language model about any text.** `<leader>aa` is an operator:
+  `<leader>aaip` asks about a paragraph, `<leader>aa` in Visual about the
+  selection, and a prompt takes the instruction. The answer opens in a new
+  chat beside you while your caret, mode and pane stay put; a second ask
+  reuses that pane. It works from read-only buffers such as
+  `*compilation*` and help, and `:'<,'>llm-ask explain this` does the same
+  from the command line. `gf` on the sent text in the answer goes back to
+  it. `<leader>aA` opens the settings menu first, and
+  `destination=*llm:…*` adds the ask to a chat already open. A selection
+  over 32 KB asks before it is sent. See `:help llm-mode`.
+- **Have a language model rewrite text, through a diff.** `<leader>ar` is
+  an operator: `<leader>arip` rewrites a paragraph after you type an
+  instruction. The answer opens as a diff against the text as it is in your
+  buffer, saved or not; edit the proposal if you like, and `:diff-accept`
+  applies it as one change that one `u` undoes. Nothing is written to disk.
+  The text follows your edits while the model works; if you changed it, the
+  diff opens again against the text as it is now, and if you deleted it or closed the buffer the answer
+  opens in its chat instead of being lost. Rewrites queue one diff at a time.
+  `.` repeats a rewrite at the caret, with the prompt already holding the last
+  instruction.
+- **Secrets are never sent to a language model.** `llm.exclude` lists globs
+  of files whose text an ask refuses to send, by name; the default covers
+  `.env`, `*.pem`, `*.key` and SSH keys.
+
+### Changed
+- `llm.exclude` entries are gitignore patterns, relative to the project root: a bare name matches anywhere, `secrets/*.txt` and `/build.log` match from the root, `.aws/` covers a directory, and `!pattern` re-includes. Before, a pattern containing `/` never matched anything. The default list adds `.npmrc`, `.pgpass`, `credentials`, `credentials.json`, `credentials.db`, `.aws/`, `*.p12` and `*.pfx`. The LLM read tools never read, list or search inside `.git`.
+- The "allow for this chat" answer for an MCP server's tool now reads "Allow this tool for this chat (any arguments)": it covers every later call of that tool, whatever its arguments.
+- **A trusted LLM chat still asks before editing under `.git`.** `<C-t>`
+  applies edits without a diff, except inside a `.git` directory: a hook or
+  `core.fsmonitor` there runs code later, and `git status` never shows it.
+  Those edits open a diff as an untrusted chat's do.
+- **"Allow for this chat" on a command covers that command only.** An LLM
+  chat's `run_command` question now offers "Allow this command for this
+  chat": the same command runs again without asking, and any other command
+  asks. Before, one answer let the chat run anything, including a command a
+  prompt-injected file or tool result asked for.
+- **The Claude Code connection runs on the official MCP SDK** (`rmcp`).
+  `claude` sees the same tools and notifications as before. A client that
+  sends a request before `initialize`, or an `initialize` without its
+  capabilities and client info, now gets an error, as the protocol
+  requires; `claude` always sends both.
+- **`messages.filter` holds `rmcp` at `warn`** unless the filter names it,
+  so the MCP SDK's per-message logging stays out of `*messages*`
+  (`:set messages.filter=info,rmcp=debug` to see it).
 
 ### Fixed
+- A trusted LLM chat (`<C-t>`) no longer writes `.hg`, `.jj` or `.lattice` (editor and LLM config) without a diff. The new `llm.review` option lists what is always reviewed, as gitignore patterns (default `.git/`, `.hg/`, `.jj/`, `.lattice/`); a project's `review` list adds to it, and `.git` is reviewed whatever the list says.
+- A fast-streaming chat reply (LLM or agent) writes its buffer at most once a frame, rather than once per token, so a long transcript no longer re-renders dozens of times a second.
+- A command an LLM runs, and an MCP server lattice starts, no longer inherit the variables your providers' `api_key_env` name. Before, an allowed `env` or `echo $ANTHROPIC_API_KEY` sent the key to the model and into saved chats. To give a key to an MCP server on purpose, name it in that server's `env`.
+- An LLM's `read_file` on a named pipe, a device or a file over 16 MiB is refused with a reason. Before, it hung waiting on the pipe or read the whole file into memory.
+- An LLM ask or rewrite still running is no longer forgotten once more than 32 other chats or asks have started since. Quitting warns about it, and `:llm-last` can reopen its answer.
+- The question before a model's command runs shows every character that draws nothing or a blank you cannot tell from a space (no-break and ideographic spaces, Hangul fillers, the braille blank, tag and variation characters) as `\u{..}`, so none can hide the rest of the command.
+- After `dd`, `x`, `p`, `u` or `<C-r>` while an LLM answer streams into the buffer, the next key lands where the caret is. Before, it could land inside the streamed text.
+- A long LLM chat no longer slows typing while a reply streams. The transcript is rebuilt on a background runtime, not on the thread that handles your keys; `:llm-context`, `:llm-requests` and `:llm-mcp` refresh there too.
+- Closing a buffer now releases what other parts of the editor kept for it: its diff session, its git-HEAD gutter diff, its place in multibuffer views and LSP reference views. The close event they listen for was never sent, so each closed buffer's state stayed until exit. **For plugins:** every document event (`document-opened`, `document-changed`, `document-saved`, `document-closed`, `selections-changed`) now carries the same id for a buffer, its buffer id; `document-changed` used to carry a different one.
+- `lattice-multibuffer` builds again with `--no-default-features`: the clock report, which only scan views use, is now gated with them, and CI checks the opt-out build.
+- Accepting an llm rewrite can no longer overwrite a key typed in the rewritten text at the moment it applies. The check that the text is unchanged and the replacement now happen together, and a key landing between them makes the rewrite read the text again.
+- An operator (`dd`, `cw`, `>>`...) or a format run while an llm answer streams into the same buffer now acts on the text the cursor is on. It used to act on the line the cursor had been on before the latest chunk arrived, so `dd` could delete part of the answer.
+- An llm chat with edits trusted (`<C-t>`) can no longer run code you have not seen through a command you allowed "for this chat". An edit applied without review now drops the chat's allowed commands, so the next `cargo test` asks again: the model could otherwise change `build.rs` or a test unseen and then run it.
+- **Completion ranks a word that starts with what you typed above one
+  that merely contains it.** `:sor<Tab>` listed every
+  `absorb-operator-*` action before `table-sort`, because a match in the
+  middle of a word scored the same as one at the start of a word. This
+  applies to the command line, insert completion and pickers alike.
+- **A rate-limited or overloaded LLM request is retried.** HTTP 429, 502,
+  503, 504 and 529 used to fail the request at once. It is now sent again
+  up to twice, waiting as long as the provider asks (or a few seconds),
+  and `:llm-requests` shows it as `retrying` meanwhile. A provider asking
+  for more than 30 seconds is not waited for: the failure says how long
+  it asked.
+- **Stopping an MCP server cannot kill an unrelated process (Linux).**
+  An MCP server is stopped by killing its process group. If the server
+  had already exited and the system had reused its id for another
+  process group, that group was killed instead; the kill is now skipped
+  when the id belongs to another process.
+- **Text sent into a plain (non-markdown) transcript folds at 8 lines,
+  as in markdown.** It stayed open up to 10 lines, because the count
+  allowed for code-fence lines that only a markdown transcript has.
+- **Claude Code knows the open file as soon as it connects.** An agent
+  started while you stayed in one buffer was told the active file only
+  when you switched to another; it is now sent the active file and
+  selection once it connects.
+- **Claude Code is sent valid file URIs for paths with spaces, `#`, `%`
+  or non-ASCII names.** The selection, open-editor and workspace-folder
+  replies wrote `file://` plus the raw path, so a `#` cut the path short
+  and a space made the URI invalid.
+- **The llm chords say when they could not be bound at all.** If the
+  `leader` did not make a valid key sequence with `llm.prefix` when
+  `llm-mode` first started, the warning said the chords "stay where they
+  were", when there were none; it now says they are not bound and names
+  the expanded keys.
+- **`:claude-code-start` says when the IDE server failed to start.** It
+  always reported "starting IDE server", even when the server could not
+  bind; it now names the port on success and reports a failure as an
+  error.
+- **A chat's tool and reasoning folds survive its mode being
+  re-activated.** When a chat or agent conversation buffer's mode was
+  activated again, the old activation's cleanup, running late, removed
+  the new activation's fold sources, so `za` and the folded blocks
+  stopped working in that buffer.
+- **`<Tab>` inside a `:/pattern` range no longer appends a command to the
+  pattern.** Since `<Tab>` learned to complete after a range, `:/TODO<Tab>`
+  took the open pattern for a finished range and offered every command
+  after it.
+- **Ending a review diff frees its changed-word marks.** Each
+  `openDiff` review (Claude Code, an LLM edit, a rewrite) kept its hunks
+  and refined lines in memory after `:diff-accept` / `:diff-reject`
+  closed it.
+- **Closing the which-key band or a completion-docs popup ends its
+  modes.** Their modes' cleanup ran only when the editor exited, as
+  closing a popup's did before the earlier fix, and closing a popup left
+  behind any activation still waiting to run for it.
+- **A closed split stops tracking its caret.** A split you left had its
+  caret anchored in the buffer so a stream writing above it would carry
+  it; closing that split (`<C-w>c`, `:only`, closing its tab) left the
+  anchor tracked, adjusted on every later edit, for the rest of the
+  session.
+- **A Visual selection stays on its text while output streams above it.**
+  The caret moved with text an LLM answer or another stream inserted
+  above it, but the selection's other end did not, so the selection
+  stretched over the new lines.
+- **A rewrite you abandon stops being tracked.** The span under a rewrite
+  prompt dismissed with `<Esc>`, a rewrite whose text was deleted during
+  review, or one whose request vanished stayed tracked in the buffer for
+  the rest of the session, adjusted on every later edit. They are now
+  released.
+- **Closing a buffer drops what the LLM layer kept for it.** Attached
+  context, menu choices, buffer-local `llm.*` values, the last request
+  shown by `:llm-inspect` and similar per-buffer state stayed for the
+  whole session after the buffer closed. They are now dropped when the
+  next buffer opens or changes an option.
+- **An ask sent into a chat waits behind prompts a failure held.** After a
+  failed reply the chat's queued prompts wait for your next send; an ask
+  sent in with `destination=` skipped ahead of them instead of resuming
+  them in order.
+- **Sending an ask into an open chat keeps the prompt you were typing.**
+  `destination=` on an ask, which continues a chat from another buffer,
+  counted as sending that chat's prompt and wiped whatever you had
+  half-written there.
+- **`dd` in `*llm-context*` never removes an item you are not looking
+  at.** If the context changed elsewhere just before the list repainted,
+  `dd` went by row number and could drop a different item than the one on
+  its row. It now removes nothing and asks you to look again.
+- **`*llm-requests*`, `*llm-context*` and `*llm-mcp*` refresh without
+  moving you.** A refresh rewrote the whole buffer, so a request
+  finishing while you were moving to a row to `dd` sent the caret back to
+  the top. Only the changed lines are rewritten now. Closing
+  `*llm-requests*` or `*llm-mcp*` also releases its event subscription
+  instead of leaving it behind.
+- **One bug in a conversation update no longer breaks every chat after
+  it.** A panic while a transcript was being updated left its lock
+  poisoned, and from then on every render, permission menu and request
+  that touched a conversation panicked as well. The store and the
+  permission menu now keep working from the transcript as it stood.
+- **The Claude Code IDE server counts only agents that signed in.** Any
+  local socket opened to its port was counted in the status line before
+  its token was checked, and one that never finished the handshake held
+  a task open indefinitely. Now a connection counts only after the token
+  checks out, and the handshake must finish within 10 seconds.
+- **An MCP tool call can no longer hang a request.** A call to an
+  external MCP server had no time limit, so a stuck server held the
+  request until you stopped it. Calls now stop after 300 seconds (set
+  `timeout` in the server's `[llm.mcp.<name>]` table, 1 to 3600): the
+  call is cancelled on the server and the model is told it timed out.
+- **A project or session file that switches the LLM provider says so.**
+  `.lattice/llm.toml` and a resumed session may choose the model, which
+  could quietly send a chat to another of your providers (a paid or
+  remote one) instead of your default. That is now reported: once per chat
+  for a project file, and in the resume message for a session file.
+- **LLM streams whose lines end in a bare carriage return work.** The
+  SSE reader only split on line feeds, so a server ending lines with
+  `\r` alone (allowed by the spec) stalled until the idle timeout.
+- **An LLM answer cut short says so wherever it goes.** A reply the
+  provider stopped early (Gemini's safety stops, a refusal, a content
+  filter, the output token limit) was noted in a chat but handed to a
+  rewrite, the echo area or a register as if it were the whole answer.
+  Those now report why it stopped instead; the partial reply stays in
+  its chat to read.
+- **A failed MCP server warns once.** Every request that selected a
+  server that could not start logged the same warning to `*messages*`;
+  it now warns once, and again only if the server fails after working.
+- **Saved and exported LLM chats are private.** `:llm-save` and
+  `:llm-export` wrote files anyone on the machine could read, though a
+  chat holds file contents and tool output; a new file is now readable
+  by you alone, and one overwritten keeps its mode. The temporary file
+  has an unguessable name, and without `!` an existing file is never
+  replaced, even one created a moment before.
+- **A rejected LLM key is not half-shown in the error.** A provider that
+  echoes the key masked (`sk-proj-****abcd`) gave away its prefix and
+  last characters in the chat's error; anything shaped like a masked key
+  is now redacted too.
+- **An MCP server's tokens stay hidden in more places.** `*llm-mcp*` and
+  logs no longer show a token passed as an argument (`--token X`,
+  `--api-key=X`, or one shaped like a token) or in an HTTP server's URL
+  path; a stdio server's start-up failure is scrubbed like its other
+  output; and the token inside a `Bearer …` header is scrubbed on its own.
+- **A key in a custom LLM `base_url` is never shown.** A URL carrying a
+  password (`https://user:key@host`) or a key in its query (`?key=…`)
+  appeared as written in connection errors and `:llm-inspect`. Both now
+  show the URL without its user part and with each query value as `…`.
+- **A trusted LLM chat reviews edits under `.GIT/` too.** The check for a
+  `.git` directory was case-sensitive, so on macOS or Windows `.GIT/hooks`
+  (the same directory) was written without a diff.
+- **OpenAI-compatible servers that end with a bare `[DONE]` still run
+  tools.** Tool calls followed by `[DONE]` and no `finish_reason` ended
+  the request as a finished answer, and the calls never ran.
+- **`:set` of a structured option no longer echoes malformed text.** Its
+  TOML error now names only the line and column, as the config loader's
+  does, so a token typed into it is not repeated back or logged.
+- **An org export of an LLM chat can't be tricked into live links.** A
+  `~` inside inline code no longer ends the code early and frees the
+  link after it; plain (unbracketed) `elisp:`/`shell:` links stay text;
+  and the lines built from a tool's or agent's own words (permission
+  descriptions, tool titles) get the same treatment as reply prose.
+- **`llm.exclude` holds in search results and multibuffers.** Asking from,
+  or attaching, a view composed from several files counted as no file at
+  all, so lines from an excluded file in it went to the model. Such a view
+  now counts as every file it shows: one showing an excluded file is
+  refused, naming it, and is checked again when the request is sent.
+- **A command allowed for an LLM chat is remembered by its exact
+  arguments.** A command whose text ended like a working directory
+  (`make\n  in /x`) could pass for that command run in `/x`; the allow is
+  now keyed on the call itself, so the two ask separately.
+- **An LLM's command question always shows the whole command.** Padding,
+  invisible characters or a flood of empty lines can no longer push the
+  end of a `run_command` (`; curl … | sh`) out of the menu: invisible
+  characters show as `\u{..}`, long blank runs as `␣×N`, empty-line runs
+  as one counted line. A command over 40 lines or 4 000 characters is
+  refused without asking. A tool's arguments cut short say how much was
+  left out.
+- **The next permission question opens on its own.** After you answered
+  one question from an agent or an LLM chat, later ones waited, unshown,
+  until you pressed a key or ran `:ai-permission`. Closing a popup now
+  finishes closing its mode, so the menu knows it is free.
+- **Debug output never shows a secret.** A built LLM request and an
+  `[llm.mcp.<name>]` server's settings printed their header and env values
+  (API keys, tokens) when formatted for debugging. They now print names only.
+- **A command that starts something in the background no longer hangs.**
+  An LLM chat's `run_command` of `server &` (or a picker command that did
+  the same) waited for ever once the shell had exited, holding a thread,
+  and the background process outlived it. What the command left running is
+  now stopped shortly after it exits, and `<C-c>` or a timeout always lands.
+- **An org export keeps a reply's org syntax as text.** A reply line such
+  as `#+INCLUDE:` or `#+SETUPFILE:`, or a link to `elisp:` or `shell:`, was
+  copied into the `.org` file live, for org to act on when you opened or
+  exported it. They are now escaped; ordinary web and file links still
+  convert.
+- **`llm.exclude` sees through links.** A file was checked by the name it
+  was opened or attached under, so a symlink `notes.txt` pointing at `.env`
+  could be sent. The file it really is is now checked as well.
+- **OpenAI-compatible servers:** a reply that was all reasoning no longer
+  breaks the rest of the chat (it went back as an empty message servers
+  reject), and a server that ends a tool-calling reply with `stop` instead of
+  `tool_calls` now gets its tools run.
+- **The Claude Code lock file is readable by you alone.** `~/.claude/ide/<port>.lock`
+  holds the token that lets a client drive the editor, and was written with
+  the default permissions, so other users on the machine could read it. It is
+  now owner-only (`0600`), including when an old lock file is reused.
+- **An LLM chat's file tools cannot leave the project through a linked
+  directory.** A new file under a symlinked directory was checked where it
+  was typed, not where the link points, so `link/new.txt` with `link`
+  pointing outside the project got written. Links in the directories above a
+  new file are now followed before the check, and a link to a missing target
+  is refused.
+- **A malformed config file no longer echoes its offending line.** The
+  parse error for `lattice.toml` (and `.lattice/llm.toml`) quoted the line it
+  failed on, so an unquoted `api_key = sk-…` put the key in `*messages*` and
+  the log. It now names the line and column only.
+- **An allowed tool call no longer reads `[denied]` in the transcript.**
+  After you answered an LLM chat's question, a clean-up step marked it denied
+  as well. The tool always ran; only the record was wrong.
+- **A proposed edit from Claude Code shows what changed, and what to do
+  about it.** The review diff now marks the changed words inside a line,
+  added on the right and removed on the left. Before, a one-word edit
+  showed as two near-identical lines with the same faint tint, so it
+  looked as if Claude had just opened the file. Each pane also has a
+  header (`README.md as it is`, and `proposed: :diff-accept keeps,
+  :diff-reject discards`), and the echo area says that Claude is waiting
+  for one of the two. The same word marks apply to any side-by-side diff
+  (`:diffsplit`).
+- **`<Tab>` completes after a range on the `:` line.** `:'<,'>cl<Tab>`
+  (what Visual mode's `:` gives you), `:%sor<Tab>` and `:5,$wr<Tab>`
+  complete the command as they would without the range, and keep the
+  range when you accept. Argument completion and `<C-h>` help work after
+  a range too.
+- **`:claude-send` works from Visual mode.** `:'<,'>claude-send` (or any
+  line range) mentions those lines of the current file instead of
+  failing with "E481: No range allowed".
+- **`/ide` connects to lattice again.** Current `claude` asks for the `mcp`
+  WebSocket subprotocol and drops a connection whose handshake does not
+  name it ("Failed to connect to Lattice"); lattice now answers with it.
+- **`<CR>` in the agent permission menu chooses the highlighted option.**
+  Enter in any help-style buffer was turned into "follow link" before any
+  mode's keys were consulted, so an agent's permission request could be
+  deferred (`<Esc>`) but never answered from the menu.
+  Following links with `<CR>` in help and on the dashboard is now an
+  ordinary `help-mode` binding, which a popup's own `<CR>` overrides.
+- **A caret no longer slides sideways when text above it is rewritten.**
+  When text above the caret was rewritten without changing the number of
+  lines, as a chat transcript update can do above the prompt, the caret
+  moved by the length change and landed on different text. It now keeps
+  its column.
+- **A split keeps its caret on its text.** Editing a buffer in one split
+  left the caret of another split on the same buffer at its old position,
+  so it pointed at different text when you went back. The caret of a split
+  you are not in now moves with edits above it, as in vim.
 - **Semantic colours no longer land on the wrong characters.** A request to
   the language server made right after a keystroke reached it before the
   edit did, so the server answered for the text as it was. Semantic tokens

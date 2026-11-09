@@ -42,7 +42,17 @@ fn every_continuation_of_a_plugin_operator_is_scoped_to_its_mode() {
     // A prefix nothing else binds, so every row under it is this wiring's.
     let mode = lattice_mode::ModeId::new("fixture-op-mode");
     wirer
-        .wire(op, "gZ", Some('Z'), mode, 7, "fixture", false)
+        .wire(
+            op,
+            "gZ",
+            Some('Z'),
+            mode,
+            lattice_mode::PluginOrigin {
+                id: 7,
+                name: "fixture",
+            },
+            false,
+        )
         .expect("a well-formed chord wires");
 
     let prefix = [lit('g'), lit('Z')];

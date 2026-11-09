@@ -40,6 +40,8 @@ mod completion;
 pub use completion::*;
 mod snippet;
 pub use snippet::*;
+mod llm;
+pub use llm::*;
 
 /// A renderer peer, as the scenarios see it.
 ///
@@ -468,6 +470,11 @@ macro_rules! peer_conformance_tests {
             gs_wraps_a_word_in_the_picked_snippet,
             gs_over_lines_keeps_the_block_indented,
             gs_in_visual_wraps_the_selection,
+            a_chat_reply_lands_without_a_keypress,
+            an_ask_writes_its_answer_below,
+            an_accepted_rewrite_replaces_its_span,
+            send_sends_the_buffer_up_to_the_cursor,
+            a_tool_question_is_answered_in_its_popup,
             gss_wraps_the_line,
             closing_the_gs_picker_changes_nothing,
             a_malformed_wrap_range_opens_no_picker,

@@ -596,3 +596,33 @@ async fn closing_the_band_requests_a_paint() {
         "a band that closed off-keystroke must repaint, or it stays on screen"
     );
 }
+
+/// Taking the band down drops the guards its modes stashed, as closing a
+/// popup does: a band mode's cleanup runs when the band goes, not at exit.
+#[tokio::test]
+async fn dismissing_the_band_drops_its_modes_guards() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    struct Flag(Arc<AtomicBool>);
+    impl Drop for Flag {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+
+    let mut editor = booted();
+    quiesce(&editor).await;
+    let _ = editor.dispatch(Action::AbsorbPartialChord(KeyChord::char('g')));
+    settle_arming_to(&mut editor, true).await;
+    fire_gate(&mut editor).await;
+    let band = editor.band_buffer.expect("the band opened");
+
+    let dropped = Arc::new(AtomicBool::new(false));
+    editor.mode_guards.insert(
+        lattice_protocol::ids::BufferId::new(band.0 as u64),
+        lattice_mode::ModeId::new("test-band-mode"),
+        Box::new(Flag(dropped.clone())),
+    );
+    editor.dismiss_band();
+    assert!(dropped.load(Ordering::SeqCst), "the guard was dropped");
+}

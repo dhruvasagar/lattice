@@ -19,7 +19,7 @@
 //! Post-M.6.X: probe gaps stay within sleep budget +
 //! tokio scheduling jitter.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -57,7 +57,7 @@ impl Drop for CorpusGuard {
 
 /// One iteration: spin up a fresh current_thread runtime,
 /// launch the scan, run a probe loop, return the max gap.
-fn one_iter(root: &PathBuf) -> Duration {
+fn one_iter(root: &Path) -> Duration {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -67,7 +67,7 @@ fn one_iter(root: &PathBuf) -> Duration {
     let events = Arc::new(EventBus::default());
     let view = BufferId(1);
     let options = ProjectSearchOptions {
-        root: root.clone(),
+        root: root.to_path_buf(),
         case_sensitive: true,
         max_files: None,
         max_hits_per_file: 100,

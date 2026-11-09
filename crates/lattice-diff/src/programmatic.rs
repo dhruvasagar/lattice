@@ -33,17 +33,48 @@ use tokio::sync::oneshot;
 
 use crate::subsystem::DiffOutcome;
 
+/// Where a programmatic diff's left (baseline) side comes from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DiffBaseline {
+    /// The on-disk content of `old_file_path` (openDiff: the agent proposes a
+    /// change to a file).
+    Disk,
+    /// This text. A change to a *buffer* is reviewed against what the buffer
+    /// holds, which may be unsaved or have no file at all; disk would be the
+    /// wrong side. `old_file_path` then only names the language and the label.
+    Text(String),
+}
+
+/// What an Accept does with the right (proposed) side.
+#[derive(Debug)]
+pub enum OnAccept {
+    /// Save it to `new_file_path`: the openDiff contract, where the review is
+    /// the save.
+    Save,
+    /// Hand its final text back, unsaved, and let the producer apply it (an
+    /// edit to a buffer, which owns its own undo). The right side then carries
+    /// no path, so a stray `:w` in it cannot write over the file. Sent before
+    /// the [`DiffOutcome`], so a producer that sees `Accept` finds it waiting.
+    ReturnText(oneshot::Sender<String>),
+}
+
 /// A request to open an interactive side-by-side diff and block (on the
 /// producer side) until the user Keeps or Rejects it.
 ///
-/// `old_file_path` is the baseline — its on-disk content fills the read-only
-/// left side. `new_contents` is the proposed text (the editable right side),
-/// carrying `new_file_path` so an Accept can save it. `response` resolves with
-/// the user's [`DiffOutcome`] when the diff is torn down.
+/// `baseline` fills the read-only left side: `old_file_path`'s on-disk content,
+/// or text the producer supplies. `new_contents` is the proposed text (the
+/// editable right side). `on_accept` decides whether an Accept saves it to
+/// `new_file_path` or hands it back. `response` resolves with the user's
+/// [`DiffOutcome`] when the diff is torn down.
 #[derive(Debug)]
 pub struct ProgrammaticDiffRequest {
-    /// Baseline file path; its on-disk content is the left (read-only) side.
+    /// Baseline file path: read for the left side under [`DiffBaseline::Disk`];
+    /// otherwise the language and label only.
     pub old_file_path: PathBuf,
+    /// Where the left side's text comes from.
+    pub baseline: DiffBaseline,
+    /// What an Accept does with the right side.
+    pub on_accept: OnAccept,
     /// The path the proposed content carries (the right side's buffer path); an
     /// Accept writes the right side here. Usually equals `old_file_path`.
     pub new_file_path: PathBuf,

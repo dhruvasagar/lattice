@@ -194,6 +194,7 @@ pub mod plugin_meta_sink;
 // for "open the multibuffer view a provider owns", replacing the
 // per-provider `AppEffect` variant + host arm + plugin-boundary arm.
 pub mod provider_view;
+pub mod quit_guard;
 // SI.12: text ranges a mode tints while active (snippet placeholders).
 pub mod range_highlight;
 pub mod registry;
@@ -278,7 +279,7 @@ pub use crate::modes::{
     HoverMode, MessagesMode, PathCompletionMode, TextMode, VersionMode, VersionReport,
     VersionSection, register_foundation_modes, register_help_mode_actions, set_version_report,
 };
-pub use crate::operator_chord::{OperatorChordWirer, OperatorChordWirerHandle};
+pub use crate::operator_chord::{OperatorChordWirer, OperatorChordWirerHandle, PluginOrigin};
 // TB.1: `table-mode` — the shared pipe-table minor. Re-exported beside the
 // other shared minors so boot reaches it by the same path.
 pub use crate::modes::table::mode::{TableMode, register_table_actions, register_table_mode};
@@ -303,6 +304,9 @@ pub use crate::tick_callback::{
     TickCallback, TickCallbackRegistration, TickCallbackRegistry, TickCallbackRegistryHandle,
 };
 pub use lattice_keymap::KeymapEntry;
+/// The layer [`SubsystemBoot::bind_operator`] binds into, re-exported so a
+/// subsystem can name it without depending on `lattice-keymap` itself.
+pub use lattice_keymap::KeymapLayer;
 // BC.5: the host pushes the `<C-x>` leader layer (it owns the `KeymapHandle` +
 // config), calling `emacs_keys_layer_bindings`; `EmacsKeysMode::mode_id` keys
 // the layer + the K.1.c per-keystroke gate.
@@ -333,6 +337,7 @@ pub use crate::pending_inlays::{InlayRow, PendingInlays, PendingInlaysHandle};
 pub use crate::pending_synthetic_highlights::{
     HighlightsOp, PendingSyntheticHighlights, PendingSyntheticHighlightsHandle,
 };
+pub use crate::quit_guard::{QuitCheck, QuitGuards, QuitGuardsHandle};
 // M.4 dep-inversion: layer-input types live in `lattice-config`
 // now. Re-exported here for compatibility -- callers that
 // imported from `lattice_mode` keep working.

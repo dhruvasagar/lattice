@@ -601,6 +601,7 @@ pub fn register_surround_operators(registry: &mut CommandRegistry) -> SurroundOp
         "Delete the nearest surrounding pair (vim's `ds{char}`).",
         OperatorSpec {
             repeatable: true,
+            mutates: true,
             apply: Arc::new(operator_surround_delete),
             args_schema: vec![ArgSpec::required(
                 "target",
@@ -617,6 +618,7 @@ pub fn register_surround_operators(registry: &mut CommandRegistry) -> SurroundOp
         "Change the nearest surrounding pair to a different one (vim's `cs{old}{new}`).",
         OperatorSpec {
             repeatable: true,
+            mutates: true,
             apply: Arc::new(operator_surround_change),
             args_schema: vec![
                 ArgSpec::required(
@@ -640,6 +642,7 @@ pub fn register_surround_operators(registry: &mut CommandRegistry) -> SurroundOp
         "Wrap the target range in a surrounding pair (vim's `yss{char}` / visual `S{char}` / `ys{motion}{char}`).",
         OperatorSpec {
             repeatable: true,
+            mutates: true,
             apply: Arc::new(operator_surround_add),
             args_schema: vec![
                 ArgSpec::required("wrapper", ArgKind::Char, "The pair character to wrap with"),

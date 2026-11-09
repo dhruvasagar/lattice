@@ -341,6 +341,7 @@ pub trait InsertSource: Send + Sync + std::fmt::Debug {
 /// | Exact | `query == text` (case-insensitive) | 1000 |
 /// | Prefix | `text.starts_with(query)` (case-insensitive) | 800 |
 /// | Word boundary | All query chars match at word boundaries (camelCase / snake_case) | 600 |
+/// | Word-start substring | `query` begins a word inside `text` (`table-sort` for `sor`) | 500 |
 /// | Substring | `text.contains(query)` (case-insensitive) | 400 |
 /// | Subsequence | Each query char appears in order in text | 200 - skipped × 5 |
 ///
@@ -416,10 +417,20 @@ pub fn fuzzy_match(
         return Some((crate::candidate::MatchScore(600), ranges));
     }
 
-    // Tier 4: contiguous substring.
+    // Tier 4: contiguous substring, ranked higher when it starts a word.
+    // `sor` is the start of `sort` in `table-sort` and only the middle of
+    // `absorb`; scoring the two alike ranked whichever sorted first.
     if let Some(start) = t_lower.find(&q_lower) {
+        let at_word = t_lower
+            .match_indices(&q_lower)
+            .map(|(i, _)| i)
+            .find(|&i| starts_word(target, i));
+        let (score, start) = match at_word {
+            Some(i) => (500, i),
+            None => (400, start),
+        };
         return Some((
-            crate::candidate::MatchScore(400),
+            crate::candidate::MatchScore(score),
             vec![start..start + q_lower.len()],
         ));
     }
@@ -433,6 +444,21 @@ pub fn fuzzy_match(
     }
 
     None
+}
+
+/// Whether byte `i` of `text` begins a word: the start of the text, after
+/// a character that is not part of an identifier (`-`, `:`, `.`, a space),
+/// after `_`, or a capital after a lowercase letter (`fooBar`). The same
+/// boundaries as [`match_word_boundary`].
+fn starts_word(text: &str, i: usize) -> bool {
+    let Some(cur) = text.get(i..).and_then(|t| t.chars().next()) else {
+        return false;
+    };
+    match text.get(..i).and_then(|t| t.chars().next_back()) {
+        None => true,
+        // `_` is not alphanumeric, so this covers `foo_bar` too.
+        Some(prev) => !prev.is_alphanumeric() || (prev.is_lowercase() && cur.is_uppercase()),
+    }
 }
 
 fn shared_prefix_byte_len(text: &str, query: &str) -> usize {
@@ -959,6 +985,31 @@ mod tests {
         let c = RawCandidate::plain("getFooBar", CandidateKind::Plain);
         let (score, _) = m.matches("ooba", &c).unwrap();
         assert_eq!(score.0, 400);
+    }
+
+    /// A substring that starts a word outranks one in the middle of a
+    /// word: `:sor` offers `table-sort` before `absorb-operator-change`,
+    /// and the highlight is on the word-start occurrence.
+    #[test]
+    fn a_word_start_substring_outranks_a_mid_word_one() {
+        let score = |q: &str, t: &str| {
+            let (s, r) = fuzzy_match(q, t).unwrap();
+            (s.0, r)
+        };
+        let (sort, ranges) = score("sor", "action:table-sort");
+        let (absorb, _) = score("sor", "action:absorb-operator-change");
+        assert_eq!((sort, absorb), (500, 400));
+        assert_eq!(ranges, vec![13..16]);
+        // Every boundary counts: `_`, camel case, a space; and the first
+        // word-start occurrence wins over an earlier mid-word one.
+        assert_eq!(score("bar", "foo_bar_x").0, 500);
+        assert_eq!(score("bar", "getFooBarX").0, 500);
+        assert_eq!(score("bar", "x foo bar").0, 500);
+        let (s, r) = score("ab", "crab-abc");
+        assert_eq!((s, r), (500, vec![5..7]));
+        // Still below a word-boundary subsequence and a prefix.
+        assert!(score("fb", "foo-bar").0 > 500);
+        assert!(score("tab", "table-sort").0 > 500);
     }
 
     #[test]

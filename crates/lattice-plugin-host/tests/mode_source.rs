@@ -57,10 +57,12 @@ async fn plugin_declares_minor_modes_into_the_shared_registry_end_to_end() {
             &manifest,
             TrustTier::Bundled,
             PluginBudget::event(),
-            &mut registry,
-            &commands,
-            &keymap,
-            None,
+            lattice_plugin_host::mode_host::ModeTargets {
+                modes: &mut registry,
+                commands: &commands,
+                keymap: &keymap,
+                config: None,
+            },
         )
         .await
         .expect("spawn mode plugin");
@@ -147,10 +149,12 @@ async fn plugin_declares_a_major_that_claims_its_language_end_to_end() {
         &manifest,
         TrustTier::Bundled,
         PluginBudget::event(),
-        &mut registry,
-        &commands,
-        &keymap,
-        None,
+        lattice_plugin_host::mode_host::ModeTargets {
+            modes: &mut registry,
+            commands: &commands,
+            keymap: &keymap,
+            config: None,
+        },
     )
     .await
     .expect("spawn mode plugin");
@@ -240,10 +244,12 @@ async fn a_modes_declared_option_overrides_cross_the_seam_end_to_end() {
         &manifest,
         TrustTier::Bundled,
         PluginBudget::event(),
-        &mut registry,
-        &commands,
-        &keymap,
-        Some(&config),
+        lattice_plugin_host::mode_host::ModeTargets {
+            modes: &mut registry,
+            commands: &commands,
+            keymap: &keymap,
+            config: Some(&config),
+        },
     )
     .await
     .expect("spawn mode plugin");

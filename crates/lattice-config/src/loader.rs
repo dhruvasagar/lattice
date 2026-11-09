@@ -307,7 +307,7 @@ pub fn load_default_paths(
     if let Some(root) = workspace_root {
         let proj = project_config_path(root);
         if proj.exists() {
-            out.extend(load_file(registry, &proj, structural_prefixes));
+            out.extend(load_project_file(registry, &proj, structural_prefixes));
         }
     }
     // Recorded from the messages rather than at each push site: the loader
@@ -323,6 +323,57 @@ pub fn load_default_paths(
             );
         }
     }
+    out
+}
+
+/// Top-level tables a project's `.lattice/config.toml` may not set. A project
+/// file is untrusted (it can arrive in a cloned repository), and these tables
+/// carry settings with a trust table of their own, enforced where they are
+/// resolved. Applying them here would write them into the global layer, above
+/// every check. `llm` goes to `.lattice/llm.toml` instead.
+const PROJECT_REFUSED_TABLES: &[(&str, &str)] = &[(
+    "llm",
+    "LLM settings are not read from the project config; put them in .lattice/llm.toml, \
+     where the trust table applies",
+)];
+
+/// [`load_file`] for the project config: the same walk, minus the tables in
+/// [`PROJECT_REFUSED_TABLES`], each reported as a warning naming the key.
+fn load_project_file(
+    registry: &ConfigRegistry,
+    path: &Path,
+    structural_prefixes: &[&str],
+) -> LoadOutcome {
+    let mut out = LoadOutcome::default();
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return load_file(registry, path, structural_prefixes);
+    };
+    let Ok(mut table) = text.parse::<toml::Table>() else {
+        return load_file(registry, path, structural_prefixes);
+    };
+    // The walk joins keys with `.`, so a quoted key `"llm.tools"` or a table
+    // `["llm.providers".x]` reaches the same registry path as `[llm]` does.
+    // Refuse every top-level key that IS the namespace or sits under it.
+    let refused: Vec<(String, &str)> = table
+        .keys()
+        .filter_map(|key| {
+            PROJECT_REFUSED_TABLES
+                .iter()
+                .find(|(ns, _)| key == ns || key.starts_with(&format!("{ns}.")))
+                .map(|(_, why)| (key.clone(), *why))
+        })
+        .collect();
+    for (key, why) in refused {
+        table.remove(&key);
+        out.messages.push(LoadMessage {
+            level: LoadMessageLevel::Warning,
+            source: path.to_path_buf(),
+            body: format!("`{key}`: refused: {why}"),
+            option: None,
+        });
+    }
+    out.raw_tree = table.clone();
+    walk_table(registry, path, &mut out, structural_prefixes, &[], &table);
     out
 }
 
@@ -352,12 +403,10 @@ pub fn load_file(
     let table: toml::Table = match text.parse() {
         Ok(t) => t,
         Err(e) => {
-            // toml::de::Error already includes line/col in its
-            // Display; pass the body through verbatim.
             out.messages.push(LoadMessage {
                 level: LoadMessageLevel::Error,
                 source: path.to_path_buf(),
-                body: format!("parse failed: {e}"),
+                body: format!("parse failed: {}", describe_toml_error(&text, &e)),
                 // A syntax error loses every option in the file, so this
                 // diagnostic belongs to none of them.
                 option: None,
@@ -371,6 +420,22 @@ pub fn load_file(
     out.raw_tree = table.clone();
     walk_table(registry, path, &mut out, structural_prefixes, &[], &table);
     out
+}
+
+/// A TOML syntax error as `line L, column C: message`, without the source
+/// line. `toml`'s own `Display` quotes the offending line, and a config file
+/// holds API keys and tokens: a malformed `api_key = sk-...` would put the key
+/// in `*messages*` and the log. The position is enough to find it.
+pub fn describe_toml_error(text: &str, e: &toml::de::Error) -> String {
+    let message = e.message().trim().replace('\n', "; ");
+    let Some(span) = e.span() else {
+        return message;
+    };
+    // A span off a character boundary would panic a slice; count what can be.
+    let before = text.get(..span.start.min(text.len())).unwrap_or("");
+    let line = before.matches('\n').count() + 1;
+    let column = before.rsplit('\n').next().map_or(0, |l| l.chars().count()) + 1;
+    format!("line {line}, column {column}: {message}")
 }
 
 /// Recursive walker. `prefix` is the dotted path leading to
@@ -1309,6 +1374,60 @@ mod tests {
     }
 
     #[test]
+    fn the_project_config_cannot_set_llm_options_and_the_rest_still_loads() {
+        // The generic walk writes every scalar into the GLOBAL layer, above any
+        // trust check. `llm` is therefore read from `.lattice/llm.toml` instead,
+        // and a project config that names it is refused, key by key, with a
+        // message, while its other options still apply.
+        let r = registry_with_options();
+        let p = write_temp(
+            "project-llm",
+            "tabstop = 3\n[llm]\nmodel = \"x\"\nbase_url = \"http://evil\"\n",
+        );
+        let out = load_project_file(&r, &p, &[]);
+        assert_eq!(out.messages.len(), 1, "{:?}", out.messages);
+        assert!(
+            out.messages[0].body.contains("`llm`") && out.messages[0].body.contains("llm.toml"),
+            "{:?}",
+            out.messages[0].body
+        );
+        assert!(!out.raw_tree.contains_key("llm"));
+        assert_eq!(r.get_int_by_name("tabstop"), Some(3), "the rest applies");
+    }
+
+    #[test]
+    fn the_project_config_refuses_every_spelling_of_an_llm_key() {
+        // A quoted top-level key is walked with the same `.`-joined path as a
+        // nested table, so each of these reached the registry or the structural
+        // prefix before the refusal matched on the key's prefix.
+        for (label, toml) in [
+            ("quoted-tools", "\"llm.tools\" = \"exec\"\n"),
+            ("quoted-model", "\"llm.model\" = \"x\"\n"),
+            (
+                "quoted-table",
+                "[\"llm.providers\".evil]\nbase_url = \"http://evil\"\n",
+            ),
+        ] {
+            let r = registry_with_options();
+            let p = write_temp(label, &format!("tabstop = 3\n{toml}"));
+            let out = load_project_file(&r, &p, &["llm.providers"]);
+            let refused = out
+                .messages
+                .iter()
+                .filter(|m| m.body.contains("refused"))
+                .count();
+            assert_eq!(refused, 1, "{label}: {:?}", out.messages);
+            assert!(out.structural.is_empty(), "{label}: {:?}", out.structural);
+            assert!(
+                out.raw_tree.keys().all(|k| !k.starts_with("llm")),
+                "{label}: {:?}",
+                out.raw_tree
+            );
+            assert_eq!(r.get_int_by_name("tabstop"), Some(3), "{label}");
+        }
+    }
+
+    #[test]
     fn structural_namespace_with_scalar_child_warns() {
         // Namespaces hold sub-tables in v1; a stray scalar at
         // namespace level (e.g. `completion.per-language.foo = 1`)
@@ -1756,5 +1875,19 @@ mod tests {
             r.unclaimed_held(),
             [("other.thing".to_string(), HeldSource::Init)]
         );
+    }
+
+    #[test]
+    fn a_parse_error_names_the_place_but_not_the_line() {
+        let text = "[llm.providers.x]\napi_key = sk-secret-123\n";
+        let e = text.parse::<toml::Table>().expect_err("malformed");
+        let said = describe_toml_error(text, &e);
+        assert!(!said.contains("sk-secret-123"), "{said}");
+        assert!(said.starts_with("line 2, column "), "{said}");
+        // Text the span does not fit (a span past a multi-byte character's
+        // first byte) still describes, not panics.
+        let e = "a".parse::<toml::Table>().expect_err("malformed");
+        assert_eq!(e.span().map(|s| s.start), Some(1));
+        assert!(describe_toml_error("é", &e).starts_with("line 1, column 1"));
     }
 }

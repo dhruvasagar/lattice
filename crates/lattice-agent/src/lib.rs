@@ -26,7 +26,7 @@ pub mod write_bus;
 pub mod log;
 
 pub use commands::{parse_no_args, parse_rest_as_text};
-pub use diff_review::{DiffReviewRequest, review_diff};
+pub use diff_review::{DiffReviewRequest, TextReviewRequest, review_diff, review_text};
 pub use editor_access::{EditorAccess, OpenEditor, SelectionInfo};
 pub use error::{AgentError, Result};
 pub use state_cache::{EditorStateCache, EditorStateHandle};

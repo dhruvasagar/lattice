@@ -41,6 +41,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use lattice_core::document::BaseMismatch;
 use lattice_grammar::{CancellationToken, CommandInvocation, Effect};
 use lattice_protocol::edit::Edit;
 use lattice_protocol::ids::DocumentId;
@@ -190,6 +191,12 @@ pub struct DispatchEnv {
     /// `None` — the default — discards the report, which is right for every
     /// caller that keeps no goal column.
     pub curswant_out: Option<Arc<std::sync::Mutex<Option<lattice_grammar::Curswant>>>>,
+    /// The `text_version` the dispatch's caret and `selection` were read
+    /// against. The actor moves both over the appends made since, in the
+    /// turn it runs the command, so an operator typed while an answer streams
+    /// into the buffer acts on the text the caret visibly was on
+    /// (owner-write-caret §10.1). `None` — the default — uses them as given.
+    pub based_on: Option<u64>,
 }
 
 /// Handle-layer abstraction over a buffer. See module docs.
@@ -257,6 +264,44 @@ pub trait Document: Send + Sync + 'static + std::fmt::Debug {
 
     fn set_selections(&self, selections: SelectionSet) -> Pending<()>;
 
+    /// LL.13a: [`Self::apply_edit`] for an edit positioned against
+    /// `text_version == based_on`, rebased in the actor turn over appends
+    /// made since, so a key typed while a stream writes lands at the caret.
+    ///
+    /// Default: ignore `based_on`. Only a kind that takes appends
+    /// ([`Self::append_to_tracked`]) has anything to rebase over.
+    fn apply_edit_based_on(&self, edit: Edit, based_on: u64) -> Pending<AppliedEdit> {
+        let _ = based_on;
+        self.apply_edit(edit)
+    }
+
+    /// [`Self::apply_edit_batch`] for a batch positioned against
+    /// `text_version == based_on` (each edit in the coordinates the ones
+    /// before it produce), rebased in the actor turn over appends made since.
+    /// When something else changed the text, `on_mismatch` decides whether
+    /// the batch applies as given or is refused with `CoreError::Stale`.
+    ///
+    /// Default: ignore `based_on` and apply. Only a kind that takes appends
+    /// has anything to rebase over, and only such a kind can be raced by a
+    /// writer that is not the caller; a kind with other concurrent writers
+    /// overrides this.
+    fn apply_edit_batch_based_on(
+        &self,
+        edits: Vec<Edit>,
+        based_on: u64,
+        on_mismatch: BaseMismatch,
+    ) -> Pending<Vec<AppliedEdit>> {
+        let _ = (based_on, on_mismatch);
+        self.apply_edit_batch(edits)
+    }
+
+    /// LL.13a: [`Self::set_selections`], rebased as
+    /// [`Self::apply_edit_based_on`] is. Default: ignore `based_on`.
+    fn set_selections_based_on(&self, selections: SelectionSet, based_on: u64) -> Pending<()> {
+        let _ = based_on;
+        self.set_selections(selections)
+    }
+
     /// GD.7d: declare the current text the clean baseline without
     /// writing it anywhere, so [`Self::dirty`] reads `false` until the
     /// next edit (and again after undoing back to this point).
@@ -308,6 +353,24 @@ pub trait Document: Send + Sync + 'static + std::fmt::Debug {
     ) -> Pending<()> {
         let _ = changes;
         Pending::ready(Ok(()))
+    }
+
+    /// Append `text` at the end of tracked range `id` and grow the range over
+    /// it, resolving the range in the actor's mailbox turn: streamed inline
+    /// output's write (LL.12, design `llm-layer.md` §9). The append amends its
+    /// own undo entry while that entry is the top of the stack. See
+    /// `lattice_core::Document::append_to_tracked`.
+    ///
+    /// Default: [`AppendOutcome::Unknown`](lattice_core::tracked::AppendOutcome),
+    /// writing nothing. A kind without text of its own (the multibuffer) has
+    /// nothing to anchor to, so a stream aimed at it refuses.
+    fn append_to_tracked(
+        &self,
+        id: lattice_core::tracked::TrackedRangeId,
+        text: String,
+    ) -> Pending<lattice_core::tracked::AppendOutcome> {
+        let _ = (id, text);
+        Pending::ready(Ok(lattice_core::tracked::AppendOutcome::Unknown))
     }
 
     // ---- Grammar dispatch ----

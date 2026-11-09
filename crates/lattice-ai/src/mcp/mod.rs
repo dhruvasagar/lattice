@@ -24,17 +24,18 @@ pub mod commands;
 // `ProgrammaticDiffRequest` on the host-drained bus and awaits the user's
 // verdict (no timeout) to shape the FILE_SAVED / DIFF_REJECTED reply.
 pub mod diff;
-pub mod dispatch;
 pub mod error;
 // BC.3b: the crate-owned `install(boot)` entry point — one Phase-B line in
 // `editor_boot`, all wiring here.
 pub mod install;
+// LL.22: the MCP server itself, an rmcp `ServerHandler` serving the Claude
+// Code catalogue.
+pub mod lattice_server;
 pub mod lockfile;
 pub mod modes;
 // I6: server-initiated notifications (selection_changed / didChangeActiveEditor)
 // — a task coalesces SelectionsChanged + broadcasts frames to connected agents.
 pub mod notifications;
-pub mod protocol;
 pub mod reads;
 pub mod server;
 // I7: the `claude-code` modeline status segment (running/port/conns) shown on

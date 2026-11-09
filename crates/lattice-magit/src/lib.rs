@@ -636,7 +636,14 @@ pub(crate) fn confirm_target_slots(name: &str) -> Option<usize> {
         .map(|(_, _, slots)| slots.len())
 }
 
-const CONFIRM_TARGET_ACTIONS: &[(&str, &str, &[(&str, &str)])] = &[
+/// `(action id, description, [(arg slot, arg description)])`.
+type ConfirmTargetAction = (
+    &'static str,
+    &'static str,
+    &'static [(&'static str, &'static str)],
+);
+
+const CONFIRM_TARGET_ACTIONS: &[ConfirmTargetAction] = &[
     (
         "action:magit-discard-execute",
         "Execute the discard after confirmation",
@@ -3111,19 +3118,17 @@ pub(crate) fn register_ex_commands_for_test(registry: &mut CommandRegistry) {
 }
 
 fn register_action_commands(registry: &mut CommandRegistry) {
-    let none = Some(Arc::new(
+    // Unsized to the `ActionSpec::apply` trait object at each field below.
+    let none = Arc::new(
         |_: &lattice_grammar::ActionContext| -> GrammarResult<Effect> { Ok(Effect::None) },
-    )
-        as Arc<
-            dyn Fn(&lattice_grammar::ActionContext) -> GrammarResult<Effect> + Send + Sync,
-        >);
+    );
 
     let mut reg = |name: &str, doc: &str| {
         registry.register_action(
             name,
             doc,
             ActionSpec {
-                apply: none.clone().unwrap(),
+                apply: none.clone(),
                 args_schema: Vec::new(),
             },
         );
@@ -4192,7 +4197,7 @@ fn register_action_commands(registry: &mut CommandRegistry) {
         "action:magit-view-refresh-args",
         "Re-run the current magit view with the chosen git arguments",
         ActionSpec {
-            apply: none.clone().unwrap(),
+            apply: none.clone(),
             args_schema: magit_diff_mode::DIFF_ARGS
                 .iter()
                 .chain(magit_log_mode::LOG_ARGS.iter())
@@ -4236,7 +4241,7 @@ fn register_action_commands(registry: &mut CommandRegistry) {
             name,
             doc,
             ActionSpec {
-                apply: none.clone().unwrap(),
+                apply: none.clone(),
                 args_schema: magit_core_mode::VIEW_ARG_TABLES
                     .iter()
                     .flat_map(|t| t.iter())
@@ -4276,7 +4281,7 @@ fn register_action_commands(registry: &mut CommandRegistry) {
             name,
             doc,
             ActionSpec {
-                apply: none.clone().unwrap(),
+                apply: none.clone(),
                 args_schema: slots
                     .iter()
                     .map(|(slot, slot_doc)| {
@@ -4292,7 +4297,7 @@ fn register_action_commands(registry: &mut CommandRegistry) {
             name,
             doc,
             ActionSpec {
-                apply: none.clone().unwrap(),
+                apply: none.clone(),
                 args_schema: vec![ArgSpec::optional(
                     "file",
                     lattice_grammar::ArgKind::String,

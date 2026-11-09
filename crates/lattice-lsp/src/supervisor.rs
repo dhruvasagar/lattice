@@ -506,11 +506,13 @@ impl LspSupervisor {
                         (*config).clone(),
                         workspace.clone(),
                         self.logger.clone(),
-                        self.apply_edit_bus.clone(),
-                        self.configuration_bus.clone(),
-                        self.show_document_bus.clone(),
-                        self.show_message_request_bus.clone(),
-                        self.event_bus.clone(),
+                        actor::ServerBuses {
+                            apply_edit: self.apply_edit_bus.clone(),
+                            configuration: self.configuration_bus.clone(),
+                            show_document: self.show_document_bus.clone(),
+                            show_message_request: self.show_message_request_bus.clone(),
+                            events: self.event_bus.clone(),
+                        },
                     )
                     .await
                     {
@@ -865,11 +867,13 @@ impl LspSupervisor {
                 (*config).clone(),
                 workspace.clone(),
                 self.logger.clone(),
-                self.apply_edit_bus.clone(),
-                self.configuration_bus.clone(),
-                self.show_document_bus.clone(),
-                self.show_message_request_bus.clone(),
-                self.event_bus.clone(),
+                actor::ServerBuses {
+                    apply_edit: self.apply_edit_bus.clone(),
+                    configuration: self.configuration_bus.clone(),
+                    show_document: self.show_document_bus.clone(),
+                    show_message_request: self.show_message_request_bus.clone(),
+                    events: self.event_bus.clone(),
+                },
             )
             .await?;
 
@@ -1721,11 +1725,13 @@ async fn handle_actor_exit(
             (*config).clone(),
             workspace.clone(),
             state.logger.clone(),
-            state.apply_edit_bus.clone(),
-            state.configuration_bus.clone(),
-            state.show_document_bus.clone(),
-            state.show_message_request_bus.clone(),
-            state.event_bus.clone(),
+            actor::ServerBuses {
+                apply_edit: state.apply_edit_bus.clone(),
+                configuration: state.configuration_bus.clone(),
+                show_document: state.show_document_bus.clone(),
+                show_message_request: state.show_message_request_bus.clone(),
+                events: state.event_bus.clone(),
+            },
         )
         .await
         {

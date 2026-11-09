@@ -330,6 +330,22 @@ pub(crate) fn default_ui_row_px(rem_size: gpui::Pixels) -> f32 {
     )
 }
 
+/// A pane's text rows: how many fit, and how tall each one is.
+#[derive(Clone, Copy)]
+struct RowBand {
+    row_px: f32,
+    count: u32,
+}
+
+/// Per-leaf chrome and cell size, constant across one pane-tree walk.
+#[derive(Clone, Copy)]
+struct LeafMetrics {
+    per_leaf_v_chrome_px: f32,
+    per_leaf_h_chrome_px: f32,
+    row_px: f32,
+    col_px: f32,
+}
+
 /// Reads the typed `picker.display` option and returns `true` iff
 /// the user wants the vertico-style minibuffer layout (default).
 /// Unknown / missing values fall back to the design default rather
@@ -360,13 +376,16 @@ fn collect_pane_geometries(
     node: &lattice_core::ui::pane::PaneNode,
     available_w_px: f32,
     available_h_px: f32,
-    per_leaf_v_chrome_px: f32,
-    per_leaf_h_chrome_px: f32,
-    row_px: f32,
-    col_px: f32,
+    leaf: LeafMetrics,
     out: &mut Vec<(usize, u32, u32)>,
 ) {
     use lattice_core::ui::pane::PaneNode;
+    let LeafMetrics {
+        per_leaf_v_chrome_px,
+        per_leaf_h_chrome_px,
+        row_px,
+        col_px,
+    } = leaf;
     match node {
         PaneNode::Leaf(idx) => {
             let usable_h = (available_h_px - per_leaf_v_chrome_px).max(0.0);
@@ -379,50 +398,14 @@ fn collect_pane_geometries(
             // Issue #28: ratio-aware split (0.5 = even).
             let top_h = available_h_px * *ratio;
             let bot_h = available_h_px - top_h;
-            collect_pane_geometries(
-                top,
-                available_w_px,
-                top_h,
-                per_leaf_v_chrome_px,
-                per_leaf_h_chrome_px,
-                row_px,
-                col_px,
-                out,
-            );
-            collect_pane_geometries(
-                bottom,
-                available_w_px,
-                bot_h,
-                per_leaf_v_chrome_px,
-                per_leaf_h_chrome_px,
-                row_px,
-                col_px,
-                out,
-            );
+            collect_pane_geometries(top, available_w_px, top_h, leaf, out);
+            collect_pane_geometries(bottom, available_w_px, bot_h, leaf, out);
         }
         PaneNode::VerticalSplit { left, right, ratio } => {
             let left_w = available_w_px * *ratio;
             let right_w = available_w_px - left_w;
-            collect_pane_geometries(
-                left,
-                left_w,
-                available_h_px,
-                per_leaf_v_chrome_px,
-                per_leaf_h_chrome_px,
-                row_px,
-                col_px,
-                out,
-            );
-            collect_pane_geometries(
-                right,
-                right_w,
-                available_h_px,
-                per_leaf_v_chrome_px,
-                per_leaf_h_chrome_px,
-                row_px,
-                col_px,
-                out,
-            );
+            collect_pane_geometries(left, left_w, available_h_px, leaf, out);
+            collect_pane_geometries(right, right_w, available_h_px, leaf, out);
         }
     }
 }
@@ -2219,8 +2202,10 @@ impl EditorView {
                 theme,
                 insert_active,
                 is_active,
-                row_px,
-                fresh_rows,
+                RowBand {
+                    row_px,
+                    count: fresh_rows,
+                },
             );
             // ML.2: terminal panes get the same zone/per-Span modeline as
             // every other kind (shared resolver) — no kind-specific status.
@@ -3502,9 +3487,12 @@ impl EditorView {
         theme: &GpuiTheme,
         insert_active: bool,
         is_active: bool,
-        row_px: f32,
-        pane_rows: u32,
+        rows: RowBand,
     ) -> AnyElement {
+        let RowBand {
+            row_px,
+            count: pane_rows,
+        } = rows;
         // ML.2: returns the inner content only; the per-pane modeline row
         // is built uniformly by `Self::modeline_row` at the call site (no
         // kind-specific status, `feedback_buffers_no_special_case`).
@@ -4281,10 +4269,12 @@ impl Render for EditorView {
             &pane_tree_root,
             avail_w_px,
             avail_h_px,
-            per_leaf_v_chrome_px,
-            per_leaf_h_chrome_px,
-            estimated_row_px,
-            glyph_advance_px,
+            LeafMetrics {
+                per_leaf_v_chrome_px,
+                per_leaf_h_chrome_px,
+                row_px: estimated_row_px,
+                col_px: glyph_advance_px,
+            },
             &mut pane_geometries,
         );
         // Issue #27 (2026-05-22): fire `set_pane_viewport` per
@@ -4442,7 +4432,7 @@ impl Render for EditorView {
                 .map(|b| b.lines().count().max(1) as u32);
             match (body_lines, comp.docs_buffer_id) {
                 (Some(lines), Some(_)) => Some((
-                    lines.min(COMPLETION_DOCS_MAX_ROWS).max(1),
+                    lines.clamp(1, COMPLETION_DOCS_MAX_ROWS),
                     popup_inner_cols(COMPLETION_DOCS_W_PX, rem, glyph_advance_px),
                 )),
                 _ => None,
@@ -4908,11 +4898,11 @@ impl Render for EditorView {
         let transient_overlay: Option<gpui::Div> = (!picker_use_minibuffer)
             .then(|| picker_substate.state.as_deref())
             .flatten()
-            .and_then(|p| p.transient.as_ref())
-            .map(|spec| {
+            .and_then(|p| p.transient.as_ref().map(|spec| (p, spec)))
+            .map(|(p, spec)| {
                 build_transient_gpui(
                     spec,
-                    picker_substate.state.as_deref().unwrap(),
+                    p,
                     &theme,
                     &TransientPalette::resolve(&docs_resolved, &docs_ids, theme.foreground),
                     transient_max_rows,
@@ -5076,7 +5066,7 @@ impl Render for EditorView {
             .map(|picker| {
                 const MAX_VISIBLE: usize = 10;
                 let total = picker.candidates.len();
-                let visible_count = total.min(MAX_VISIBLE).max(1);
+                let visible_count = total.clamp(1, MAX_VISIBLE);
                 let scroll = if picker.selected < visible_count {
                     0
                 } else {
@@ -5211,7 +5201,7 @@ impl Render for EditorView {
             .map(|state| {
                 const MAX_VISIBLE: usize = 10;
                 let total = state.candidates.len();
-                let visible_count = total.min(MAX_VISIBLE).max(1);
+                let visible_count = total.clamp(1, MAX_VISIBLE);
                 // Picker keeps the selected row at the top of the
                 // band; cmdline completion uses the same convention
                 // so the eye path is identical across the two
@@ -6995,7 +6985,7 @@ mod popup_geometry_tests {
 
 #[cfg(test)]
 mod pane_geometry_split_tests {
-    use super::{collect_pane_geometries, default_ui_row_px};
+    use super::{LeafMetrics, collect_pane_geometries, default_ui_row_px};
     use lattice_core::ui::pane::{PaneNode, PaneState, PaneTree, SplitOrientation};
 
     /// ZP.3: the GPUI half of the zoom contract. This peer does not
@@ -7017,7 +7007,18 @@ mod pane_geometry_split_tests {
         let (w, h, row_px, col_px) = (1200.0_f32, 800.0_f32, 20.0_f32, 8.0_f32);
         let geoms = |root: &PaneNode| {
             let mut out = Vec::new();
-            collect_pane_geometries(root, w, h, 0.0, 0.0, row_px, col_px, &mut out);
+            collect_pane_geometries(
+                root,
+                w,
+                h,
+                LeafMetrics {
+                    per_leaf_v_chrome_px: 0.0,
+                    per_leaf_h_chrome_px: 0.0,
+                    row_px,
+                    col_px,
+                },
+                &mut out,
+            );
             out
         };
 
@@ -7124,10 +7125,12 @@ mod pane_geometry_split_tests {
                     tree,
                     avail_w,
                     avail_h,
-                    per_leaf_v_chrome_px,
-                    per_leaf_h_chrome_px,
-                    row_px,
-                    col_px,
+                    LeafMetrics {
+                        per_leaf_v_chrome_px,
+                        per_leaf_h_chrome_px,
+                        row_px,
+                        col_px,
+                    },
                     &mut out,
                 );
 
@@ -7212,10 +7215,12 @@ mod pane_geometry_split_tests {
                 &tree,
                 avail_w,
                 avail_h,
-                correct_chrome,
-                0.0,
-                row_px,
-                col_px,
+                LeafMetrics {
+                    per_leaf_v_chrome_px: correct_chrome,
+                    per_leaf_h_chrome_px: 0.0,
+                    row_px,
+                    col_px,
+                },
                 &mut correct_out,
             );
             let mut wrong_out = Vec::new();
@@ -7223,10 +7228,12 @@ mod pane_geometry_split_tests {
                 &tree,
                 avail_w,
                 avail_h,
-                wrong_chrome,
-                0.0,
-                row_px,
-                col_px,
+                LeafMetrics {
+                    per_leaf_v_chrome_px: wrong_chrome,
+                    per_leaf_h_chrome_px: 0.0,
+                    row_px,
+                    col_px,
+                },
                 &mut wrong_out,
             );
             correct_out.sort_by_key(|(idx, _, _)| *idx);

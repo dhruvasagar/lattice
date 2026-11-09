@@ -1,0 +1,1388 @@
+//! Lattice's own read tools (LL.16): `read_file`, `list_directory`, `search`.
+//!
+//! **What the user sees is what a read returns.** A file open in a buffer is
+//! read from the buffer, unsaved edits and all, through
+//! [`EditorAccess::read_text_file`]; a search overlays every open buffer on
+//! what it walks from disk. A model reasoning over the saved file while the
+//! user looks at an edited one would propose edits to text that is not there.
+//!
+//! **Reads stay inside the project and outside `llm.exclude`.** These tools
+//! run without asking (design §6), and a tool result is untrusted input that
+//! can carry instructions, so a read that could reach `~/.ssh` would let a
+//! prompt injected into any file read it out. A path outside the project
+//! root, or matching `llm.exclude`, is refused by name; a search skips such
+//! files silently, as it skips ignored ones.
+//!
+//! Every output is capped, with a note saying how to read on, so one call
+//! cannot flood the context window.
+
+use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use lattice_agent::EditorAccess;
+use serde::Deserialize;
+use serde_json::{Value, json};
+
+use super::{BoxFuture, CallContext, SourceTool, ToolError, ToolOutput, ToolSource};
+use crate::conversation::ToolKind;
+use crate::llm::ToolDescriptor;
+
+/// Lines `read_file` returns at most per call.
+pub const MAX_LINES: usize = 2000;
+/// Bytes `read_file` returns at most per call.
+pub const MAX_BYTES: usize = 200_000;
+/// Entries `list_directory` returns at most.
+pub const MAX_ENTRIES: usize = 1000;
+/// Matches `search` returns at most.
+pub const MAX_MATCHES: usize = 200;
+/// A matching line is cut to this many characters.
+const MAX_MATCH_CHARS: usize = 240;
+/// Files larger than this are not searched.
+const MAX_SEARCH_FILE: u64 = 2_000_000;
+/// `run_command` keeps this much of each of stdout and stderr.
+const MAX_EXEC_OUTPUT: usize = 30_000;
+/// `run_command`'s timeout when the call names none, and the most it may name.
+const EXEC_TIMEOUT: u64 = 120;
+const MAX_EXEC_TIMEOUT: u64 = 600;
+
+/// The project root a read is confined to, asked per call so a changed root
+/// applies at once.
+pub type RootFn = Arc<dyn Fn() -> PathBuf + Send + Sync>;
+/// The `llm.exclude` glob that matches a path, if any.
+pub type ExcludeFn = Arc<dyn Fn(&Path) -> Option<String> + Send + Sync>;
+
+/// The environment variables a started process must not inherit: the
+/// providers' key variables, read when each process starts (P.1).
+pub type KeyVariablesFn = Arc<dyn Fn() -> Vec<String> + Send + Sync>;
+
+/// Closes every review a session opened: sends `Effect::CloseSessionDiffs`.
+pub type CloseFn = Arc<dyn Fn(u64) + Send + Sync>;
+
+/// What the edit tools need to put a change in front of the user (LL.17).
+#[derive(Clone)]
+pub struct Review {
+    pub diffs: lattice_diff::ProgrammaticDiffBus,
+    /// One diff at a time across the llm layer: a second edit (or rewrite)
+    /// waits here until the first is decided.
+    pub gate: Arc<tokio::sync::Mutex<()>>,
+    pub close: CloseFn,
+}
+
+/// Lattice's tools over an [`EditorAccess`]: reads always, edits when a
+/// review is available.
+pub struct LatticeTools {
+    access: EditorAccess,
+    root: RootFn,
+    exclude: ExcludeFn,
+    review: Option<Review>,
+    key_variables: Option<KeyVariablesFn>,
+    /// `llm.review`: an edit whose path it matches opens a diff even in a
+    /// trusted chat (P.2). `.git` is fenced whether or not this is set.
+    fence: Option<ExcludeFn>,
+}
+
+impl LatticeTools {
+    pub fn new(access: EditorAccess, root: RootFn, exclude: ExcludeFn) -> Self {
+        Self {
+            access,
+            root,
+            exclude,
+            review: None,
+            key_variables: None,
+            fence: None,
+        }
+    }
+
+    /// Fence the paths `fence` names: their edits are always reviewed.
+    pub fn fenced_by(mut self, fence: ExcludeFn) -> Self {
+        self.fence = Some(fence);
+        self
+    }
+
+    /// Whether an edit to `at` is reviewed even in a trusted chat: anything
+    /// under `.git` (a fixed rule), or a path `llm.review` names.
+    fn fenced(&self, at: &Resolved) -> bool {
+        in_git_dir(at) || self.fence.as_ref().is_some_and(|f| f(&at.path).is_some())
+    }
+
+    /// Withhold these variables from every command `run_command` starts.
+    pub fn without_variables(mut self, key_variables: KeyVariablesFn) -> Self {
+        self.key_variables = Some(key_variables);
+        self
+    }
+
+    /// With the edit tools, whose changes go through `review`.
+    pub fn with_review(mut self, review: Review) -> Self {
+        self.review = Some(review);
+        self
+    }
+
+    fn catalogue(&self) -> Vec<SourceTool> {
+        let mut tools = Self::read_catalogue();
+        if self.review.is_some() {
+            tools.extend(Self::edit_catalogue());
+        }
+        tools.push(SourceTool {
+            descriptor: ToolDescriptor {
+                name: "run_command".into(),
+                description: format!(
+                    "Run a shell command in the project and return its exit status and \
+                     output (each stream cut at {MAX_EXEC_OUTPUT} bytes). The user is asked \
+                     before it runs and may refuse. cwd is relative to the project root; \
+                     timeout_secs defaults to {EXEC_TIMEOUT}, at most {MAX_EXEC_TIMEOUT}."
+                ),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "command": {"type": "string", "description": "The command, run by the shell"},
+                        "cwd": {"type": "string", "description": "Directory to run in, relative to the project root"},
+                        "timeout_secs": {"type": "integer", "minimum": 1, "maximum": MAX_EXEC_TIMEOUT}
+                    },
+                    "required": ["command"]
+                }),
+            },
+            kind: ToolKind::Execute,
+        });
+        tools
+    }
+
+    fn edit_catalogue() -> Vec<SourceTool> {
+        let tool = |name: &str, description: &str, input_schema| SourceTool {
+            descriptor: ToolDescriptor {
+                name: name.into(),
+                description: description.into(),
+                input_schema,
+            },
+            kind: ToolKind::Edit,
+        };
+        vec![
+            tool(
+                "edit_file",
+                "Replace text in a file in the project. old_string must match the file as                  the editor has it (unsaved edits included) exactly once, unless                  replace_all is set. The user reviews the change as a diff and may accept,                  change or reject it; the result says which.",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "File path, relative to the project root"},
+                        "old_string": {"type": "string", "description": "The exact text to replace"},
+                        "new_string": {"type": "string", "description": "The text to put in its place"},
+                        "replace_all": {"type": "boolean", "description": "Replace every occurrence"}
+                    },
+                    "required": ["path", "old_string", "new_string"]
+                }),
+            ),
+            tool(
+                "write_file",
+                "Create a file in the project, or replace all of one. The user reviews the                  change as a diff and may accept, change or reject it; the result says which.",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "File path, relative to the project root"},
+                        "content": {"type": "string", "description": "The whole new content"}
+                    },
+                    "required": ["path", "content"]
+                }),
+            ),
+        ]
+    }
+
+    fn read_catalogue() -> Vec<SourceTool> {
+        let tool = |name: &str, description: &str, kind, input_schema| SourceTool {
+            descriptor: ToolDescriptor {
+                name: name.into(),
+                description: description.into(),
+                input_schema,
+            },
+            kind,
+        };
+        vec![
+            tool(
+                "read_file",
+                "Read a text file in the project, as the user's editor has it: an open \
+                 file's unsaved edits are included. Paths are relative to the project \
+                 root. Returns up to 2000 lines; pass start_line to read further.",
+                ToolKind::Read,
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "File path, relative to the project root"},
+                        "start_line": {"type": "integer", "minimum": 1, "description": "First line to return, 1-based"},
+                        "end_line": {"type": "integer", "minimum": 1, "description": "Last line to return, inclusive"}
+                    },
+                    "required": ["path"]
+                }),
+            ),
+            tool(
+                "list_directory",
+                "List a directory in the project. Directories end in `/`. Paths are \
+                 relative to the project root; omit path for the root itself.",
+                ToolKind::Read,
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "Directory path, relative to the project root"}
+                    }
+                }),
+            ),
+            tool(
+                "search",
+                "Search the project's files for a regular expression, honouring \
+                 .gitignore. Open files are searched as the editor has them. Returns \
+                 `path:line: text` for up to 200 matching lines.",
+                ToolKind::Search,
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "pattern": {"type": "string", "description": "A regular expression (Rust syntax)"},
+                        "path": {"type": "string", "description": "Directory or file to search under, relative to the project root"},
+                        "ignore_case": {"type": "boolean", "description": "Match case-insensitively"}
+                    },
+                    "required": ["pattern"]
+                }),
+            ),
+        ]
+    }
+
+    /// `input` resolved inside the project, or why not.
+    fn resolve(&self, input: &str) -> Result<Resolved, ToolError> {
+        let root = (self.root)();
+        if root.as_os_str().is_empty() {
+            return Err(ToolError::Refused(
+                "there is no project root to read from".into(),
+            ));
+        }
+        let root = std::fs::canonicalize(&root).unwrap_or(root);
+        let joined = if Path::new(input).is_absolute() {
+            PathBuf::from(input)
+        } else {
+            root.join(input)
+        };
+        // Lexically first, so `..` cannot climb out through a path that does
+        // not exist; then through symlinks, so a link cannot either.
+        let lexical = normalize(&joined);
+        let Some(path) = through_links(&lexical) else {
+            return Err(ToolError::Refused(format!(
+                "`{input}` goes through a link whose target does not exist"
+            )));
+        };
+        if !path.starts_with(&root) {
+            return Err(ToolError::Refused(format!(
+                "`{input}` is outside the project ({})",
+                root.display()
+            )));
+        }
+        if let Some(glob) = (self.exclude)(&path) {
+            return Err(ToolError::Refused(format!(
+                "`{input}` matches llm.exclude ({glob})"
+            )));
+        }
+        Ok(Resolved { path, root })
+    }
+
+    /// [`Self::resolve`] for the read tools, which also never look inside a
+    /// `.git` directory, whatever `llm.exclude` says: `.git/config` can hold a
+    /// credential in a remote URL, and a user who replaces the exclude list
+    /// should not lose that by accident (P.4). Edits resolve through
+    /// [`Self::resolve`], where `.git` is reviewed instead (P.2).
+    fn resolve_read(&self, input: &str) -> Result<Resolved, ToolError> {
+        let at = self.resolve(input)?;
+        if in_git_dir(&at) {
+            return Err(ToolError::Refused(format!(
+                "`{input}` is inside a .git directory, which is never read"
+            )));
+        }
+        Ok(at)
+    }
+
+    async fn read_file(&self, input: Value) -> Result<ToolOutput, ToolError> {
+        #[derive(Deserialize)]
+        struct Args {
+            path: String,
+            start_line: Option<usize>,
+            end_line: Option<usize>,
+        }
+        let args: Args = parse(input)?;
+        let at = self.resolve_read(&args.path)?;
+        if at.path.is_dir() {
+            return Err(ToolError::Failed(format!(
+                "`{}` is a directory; use list_directory",
+                args.path
+            )));
+        }
+        let text = self
+            .access
+            .read_text_file(&at.path)
+            .await
+            .map_err(|e| ToolError::Failed(read_error(&args.path, &e.to_string())))?;
+        Ok(ToolOutput {
+            text: slice_lines(&text, args.start_line, args.end_line)?,
+        })
+    }
+
+    async fn list_directory(&self, input: Value) -> Result<ToolOutput, ToolError> {
+        #[derive(Deserialize)]
+        struct Args {
+            path: Option<String>,
+        }
+        let args: Args = parse(input)?;
+        let shown = args.path.clone().unwrap_or_else(|| ".".into());
+        let at = self.resolve_read(args.path.as_deref().unwrap_or(""))?;
+        let exclude = self.exclude.clone();
+        let dir = at.path.clone();
+        let listed = tokio::task::spawn_blocking(move || list(&dir, &exclude))
+            .await
+            .map_err(|e| ToolError::Failed(e.to_string()))?
+            .map_err(|e| ToolError::Failed(format!("`{shown}`: {e}")))?;
+        Ok(ToolOutput { text: listed })
+    }
+
+    async fn search(&self, input: Value) -> Result<ToolOutput, ToolError> {
+        #[derive(Deserialize)]
+        struct Args {
+            pattern: String,
+            path: Option<String>,
+            #[serde(default)]
+            ignore_case: bool,
+        }
+        let args: Args = parse(input)?;
+        let re = regex::RegexBuilder::new(&args.pattern)
+            .case_insensitive(args.ignore_case)
+            .build()
+            .map_err(|e| ToolError::InvalidArguments(format!("pattern: {e}")))?;
+        let at = self.resolve_read(args.path.as_deref().unwrap_or(""))?;
+        let open = self.access.open_texts();
+        let exclude = self.exclude.clone();
+        // Dropping the call (a cancel) stops the walk at its next file.
+        let stop = StopOnDrop::default();
+        let flag = stop.0.clone();
+        let found = tokio::task::spawn_blocking(move || {
+            search_files(&at.path, &at.root, &re, &open, &exclude, &flag)
+        })
+        .await
+        .map_err(|e| ToolError::Failed(e.to_string()))?;
+        drop(stop);
+        Ok(ToolOutput { text: found })
+    }
+}
+
+impl ToolSource for LatticeTools {
+    fn list(&self) -> BoxFuture<'_, Result<Vec<SourceTool>, ToolError>> {
+        let tools = self.catalogue();
+        Box::pin(async move { Ok(tools) })
+    }
+
+    fn call(
+        &self,
+        name: &str,
+        input: Value,
+        ctx: CallContext,
+    ) -> BoxFuture<'_, Result<ToolOutput, ToolError>> {
+        let name = name.to_string();
+        Box::pin(async move {
+            match name.as_str() {
+                "read_file" => self.read_file(input).await,
+                "list_directory" => self.list_directory(input).await,
+                "search" => self.search(input).await,
+                "edit_file" if self.review.is_some() => self.edit_file(input, ctx).await,
+                "write_file" if self.review.is_some() => self.write_file(input, ctx).await,
+                "run_command" => self.run_command(input).await,
+                other => Err(ToolError::UnknownTool(other.to_string())),
+            }
+        })
+    }
+
+    /// A command is shown as the command (and where it runs), which is what
+    /// the user is deciding on.
+    fn describe(&self, name: &str, input: &Value) -> Option<String> {
+        if name != "run_command" {
+            return None;
+        }
+        let command = input.get("command")?.as_str()?;
+        Some(match input.get("cwd").and_then(Value::as_str) {
+            Some(cwd) if cwd != "." && !cwd.is_empty() => format!("$ {command}\n  in {cwd}"),
+            _ => format!("$ {command}"),
+        })
+    }
+}
+
+struct Resolved {
+    path: PathBuf,
+    root: PathBuf,
+}
+
+/// A file as an edit finds it.
+struct Target {
+    text: String,
+    /// Shown in a buffer: the change is applied there, unsaved.
+    open: bool,
+    exists: bool,
+}
+
+/// Marks a review open: tells the request, and on drop (decided or not)
+/// tells it the review closed. Dropped undecided, the request was stopped or
+/// the chat closed, so the session's diffs are closed too: a diff whose
+/// verdict would reach nobody must not stay on screen.
+struct InReview {
+    ctx: CallContext,
+    close: CloseFn,
+    decided: bool,
+}
+
+impl InReview {
+    fn open(ctx: &CallContext, close: &CloseFn) -> Self {
+        if let Some(f) = &ctx.on_review {
+            f(true);
+        }
+        Self {
+            ctx: ctx.clone(),
+            close: close.clone(),
+            decided: false,
+        }
+    }
+
+    fn decided(mut self) {
+        self.decided = true;
+    }
+}
+
+impl Drop for InReview {
+    fn drop(&mut self) {
+        if let Some(f) = &self.ctx.on_review {
+            f(false);
+        }
+        if !self.decided && self.ctx.origin != 0 {
+            (self.close)(self.ctx.origin);
+        }
+    }
+}
+
+impl LatticeTools {
+    async fn edit_file(&self, input: Value, ctx: CallContext) -> Result<ToolOutput, ToolError> {
+        #[derive(Deserialize)]
+        struct Args {
+            path: String,
+            old_string: String,
+            new_string: String,
+            #[serde(default)]
+            replace_all: bool,
+        }
+        let args: Args = parse(input)?;
+        if args.old_string.is_empty() {
+            return Err(ToolError::InvalidArguments(
+                "old_string is empty; use write_file to create or replace a whole file".into(),
+            ));
+        }
+        let at = self.resolve(&args.path)?;
+        let target = self.target(&at.path, &args.path).await?;
+        if !target.exists {
+            return Err(ToolError::Failed(format!(
+                "`{}` does not exist; use write_file to create it",
+                args.path
+            )));
+        }
+        let count = target.text.matches(&args.old_string).count();
+        if count == 0 {
+            return Err(ToolError::Failed(format!(
+                "old_string was not found in `{}`; read it again, it may have changed",
+                args.path
+            )));
+        }
+        if count > 1 && !args.replace_all {
+            return Err(ToolError::Failed(format!(
+                "old_string occurs {count} times in `{}`; include more of the surrounding \
+                 text to pick one, or set replace_all",
+                args.path
+            )));
+        }
+        let proposed = if args.replace_all {
+            target.text.replace(&args.old_string, &args.new_string)
+        } else {
+            target.text.replacen(&args.old_string, &args.new_string, 1)
+        };
+        self.propose(&at, &args.path, target, proposed, ctx).await
+    }
+
+    async fn write_file(&self, input: Value, ctx: CallContext) -> Result<ToolOutput, ToolError> {
+        #[derive(Deserialize)]
+        struct Args {
+            path: String,
+            content: String,
+        }
+        let args: Args = parse(input)?;
+        let at = self.resolve(&args.path)?;
+        if at.path.is_dir() {
+            return Err(ToolError::Failed(format!("`{}` is a directory", args.path)));
+        }
+        let target = self.target(&at.path, &args.path).await?;
+        self.propose(&at, &args.path, target, args.content, ctx)
+            .await
+    }
+
+    /// The file as the user sees it: the buffer's text when open, else the
+    /// disk's, else nothing yet.
+    async fn target(&self, path: &Path, shown: &str) -> Result<Target, ToolError> {
+        if let Some(text) = self.access.buffer_text(path) {
+            return Ok(Target {
+                text,
+                open: true,
+                exists: true,
+            });
+        }
+        if !path.exists() {
+            return Ok(Target {
+                text: String::new(),
+                open: false,
+                exists: false,
+            });
+        }
+        let text = self
+            .access
+            .read_text_file(path)
+            .await
+            .map_err(|e| ToolError::Failed(read_error(shown, &e.to_string())))?;
+        Ok(Target {
+            text,
+            open: false,
+            exists: true,
+        })
+    }
+
+    /// Put `proposed` in front of the user (unless the session trusts edits),
+    /// then apply what they accepted to the text the review was of. The file
+    /// changing in between refuses: applying would overwrite what changed.
+    async fn propose(
+        &self,
+        at: &Resolved,
+        shown: &str,
+        target: Target,
+        proposed: String,
+        ctx: CallContext,
+    ) -> Result<ToolOutput, ToolError> {
+        if target.exists && proposed == target.text {
+            return Ok(ToolOutput {
+                text: format!("no change: `{shown}` already holds that"),
+            });
+        }
+        let stale = || {
+            ToolError::Failed(format!(
+                "`{shown}` changed while the edit waited for review; nothing was applied. \
+                 Read it again before proposing a change"
+            ))
+        };
+        let review = self.review.as_ref().ok_or_else(|| {
+            ToolError::Refused("edits need a diff review, which is not available here".into())
+        })?;
+        let accepted = if ctx.trusted && !self.fenced(at) {
+            if let Some(dropped) = &ctx.on_unreviewed_edit {
+                dropped();
+            }
+            proposed.clone()
+        } else {
+            // Queued behind another review: what it was proposed against may
+            // have changed by the time this one opens.
+            let _gate = review.gate.lock().await;
+            if self.target(&at.path, shown).await?.text != target.text {
+                return Err(stale());
+            }
+            let in_review = InReview::open(&ctx, &review.close);
+            let verdict = lattice_agent::review_text(
+                &review.diffs,
+                lattice_agent::TextReviewRequest {
+                    path: at.path.clone(),
+                    baseline: target.text.clone(),
+                    proposed: proposed.clone(),
+                    tab_name: format!("llm edit {shown}"),
+                    origin_session: ctx.origin,
+                },
+            )
+            .await;
+            in_review.decided();
+            match verdict {
+                Ok(Some(text)) => text,
+                Ok(None) => {
+                    return Err(ToolError::Refused(format!(
+                        "the user rejected this edit to `{shown}`; nothing changed"
+                    )));
+                }
+                Err(_) => {
+                    return Err(ToolError::Refused(format!(
+                        "the review of `{shown}` was closed without a decision; nothing changed"
+                    )));
+                }
+            }
+        };
+        if target.open {
+            match self
+                .access
+                .apply_buffer_text(&at.path, &target.text, &accepted)
+                .await
+            {
+                Ok(true) => {}
+                Ok(false) => return Err(stale()),
+                Err(_) => {
+                    return Err(ToolError::Failed(format!(
+                        "`{shown}` was closed during the review; nothing was applied"
+                    )));
+                }
+            }
+        } else {
+            // Opened in a buffer since: writing the disk under it would leave
+            // the buffer showing text the file no longer holds.
+            if self.access.buffer_text(&at.path).is_some() {
+                return Err(stale());
+            }
+            let (path, expected, exists, text) = (
+                at.path.clone(),
+                target.text.clone(),
+                target.exists,
+                accepted.clone(),
+            );
+            let wrote = tokio::task::spawn_blocking(move || {
+                write_if_unchanged(&path, exists, &expected, &text)
+            })
+            .await
+            .map_err(|e| ToolError::Failed(e.to_string()))?;
+            match wrote {
+                Ok(true) => {}
+                Ok(false) => return Err(stale()),
+                Err(e) => return Err(ToolError::Failed(format!("`{shown}`: {e}"))),
+            }
+        }
+        let mut text = if target.open {
+            format!("applied to `{shown}` in the editor (not saved; the user saves it)")
+        } else if target.exists {
+            format!("wrote `{shown}`")
+        } else {
+            format!("created `{shown}`")
+        };
+        if accepted != proposed {
+            text.push_str(
+                "; the user changed your proposal before accepting it, so read the file to \
+                 see what it holds now",
+            );
+        }
+        Ok(ToolOutput { text })
+    }
+}
+
+/// Write `text` to `path` if the file is still as it was read (`expected`,
+/// or absent when it did not exist). `Ok(false)` when it changed.
+fn write_if_unchanged(
+    path: &Path,
+    existed: bool,
+    expected: &str,
+    text: &str,
+) -> std::io::Result<bool> {
+    let now = match std::fs::read(path) {
+        Ok(bytes) => Some(bytes),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => return Err(e),
+    };
+    let unchanged = match now {
+        Some(bytes) => existed && bytes == expected.as_bytes(),
+        None => !existed,
+    };
+    if !unchanged {
+        return Ok(false);
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, text)?;
+    Ok(true)
+}
+
+#[derive(Deserialize)]
+struct ExecArgs {
+    command: String,
+    cwd: Option<String>,
+    timeout_secs: Option<u64>,
+}
+
+impl LatticeTools {
+    /// Run a command the user allowed (the broker asked). Its process group
+    /// is killed when the call is dropped (the request stopped), times out, or
+    /// the shell exits leaving something in the background, so nothing left in
+    /// its group outlives it. A process that leaves the group on purpose
+    /// (`setsid`, a detaching daemon) is beyond a process-group kill; the user
+    /// approved the command text, which shows it.
+    async fn run_command(&self, input: Value) -> Result<ToolOutput, ToolError> {
+        let args: ExecArgs = parse(input)?;
+        if args.command.trim().is_empty() {
+            return Err(ToolError::InvalidArguments("command is empty".into()));
+        }
+        let dir = self.resolve(args.cwd.as_deref().unwrap_or("."))?.path;
+        if !dir.is_dir() {
+            return Err(ToolError::Failed(format!(
+                "`{}` is not a directory",
+                args.cwd.as_deref().unwrap_or(".")
+            )));
+        }
+        let timeout = args
+            .timeout_secs
+            .unwrap_or(EXEC_TIMEOUT)
+            .clamp(1, MAX_EXEC_TIMEOUT);
+        let mut command = shell(&args.command);
+        command.current_dir(&dir);
+        // The providers' keys stay with lattice: a command the model wrote
+        // must not be able to read and print them (P.1).
+        for var in self.key_variables.as_ref().map(|f| f()).unwrap_or_default() {
+            command.env_remove(var);
+        }
+        let token = lattice_protocol::CancellationToken::new();
+        let _stop = CancelOnDrop(token.clone());
+        let run = {
+            let token = token.clone();
+            tokio::task::spawn_blocking(move || {
+                lattice_core::process::run_cancellable_capped(
+                    command,
+                    None,
+                    lattice_core::process::ProcessGroup::Own,
+                    &token,
+                    MAX_EXEC_OUTPUT,
+                )
+            })
+        };
+        let outcome = match tokio::time::timeout(std::time::Duration::from_secs(timeout), run).await
+        {
+            Ok(joined) => joined.map_err(|e| ToolError::Failed(e.to_string()))?,
+            Err(_) => {
+                token.cancel();
+                return Err(ToolError::Failed(format!(
+                    "`{}` was still running after {timeout}s and was stopped",
+                    args.command
+                )));
+            }
+        };
+        match outcome {
+            Ok(lattice_core::process::RunOutcome::Finished(out)) => Ok(ToolOutput {
+                text: exec_report(&out),
+            }),
+            Ok(lattice_core::process::RunOutcome::Cancelled) => {
+                Err(ToolError::Failed("the command was stopped".into()))
+            }
+            Err(e) => Err(ToolError::Failed(format!(
+                "`{}` could not be started: {e}",
+                args.command
+            ))),
+        }
+    }
+}
+
+/// The platform shell running `command`.
+fn shell(command: &str) -> std::process::Command {
+    #[cfg(windows)]
+    {
+        let mut c = std::process::Command::new("cmd");
+        c.args(["/C", command]);
+        c
+    }
+    #[cfg(not(windows))]
+    {
+        let mut c = std::process::Command::new("sh");
+        c.args(["-c", command]);
+        c
+    }
+}
+
+/// `exit status N`, then each non-empty stream, each cut at the cap with a
+/// note saying so.
+fn exec_report(out: &std::process::Output) -> String {
+    let mut text = match out.status.code() {
+        Some(code) => format!("exit status {code}"),
+        None => "ended by a signal".to_string(),
+    };
+    for (name, bytes) in [("stdout", &out.stdout), ("stderr", &out.stderr)] {
+        if bytes.is_empty() {
+            continue;
+        }
+        let cut = bytes.len() > MAX_EXEC_OUTPUT;
+        let shown = String::from_utf8_lossy(&bytes[..bytes.len().min(MAX_EXEC_OUTPUT)]);
+        text.push_str(&format!("\n--- {name} ---\n{shown}"));
+        if cut {
+            text.push_str(&format!("\n[{name} cut at {MAX_EXEC_OUTPUT} bytes]"));
+        }
+    }
+    text
+}
+
+/// Cancels the command's token when the call goes away.
+struct CancelOnDrop(lattice_protocol::CancellationToken);
+
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        self.0.cancel();
+    }
+}
+
+/// Sets its flag when dropped, so blocking work can see its caller is gone.
+#[derive(Default)]
+struct StopOnDrop(Arc<AtomicBool>);
+
+impl Drop for StopOnDrop {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
+}
+
+/// The arguments as `T`, or an error the model can correct from.
+fn parse<T: for<'de> Deserialize<'de>>(input: Value) -> Result<T, ToolError> {
+    let input = if input.is_null() { json!({}) } else { input };
+    if !input.is_object() {
+        return Err(ToolError::InvalidArguments(
+            "arguments must be a JSON object".into(),
+        ));
+    }
+    serde_json::from_value(input).map_err(|e| ToolError::InvalidArguments(e.to_string()))
+}
+
+fn read_error(shown: &str, e: &str) -> String {
+    // `EditorAccess` prefixes its own errors; the model needs only the cause.
+    let e = e.strip_prefix("editor io error: ").unwrap_or(e);
+    if e.contains("No such file") || e.contains("not found") {
+        format!("`{shown}` does not exist")
+    } else {
+        e.to_string()
+    }
+}
+
+/// Whether `at` is inside a `.git` directory: hooks and `core.fsmonitor`
+/// there run code later, and nothing under `.git` shows in `git status` or
+/// `git diff`, so no later look at the changes would catch it. An edit there
+/// is reviewed even in a trusted chat. Matched without case: on a
+/// case-insensitive filesystem (macOS, Windows) `.GIT/hooks` is the same
+/// directory.
+fn in_git_dir(at: &Resolved) -> bool {
+    at.path
+        .strip_prefix(&at.root)
+        .unwrap_or(&at.path)
+        .components()
+        .any(|c| c.as_os_str().eq_ignore_ascii_case(".git"))
+}
+
+/// `path` with every symlink in it followed, including those in the
+/// directories above a file that does not exist yet: a new file under
+/// `link/` lands wherever `link` points, so that is where it must be checked.
+/// `None` for a link whose target is missing, which a write would create
+/// wherever the link points.
+fn through_links(path: &Path) -> Option<PathBuf> {
+    let mut missing = Vec::new();
+    let mut at = path;
+    loop {
+        if let Ok(real) = std::fs::canonicalize(at) {
+            return Some(missing.iter().rev().fold(real, |p, name| p.join(name)));
+        }
+        if std::fs::symlink_metadata(at).is_ok() {
+            return None;
+        }
+        match (at.parent(), at.file_name()) {
+            (Some(parent), Some(name)) => {
+                missing.push(name.to_owned());
+                at = parent;
+            }
+            _ => return Some(path.to_path_buf()),
+        }
+    }
+}
+
+/// `..` and `.` removed without touching the disk.
+fn normalize(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for c in path.components() {
+        match c {
+            Component::ParentDir => {
+                out.pop();
+            }
+            Component::CurDir => {}
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
+/// Lines `start..=end` (1-based) of `text`, capped, with a note when more
+/// remain.
+fn slice_lines(text: &str, start: Option<usize>, end: Option<usize>) -> Result<String, ToolError> {
+    let lines: Vec<&str> = text.lines().collect();
+    let total = lines.len();
+    let first = start.unwrap_or(1).max(1);
+    if total == 0 {
+        return Ok("(empty file)".into());
+    }
+    if first > total {
+        return Err(ToolError::InvalidArguments(format!(
+            "start_line {first} is past the end ({total} lines)"
+        )));
+    }
+    let wanted_last = end.unwrap_or(total).min(total);
+    if wanted_last < first {
+        return Err(ToolError::InvalidArguments(format!(
+            "end_line {wanted_last} is before start_line {first}"
+        )));
+    }
+    let mut out = String::new();
+    let mut last = first - 1;
+    for (i, line) in lines[first - 1..wanted_last].iter().enumerate() {
+        if i >= MAX_LINES || out.len() + line.len() + 1 > MAX_BYTES {
+            break;
+        }
+        out.push_str(line);
+        out.push('\n');
+        last = first + i;
+    }
+    if last < wanted_last {
+        out.push_str(&format!(
+            "[showing lines {first}-{last} of {total}; pass start_line={} to read on]\n",
+            last + 1
+        ));
+    } else if first > 1 || wanted_last < total {
+        out.push_str(&format!("[lines {first}-{last} of {total}]\n"));
+    }
+    Ok(out)
+}
+
+fn list(dir: &Path, exclude: &ExcludeFn) -> std::io::Result<String> {
+    let mut entries: Vec<String> = std::fs::read_dir(dir)?
+        .filter_map(Result::ok)
+        .filter(|e| e.file_name() != ".git" && exclude(&e.path()).is_none())
+        .map(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                format!("{name}/")
+            } else {
+                name
+            }
+        })
+        .collect();
+    entries.sort();
+    let total = entries.len();
+    let mut out: String = entries
+        .iter()
+        .take(MAX_ENTRIES)
+        .map(|e| format!("{e}\n"))
+        .collect();
+    if total == 0 {
+        out.push_str("(empty directory)\n");
+    } else if total > MAX_ENTRIES {
+        out.push_str(&format!("[{MAX_ENTRIES} of {total} entries shown]\n"));
+    }
+    Ok(out)
+}
+
+fn search_files(
+    under: &Path,
+    root: &Path,
+    re: &regex::Regex,
+    open: &[(PathBuf, String)],
+    exclude: &ExcludeFn,
+    stop: &AtomicBool,
+) -> String {
+    let mut out = String::new();
+    let mut matches = 0usize;
+    let mut capped = false;
+    let walk = ignore::WalkBuilder::new(under)
+        .sort_by_file_name(|a, b| a.cmp(b))
+        .build();
+    'files: for entry in walk {
+        if stop.load(Ordering::Relaxed) {
+            break;
+        }
+        let Ok(entry) = entry else { continue };
+        if !entry.file_type().is_some_and(|t| t.is_file()) {
+            continue;
+        }
+        let path = entry.path();
+        if exclude(path).is_some() {
+            continue;
+        }
+        let resolved = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        let text = match open.iter().find(|(p, _)| *p == resolved) {
+            Some((_, text)) => text.clone(),
+            None => {
+                if entry.metadata().map(|m| m.len()).unwrap_or(0) > MAX_SEARCH_FILE {
+                    continue;
+                }
+                let Ok(bytes) = std::fs::read(path) else {
+                    continue;
+                };
+                // Binary: a NUL in the first 8 KiB, as git decides.
+                if bytes.iter().take(8192).any(|b| *b == 0) {
+                    continue;
+                }
+                match String::from_utf8(bytes) {
+                    Ok(t) => t,
+                    Err(_) => continue,
+                }
+            }
+        };
+        let shown = resolved.strip_prefix(root).unwrap_or(&resolved).display();
+        for (n, line) in text.lines().enumerate() {
+            if !re.is_match(line) {
+                continue;
+            }
+            if matches == MAX_MATCHES {
+                capped = true;
+                break 'files;
+            }
+            matches += 1;
+            let cut: String = line.chars().take(MAX_MATCH_CHARS).collect();
+            out.push_str(&format!("{shown}:{}: {cut}\n", n + 1));
+        }
+    }
+    if matches == 0 {
+        out.push_str("(no matches)\n");
+    } else if capped {
+        out.push_str(&format!(
+            "[stopped at {MAX_MATCHES} matches; narrow the pattern or the path]\n"
+        ));
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+
+    #[test]
+    fn lines_are_sliced_and_a_cap_says_how_to_read_on() {
+        let text: String = (1..=5).map(|n| format!("l{n}\n")).collect();
+        assert_eq!(slice_lines(&text, None, None).unwrap(), text);
+        assert_eq!(
+            slice_lines(&text, Some(2), Some(3)).unwrap(),
+            "l2\nl3\n[lines 2-3 of 5]\n"
+        );
+        assert!(slice_lines(&text, Some(9), None).is_err());
+
+        let long: String = (1..=MAX_LINES + 5).map(|n| format!("{n}\n")).collect();
+        let shown = slice_lines(&long, None, None).unwrap();
+        assert!(
+            shown.ends_with(&format!(
+                "[showing lines 1-{MAX_LINES} of {}; pass start_line={} to read on]\n",
+                MAX_LINES + 5,
+                MAX_LINES + 1
+            )),
+            "{}",
+            &shown[shown.len() - 120..]
+        );
+    }
+
+    /// A fresh directory for one test, removed when dropped.
+    struct Scratch(PathBuf);
+    impl Scratch {
+        fn new(name: &str) -> Self {
+            let p =
+                std::env::temp_dir().join(format!("lattice-tools-{name}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&p);
+            std::fs::create_dir_all(&p).unwrap();
+            Self(p)
+        }
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// The read tools over a temp project, with the real `llm.exclude` check
+    /// (`LlmChats::excluded`, default globs) and root, as `install` wires them.
+    fn tools_over(root: &Path) -> (LatticeTools, Arc<crate::llm::chat::LlmChats>) {
+        use crate::llm::request::{RequestRegistry, RequestRegistryHandle};
+        let handle = tokio::runtime::Handle::current();
+        let bus = Arc::new(lattice_runtime::EventBus::new());
+        let requests: RequestRegistryHandle = Arc::new(RequestRegistry::new(
+            handle.clone(),
+            Some(bus.clone()),
+            None,
+        ));
+        let chats = Arc::new(crate::llm::chat::LlmChats::new(
+            handle,
+            requests,
+            bus,
+            crate::llm::config::LlmConfig::default(),
+        ));
+        chats.set_project_root(root.to_path_buf());
+        let access = EditorAccess::new(
+            Arc::new(std::sync::Mutex::new(
+                lattice_agent::state_cache::EditorStateCache::default(),
+            )),
+            None,
+            Vec::new(),
+            None,
+        );
+        let (root_of, exclude_of) = (chats.clone(), chats.clone());
+        let tools = LatticeTools::new(
+            access,
+            Arc::new(move || root_of.tools_root()),
+            Arc::new(move |p| exclude_of.excluded(p)),
+        );
+        (tools, chats)
+    }
+
+    async fn call(tools: &LatticeTools, name: &str, input: Value) -> Result<String, String> {
+        tools
+            .call(name, input, CallContext::default())
+            .await
+            .map(|o| o.text)
+            .map_err(|e| e.to_string())
+    }
+
+    /// `llm.exclude` holds for every read tool: `read_file` refuses by name,
+    /// `list_directory` leaves the file out, and `search` never matches
+    /// inside it, so a secret cannot be read sideways.
+    #[tokio::test]
+    async fn every_read_tool_honours_the_exclude_list() {
+        let dir = Scratch::new("exclude");
+        std::fs::write(dir.path().join(".env"), "TOKEN=hunter2\n").unwrap();
+        std::fs::write(
+            dir.path().join("main.rs"),
+            "// hunter2 is not here\nfn main() {}\n",
+        )
+        .unwrap();
+        let (tools, _chats) = tools_over(dir.path());
+
+        let read = call(&tools, "read_file", serde_json::json!({"path": ".env"})).await;
+        let why = read.unwrap_err();
+        assert!(why.contains("llm.exclude"), "{why}");
+        assert!(!why.contains("hunter2"), "{why}");
+
+        let listed = call(&tools, "list_directory", serde_json::json!({}))
+            .await
+            .unwrap();
+        assert!(listed.contains("main.rs"), "{listed}");
+        assert!(!listed.contains(".env"), "{listed}");
+
+        let found = call(&tools, "search", serde_json::json!({"pattern": "TOKEN"}))
+            .await
+            .unwrap();
+        assert!(!found.contains("hunter2"), "{found}");
+        assert!(!found.contains(".env"), "{found}");
+    }
+
+    /// P.2: `llm.review` names the version-control and editor-config
+    /// directories by default, and a project's `review` list adds to it as a
+    /// set of its own.
+    #[tokio::test]
+    async fn llm_review_fences_the_config_directories_and_the_projects_additions() {
+        let dir = Scratch::new("review");
+        std::fs::create_dir_all(dir.path().join(".lattice")).unwrap();
+        std::fs::write(
+            dir.path().join(".lattice/llm.toml"),
+            "review = [\"deploy/\"]\n",
+        )
+        .unwrap();
+        let (_, chats) = tools_over(dir.path());
+        chats.reload_project().await;
+        let at = |p: &str| chats.reviewed(&dir.path().join(p));
+        assert_eq!(at(".lattice/config.toml").as_deref(), Some(".lattice/"));
+        assert_eq!(at(".jj/repo/store").as_deref(), Some(".jj/"));
+        assert_eq!(at("vendor/x/.hg/hgrc").as_deref(), Some(".hg/"));
+        assert_eq!(at("deploy/prod.yaml").as_deref(), Some("deploy/ (project)"));
+        assert_eq!(at("src/main.rs"), None);
+    }
+
+    /// GR.1: a project's `.lattice/llm.toml` and `.aiignore` add excludes the
+    /// read tools honour, named as the project's; a project's `!.env` cannot
+    /// re-include what the global list excludes.
+    #[tokio::test]
+    async fn a_project_adds_excludes_and_cannot_remove_one() {
+        let dir = Scratch::new("project-lists");
+        std::fs::create_dir_all(dir.path().join(".lattice")).unwrap();
+        std::fs::write(
+            dir.path().join(".lattice/llm.toml"),
+            "exclude = [\"internal/\", \"!.env\"]\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join(".aiignore"), "*.secret\n").unwrap();
+        std::fs::create_dir_all(dir.path().join("internal")).unwrap();
+        std::fs::write(dir.path().join("internal/plan.md"), "plan\n").unwrap();
+        std::fs::write(dir.path().join("api.secret"), "k\n").unwrap();
+        std::fs::write(dir.path().join(".env"), "TOKEN=hunter2\n").unwrap();
+        let (tools, chats) = tools_over(dir.path());
+        chats.reload_project().await;
+
+        for (path, why) in [
+            ("internal/plan.md", "internal/ (project)"),
+            ("api.secret", "*.secret (project)"),
+            (".env", ".env"),
+        ] {
+            let err = call(&tools, "read_file", serde_json::json!({"path": path}))
+                .await
+                .unwrap_err();
+            assert!(err.contains(why), "{path}: {err}");
+        }
+    }
+
+    /// `.git` is never read, listed or searched, whatever the exclude list
+    /// says (P.4): `.git/config` can carry a credential in a remote URL.
+    #[tokio::test]
+    async fn the_read_tools_never_look_inside_git() {
+        let dir = Scratch::new("git");
+        std::fs::create_dir_all(dir.path().join(".git")).unwrap();
+        std::fs::write(
+            dir.path().join(".git/config"),
+            "[remote \"origin\"]\n\turl = https://user:hunter2@example.com/r\n",
+        )
+        .unwrap();
+        let (tools, _chats) = tools_over(dir.path());
+        for (tool, input) in [
+            ("read_file", serde_json::json!({"path": ".git/config"})),
+            ("list_directory", serde_json::json!({"path": ".git"})),
+            (
+                "search",
+                serde_json::json!({"pattern": "hunter2", "path": ".git"}),
+            ),
+        ] {
+            let why = call(&tools, tool, input).await.unwrap_err();
+            assert!(why.contains(".git directory"), "{tool}: {why}");
+            assert!(!why.contains("hunter2"), "{tool}: {why}");
+        }
+    }
+
+    /// The defaults P.4 added are refused; a source file whose name merely
+    /// contains one of them is not.
+    #[tokio::test]
+    async fn the_default_list_covers_the_common_credential_files() {
+        let dir = Scratch::new("defaults");
+        std::fs::create_dir_all(dir.path().join(".aws")).unwrap();
+        for f in [
+            ".npmrc",
+            ".pgpass",
+            "credentials.json",
+            ".aws/credentials",
+            "id.p12",
+            "src.rs",
+        ] {
+            std::fs::write(dir.path().join(f), "x\n").unwrap();
+        }
+        std::fs::write(dir.path().join("credentials.rs"), "fn f() {}\n").unwrap();
+        let (tools, _chats) = tools_over(dir.path());
+        for f in [
+            ".npmrc",
+            ".pgpass",
+            "credentials.json",
+            ".aws/credentials",
+            "id.p12",
+        ] {
+            let why = call(&tools, "read_file", serde_json::json!({"path": f}))
+                .await
+                .unwrap_err();
+            assert!(why.contains("llm.exclude"), "{f}: {why}");
+        }
+        let read = call(
+            &tools,
+            "read_file",
+            serde_json::json!({"path": "credentials.rs"}),
+        )
+        .await;
+        assert!(read.unwrap().contains("fn f()"));
+    }
+
+    /// A link is judged by where it leads: one out of the project is refused
+    /// as outside it, and one in the project that names an excluded file is
+    /// refused as excluded, whatever the link itself is called.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_link_cannot_lead_a_read_out_of_bounds() {
+        let base = Scratch::new("links");
+        let (project, outside) = (base.path().join("project"), base.path().join("outside"));
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("secret.txt"), "outside text\n").unwrap();
+        std::fs::write(project.join(".env"), "TOKEN=hunter2\n").unwrap();
+        std::os::unix::fs::symlink(&outside, project.join("out")).unwrap();
+        std::os::unix::fs::symlink(project.join(".env"), project.join("notes.txt")).unwrap();
+        let (tools, _chats) = tools_over(&project);
+
+        let out = call(
+            &tools,
+            "read_file",
+            serde_json::json!({"path": "out/secret.txt"}),
+        )
+        .await;
+        let why = out.unwrap_err();
+        assert!(why.contains("outside the project"), "{why}");
+        assert!(!why.contains("outside text"), "{why}");
+
+        let named = call(
+            &tools,
+            "read_file",
+            serde_json::json!({"path": "notes.txt"}),
+        )
+        .await;
+        let why = named.unwrap_err();
+        assert!(why.contains("llm.exclude"), "{why}");
+        assert!(!why.contains("hunter2"), "{why}");
+    }
+
+    /// A command past its timeout is stopped and the model told so, rather
+    /// than the request waiting on it.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_command_past_its_timeout_is_stopped() {
+        let dir = Scratch::new("timeout");
+        let (tools, _chats) = tools_over(dir.path());
+        let started = std::time::Instant::now();
+        let ran = call(
+            &tools,
+            "run_command",
+            serde_json::json!({"command": "sleep 30", "timeout_secs": 1}),
+        )
+        .await;
+        let why = ran.unwrap_err();
+        assert!(why.contains("still running after 1s"), "{why}");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(10),
+            "it waited {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_new_file_under_a_linked_directory_resolves_through_the_link() {
+        let base = std::env::temp_dir().join(format!("lattice-links-{}", std::process::id()));
+        let (project, outside) = (base.join("project"), base.join("outside"));
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        let outside = std::fs::canonicalize(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, project.join("link")).unwrap();
+        std::os::unix::fs::symlink(outside.join("gone"), project.join("dangling")).unwrap();
+
+        let resolved = through_links(&project.join("link/new/x.txt")).unwrap();
+        assert_eq!(resolved, outside.join("new/x.txt"));
+        assert_eq!(through_links(&project.join("dangling")), None);
+        let real_project = std::fs::canonicalize(&project).unwrap();
+        assert_eq!(
+            through_links(&project.join("fresh.txt")).unwrap(),
+            real_project.join("fresh.txt")
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn anything_under_a_git_dir_is_in_it() {
+        let at = |p: &str| Resolved {
+            path: PathBuf::from("/p").join(p),
+            root: PathBuf::from("/p"),
+        };
+        assert!(in_git_dir(&at(".git/hooks/pre-commit")));
+        assert!(in_git_dir(&at(".git/config")));
+        assert!(in_git_dir(&at("vendor/sub/.git/hooks/post-checkout")));
+        assert!(in_git_dir(&at(".GIT/hooks/pre-commit")));
+        assert!(!in_git_dir(&at(".gitignore")));
+        assert!(!in_git_dir(&at("src/git/mod.rs")));
+    }
+
+    #[test]
+    fn dot_dot_cannot_climb_lexically() {
+        assert_eq!(
+            normalize(Path::new("/p/src/../../etc/passwd")),
+            PathBuf::from("/etc/passwd")
+        );
+        assert_eq!(normalize(Path::new("/p/./a/b/..")), PathBuf::from("/p/a"));
+    }
+}

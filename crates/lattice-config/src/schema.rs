@@ -553,7 +553,13 @@ fn unwrap_root(table: &toml::Table) -> Option<&toml::Value> {
 /// that way — the text they wrote still parses, it is simply now validated.
 impl crate::OptionType for ConfigValue {
     fn parse(s: &str) -> Result<Self, String> {
-        let table = toml::from_str::<toml::Table>(s).map_err(|e| format!("expected TOML: {e}"))?;
+        // Never `{e}`: toml quotes the offending line, which may hold a secret.
+        let table = toml::from_str::<toml::Table>(s).map_err(|e| {
+            format!(
+                "expected TOML: {}",
+                crate::loader::describe_toml_error(s, &e)
+            )
+        })?;
         // The unwrap half of `format`'s wrapper, below. Symmetric on purpose:
         // `parse(&v.format()) == Ok(v)` is `OptionType`'s contract and a
         // structured option does not get an exemption from it.
@@ -612,6 +618,16 @@ impl crate::OptionType for ConfigValue {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
     use super::*;
+
+    /// `:set` of a structured option with malformed text says where, never
+    /// the text: it may hold a token.
+    #[test]
+    fn a_malformed_structured_value_does_not_echo_its_text() {
+        use crate::OptionType as _;
+        let err = ConfigValue::parse("token = sk-secret-123").unwrap_err();
+        assert!(!err.contains("sk-secret-123"), "{err}");
+        assert!(err.starts_with("expected TOML: line 1, column "), "{err}");
+    }
 
     fn template_schema() -> ConfigSchema {
         ConfigSchema::list(ConfigSchema::record([

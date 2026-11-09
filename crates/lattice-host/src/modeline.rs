@@ -215,7 +215,7 @@ pub fn buffer_label(rs: &RenderState, buffer: lattice_core::BufferId) -> Option<
 
 /// The buffer-label segment for `pane`: the label its buffer's mode
 /// gave it ([`buffer_label`]) when there is one, else the document path
-/// + dirty marker (or the registry name slot for non-document panes).
+/// plus dirty marker (or the registry name slot for non-document panes).
 /// Empty only for the genuinely-nameless case, which the caller treats
 /// as hidden.
 ///

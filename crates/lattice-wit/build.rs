@@ -48,14 +48,18 @@ fn main() {
         }
     };
     for path in &files {
-        let name = path.file_name().unwrap().to_str().unwrap();
-        let abs = std::fs::canonicalize(path).unwrap();
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .expect("a .wit file read from wit/ has a UTF-8 file name");
+        let abs = std::fs::canonicalize(path).expect("wit file canonicalizable");
         let contents = std::fs::read(path).expect("wit file readable");
         fnv(name.as_bytes(), &mut hash);
         fnv(&contents, &mut hash);
         code.push_str(&format!(
             "    ({name:?}, include_str!({:?})),\n",
-            abs.to_str().unwrap()
+            abs.to_str()
+                .expect("wit/ path is UTF-8 (it is embedded via include_str!)")
         ));
         println!("cargo:rerun-if-changed={}", path.display());
     }
@@ -65,7 +69,7 @@ fn main() {
          pub const ABI_FINGERPRINT: &str = \"{hash:016x}\";\n"
     ));
 
-    let out = std::env::var("OUT_DIR").unwrap();
-    std::fs::write(Path::new(&out).join("wit_assets.rs"), code).unwrap();
+    let out = std::env::var("OUT_DIR").expect("OUT_DIR is set by cargo");
+    std::fs::write(Path::new(&out).join("wit_assets.rs"), code).expect("write wit_assets.rs");
     println!("cargo:rerun-if-changed={}", wit_dir.display());
 }

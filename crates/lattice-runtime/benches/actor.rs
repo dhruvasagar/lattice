@@ -277,8 +277,62 @@ fn status_segment_update(c: &mut Criterion) {
     g.finish();
 }
 
+/// LL.12: the keystroke round trip while a stream appends into the same
+/// document from another thread, one chunk per millisecond: several times
+/// the sink's one-write-per-frame pacing, so this is the contended upper
+/// bound. Compare with `runtime::apply_edit_round_trip`; the difference is
+/// what a stream costs a keystroke.
+fn apply_edit_round_trip_during_appends(c: &mut Criterion) {
+    use lattice_core::tracked::{Stickiness, TrackedRangeChange, TrackedRangeId};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let mut g = c.benchmark_group("runtime::apply_edit_round_trip_during_appends");
+    let registry: CommandRegistryHandle =
+        Arc::new(arc_swap::ArcSwap::from_pointee(CommandRegistry::new()));
+    for size in [1_000usize, 50_000] {
+        let text = build_buffer_text(size);
+        g.bench_with_input(BenchmarkId::from_parameter(size), &text, |bencher, t| {
+            let handle = spawn_document(
+                lattice_core::BufferId(0),
+                Document::from_text(t),
+                registry.clone(),
+            );
+            let id = TrackedRangeId::next();
+            let at = t.len();
+            let _ = block_on(
+                handle.update_tracked_ranges(vec![TrackedRangeChange::Track {
+                    id,
+                    bytes: at..at,
+                    stickiness: Stickiness::NeverGrows,
+                }]),
+            );
+            let stop = Arc::new(AtomicBool::new(false));
+            let streamer = {
+                let handle = handle.clone();
+                let stop = stop.clone();
+                std::thread::spawn(move || {
+                    while !stop.load(Ordering::Relaxed) {
+                        let _ = block_on(handle.append_to_tracked(id, "tok ".to_string()));
+                        std::thread::sleep(std::time::Duration::from_millis(1));
+                    }
+                })
+            };
+            let _ = block_on(handle.apply_edit(Edit::insert(Position::ZERO, "x")));
+            bencher.iter(|| {
+                let applied =
+                    block_on(handle.apply_edit(Edit::insert(Position::ZERO, black_box("z"))))
+                        .unwrap();
+                black_box(applied);
+            });
+            stop.store(true, Ordering::Relaxed);
+            let _ = streamer.join();
+        });
+    }
+    g.finish();
+}
+
 criterion_group!(
     benches,
+    apply_edit_round_trip_during_appends,
     snapshot_publish_standalone,
     snapshot_publish_via_apply_edit,
     snapshot_load,

@@ -729,6 +729,23 @@ pub trait Mode: Send + Sync + 'static {
         None
     }
 
+    /// Which of this mode's own actions `:w` runs in place of writing a file,
+    /// or `None` (the default) when `:w` means what it always does.
+    ///
+    /// For a buffer whose text is a form to submit, not a file to keep: a
+    /// system prompt being edited, a commit message. `:w` then means "apply
+    /// this", and nothing may touch the disk. Like
+    /// [`refresh_action`](Self::refresh_action) this declares a **target, not a
+    /// body**: the handler stays in [`action_handlers`](Self::action_handlers),
+    /// and the host learns nothing about what any particular buffer submits.
+    ///
+    /// Only a bare `:w` is claimed. `:w <path>` still writes a copy, as in vim.
+    /// The host resolves it with `Editor::resolve_write_action`, walking active
+    /// modes the way `refresh_action` does.
+    fn write_action(&self) -> Option<&'static str> {
+        None
+    }
+
     /// Which of this mode's actions `<Tab>` fires, and the declaration that
     /// pulls in
     /// [`foldable-view-mode`](crate::foldable_view_mode::FoldableViewMode) —
@@ -805,7 +822,13 @@ pub trait Mode: Send + Sync + 'static {
     /// end (see [`EditableTail`]), so it stays valid as the owner appends
     /// content above it. Returning `None` leaves the read-only gate's
     /// behaviour unchanged (edits rejected iff `ReadOnly` is resolved true).
-    fn editable_tail(&self) -> Option<EditableTail> {
+    ///
+    /// `buffer` is the buffer the gate is asking about, so a mode that backs
+    /// several buffers at once (one conversation per buffer) can answer per
+    /// buffer instead of from process-wide state. A mode whose tail is the
+    /// same everywhere ignores it.
+    fn editable_tail(&self, buffer: lattice_core::BufferId) -> Option<EditableTail> {
+        let _ = buffer;
         None
     }
 
@@ -912,6 +935,8 @@ pub trait DynMode: Send + Sync + 'static {
     fn invocation_runner(&self) -> Option<ModeId>;
     /// Forwards to [`Mode::refresh_action`].
     fn refresh_action(&self) -> Option<&'static str>;
+    /// Forwards to [`Mode::write_action`].
+    fn write_action(&self) -> Option<&'static str>;
     /// Forwards to [`Mode::fold_toggle_action`].
     fn fold_toggle_action(&self) -> Option<&'static str>;
     /// Forwards to [`Mode::refresh_on_open`].
@@ -919,16 +944,13 @@ pub trait DynMode: Send + Sync + 'static {
     /// Forwards to [`Mode::activation_policy`].
     fn activation_policy(&self) -> ActivationPolicy;
     /// Forwards to [`Mode::editable_tail`].
-    fn editable_tail(&self) -> Option<EditableTail>;
+    fn editable_tail(&self, buffer: lattice_core::BufferId) -> Option<EditableTail>;
 
     /// Type-erased lifecycle entry. Returns a future whose
     /// output is the typed Guard erased to `Box<dyn Any + Send>`.
     /// The dispatcher stashes this box keyed by
     /// `(BufferId, ModeId)`; deactivation drops it.
-    fn on_activate_dyn<'a>(
-        &'a self,
-        ctx: ModeContext,
-    ) -> Pin<Box<dyn Future<Output = Result<Box<dyn Any + Send>, ModeActivationError>> + Send + 'a>>;
+    fn on_activate_dyn<'a>(&'a self, ctx: ModeContext) -> LifecycleFuture<'a, Box<dyn Any + Send>>;
 }
 
 impl<M: Mode> DynMode for M {
@@ -983,6 +1005,9 @@ impl<M: Mode> DynMode for M {
     fn refresh_action(&self) -> Option<&'static str> {
         <M as Mode>::refresh_action(self)
     }
+    fn write_action(&self) -> Option<&'static str> {
+        <M as Mode>::write_action(self)
+    }
     fn fold_toggle_action(&self) -> Option<&'static str> {
         <M as Mode>::fold_toggle_action(self)
     }
@@ -992,15 +1017,11 @@ impl<M: Mode> DynMode for M {
     fn activation_policy(&self) -> ActivationPolicy {
         <M as Mode>::activation_policy(self)
     }
-    fn editable_tail(&self) -> Option<EditableTail> {
-        <M as Mode>::editable_tail(self)
+    fn editable_tail(&self, buffer: lattice_core::BufferId) -> Option<EditableTail> {
+        <M as Mode>::editable_tail(self, buffer)
     }
 
-    fn on_activate_dyn<'a>(
-        &'a self,
-        ctx: ModeContext,
-    ) -> Pin<Box<dyn Future<Output = Result<Box<dyn Any + Send>, ModeActivationError>> + Send + 'a>>
-    {
+    fn on_activate_dyn<'a>(&'a self, ctx: ModeContext) -> LifecycleFuture<'a, Box<dyn Any + Send>> {
         let fut = <M as Mode>::on_activate(self, ctx);
         Box::pin(async move {
             let guard = fut.await?;
@@ -1031,7 +1052,10 @@ mod tests {
                 Box::pin(async { Ok(()) })
             }
         }
-        assert_eq!(<BareMode as Mode>::editable_tail(&BareMode), None);
+        assert_eq!(
+            <BareMode as Mode>::editable_tail(&BareMode, lattice_core::BufferId(1)),
+            None
+        );
     }
 
     /// AU‑3: a single-line prompt tail (`> ` marker ⇒ min byte 2) permits

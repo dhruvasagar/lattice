@@ -81,16 +81,17 @@ fn agenda_shaped_view(editor: &mut Editor) -> BufferId {
 
     create_multibuffer_view(
         editor,
-        sources,
-        // Row 0 is source line 0; row 1 is source line 2. The gap is what makes
+        sources, // Row 0 is source line 0; row 1 is source line 2. The gap is what makes
         // the answer's LINE meaningful — a seam that echoed the composed line
         // back would pass on row 0 and fail here.
         vec![Excerpt::new(SOURCE, 0, 0), Excerpt::new(SOURCE, 2, 2)],
-        Some("*test:agenda*".into()),
-        BufferFlags::default(),
+        lattice_multibuffer::MultibufferViewConfig {
+            name: Some("*test:agenda*".into()),
+            flags: BufferFlags::default(),
+            fold_grouping: lattice_multibuffer::FoldGrouping::SourceFile,
+        },
         cmd_registry,
         None,
-        lattice_multibuffer::FoldGrouping::SourceFile,
     )
 }
 

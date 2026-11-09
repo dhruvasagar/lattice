@@ -30,7 +30,7 @@ fn body(editor: &Editor) -> String {
 fn press(editor: &mut Editor, chords: &[KeyChord]) {
     let mut partial = Vec::new();
     for c in chords {
-        let _ = editor.dispatch_chord(c.clone(), &mut partial);
+        let _ = editor.dispatch_chord(*c, &mut partial);
     }
 }
 

@@ -518,6 +518,10 @@ fn start_accepting(
     })
 }
 
+/// How long a peer has to complete the WebSocket handshake (with the auth
+/// token) before its socket is dropped.
+const HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 async fn accept_loop(
     listener: TcpListener,
     token: String,
@@ -542,23 +546,38 @@ async fn accept_loop(
                 let notify_rx = notify_tx.subscribe();
                 // I7: and a shutdown receiver — closed when the server stops.
                 let shutdown_rx = shutdown_tx.subscribe();
-                // I7: bump the live connection count + wake the status segment;
-                // the `ConnGuard` decrements + wakes again when this connection
-                // ends (drop runs on a normal end, error, or panic).
-                signals.conn_count.fetch_add(1, Ordering::SeqCst);
-                signals.fire();
-                let conn_guard = ConnGuard(signals.clone());
+                let signals = signals.clone();
                 tokio::spawn(async move {
-                    if let Err(e) = serve_connection(
-                        stream,
-                        token,
-                        ctx,
-                        conn_id,
-                        notify_rx,
-                        shutdown_rx,
-                        conn_guard,
+                    // Only an authenticated agent is a connection: a peer that
+                    // never finishes the handshake, or sends the wrong token,
+                    // is dropped without ever showing in the status count, and
+                    // the handshake is bounded so a silent socket cannot hold
+                    // a task open.
+                    let ws = match tokio::time::timeout(
+                        HANDSHAKE_TIMEOUT,
+                        transport::accept(stream, &token),
                     )
                     .await
+                    {
+                        Ok(Ok(ws)) => ws,
+                        Ok(Err(e)) => {
+                            tracing::debug!(error = %e, "claude-code handshake refused");
+                            return;
+                        }
+                        Err(_) => {
+                            tracing::debug!("claude-code handshake timed out");
+                            return;
+                        }
+                    };
+                    // I7: bump the live connection count + wake the status
+                    // segment; the `ConnGuard` decrements + wakes again when
+                    // this connection ends (drop runs on a normal end, error,
+                    // or panic).
+                    signals.conn_count.fetch_add(1, Ordering::SeqCst);
+                    signals.fire();
+                    let conn_guard = ConnGuard(signals);
+                    if let Err(e) =
+                        serve_connection(ws, ctx, conn_id, notify_rx, shutdown_rx, conn_guard).await
                     {
                         tracing::debug!(error = %e, "claude-code connection ended with error");
                     }
@@ -574,8 +593,7 @@ async fn accept_loop(
 }
 
 async fn serve_connection(
-    stream: TcpStream,
-    token: String,
+    ws: tokio_tungstenite::WebSocketStream<TcpStream>,
     dispatch_ctx: Arc<ArcSwap<ToolContext>>,
     // D-fix.6: this connection's unique id, stamped into the per-connection
     // tool context so `openDiff` tags its diff and the close tools scope
@@ -587,7 +605,6 @@ async fn serve_connection(
     // connection count + wakes the status segment when this connection ends.
     _conn_guard: ConnGuard,
 ) -> Result<()> {
-    let ws = transport::accept(stream, &token).await?;
     let (mut write, read) = ws.split();
     // Load the current tool context once per connection (installed at boot
     // before any start, so it carries the generic read services), and stamp

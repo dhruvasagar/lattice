@@ -134,6 +134,11 @@
   (`:set messages.filter=info,rmcp=debug` to see it).
 
 ### Fixed
+- **The Claude Code IDE server counts only agents that signed in.** Any
+  local socket opened to its port was counted in the status line before
+  its token was checked, and one that never finished the handshake held
+  a task open indefinitely. Now a connection counts only after the token
+  checks out, and the handshake must finish within 10 seconds.
 - **An MCP tool call can no longer hang a request.** A call to an
   external MCP server had no time limit, so a stuck server held the
   request until you stopped it. Calls now stop after 300 seconds (set

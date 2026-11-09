@@ -309,6 +309,40 @@ async fn wrong_token_is_rejected() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Only an authenticated agent counts as a connection: a socket that never
+/// finishes the handshake, or one with the wrong token, never shows in the
+/// status count.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_unauthenticated_socket_is_not_a_connection() {
+    let dir = unique_dir("count");
+    let handle = spawn(
+        ServerConfig {
+            workspace_folders: vec![],
+            lock_dir: dir.clone(),
+        },
+        bus(),
+        &tokio::runtime::Handle::current(),
+    );
+    handle.start();
+    let (port, _token) = wait_for_lockfile(&dir).await;
+
+    let _silent = tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .expect("tcp connect");
+    let mut request = format!("ws://127.0.0.1:{port}")
+        .into_client_request()
+        .expect("client request");
+    request
+        .headers_mut()
+        .insert(AUTH_HEADER, HeaderValue::from_static("not-the-real-token"));
+    assert!(tokio_tungstenite::connect_async(request).await.is_err());
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(handle.connection_count(), 0);
+
+    handle.stop();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// Resilience: a blocking `openDiff` review must NOT freeze the connection,
 /// and dropping the connection mid-review must reject + close that session's
 /// diffs (so the agent is never stranded and panes don't leak). This is the

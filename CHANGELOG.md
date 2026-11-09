@@ -134,6 +134,9 @@
   (`:set messages.filter=info,rmcp=debug` to see it).
 
 ### Fixed
+- **A trusted LLM chat reviews edits under `.GIT/` too.** The check for a
+  `.git` directory was case-sensitive, so on macOS or Windows `.GIT/hooks`
+  (the same directory) was written without a diff.
 - **OpenAI-compatible servers that end with a bare `[DONE]` still run
   tools.** Tool calls followed by `[DONE]` and no `finish_reason` ended
   the request as a finished answer, and the calls never ran.

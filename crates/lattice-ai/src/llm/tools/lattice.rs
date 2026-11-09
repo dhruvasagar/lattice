@@ -796,13 +796,15 @@ fn read_error(shown: &str, e: &str) -> String {
 /// Whether `at` is inside a `.git` directory: hooks and `core.fsmonitor`
 /// there run code later, and nothing under `.git` shows in `git status` or
 /// `git diff`, so no later look at the changes would catch it. An edit there
-/// is reviewed even in a trusted chat.
+/// is reviewed even in a trusted chat. Matched without case: on a
+/// case-insensitive filesystem (macOS, Windows) `.GIT/hooks` is the same
+/// directory.
 fn in_git_dir(at: &Resolved) -> bool {
     at.path
         .strip_prefix(&at.root)
         .unwrap_or(&at.path)
         .components()
-        .any(|c| c.as_os_str() == ".git")
+        .any(|c| c.as_os_str().eq_ignore_ascii_case(".git"))
 }
 
 /// `path` with every symlink in it followed, including those in the
@@ -1043,6 +1045,7 @@ mod tests {
         assert!(in_git_dir(&at(".git/hooks/pre-commit")));
         assert!(in_git_dir(&at(".git/config")));
         assert!(in_git_dir(&at("vendor/sub/.git/hooks/post-checkout")));
+        assert!(in_git_dir(&at(".GIT/hooks/pre-commit")));
         assert!(!in_git_dir(&at(".gitignore")));
         assert!(!in_git_dir(&at("src/git/mod.rs")));
     }

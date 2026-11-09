@@ -22,6 +22,7 @@ pub mod modeline;
 pub mod modes;
 pub mod operators;
 pub mod options;
+pub mod path_rules;
 pub mod prompt_cookie;
 pub mod provider;
 pub mod request;

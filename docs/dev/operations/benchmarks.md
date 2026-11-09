@@ -285,6 +285,23 @@ also the cost LL.23 would have added to every chat tool call, one reason it was 
 
 ---
 
+## GR.2 — `llm.exclude` matching (2026-11-09)
+
+`crates/lattice-ai/benches/llm_exclude.rs`. Every read-tool call, every listed or
+searched file and every captured span is checked against the exclude list, and an
+ask's capture runs on the editor thread. The list is now compiled once per change
+(`PathRules`, gitignore semantics); before, every glob was recompiled on every
+check, so each check paid close to the full compile cost below. Debug-free release
+build, the 15-entry default list, a path five directories deep.
+
+| Case | Time |
+|---|---|
+| One check, no match (whole list walked) | 524 ns |
+| One check, matches `.env` | 144 ns |
+| Compiling the list (once per change) | 381 µs |
+
+---
+
 ## LL.4 — LLM stream decode throughput (2026-11-01)
 
 `crates/lattice-ai/benches/llm_decode.rs`. The request task decodes every

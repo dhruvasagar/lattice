@@ -263,6 +263,21 @@ impl LatticeTools {
         Ok(Resolved { path, root })
     }
 
+    /// [`Self::resolve`] for the read tools, which also never look inside a
+    /// `.git` directory, whatever `llm.exclude` says: `.git/config` can hold a
+    /// credential in a remote URL, and a user who replaces the exclude list
+    /// should not lose that by accident (P.4). Edits resolve through
+    /// [`Self::resolve`], where `.git` is reviewed instead (P.2).
+    fn resolve_read(&self, input: &str) -> Result<Resolved, ToolError> {
+        let at = self.resolve(input)?;
+        if in_git_dir(&at) {
+            return Err(ToolError::Refused(format!(
+                "`{input}` is inside a .git directory, which is never read"
+            )));
+        }
+        Ok(at)
+    }
+
     async fn read_file(&self, input: Value) -> Result<ToolOutput, ToolError> {
         #[derive(Deserialize)]
         struct Args {
@@ -271,7 +286,7 @@ impl LatticeTools {
             end_line: Option<usize>,
         }
         let args: Args = parse(input)?;
-        let at = self.resolve(&args.path)?;
+        let at = self.resolve_read(&args.path)?;
         if at.path.is_dir() {
             return Err(ToolError::Failed(format!(
                 "`{}` is a directory; use list_directory",
@@ -295,7 +310,7 @@ impl LatticeTools {
         }
         let args: Args = parse(input)?;
         let shown = args.path.clone().unwrap_or_else(|| ".".into());
-        let at = self.resolve(args.path.as_deref().unwrap_or(""))?;
+        let at = self.resolve_read(args.path.as_deref().unwrap_or(""))?;
         let exclude = self.exclude.clone();
         let dir = at.path.clone();
         let listed = tokio::task::spawn_blocking(move || list(&dir, &exclude))
@@ -318,7 +333,7 @@ impl LatticeTools {
             .case_insensitive(args.ignore_case)
             .build()
             .map_err(|e| ToolError::InvalidArguments(format!("pattern: {e}")))?;
-        let at = self.resolve(args.path.as_deref().unwrap_or(""))?;
+        let at = self.resolve_read(args.path.as_deref().unwrap_or(""))?;
         let open = self.access.open_texts();
         let exclude = self.exclude.clone();
         // Dropping the call (a cancel) stops the walk at its next file.
@@ -1129,6 +1144,71 @@ mod tests {
             .unwrap();
         assert!(!found.contains("hunter2"), "{found}");
         assert!(!found.contains(".env"), "{found}");
+    }
+
+    /// `.git` is never read, listed or searched, whatever the exclude list
+    /// says (P.4): `.git/config` can carry a credential in a remote URL.
+    #[tokio::test]
+    async fn the_read_tools_never_look_inside_git() {
+        let dir = Scratch::new("git");
+        std::fs::create_dir_all(dir.path().join(".git")).unwrap();
+        std::fs::write(
+            dir.path().join(".git/config"),
+            "[remote \"origin\"]\n\turl = https://user:hunter2@example.com/r\n",
+        )
+        .unwrap();
+        let (tools, _chats) = tools_over(dir.path());
+        for (tool, input) in [
+            ("read_file", serde_json::json!({"path": ".git/config"})),
+            ("list_directory", serde_json::json!({"path": ".git"})),
+            (
+                "search",
+                serde_json::json!({"pattern": "hunter2", "path": ".git"}),
+            ),
+        ] {
+            let why = call(&tools, tool, input).await.unwrap_err();
+            assert!(why.contains(".git directory"), "{tool}: {why}");
+            assert!(!why.contains("hunter2"), "{tool}: {why}");
+        }
+    }
+
+    /// The defaults P.4 added are refused; a source file whose name merely
+    /// contains one of them is not.
+    #[tokio::test]
+    async fn the_default_list_covers_the_common_credential_files() {
+        let dir = Scratch::new("defaults");
+        std::fs::create_dir_all(dir.path().join(".aws")).unwrap();
+        for f in [
+            ".npmrc",
+            ".pgpass",
+            "credentials.json",
+            ".aws/credentials",
+            "id.p12",
+            "src.rs",
+        ] {
+            std::fs::write(dir.path().join(f), "x\n").unwrap();
+        }
+        std::fs::write(dir.path().join("credentials.rs"), "fn f() {}\n").unwrap();
+        let (tools, _chats) = tools_over(dir.path());
+        for f in [
+            ".npmrc",
+            ".pgpass",
+            "credentials.json",
+            ".aws/credentials",
+            "id.p12",
+        ] {
+            let why = call(&tools, "read_file", serde_json::json!({"path": f}))
+                .await
+                .unwrap_err();
+            assert!(why.contains("llm.exclude"), "{f}: {why}");
+        }
+        let read = call(
+            &tools,
+            "read_file",
+            serde_json::json!({"path": "credentials.rs"}),
+        )
+        .await;
+        assert!(read.unwrap().contains("fn f()"));
     }
 
     /// A link is judged by where it leads: one out of the project is refused

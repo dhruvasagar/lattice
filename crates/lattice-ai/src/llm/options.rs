@@ -20,7 +20,9 @@
 use super::settings::{SettingKey, validate};
 
 /// What `llm.exclude` refuses when nothing overrides it: files that hold
-/// secrets by convention.
+/// secrets by convention. `credentials` is named exactly (with the
+/// `.json`/`.db` forms gcloud and the Google SDKs write), not `credentials*`,
+/// which would refuse a project's own `credentials.rs`.
 pub const DEFAULT_EXCLUDE: &[&str] = &[
     ".env",
     ".env.*",
@@ -29,38 +31,32 @@ pub const DEFAULT_EXCLUDE: &[&str] = &[
     "id_rsa*",
     "id_ed25519*",
     ".netrc",
+    ".npmrc",
+    ".pgpass",
+    "credentials",
+    "credentials.json",
+    "credentials.db",
+    ".aws/",
+    "*.p12",
+    "*.pfx",
 ];
 
-/// `llm.exclude`: globs naming files whose text is never sent (design §5).
+/// `llm.exclude`: gitignore patterns naming files whose text is never sent
+/// (design §5, §6 "Safety lists"), matched by [`PathRules`] relative to the
+/// project root: a bare name at any depth, a pattern with a `/` from the root,
+/// a trailing `/` a directory and everything in it.
 ///
-/// A glob without a `/` is matched against the file name, so `.env` refuses
-/// every `.env` in the tree; one with a `/` is matched against the whole path.
 /// The value **replaces** the default, as `:set` does for every list option, so
 /// `:set llm.exclude?` shows exactly what a user is about to replace. Empty
 /// excludes nothing, deliberately.
+///
+/// [`PathRules`]: super::path_rules::PathRules
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExcludeGlobs(pub Vec<String>);
 
 impl Default for ExcludeGlobs {
     fn default() -> Self {
         Self(DEFAULT_EXCLUDE.iter().map(|g| g.to_string()).collect())
-    }
-}
-
-impl ExcludeGlobs {
-    /// The first glob `path` matches, if any.
-    pub fn matching(&self, path: &std::path::Path) -> Option<&str> {
-        let name = path.file_name()?;
-        self.0.iter().map(String::as_str).find(|glob| {
-            let Ok(matcher) = globset::Glob::new(glob).map(|g| g.compile_matcher()) else {
-                return false;
-            };
-            if glob.contains('/') {
-                matcher.is_match(path)
-            } else {
-                matcher.is_match(name)
-            }
-        })
     }
 }
 
@@ -72,10 +68,7 @@ impl lattice_config::OptionType for ExcludeGlobs {
             .filter(|g| !g.is_empty())
             .map(str::to_string)
             .collect();
-        for glob in &globs {
-            globset::Glob::new(glob)
-                .map_err(|e| format!("llm.exclude: `{glob}` is not a glob ({e})"))?;
-        }
+        super::path_rules::PathRules::validate(&globs).map_err(|e| format!("llm.exclude: {e}"))?;
         Ok(Self(globs))
     }
 
@@ -216,9 +209,9 @@ lattice_config::options! {
     #[validate(v_profile)]
     pub LlmDefaultProfile: String = String::new();
 
-    /// Files whose text is never sent, as globs: `.env`, `*.pem`. A glob with
-    /// no `/` matches the file name anywhere; one with a `/` matches the path.
-    /// Replaces the default list rather than adding to it. Global only.
+    /// Files whose text is never sent, as gitignore patterns: `.env`, `*.pem`,
+    /// `secrets/`. A bare name matches anywhere; one with a `/` is relative to
+    /// the project root. Replaces the default list rather than adding to it.
     #[name("llm.exclude")]
     pub LlmExclude: ExcludeGlobs = ExcludeGlobs::default();
 

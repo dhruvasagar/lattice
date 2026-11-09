@@ -109,5 +109,10 @@ name = "llm_projection"
 harness = false
 required-features = ["llm"]
 
+[[bench]]
+name = "llm_exclude"
+harness = false
+required-features = ["llm"]
+
 [lints]
 workspace = true

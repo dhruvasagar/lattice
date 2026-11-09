@@ -870,8 +870,9 @@ Fix now (clear defects, one commit each):
   is never cleared when a buffer is removed. Fixed: `Editor::record_seen_text_version` on
   every host-made change, and `remove_buffer` drops the entry; pinned by two caret tests that
   fail on the old code (the key landed inside the streamed text).
-- 📝 R.4 **`llm.exclude` globs containing `/` never match** (globset anchors at the start of
-  the absolute path), so `secrets/*` excludes nothing.
+- ✅ R.4 **`llm.exclude` globs containing `/` never match** (globset anchors at the start of
+  the absolute path), so `secrets/*` excludes nothing. Fixed: gitignore matching relative to the root
+  (`a_pattern_with_a_slash_is_relative_to_the_root`).
 - ✅ R.5 **The command popup's invisible-character list is incomplete**: variation selectors,
   tag characters, Hangul fillers, U+034F, U+2800 and the Unicode spaces pass through
   unescaped and uncollapsed. Fixed: every blank but space/tab and every blank-rendering
@@ -920,7 +921,7 @@ Security policy (Dhruva decided 2026-11-09, the recommended option each time):
 - ✅ P.3 **Keep per-tool, and say so** in the answer's label and the docs. "Allow for this chat" on an MCP tool covers every later call with any arguments
   (`run_command` is exact-arguments). Fixed: the answer reads "Allow this tool for this chat (any arguments)",
   pinned in the broker test; the guide, its gate table and the design fragment say what it covers.
-- 📝 P.4 **Extend both**: add the globs, and `read_file` refuses `.git/**`. The default exclude list lacks `.npmrc`, `.pgpass`, `credentials*`, `.aws/**`,
+- ✅ P.4 **Extend both**: add the globs, and `read_file` refuses `.git/**`. The default exclude list lacks `.npmrc`, `.pgpass`, `credentials*`, `.aws/**`,
   `*.p12`, `*.pfx`; `read_file` can read `.git/config`.
 
 Layered safety lists, and the standards they follow (Dhruva decided 2026-11-09). These replace
@@ -943,16 +944,21 @@ P.4, GR.1, P.2, GR.3, GR.4. Decided with it:
   `~/.config/lattice` config and the project `./.lattice`. **The project only narrows:** its
   `exclude`, `review` and `deny` are added to the global lists, and it can neither remove an
   entry nor allow a command. A project `allow` is refused and named in `*messages*`.
-- 📝 GR.2 **`llm.exclude` uses gitignore semantics** (relative to the project root, a leading
+- 🚧 GR.2 **`llm.exclude` uses gitignore semantics** (relative to the project root, a leading
   `/` anchors, a bare name matches at any depth; this fixes R.4), and a project's
-  `.aiexclude`, `.aiignore` and `.agentignore` are read as additional excludes.
+  `.aiexclude`, `.aiignore` and `.agentignore` are read as additional excludes. The matching half
+  landed with R.4 and P.4: `llm/path_rules.rs` (`PathRules`, compiled once per list and root);
+  reading the ignore files is part of GR.1's project additions.
 - 📝 GR.3 **`allow` / `deny` rules** use the shape Claude Code and OpenCode share:
   `run_command(git push *)`, `read_file(.env)`, `mcp_server.tool(...)`; deny beats ask
   beats allow. The chat-scoped "allow for this chat" stays as it is.
 - 📝 GR.4 **AGENTS.md** joins the system prompt as instructions (nearest file wins), trusted as
   a project's system prompt is: it instructs, never widens tools.
-- The default exclude list gains `.npmrc`, `.pgpass`, `credentials*`, `.aws/**`, `*.p12` and
-  `*.pfx`, and `read_file` refuses `.git/**` (P.4).
+- ✅ The default exclude list gains `.npmrc`, `.pgpass`, `credentials`, `credentials.json`,
+  `credentials.db`, `.aws/`, `*.p12` and `*.pfx`, and the read tools refuse `.git/` (P.4).
+  `credentials*` was narrowed to the names credential tools actually write, because it would
+  have refused a project's own `credentials.rs`. Pinned by `the_default_list_covers_the_common_credential_files`
+  and `the_read_tools_never_look_inside_git`.
 
 Verified and accepted (no change):
 

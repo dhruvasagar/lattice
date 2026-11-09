@@ -28,6 +28,7 @@
 //! `submit` and in `end_turn`, so a send landing between a turn ending and the
 //! next being chosen cannot strand a prompt.
 
+use super::path_rules::PathRules;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock};
@@ -349,11 +350,21 @@ pub struct MenuHeld {
     pub lines: String,
 }
 
+/// [`LlmChats::exclude_rules_for`]'s cache entry.
+struct CompiledExclude {
+    globs: super::options::ExcludeGlobs,
+    root: std::path::PathBuf,
+    rules: Arc<PathRules>,
+}
+
 pub struct LlmChats {
     runtime: Handle,
     requests: RequestRegistryHandle,
     bus: Arc<lattice_runtime::EventBus>,
     config: RwLock<LlmConfig>,
+    /// `llm.exclude` compiled against the tools root, with the list and root
+    /// it was compiled from: rebuilt when either changes, never per check.
+    exclude_rules: RwLock<Option<CompiledExclude>>,
     /// The global registry, where `:set llm.*` and the config file's scalar
     /// settings land. Absent in tests that run without a host.
     registry: RwLock<Option<Arc<ConfigRegistry>>>,
@@ -434,6 +445,7 @@ impl LlmChats {
             requests,
             bus,
             config: RwLock::new(config),
+            exclude_rules: RwLock::new(None),
             registry: RwLock::new(None),
             sessions: RwLock::new(HashMap::new()),
             read_only: RwLock::new(Default::default()),
@@ -850,11 +862,45 @@ impl LlmChats {
             .map(|v| (*v).clone())
             .unwrap_or_default();
         drop(reg);
-        if let Some(glob) = globs.matching(path) {
-            return Some(glob.to_string());
+        // A list that will not compile (it was validated when set, so only a
+        // hand-built registry can hold one) refuses every file: the safe side.
+        let rules = match self.exclude_rules_for(globs) {
+            Ok(rules) => rules,
+            Err(e) => return Some(format!("llm.exclude does not compile: {e}")),
+        };
+        if let Some(pattern) = rules.matching(path) {
+            return Some(pattern.to_string());
         }
         let real = std::fs::canonicalize(path).ok()?;
-        globs.matching(&real).map(str::to_string)
+        rules.matching(&real).map(str::to_string)
+    }
+
+    /// `globs` compiled against the tools root, from the cache when neither
+    /// changed.
+    fn exclude_rules_for(
+        &self,
+        globs: super::options::ExcludeGlobs,
+    ) -> Result<Arc<PathRules>, String> {
+        let root = self.tools_root();
+        if let Some(c) = self
+            .exclude_rules
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .filter(|c| c.globs == globs && c.root == root)
+        {
+            return Ok(c.rules.clone());
+        }
+        let rules = Arc::new(PathRules::new(&root, &globs.0)?);
+        *self
+            .exclude_rules
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = Some(CompiledExclude {
+            globs,
+            root,
+            rules: rules.clone(),
+        });
+        Ok(rules)
     }
 
     /// Flip the menu's scope for `buffer` and return the new one.

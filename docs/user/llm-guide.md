@@ -424,7 +424,8 @@ folded block in the transcript.
 These run without asking, so they are kept to what you could see yourself. A file you
 have open is read as you have it, unsaved edits included. A path outside the project
 (`../`, `/etc`, a link out) is refused and the model is told why. A file `llm.exclude`
-names is never read.
+names is never read, and nothing inside a `.git` directory is ever read, listed or
+searched, whatever `llm.exclude` says: `.git/config` can hold a password in a remote URL.
 
 ### `lattice.edit`
 
@@ -609,7 +610,7 @@ asking. `@unknown` is just text.
 | `llm.fold.reasoning`, `llm.fold.tools` | `closed`, `open`, `hidden`; applied to open chats live |
 | `llm.profile` | The profile in use |
 | `llm.default_profile`, `llm.default_provider` | Global only |
-| `llm.exclude` | Globs never sent; global only |
+| `llm.exclude` | Gitignore patterns never sent; global only |
 | `llm.tool_rounds` | Rounds of tool calls one request may run; global only |
 | `llm.prefix` | The keys every llm chord starts with; global only |
 
@@ -677,15 +678,20 @@ still pass one on purpose.
 
 **What leaves the machine.** What a request sends is visible beforehand with `:llm-inspect`.
 Text is sent only from what you ask about, what you attached, and what a tool you enabled
-reads. `llm.exclude` is a list of globs for files that are never sent:
+reads. `llm.exclude` lists files that are never sent, as gitignore patterns (the syntax
+of `.gitignore`, `.aiexclude` and `.aiignore`). The default:
 
 ```toml
 [llm]
-exclude = [".env", ".env.*", "*.pem", "*.key", "id_rsa*", "id_ed25519*", ".netrc"]
+exclude = [".env", ".env.*", "*.pem", "*.key", "id_rsa*", "id_ed25519*", ".netrc",
+           ".npmrc", ".pgpass", "credentials", "credentials.json", "credentials.db",
+           ".aws/", "*.p12", "*.pfx"]
 ```
 
-A glob without `/` matches the file name in any directory; one with `/` matches the whole
-path. It holds for asking, attaching context, rewriting and the read tools, sees through
+A bare name (`.env`, `*.pem`) matches in any directory. A pattern with a `/` in it is
+relative to the project root (`secrets/*.txt`, `/build.log`), and one ending in `/` covers a
+directory and everything in it (`.aws/`). `!pattern` re-includes something an earlier
+entry excluded. A file outside the project is still refused by a bare name. It holds for asking, attaching context, rewriting and the read tools, sees through
 links (a file is checked by where it really is), and counts a view composed of several files
 as every file it shows, checked again when the request is sent. Setting it **replaces** the
 list, so copy the default to add to it; an empty list excludes nothing.

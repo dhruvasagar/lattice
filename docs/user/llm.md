@@ -66,8 +66,8 @@ server's `github.*`; see [`llm-chat-mode`](help:llm-chat-mode) and
 [`llm-mcp-mode`](help:llm-mcp-mode)), `llm.destination` (a kind, or an open chat's buffer
 name to continue it), `llm.fold.reasoning` and `llm.fold.tools` (`closed` `open`
 `hidden`, applied to open chats live), `llm.profile`, and the global-only
-`llm.default_profile`, `llm.default_provider`, `llm.exclude` (globs naming files
-that are never sent; see [`llm-mode`](help:llm-mode)), `llm.tool_rounds` (how many
+`llm.default_profile`, `llm.default_provider`, `llm.exclude` (gitignore patterns
+naming files that are never sent; see [`llm-mode`](help:llm-mode)), `llm.tool_rounds` (how many
 rounds of tool calls one request may run) and `llm.prefix` (the keys every llm chord
 starts with).
 

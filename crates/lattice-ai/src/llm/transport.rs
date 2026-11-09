@@ -391,7 +391,7 @@ fn describe_error(e: &reqwest::Error) -> String {
         src = s.source();
     }
     if let Some(url) = e.url() {
-        text.push_str(&format!(" ({url})"));
+        text.push_str(&format!(" ({})", super::redacted_url(url.as_str())));
     }
     text
 }

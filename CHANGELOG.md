@@ -134,6 +134,10 @@
   (`:set messages.filter=info,rmcp=debug` to see it).
 
 ### Fixed
+- **A key in a custom LLM `base_url` is never shown.** A URL carrying a
+  password (`https://user:key@host`) or a key in its query (`?key=…`)
+  appeared as written in connection errors and `:llm-inspect`. Both now
+  show the URL without its user part and with each query value as `…`.
 - **A trusted LLM chat reviews edits under `.GIT/` too.** The check for a
   `.git` directory was case-sensitive, so on macOS or Windows `.GIT/hooks`
   (the same directory) was written without a diff.

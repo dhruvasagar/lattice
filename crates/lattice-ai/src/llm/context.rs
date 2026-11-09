@@ -277,8 +277,10 @@ pub fn prepend(messages: &mut [Message], block: &str) {
 /// A request as `:llm-inspect` shows it: the method and URL, the headers, a
 /// blank line, the body pretty-printed. Built with [`REDACTED`] in the key's
 /// place, so the key is not in it to leak; any header carrying it shows that.
+/// The URL is [`redacted_url`](super::redacted_url): a key put in a custom
+/// `base_url` is not shown either.
 pub fn show(http: &HttpRequest) -> String {
-    let mut out = format!("{} {}\n", http.method, http.url);
+    let mut out = format!("{} {}\n", http.method, super::redacted_url(&http.url));
     for (name, value) in &http.headers {
         out.push_str(&format!("{name}: {value}\n"));
     }

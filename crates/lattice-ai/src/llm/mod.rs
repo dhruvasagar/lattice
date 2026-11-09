@@ -71,8 +71,45 @@ impl std::fmt::Debug for ApiKey {
     }
 }
 
+/// `url` with nothing secret in it, for whatever shows or logs it: no user or
+/// password, each query value written `…` (the names stay, so
+/// `?api-version=…&key=…` still says what was sent), no fragment. A key
+/// put in a custom `base_url` (`https://user:key@host`, `?key=…`) is the case
+/// this is for.
+pub fn redacted_url(url: &str) -> String {
+    let url = url.split_once('#').map_or(url, |(u, _)| u);
+    let (url, query) = match url.split_once('?') {
+        Some((u, q)) => (u, Some(q)),
+        None => (url, None),
+    };
+    let mut out = match url.split_once("://") {
+        Some((scheme, rest)) => {
+            let (host, path) = rest.split_at(rest.find('/').unwrap_or(rest.len()));
+            let host = host.rsplit_once('@').map_or(host, |(_, h)| h);
+            format!("{scheme}://{host}{path}")
+        }
+        None => url.to_string(),
+    };
+    if let Some(query) = query {
+        let names: Vec<String> = query
+            .split('&')
+            .filter(|p| !p.is_empty())
+            .map(|p| match p.split_once('=') {
+                Some((name, _)) => format!("{name}=…"),
+                None => p.to_string(),
+            })
+            .collect();
+        if !names.is_empty() {
+            out.push('?');
+            out.push_str(&names.join("&"));
+        }
+    }
+    out
+}
+
 /// A fully-built HTTP request, as plain data. The transport (LL.4) executes it.
-/// `Debug` names the headers but not their values, which hold the API key.
+/// `Debug` names the headers but not their values, which hold the API key, and
+/// shows the URL [`redacted_url`].
 #[derive(Clone, PartialEq, Eq)]
 pub struct HttpRequest {
     pub method: String,
@@ -85,7 +122,7 @@ impl std::fmt::Debug for HttpRequest {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("HttpRequest")
             .field("method", &self.method)
-            .field("url", &self.url)
+            .field("url", &redacted_url(&self.url))
             .field(
                 "headers",
                 &self.headers.iter().map(|(k, _)| k).collect::<Vec<_>>(),
@@ -225,4 +262,35 @@ pub enum StreamEvent {
     Usage(Usage),
     Done(StopReason),
     Error(ProviderError),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A key in a custom `base_url` (its user part or a query value) never
+    /// reaches anything that shows the URL; where it went still reads.
+    #[test]
+    fn a_shown_url_keeps_no_secret() {
+        assert_eq!(
+            redacted_url("https://me:sk-1@gw.example:8443/v1/chat?api-version=2024&key=sk-2#x"),
+            "https://gw.example:8443/v1/chat?api-version=…&key=…"
+        );
+        assert_eq!(
+            redacted_url("http://localhost:11434/v1"),
+            "http://localhost:11434/v1"
+        );
+        let http = HttpRequest {
+            method: "POST".into(),
+            url: "https://u:sk-1@h/v1?key=sk-2".into(),
+            headers: Vec::new(),
+            body: Vec::new(),
+        };
+        let shown = format!("{http:?}");
+        assert!(
+            !shown.contains("sk-1") && !shown.contains("sk-2"),
+            "{shown}"
+        );
+        assert!(!context::show(&http).contains("sk-"), "inspect too");
+    }
 }

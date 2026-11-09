@@ -525,6 +525,10 @@ tool does is not trusted.
 
 - **Every server tool asks before it runs**, unless it is named in `allow`. A server that
   marks a tool read-only gets that said in the question, and the tool asks all the same.
+- "Allow this tool for this chat (any arguments)" covers **every later call of that
+  tool** in the chat, whatever it is asked to do, until the chat closes. A server tool's
+  input is not something lattice can judge, so unlike a command it is not narrowed to the
+  exact call. Pick "allow once" when the arguments matter.
   A server tool's edits happen in its own process and cannot go through lattice's diff
   review, so your answer is the only review there is.
 - A server starts when a request first selects one of its tools, never for a request that
@@ -692,7 +696,7 @@ list, so copy the default to add to it; an empty list excludes nothing.
 |---|---|
 | Model edits a file | A diff you accept or reject. `<C-t>` skips it for one chat, except under `.git` |
 | Model runs a command | Asks, showing the whole command. Allow once, for this chat (exact command; dropped by an unreviewed edit), or deny |
-| MCP server tool | Asks unless named in that server's `allow` |
+| MCP server tool | Asks unless named in that server's `allow`. Allow once, for this chat (the whole tool, any arguments), or deny |
 | Rewrite | A diff, never a direct write |
 | Large selection | Asks over 32 KB |
 

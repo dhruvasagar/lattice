@@ -684,6 +684,12 @@ mod tests {
         );
         let q = asked.lock().unwrap()[0].clone();
         assert_eq!(q.chat_allow_label(), "Allow this command for this chat");
+        let q = asked.lock().unwrap()[3].clone();
+        assert_eq!(
+            q.chat_allow_label(),
+            "Allow this tool for this chat (any arguments)",
+            "a whole-tool allow says so"
+        );
 
         // Text in the command cannot pass for the place it runs.
         asked.lock().unwrap().clear();

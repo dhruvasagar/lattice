@@ -128,7 +128,10 @@ impl Question {
     /// The menu's label for the "allow for this chat" answer.
     pub fn chat_allow_label(&self) -> &'static str {
         match self.chat_allow {
-            ChatAllow::Tool => "Allow for this chat",
+            // Says what it covers: every later call, whatever its arguments.
+            // A server tool's input cannot be judged the way a command's can,
+            // so it is allowed whole or asked each time (P.3).
+            ChatAllow::Tool => "Allow this tool for this chat (any arguments)",
             ChatAllow::Call(_) => "Allow this command for this chat",
         }
     }

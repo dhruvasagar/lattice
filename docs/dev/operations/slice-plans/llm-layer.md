@@ -908,8 +908,9 @@ Security policy (Dhruva decided 2026-11-09, the recommended option each time):
 - 📝 P.2 **Fence `.git`, `.hg`, `.jj` and `.lattice`.** A trusted chat (`<C-t>`) writes everything but `.git` unreviewed, including
   `.lattice/llm.toml`, `.lattice/config.toml`, `.envrc`, `.cargo/config.toml`, CI
   workflows and `.hg`/`.jj`.
-- 📝 P.3 **Keep per-tool, and say so** in the answer's label and the docs. "Allow for this chat" on an MCP tool covers every later call with any arguments
-  (`run_command` is exact-arguments).
+- ✅ P.3 **Keep per-tool, and say so** in the answer's label and the docs. "Allow for this chat" on an MCP tool covers every later call with any arguments
+  (`run_command` is exact-arguments). Fixed: the answer reads "Allow this tool for this chat (any arguments)",
+  pinned in the broker test; the guide, its gate table and the design fragment say what it covers.
 - 📝 P.4 **Extend both**: add the globs, and `read_file` refuses `.git/**`. The default exclude list lacks `.npmrc`, `.pgpass`, `credentials*`, `.aws/**`,
   `*.p12`, `*.pfx`; `read_file` can read `.git/config`.
 

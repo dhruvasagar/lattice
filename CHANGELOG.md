@@ -118,6 +118,7 @@
   `.env`, `*.pem`, `*.key` and SSH keys.
 
 ### Changed
+- The "allow for this chat" answer for an MCP server's tool now reads "Allow this tool for this chat (any arguments)": it covers every later call of that tool, whatever its arguments.
 - **A trusted LLM chat still asks before editing under `.git`.** `<C-t>`
   applies edits without a diff, except inside a `.git` directory: a hook or
   `core.fsmonitor` there runs code later, and `git status` never shows it.

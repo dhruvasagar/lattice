@@ -530,7 +530,9 @@ block on a full pipe. The result carries the exit status, both streams, and a li
 saying where each was cut.
 
 **"Allow for this chat"** lives on the chat session, like `<C-t>`: never saved, never
-copied, cleared when the chat closes. For most tools it covers the tool. For a tool of
+copied, cleared when the chat closes. For most tools it covers the tool, and the answer
+says so: "Allow this tool for this chat (any arguments)". An MCP tool's arguments are
+opaque to lattice, so no narrower key would mean anything to the user. For a tool of
 the `Execute` kind it covers the exact call (the command and where it runs), offered as
 "Allow this command for this chat": allowing `cargo test` must not allow whatever a
 prompt-injected tool result asks for next, while re-running the same tests still asks

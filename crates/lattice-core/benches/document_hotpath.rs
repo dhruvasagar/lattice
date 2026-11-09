@@ -308,9 +308,50 @@ fn rebase_over_appends(c: &mut Criterion) {
     g.finish();
 }
 
+/// A two-edit batch (an operator's shape) positioned before `k` appends and
+/// rebased over them in the turn that applies it. `k = 0` is what every
+/// operator now pays for the check; compare `rebase_over_appends`.
+fn rebase_batch_over_appends(c: &mut Criterion) {
+    use lattice_core::document::BaseMismatch;
+    use lattice_core::tracked::{Stickiness, TrackedRangeId};
+    use lattice_protocol::position::Range;
+    let mut g = c.benchmark_group("document_edit_p99_us::rebase_batch_over_appends");
+    for k in [0usize, 1, 8] {
+        g.throughput(Throughput::Elements(1));
+        g.bench_with_input(BenchmarkId::from_parameter(k), &k, |bencher, &k| {
+            bencher.iter_with_setup(
+                || {
+                    let mut d = build_doc(1_000);
+                    let at = (d.buffer().byte_len() / 2) as usize;
+                    let id = TrackedRangeId::next();
+                    d.update_tracked_ranges(|t| t.insert(id, at..at, Stickiness::NeverGrows));
+                    let base = d.text_version();
+                    for _ in 0..k {
+                        d.append_to_tracked(id, "token\n").unwrap();
+                    }
+                    (d, base)
+                },
+                |(mut d, base)| {
+                    d.apply_edit_batch_based_on(
+                        black_box(vec![
+                            Edit::delete(Range::new(Position::new(900, 0), Position::new(901, 0))),
+                            Edit::insert(Position::new(900, 0), "x\n"),
+                        ]),
+                        base,
+                        BaseMismatch::UseAsGiven,
+                    )
+                    .unwrap();
+                },
+            );
+        });
+    }
+    g.finish();
+}
+
 criterion_group!(
     benches,
     rebase_over_appends,
+    rebase_batch_over_appends,
     append_to_tracked,
     viewport_walk,
     insert_at_middle,

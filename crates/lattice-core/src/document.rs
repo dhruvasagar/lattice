@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use lattice_protocol::edit::{Edit, EditKind};
 use lattice_protocol::ids::DocumentId;
-use lattice_protocol::position::Range;
+use lattice_protocol::position::{Position, Range};
 use lattice_protocol::selection::{Selection, SelectionSet};
 
 use crate::buffer::{AppliedEdit, Buffer, transform_position};
@@ -675,6 +675,112 @@ impl Document {
         edit
     }
 
+    /// `edits`, a batch positioned against `text_version == based_on` (each
+    /// edit in the coordinates the ones before it produce), carried over the
+    /// appends since so the batch lands on the text it was aimed at. `Err`
+    /// gives the batch back untouched when something other than an append
+    /// changed the text since, or the append log no longer reaches back.
+    ///
+    /// Each edit moves over the appends as [`Self::rebase_edit`] moves one,
+    /// and the appends then move over that edit (an append at the edit's
+    /// start stays before it), so the next edit meets them where they now
+    /// are. An append whose text an edit covers is gone after it and moves
+    /// nothing further. Positions only: the buffer is never read.
+    ///
+    /// # Errors
+    ///
+    /// The batch itself, returned when it cannot be rebased.
+    pub fn rebase_edit_batch(
+        &self,
+        edits: Vec<Edit>,
+        based_on: u64,
+    ) -> Result<Vec<Edit>, Vec<Edit>> {
+        let Some(appends) = self.appends_since(based_on) else {
+            return Err(edits);
+        };
+        if appends.is_empty() {
+            return Ok(edits);
+        }
+        let mut regions: Vec<Shift> = appends
+            .iter()
+            .map(|a| Shift {
+                original: a.original_range,
+                inserted: a.inserted_range,
+            })
+            .collect();
+        let mut out = Vec::with_capacity(edits.len());
+        for mut edit in edits {
+            let text = match &edit.kind {
+                EditKind::Replace { text } => text.as_str(),
+            };
+            let mut next = Vec::with_capacity(regions.len());
+            for region in regions {
+                // `edit` and `region` are positioned against the same text.
+                let before = edit.range;
+                let empty = before.start == before.end;
+                let start = shift_position(before.start, &region);
+                let end = if empty {
+                    start
+                } else {
+                    shift_end(before.end, &region)
+                };
+                edit.range = Range::new(start, end);
+                let appended = region.inserted.start != region.inserted.end;
+                let covered = appended
+                    && !empty
+                    && start <= region.inserted.start
+                    && end >= region.inserted.end;
+                if covered || !appended {
+                    continue;
+                }
+                // The append, moved over `before` (pre-region coordinates).
+                let at = region.original.start;
+                let over = Shift {
+                    original: before,
+                    inserted: Range::new(before.start, end_after(before.start, text)),
+                };
+                let moved = if at <= before.start {
+                    at
+                } else {
+                    shift_position(at, &over)
+                };
+                next.push(Shift {
+                    original: Range::empty(moved),
+                    inserted: Range::new(
+                        moved,
+                        offset(moved, region.original.start, region.inserted.end),
+                    ),
+                });
+            }
+            regions = next;
+            out.push(edit);
+        }
+        Ok(out)
+    }
+
+    /// [`Self::apply_edit_batch`] for a batch positioned against
+    /// `text_version == based_on`: rebased over the appends since
+    /// ([`Self::rebase_edit_batch`]) in the turn that applies it. When the
+    /// text changed by anything else, `on_mismatch` decides: apply the batch
+    /// as given, or refuse it with [`CoreError::Stale`].
+    ///
+    /// # Errors
+    ///
+    /// [`CoreError::Stale`] when refused; otherwise those of
+    /// [`Self::apply_edit_batch`].
+    pub fn apply_edit_batch_based_on(
+        &mut self,
+        edits: Vec<Edit>,
+        based_on: u64,
+        on_mismatch: BaseMismatch,
+    ) -> CoreResult<Vec<AppliedEdit>> {
+        let edits = match (self.rebase_edit_batch(edits, based_on), on_mismatch) {
+            (Ok(edits), _) | (Err(edits), BaseMismatch::UseAsGiven) => edits,
+            (Err(_), BaseMismatch::Refuse) => return Err(CoreError::Stale),
+        };
+        self.apply_edit_batch(edits)
+    }
+
     /// [`Self::apply_edit`] after [`Self::rebase_edit`].
     ///
     /// # Errors
@@ -972,6 +1078,63 @@ impl Document {
 /// frame and a key's dispatch takes well under one, so one entry is the
 /// common case; the cap only bounds memory.
 const APPEND_LOG_CAP: usize = 64;
+
+/// What [`Document::apply_edit_batch_based_on`] does when the text changed
+/// after the batch's version by something other than an append, so the batch
+/// cannot be carried to where it was aimed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BaseMismatch {
+    /// Apply it as given: what every write did before rebasing existed. Right
+    /// for a key, which the user pressed and expects to take effect.
+    UseAsGiven,
+    /// Refuse with [`CoreError::Stale`]. Right for a write computed from text
+    /// it must still match, such as a reviewed replacement: the caller reads
+    /// again and decides again.
+    Refuse,
+}
+
+/// An applied change, as positions only: what [`transform_position`] reads.
+#[derive(Debug, Clone, Copy)]
+struct Shift {
+    original: Range,
+    inserted: Range,
+}
+
+fn shift_position(pos: Position, shift: &Shift) -> Position {
+    crate::buffer::transform_position_over(pos, shift.original, shift.inserted)
+}
+
+/// [`transform_end`] over a [`Shift`].
+fn shift_end(end: Position, shift: &Shift) -> Position {
+    if shift.original.start == shift.original.end && end <= shift.original.start {
+        end
+    } else {
+        shift_position(end, shift)
+    }
+}
+
+/// Where `text` ends when inserted at `start`.
+fn end_after(start: Position, text: &str) -> Position {
+    match text.rfind('\n') {
+        Some(nl) => Position::new(
+            start.line + u32::try_from(text.matches('\n').count()).unwrap_or(u32::MAX),
+            u32::try_from(text.len() - nl - 1).unwrap_or(u32::MAX),
+        ),
+        None => Position::new(
+            start.line,
+            start.byte + u32::try_from(text.len()).unwrap_or(u32::MAX),
+        ),
+    }
+}
+
+/// `end`, an insertion's end measured from `from`, measured from `to` instead.
+fn offset(to: Position, from: Position, end: Position) -> Position {
+    if end.line == from.line {
+        Position::new(to.line, to.byte + (end.byte - from.byte))
+    } else {
+        Position::new(to.line + (end.line - from.line), end.byte)
+    }
+}
 
 /// The end of a non-empty range, moved over an insertion `applied`. Unlike
 /// [`transform_position`], an end exactly at the insertion point stays: the

@@ -213,6 +213,21 @@ handful of position transforms against a log the actor already holds.
 
 ---
 
+## Rebasing a batch over appends it had not seen (2026-11-09)
+
+`document_edit_p99_us::rebase_batch_over_appends/{k}` (`lattice-core/benches/document_hotpath.rs`):
+a two-edit batch (an operator's shape: delete a line, insert one) in a 1 000-line document,
+positioned before `k` appends and rebased over them in the turn that applies it.
+
+| k | 0 | 1 | 8 | `rebase_over_appends/0` (one edit, reference) |
+|---|---|---|---|---|
+| time | 2.45 µs | 2.35 µs | 2.66 µs | 1.78 µs |
+
+Flat in `k` within noise. The gap to the single-edit row is the second edit's rope work, not the
+rebase: moving each edit over each append and back is position arithmetic, with no buffer reads.
+
+---
+
 ## LL.12 — anchored append, and a keystroke during a stream (2026-11-07)
 
 `document_edit_p99_us::append_to_tracked` (`lattice-core/benches/document_hotpath.rs`)

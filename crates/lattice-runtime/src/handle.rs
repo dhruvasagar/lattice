@@ -38,6 +38,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use lattice_core::Document;
+use lattice_core::document::BaseMismatch;
 use lattice_grammar::{CancellationToken, CommandInvocation, CommandRegistryHandle, Effect};
 use lattice_protocol::edit::Edit;
 use lattice_protocol::ids::DocumentId;
@@ -221,7 +222,27 @@ impl RopeDocumentHandle {
 
     /// Apply multiple edits as one undo unit.
     pub fn apply_edit_batch(&self, edits: Vec<Edit>) -> Pending<Vec<AppliedEdit>> {
-        self.send(|reply| ActorMsg::ApplyEditBatch { edits, reply })
+        self.send(|reply| ActorMsg::ApplyEditBatch {
+            edits,
+            based_on: None,
+            reply,
+        })
+    }
+
+    /// [`Self::apply_edit_batch`] for a batch positioned against
+    /// `text_version == based_on`. See
+    /// [`crate::document::Document::apply_edit_batch_based_on`].
+    pub fn apply_edit_batch_based_on(
+        &self,
+        edits: Vec<Edit>,
+        based_on: u64,
+        on_mismatch: BaseMismatch,
+    ) -> Pending<Vec<AppliedEdit>> {
+        self.send(|reply| ActorMsg::ApplyEditBatch {
+            edits,
+            based_on: Some((based_on, on_mismatch)),
+            reply,
+        })
     }
 
     pub fn undo(&self) -> Pending<Vec<AppliedEdit>> {
@@ -469,6 +490,15 @@ impl crate::document::Document for RopeDocumentHandle {
 
     fn apply_edit_based_on(&self, edit: Edit, based_on: u64) -> Pending<AppliedEdit> {
         RopeDocumentHandle::apply_edit_based_on(self, edit, based_on)
+    }
+
+    fn apply_edit_batch_based_on(
+        &self,
+        edits: Vec<Edit>,
+        based_on: u64,
+        on_mismatch: BaseMismatch,
+    ) -> Pending<Vec<AppliedEdit>> {
+        RopeDocumentHandle::apply_edit_batch_based_on(self, edits, based_on, on_mismatch)
     }
 
     fn set_selections_based_on(&self, selections: SelectionSet, based_on: u64) -> Pending<()> {

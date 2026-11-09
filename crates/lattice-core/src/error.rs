@@ -43,6 +43,14 @@ pub enum CoreError {
     /// substitute) can map it to their domain-specific error.
     #[error("operation cancelled")]
     Cancelled,
+
+    /// [`Document::apply_edit_batch_based_on`](crate::Document::apply_edit_batch_based_on)
+    /// with [`BaseMismatch::Refuse`](crate::document::BaseMismatch::Refuse):
+    /// something other than an append changed the text after the version the
+    /// batch was positioned against, so nothing was applied. The caller reads
+    /// the text again and decides again.
+    #[error("the text changed after the edit was positioned; nothing was applied")]
+    Stale,
 }
 
 /// `Result` specialised to [`CoreError`].

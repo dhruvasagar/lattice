@@ -309,9 +309,38 @@ needs an effect per kind of concurrent writer, and leaves a plugin writing strai
 to a document handle racy. The rebase covers any writer that appends, a plugin
 included, with no host code per writer.
 
-Not rebased: edit batches (each edit is in the coordinates the ones before it make,
-so an append would have to be carried through them first; they come from operators
-and completion accepts, not typing) and non-append owner writes.
+Not rebased: non-append owner writes.
+
+### 10.1 Batches
+
+**A batch is rebased too** (`Document::apply_edit_batch_based_on`). Each edit of a
+batch is in the coordinates the ones before it produce, so the appends cannot be
+applied to every edit as they stand: an append has to be carried through the batch
+alongside it. Each edit moves over the appends exactly as a single edit does; then
+each append moves over that edit, staying before it when it sits at the edit's start,
+so the next edit meets the appends where they now are. An append whose text an edit
+covers is gone after that edit and moves nothing further. It is operational transform
+restricted to the one case that arises (inserts against arbitrary replaces), and it is
+position arithmetic only: the buffer is never read, so the cost is flat in the number
+of appends (`rebase_batch_over_appends` in benchmarks.md).
+
+**What a mismatch means depends on the writer, so the caller says.** When something
+other than an append changed the text since the batch's version, the batch cannot be
+carried to where it was aimed. `BaseMismatch::UseAsGiven` applies it anyway, which is
+right for a key: the user pressed it, and refusing would drop it silently.
+`BaseMismatch::Refuse` applies nothing and returns `CoreError::Stale`, which is right
+for a write computed from text it must still match, such as a reviewed replacement:
+the caller reads again and decides again. The check and the write happen in one
+actor turn, so nothing can land between them.
+
+Rejected: a narrow "replace this tracked range if it still holds X" message for the
+reviewed-replacement case alone. It closes that race and leaves operators unrebased,
+so a second special case would follow; the version is the general precondition and
+the tracked range's text a consequence of it.
+
+Rejected: refusing on any change since the version, appends included. A reply
+streaming into the buffer would then refuse every reviewed replacement in it until
+the stream ended, though the appends are exactly what the rebase can carry.
 
 **The transform table was wrong on two rows until here.** The earlier code shifted
 the column of every later line when an edit kept the line count, and kept the column

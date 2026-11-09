@@ -41,6 +41,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use lattice_core::document::BaseMismatch;
 use lattice_grammar::{CancellationToken, CommandInvocation, Effect};
 use lattice_protocol::edit::Edit;
 use lattice_protocol::ids::DocumentId;
@@ -266,6 +267,26 @@ pub trait Document: Send + Sync + 'static + std::fmt::Debug {
     fn apply_edit_based_on(&self, edit: Edit, based_on: u64) -> Pending<AppliedEdit> {
         let _ = based_on;
         self.apply_edit(edit)
+    }
+
+    /// [`Self::apply_edit_batch`] for a batch positioned against
+    /// `text_version == based_on` (each edit in the coordinates the ones
+    /// before it produce), rebased in the actor turn over appends made since.
+    /// When something else changed the text, `on_mismatch` decides whether
+    /// the batch applies as given or is refused with `CoreError::Stale`.
+    ///
+    /// Default: ignore `based_on` and apply. Only a kind that takes appends
+    /// has anything to rebase over, and only such a kind can be raced by a
+    /// writer that is not the caller; a kind with other concurrent writers
+    /// overrides this.
+    fn apply_edit_batch_based_on(
+        &self,
+        edits: Vec<Edit>,
+        based_on: u64,
+        on_mismatch: BaseMismatch,
+    ) -> Pending<Vec<AppliedEdit>> {
+        let _ = (based_on, on_mismatch);
+        self.apply_edit_batch(edits)
     }
 
     /// LL.13a: [`Self::set_selections`], rebased as

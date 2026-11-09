@@ -74,6 +74,9 @@ pub(crate) enum ActorMsg {
     },
     ApplyEditBatch {
         edits: Vec<Edit>,
+        /// The `text_version` the batch was positioned against and what to
+        /// do if it cannot be rebased (`Document::apply_edit_batch_based_on`).
+        based_on: Option<(u64, lattice_core::document::BaseMismatch)>,
         reply: oneshot::Sender<Result<Vec<lattice_core::buffer::AppliedEdit>, RuntimeError>>,
     },
     Undo {
@@ -227,11 +230,19 @@ impl DocumentActor {
                 self.publish();
                 let _ = reply.send(result);
             }
-            ActorMsg::ApplyEditBatch { edits, reply } => {
-                let result = self
-                    .document
-                    .apply_edit_batch(edits)
-                    .map_err(RuntimeError::Core);
+            ActorMsg::ApplyEditBatch {
+                edits,
+                based_on,
+                reply,
+            } => {
+                let result = match based_on {
+                    Some((v, on_mismatch)) => {
+                        self.document
+                            .apply_edit_batch_based_on(edits, v, on_mismatch)
+                    }
+                    None => self.document.apply_edit_batch(edits),
+                }
+                .map_err(RuntimeError::Core);
                 self.publish();
                 let _ = reply.send(result);
             }

@@ -501,9 +501,12 @@ fn snap_to_char_boundary(rope: &Rope, byte: usize) -> usize {
 /// # }
 /// ```
 pub fn transform_position(pos: Position, edit: &AppliedEdit) -> Position {
-    let original = edit.original_range;
-    let inserted = edit.inserted_range;
+    transform_position_over(pos, edit.original_range, edit.inserted_range)
+}
 
+/// [`transform_position`] over an edit given as its two ranges: the range it
+/// replaced and where its text now sits.
+pub(crate) fn transform_position_over(pos: Position, original: Range, inserted: Range) -> Position {
     if pos >= original.end {
         // On the edit's last line, the text after the edit moved with it:
         // re-measure from where the replacement ends. On a later line only

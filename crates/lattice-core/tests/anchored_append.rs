@@ -9,6 +9,7 @@
 #![allow(clippy::unwrap_used, clippy::panic)]
 
 use lattice_core::Document;
+use lattice_core::document::BaseMismatch;
 use lattice_core::protocol::edit::Edit;
 use lattice_core::protocol::position::{Position, Range};
 use lattice_core::tracked::{AppendOutcome, Stickiness, TrackedRangeId};
@@ -405,5 +406,169 @@ proptest! {
         };
         prop_assert_eq!(doc.text(), expected);
         prop_assert_eq!(span(&doc, id), response);
+    }
+}
+
+// ---- Batches positioned before an append ----
+
+fn del(a: (u32, u32), b: (u32, u32)) -> Edit {
+    Edit::delete(Range::new(Position::new(a.0, a.1), Position::new(b.0, b.1)))
+}
+
+/// `dd` on the line under the response, against a version before a chunk
+/// arrived: it deletes the line the user saw, not the chunk.
+#[test]
+fn a_batch_is_carried_over_an_append_it_had_not_seen() {
+    let (mut doc, id) = anchored("ab\ncd\n", 3);
+    let base = doc.text_version();
+    doc.append_to_tracked(id, "new\n").unwrap();
+    doc.apply_edit_batch_based_on(vec![del((1, 0), (2, 0))], base, BaseMismatch::Refuse)
+        .unwrap();
+    assert_eq!(doc.text(), "ab\nnew\n");
+}
+
+/// The second edit is in the coordinates the first produces, and meets the
+/// append where the first edit left it.
+#[test]
+fn each_edit_of_a_batch_meets_the_append_where_the_last_left_it() {
+    let (mut doc, id) = anchored("ab\ncd\nef\n", 3);
+    let base = doc.text_version();
+    doc.append_to_tracked(id, "X\n").unwrap();
+    doc.apply_edit_batch_based_on(
+        vec![
+            Edit::insert(Position::new(0, 0), "1\n"),
+            del((3, 0), (4, 0)),
+        ],
+        base,
+        BaseMismatch::Refuse,
+    )
+    .unwrap();
+    assert_eq!(doc.text(), "1\nab\nX\ncd\n");
+}
+
+/// A change starting right after the append point keeps the appended text,
+/// as a single rebased edit does.
+#[test]
+fn a_change_at_the_point_leaves_the_append_before_it() {
+    let (mut doc, id) = anchored("abcd\n", 2);
+    let base = doc.text_version();
+    doc.append_to_tracked(id, "XY").unwrap();
+    doc.apply_edit_batch_based_on(
+        vec![
+            Edit::replace(Range::new(Position::new(0, 2), Position::new(0, 3)), "C"),
+            Edit::insert(Position::new(0, 4), "!"),
+        ],
+        base,
+        BaseMismatch::Refuse,
+    )
+    .unwrap();
+    assert_eq!(doc.text(), "abXYCd!\n");
+}
+
+/// An edit spanning the point takes the appended text with it; the append
+/// then moves nothing for the edits after it.
+#[test]
+fn an_append_inside_a_deletion_goes_with_it() {
+    let (mut doc, id) = anchored("abcd\n", 2);
+    let base = doc.text_version();
+    doc.append_to_tracked(id, "XY").unwrap();
+    doc.apply_edit_batch_based_on(
+        vec![del((0, 1), (0, 3)), Edit::insert(Position::new(0, 1), "Z")],
+        base,
+        BaseMismatch::Refuse,
+    )
+    .unwrap();
+    assert_eq!(doc.text(), "aZd\n");
+}
+
+#[test]
+fn a_rebased_batch_is_one_undo_unit() {
+    let (mut doc, id) = anchored("ab\ncd\nef\n", 3);
+    let base = doc.text_version();
+    doc.append_to_tracked(id, "X\n").unwrap();
+    let before = doc.text();
+    doc.apply_edit_batch_based_on(
+        vec![del((1, 0), (2, 0)), del((1, 0), (2, 0))],
+        base,
+        BaseMismatch::Refuse,
+    )
+    .unwrap();
+    assert_eq!(doc.text(), "ab\nX\n");
+    doc.undo().unwrap();
+    assert_eq!(doc.text(), before);
+}
+
+/// Anything but an append since: `Refuse` applies nothing and says so;
+/// `UseAsGiven` applies the batch where it stands, as before rebasing.
+#[test]
+fn a_non_append_change_since_refuses_or_applies_as_given() {
+    let (mut doc, _) = anchored("ab\ncd\n", 3);
+    let base = doc.text_version();
+    insert_at_byte(&mut doc, 0, "Z");
+    let err = doc
+        .apply_edit_batch_based_on(vec![del((1, 0), (2, 0))], base, BaseMismatch::Refuse)
+        .unwrap_err();
+    assert!(matches!(err, lattice_core::CoreError::Stale), "{err:?}");
+    assert_eq!(doc.text(), "Zab\ncd\n", "nothing applied");
+
+    doc.apply_edit_batch_based_on(vec![del((1, 0), (2, 0))], base, BaseMismatch::UseAsGiven)
+        .unwrap();
+    assert_eq!(doc.text(), "Zab\n");
+}
+
+#[test]
+fn with_nothing_since_a_batch_applies_as_given() {
+    let (mut doc, _) = anchored("ab\ncd\n", 3);
+    let base = doc.text_version();
+    doc.apply_edit_batch_based_on(vec![del((0, 0), (1, 0))], base, BaseMismatch::Refuse)
+        .unwrap();
+    assert_eq!(doc.text(), "cd\n");
+}
+
+proptest! {
+    /// A batch of line edits that never touch the response's line lands as
+    /// if it had been applied before the stream wrote: the same text as
+    /// applying the batch first and appending the chunks after, through the
+    /// anchor the batch moved.
+    #[test]
+    fn a_rebased_batch_equals_the_batch_applied_before_the_appends(
+        lines in 2usize..8,
+        anchor_line in 0usize..8,
+        ops in proptest::collection::vec((any::<bool>(), 0usize..10), 1..6),
+        chunks in proptest::collection::vec("[xy\n]{1,4}", 1..5),
+    ) {
+        let seed: String = (0..lines).map(|i| format!("l{i}\n")).collect();
+        let anchor_line = anchor_line.min(lines - 1);
+        // Mid-line, so no line edit's endpoint is the anchor.
+        let at = seed.lines().take(anchor_line).map(|l| l.len() + 1).sum::<usize>() + 1;
+
+        let mut line_count = lines;
+        let mut l = anchor_line;
+        let mut edits = Vec::new();
+        for (insert, i) in ops {
+            if insert {
+                let i = i % (line_count + 1);
+                edits.push(Edit::insert(Position::new(i as u32, 0), "n\n"));
+                if i <= l { l += 1; }
+                line_count += 1;
+            } else {
+                let i = i % line_count;
+                if i == l || line_count == 1 { continue; }
+                edits.push(del((i as u32, 0), (i as u32 + 1, 0)));
+                if i < l { l -= 1; }
+                line_count -= 1;
+            }
+        }
+
+        let (mut oracle, oid) = anchored(&seed, at);
+        oracle.apply_edit_batch(edits.clone()).unwrap();
+        for c in &chunks { oracle.append_to_tracked(oid, c).unwrap(); }
+
+        let (mut doc, id) = anchored(&seed, at);
+        let base = doc.text_version();
+        for c in &chunks { doc.append_to_tracked(id, c).unwrap(); }
+        doc.apply_edit_batch_based_on(edits, base, BaseMismatch::Refuse).unwrap();
+
+        prop_assert_eq!(doc.text(), oracle.text());
     }
 }

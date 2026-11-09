@@ -233,9 +233,16 @@ pub fn parse_tools(text: &str) -> Option<BTreeSet<String>> {
 }
 
 /// True for a system prompt that names a file rather than being text.
+///
+/// `C:\Users\me\editor.md` is read rather than sent as the prompt text.
+/// `C:\\Users\\me\\editor.md` is read rather than sent as the prompt text.
 pub fn system_is_path(s: &str) -> bool {
     let s = s.trim();
-    !s.contains('\n') && (s.starts_with('/') || s.starts_with("~/") || s.starts_with("./"))
+    !s.contains('\n')
+        && (s.starts_with('/')
+            || s.starts_with("~/")
+            || s.starts_with("./")
+            || std::path::Path::new(s).is_absolute())
 }
 
 // ---------------------------------------------------------------------------
@@ -1264,6 +1271,22 @@ mod tests {
         );
         assert_eq!(refused_keys(&r), vec!["tools"]);
         assert!(r.values.tools.is_empty());
+    }
+
+    #[test]
+    fn a_system_prompt_names_a_file_by_its_prefix() {
+        for path in ["/etc/editor.md", "~/editor.md", "./editor.md"] {
+            assert!(system_is_path(path), "{path}");
+        }
+        assert!(!system_is_path("You are a terse editor."));
+        assert!(!system_is_path("/etc/editor.md\nand more text"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_windows_absolute_path_names_a_file() {
+        assert!(system_is_path(r"C:\Users\me\editor.md"));
+        assert!(system_is_path(r"\\server\share\editor.md"));
     }
 
     #[test]

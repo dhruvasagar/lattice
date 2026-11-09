@@ -499,7 +499,9 @@ async fn the_key_command_runs_once_per_chat() {
     let chats = chats_with(config_for(
         addr,
         &format!(
-            "api_key_command = 'echo run >> {}; echo sk-test'",
+            // Quoted for `sh`: unquoted, the backslashes of a Windows temp
+            // path are escapes and the log lands somewhere else.
+            "api_key_command = 'echo run >> \"{}\"; echo sk-test'",
             log.display()
         ),
     ));

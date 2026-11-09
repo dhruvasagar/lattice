@@ -182,6 +182,8 @@ async fn a_change_applies_to_the_next_request_never_to_one_in_flight() {
 
 #[tokio::test]
 async fn a_profile_supplies_the_base_and_its_system_prompt_can_be_a_file() {
+    // The path goes in a TOML literal string: a basic one reads the `\U` of
+    // a Windows temp path as a unicode escape.
     let dir = std::env::temp_dir().join(format!("lattice-ll7-sys-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let sys = dir.join("editor.md");
@@ -194,7 +196,7 @@ async fn a_profile_supplies_the_base_and_its_system_prompt_can_be_a_file() {
             r#"
             [llm.profiles.writer]
             model = "mock/profile-model"
-            system = "{}"
+            system = '{}'
             temperature = 0.1
             "#,
             sys.display()

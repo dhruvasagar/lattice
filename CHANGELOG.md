@@ -134,6 +134,7 @@
   (`:set messages.filter=info,rmcp=debug` to see it).
 
 ### Fixed
+- An llm chat with edits trusted (`<C-t>`) can no longer run code you have not seen through a command you allowed "for this chat". An edit applied without review now drops the chat's allowed commands, so the next `cargo test` asks again: the model could otherwise change `build.rs` or a test unseen and then run it.
 - **Completion ranks a word that starts with what you typed above one
   that merely contains it.** `:sor<Tab>` listed every
   `absorb-operator-*` action before `table-sort`, because a match in the

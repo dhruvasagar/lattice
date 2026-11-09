@@ -530,6 +530,9 @@ impl LatticeTools {
             ToolError::Refused("edits need a diff review, which is not available here".into())
         })?;
         let accepted = if ctx.trusted && !in_git_dir(at) {
+            if let Some(dropped) = &ctx.on_unreviewed_edit {
+                dropped();
+            }
             proposed.clone()
         } else {
             // Queued behind another review: what it was proposed against may

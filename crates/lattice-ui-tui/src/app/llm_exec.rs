@@ -211,6 +211,47 @@ mod tests {
         );
     }
 
+    /// A trusted edit drops the chat's allowed commands. `echo one` was
+    /// allowed for the chat, then an edit applied without review: the same
+    /// command asks again, because what it runs may no longer be what was
+    /// allowed (an unseen `build.rs` changes what `cargo test` does).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_trusted_edit_drops_the_commands_allowed_for_the_chat() {
+        let (mut a, log, dir) = app(
+            vec![
+                run("echo one"),
+                (
+                    "write_file",
+                    json!({"path": "build.rs", "content": "fn main() {}\n"}),
+                ),
+                run("echo one"),
+            ],
+            "lattice.exec,lattice.edit",
+        );
+        ex(&mut a, "llm");
+        let chat = a.editor.active_pane_buffer_id();
+        assert!(settle(&mut a, |a| chats(a).for_buffer(chat).is_some()).await);
+        let session = chats(&a).for_buffer(chat).unwrap();
+        assert!(session.toggle_trust(), "edits trusted");
+        chats(&a).submit(&session, "go".to_string());
+
+        answer(&mut a, 2).await;
+        assert!(
+            settle_woken(&mut a, |a| popup(a).is_some_and(|t| t.contains("echo one"))).await,
+            "the allowed command did not ask again after a trusted edit: {:?}",
+            popup(&a)
+        );
+        assert!(
+            dir.path().join("build.rs").exists(),
+            "the trusted edit applied without a review"
+        );
+        answer(&mut a, 1).await;
+        second_request(&mut a, &log).await;
+        let said = results(&log);
+        assert_eq!(said.len(), 3, "{said:?}");
+        assert!(said[2].contains("one"), "{said:?}");
+    }
+
     /// Stopping the request kills what the command started, children
     /// included, not only the shell.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -82,6 +82,11 @@ pub struct CallContext {
     /// Told `true` when a review opens and `false` when it closes, so the
     /// request shows `AwaitingReview` while the user decides.
     pub on_review: Option<std::sync::Arc<dyn Fn(bool) + Send + Sync>>,
+    /// Called when an edit applies without a review (a trusted session).
+    /// The chat drops its "allow for this chat" commands then: an allowed
+    /// `cargo test` was allowed against the code as it was, and an unseen
+    /// edit to `build.rs` or a test changes what that command runs.
+    pub on_unreviewed_edit: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
     /// Asks the user whether a tool may run (LL.18). `None` where nothing
     /// can ask: a tool that must ask is then refused.
     pub ask: Option<AskFn>,

@@ -123,6 +123,12 @@ impl ChatRounds {
                 origin: self.origin,
                 trusted: self.trusted.load(Ordering::Acquire),
                 on_review: Some(Arc::new(move |open| status.reviewing(open))),
+                on_unreviewed_edit: Some({
+                    let allowed = self.allowed.clone();
+                    Arc::new(move || {
+                        allowed.lock().unwrap_or_else(|e| e.into_inner()).clear();
+                    })
+                }),
                 ask: Some(asker(
                     self.store.clone(),
                     self.key.clone(),

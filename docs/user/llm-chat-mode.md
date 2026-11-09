@@ -273,7 +273,10 @@ its output and error streams, with a note saying where it was cut.
 "Allow this command for this chat" covers that exact command, run in the
 same place, until the chat closes: the same `cargo test` runs again
 without asking, but any other command asks. It is never saved. `<C-t>`
-trusts edits only: commands still ask. A project's
+trusts edits only: commands still ask, and an edit applied without review
+drops the commands allowed so far, so each asks again. An allowed `cargo
+test` was allowed against the code as it was; an unseen change to
+`build.rs` or a test changes what it runs. A project's
 `.lattice/llm.toml` cannot turn `lattice.exec` on; only your own config,
 a profile, or `:setlocal` in the chat can.
 

@@ -116,9 +116,6 @@ pub struct DiffState {
     /// `:set magit.hunk.context-lines` takes effect on the next `gr`
     /// rather than only on reopen.
     config: Option<std::sync::Arc<lattice_config::ConfigRegistry>>,
-    /// DS.4: the grammar registry, for syntax under the diff colouring.
-    /// `None` ⇒ the flat classifier, as before.
-    lang_registry: Option<std::sync::Arc<lattice_syntax::LangRegistry>>,
 }
 
 /// `magit.hunk.context-lines`, or git's own default when there is no
@@ -361,9 +358,6 @@ impl Mode for MagitDiffMode {
                     config: ctx
                         .service::<std::sync::Arc<lattice_config::ConfigRegistry>>()
                         .map(|outer| (*outer).clone()),
-                    lang_registry: ctx
-                        .service::<std::sync::Arc<lattice_syntax::LangRegistry>>()
-                        .map(|outer| (*outer).clone()),
                 },
             );
             let mut guard = BufferStateGuard::new((*states).clone(), buffer_id)
@@ -380,8 +374,6 @@ impl Mode for MagitDiffMode {
                     .map(|outer| (*outer).clone()),
             );
             let activation_registry = crate::hunk_syntax::syntax_registry(
-                ctx.service::<std::sync::Arc<lattice_syntax::LangRegistry>>()
-                    .map(|outer| (*outer).clone()),
                 ctx.service::<std::sync::Arc<lattice_config::ConfigRegistry>>()
                     .map(|outer| (*outer).clone())
                     .as_ref(),
@@ -435,7 +427,7 @@ fn refresh_with(
             g.cursor_bus.clone(),
             g.extra_args.clone(),
             context_lines(&g.config),
-            crate::hunk_syntax::syntax_registry(g.lang_registry.clone(), g.config.as_ref()),
+            crate::hunk_syntax::syntax_registry(g.config.as_ref()),
         )
     };
     // CG.7c: paint only if no newer refresh of this view started since.
@@ -485,7 +477,7 @@ fn spawn_mutation_and_refresh(
             g.buffer_id,
             g.extra_args.clone(),
             context_lines(&g.config),
-            crate::hunk_syntax::syntax_registry(g.lang_registry.clone(), g.config.as_ref()),
+            crate::hunk_syntax::syntax_registry(g.config.as_ref()),
         )
     };
     // CG.7b: the same operation again is refused; another change to this

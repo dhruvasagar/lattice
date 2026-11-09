@@ -577,8 +577,6 @@ impl Mode for MagitCommitMode {
                 diff_start_line + 1,
                 line_count,
                 crate::hunk_syntax::syntax_registry(
-                    ctx.service::<std::sync::Arc<lattice_syntax::LangRegistry>>()
-                        .map(|outer| (*outer).clone()),
                     ctx.service::<std::sync::Arc<lattice_config::ConfigRegistry>>()
                         .map(|outer| (*outer).clone())
                         .as_ref(),

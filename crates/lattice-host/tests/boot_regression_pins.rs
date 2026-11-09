@@ -167,24 +167,24 @@ fn lsp_services_present_at_boot() {
     );
 }
 
-/// MG.26c: the language registry is a *service* so a mode that owns a
-/// pathless synthetic buffer can highlight it from the same grammar
-/// set every other buffer uses.
+/// The language registry is deliberately NOT a service.
 ///
-/// Pinned under the exact type the register site uses. A mismatch here
-/// is the `ServiceRegistry` Arc/TypeId trap in its worst form: the
-/// lookup returns `None`, the mode silently falls back to plain text,
-/// and the only symptom is a buffer that is not coloured — which looks
-/// like a missing grammar rather than a missing service.
+/// MG.26c registered `Arc<LangRegistry>` so magit could highlight a file at
+/// a revision. But `LangRegistry::standard()` is a snapshot of the live
+/// registry, and a plugin language registers after boot by REPLACING it, so
+/// the service held the bundled-only set forever: an org file at a revision,
+/// and every org hunk in a magit diff, painted plain. Consumers read
+/// `lattice_syntax::registry::live()` per use instead. This pin keeps the
+/// trap from being re-registered for the next mode that wants a grammar.
 #[test]
-fn lang_registry_service_present_at_boot() {
+fn lang_registry_is_not_a_service() {
     assert!(
         boot()
             .services
             .get::<Arc<lattice_syntax::LangRegistry>>()
-            .is_some(),
-        "Arc<LangRegistry> must be registered — magit's blob buffer reads it \
-         to highlight a file shown at a revision"
+            .is_none(),
+        "Arc<LangRegistry> must not be a service: a boot-time snapshot never \
+         sees a plugin language. Read `lattice_syntax::registry::live()`"
     );
 }
 

@@ -3925,3 +3925,38 @@ leading byte rather than a delimited field.
   separators and awkward paths included.
 - `lattice-ui-tui`: `do_confirm` actually gets every file into the dialog —
   the step `confirm_seeding` exists to cover.
+
+## MG.55 ✅ — an org file at a revision was plain (2026-11-10)
+
+Design: [`../../architecture/magit.md`](../../architecture/magit.md) §4.4.
+
+`*magit:file:…:notes.org*` showed the file uncoloured while the same file
+opened directly was highlighted. Rust at a revision was fine, which is why
+MG.26c's tests (all Rust) never saw it.
+
+**Cause.** MG.26c parsed the blob with the `Arc<LangRegistry>` service, and
+that `Arc` was the boot-time snapshot of the live registry. A plugin
+language registers by REPLACING the live registry, so the snapshot never
+held org's grammar: `detect_from_path` resolved `.org` (identity lives in a
+separate table), and `Syntax::for_language_with_registry` against the old
+snapshot answered "no grammar". The status, diff, commit, revision and
+project-diff hunk highlighting read the same service, so org hunks were
+plain in all of them.
+
+**Fix: the service is retired** rather than patched per consumer — AH.1 had
+already fixed this trap twice that way, and a third local fix would have
+left it waiting for the next mode that wants a grammar.
+`file_syntax_spans` and the `hunk_syntax::syntax_registry` gate read
+`registry::live()` per operation; the `lang_registry` fields on the status
+and diff state are gone; the multibuffer providers that took the service
+only as a "highlighting is wired" gate take `standard()`.
+
+- **Tests:** `magit_file_revision_is_highlighted` (lattice-host) registers a
+  language after boot and opens a file in it with `:magit-find-file`,
+  ticking only on wakes — red on the old code with the exact symptom (text,
+  no spans). `a_language_registered_after_the_gate_was_built_is_highlighted`
+  for hunks. The boot pin flips to `lang_registry_is_not_a_service`.
+- **No bench:** one `ArcSwap` load per refresh replaces an `Arc` clone.
+- **Not in this slice:** `Editor::lang_registry` is the same snapshot,
+  held as a field; it feeds the inline-diff overlay's deletion-block syntax
+  and the in-memory proposal buffers. Retired in its own commit.

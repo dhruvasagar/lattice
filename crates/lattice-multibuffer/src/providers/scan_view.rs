@@ -353,9 +353,10 @@ pub fn open_scan_view(
             message: format!("{name}: command registry unavailable; cannot open the view"),
         };
     };
-    let lang_registry = services
-        .get::<Arc<lattice_syntax::LangRegistry>>()
-        .map(|h| (*h).clone());
+    // Only the "highlighting is wired" gate: excerpts resolve grammars from
+    // the LIVE registry (AH.1). There is no service to read: a boot-time
+    // `Arc` could never see a plugin language.
+    let lang_registry = lattice_syntax::LangRegistry::standard().ok();
 
     // Read before any `&mut` use of the activator: `snapshot` borrows the
     // registry's ArcSwap guard, and the activation calls below need the

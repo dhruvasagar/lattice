@@ -53,14 +53,6 @@ pub struct StatusBufferState {
     pub pending_cursor: Option<crate::cursor_restore::HunkRestore>,
     /// MG.18d: the wake-baked bus the resolved position goes back on.
     pub cursor_bus: Option<crate::cursor_restore::CursorBusHandle>,
-    /// DS.3: the grammar registry, for syntax-highlighting the code
-    /// inside an inline-expanded diff.
-    ///
-    /// `None` in a harness without the service — the diff then renders
-    /// exactly as it did before syntax layering existed, which is the
-    /// degradation this feature is designed around rather than an
-    /// error path.
-    pub lang_registry: Option<Arc<lattice_syntax::LangRegistry>>,
 }
 
 // ── line classification ─────────────────────────────────
@@ -446,7 +438,7 @@ fn toggle_expand(
             g.buffer_id,
             context,
             g.headerline.clone(),
-            crate::hunk_syntax::syntax_registry(g.lang_registry.clone(), g.config.as_ref()),
+            crate::hunk_syntax::syntax_registry(g.config.as_ref()),
         )
     };
 
@@ -1548,10 +1540,7 @@ fn refresh_context(s: &Arc<Mutex<StatusBufferState>>) -> Option<RefreshContext> 
         restore,
         cursor_bus: g.cursor_bus.clone(),
         context: context_lines(&g.config),
-        lang_registry: crate::hunk_syntax::syntax_registry(
-            g.lang_registry.clone(),
-            g.config.as_ref(),
-        ),
+        lang_registry: crate::hunk_syntax::syntax_registry(g.config.as_ref()),
         state: Arc::clone(s),
     })
 }

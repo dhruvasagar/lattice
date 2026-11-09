@@ -363,8 +363,6 @@ impl Mode for MagitRevisionMode {
             let spans = crate::hunk_syntax::diff_spans(
                 &text,
                 crate::hunk_syntax::syntax_registry(
-                    ctx.service::<std::sync::Arc<lattice_syntax::LangRegistry>>()
-                        .map(|outer| (*outer).clone()),
                     ctx.service::<std::sync::Arc<lattice_config::ConfigRegistry>>()
                         .map(|outer| (*outer).clone())
                         .as_ref(),

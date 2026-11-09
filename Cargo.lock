@@ -5767,6 +5767,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
+ "tree-sitter-rust",
 ]
 
 [[package]]

@@ -337,6 +337,20 @@ impl DocumentActor {
                 // VM.3i: deref the owned fold handle, like `indent_resolver`.
                 let fold_resolver: Option<&dyn lattice_grammar::FoldResolver> =
                     env.fold_resolver.as_deref().map(|r| r as _);
+                // Read against the host's version; carried over any append
+                // since, as a typed key is.
+                let (cursor, selection) = match env.based_on {
+                    Some(v) => (
+                        self.document.rebase_position(cursor, v),
+                        env.selection.map(|r| {
+                            lattice_protocol::position::Range::new(
+                                self.document.rebase_position(r.start, v),
+                                self.document.rebase_position(r.end, v),
+                            )
+                        }),
+                    ),
+                    None => (cursor, env.selection),
+                };
                 let to_env = lattice_grammar::GrammarEnv {
                     scope_resolver,
                     comment_syntax: env.comment_syntax.as_deref(),
@@ -353,7 +367,7 @@ impl DocumentActor {
                     indent_resolver,
                     textwidth: env.textwidth,
                     native_format: env.native_format,
-                    selection: env.selection,
+                    selection,
                     last_find: env.last_find,
                     fold_resolver,
                     last_search: env.last_search.as_ref(),

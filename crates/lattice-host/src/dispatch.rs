@@ -22949,6 +22949,10 @@ impl Editor {
                 // into. An `Arc` clone per dispatch, read by the dispatch tail
                 // which (unlike this `&self` method) can write `self.curswant`.
                 curswant_out: Some(self.curswant_report.clone()),
+                // The caret and region above are in the coordinates of the
+                // version this host last saw; the actor carries them over an
+                // append that landed since (owner-write-caret §10.1).
+                based_on: Some(self.seen_text_version()),
                 // OT.4: the same `h.snapshot()` bump the Action gate takes —
                 // O(1) `ArcSwap` load, no parse on the dispatch thread — so
                 // a PLUGIN motion or text object can mint a `tree-snapshot`
@@ -23160,12 +23164,16 @@ impl Editor {
         if edits.iter().any(|e| self.read_only_edit_rejected(e)) {
             return Err(lattice_runtime::RuntimeError::ReadOnly);
         }
-        // Not rebased (LL.13a): each edit of a batch is in the coordinates
-        // the ones before it produce, so an append would have to be carried
-        // through them first. Batches come from operators and completion
-        // accepts, not from typing; the recorded version below is still the
-        // one that keeps a following append adopted.
-        let result = block_on(self.document.apply_edit_batch(edits));
+        // Rebased over appends the host has not seen, as a single key is
+        // (owner-write-caret §10.1): an operator applied while an answer
+        // streams into this buffer lands on the text it was aimed at. A key
+        // is applied as given when anything else changed the text, as before.
+        let seen = self.seen_text_version();
+        let result = block_on(self.document.apply_edit_batch_based_on(
+            edits,
+            seen,
+            lattice_core::document::BaseMismatch::UseAsGiven,
+        ));
         if let Ok(applied) = result.as_ref() {
             // OWC: record the text version so the host knows it issued
             // this edit (not an owner write); `pre_append_version`, as in

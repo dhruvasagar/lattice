@@ -298,3 +298,24 @@ async fn a_closed_panes_anchor_is_untracked() {
     }
     assert_eq!(tracked(&editor), before);
 }
+
+/// `dd` in the window between the key adopting the caret and the operator
+/// reaching the document, with a chunk landing above it: the line the caret
+/// was on is deleted, not the chunk that took its old line number.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_operator_run_while_a_chunk_lands_acts_on_the_carets_text() {
+    use lattice_grammar::{CommandInvocation, Range};
+    let mut editor = boot("ab\ncd\nef\n");
+    editor.set_cursor_clamped(Position::new(1, 1));
+    key(&mut editor, Action::None);
+    let id = anchor(&editor, 3).await;
+    editor
+        .document
+        .append_to_tracked(id, "new\n".to_string())
+        .await
+        .unwrap();
+    // What the doubled chord binds (`keymap_normal.rs`).
+    let dd = CommandInvocation::of(editor.builtins.delete.0).with_range(Range::CurrentLine);
+    let _ = editor.dispatch(Action::Invoke(dd));
+    assert_eq!(text(&editor), "ab\nnew\nef\n");
+}

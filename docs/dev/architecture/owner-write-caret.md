@@ -333,6 +333,14 @@ for a write computed from text it must still match, such as a reviewed replaceme
 the caller reads again and decides again. The check and the write happen in one
 actor turn, so nothing can land between them.
 
+**Operators carry the version too.** Most operators never send the host a batch: the
+grammar runs in the actor, from the caret and Visual region the host passes in
+`DispatchEnv`, and those are in the coordinates the host last saw. `based_on` on the env
+tells the actor which version that was, and it moves both over the appends since before
+running the command, so `dd` deletes the line the caret was on rather than the chunk
+that took its line number. The batches the host does send (formatting, completion's
+extra edits, a block insert) go through `apply_edit_batch_based_on` with `UseAsGiven`.
+
 Rejected: a narrow "replace this tracked range if it still holds X" message for the
 reviewed-replacement case alone. It closes that race and leaves operators unrebased,
 so a second special case would follow; the version is the general precondition and

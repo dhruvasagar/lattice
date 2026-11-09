@@ -781,6 +781,16 @@ impl Document {
         self.apply_edit_batch(edits)
     }
 
+    /// `pos`, read against `text_version == based_on`, moved over the appends
+    /// since by the rule a caret the document holds is moved by. As given
+    /// when something else changed the text since.
+    pub fn rebase_position(&self, pos: Position, based_on: u64) -> Position {
+        match self.appends_since(based_on) {
+            Some(appends) => appends.into_iter().fold(pos, transform_position),
+            None => pos,
+        }
+    }
+
     /// [`Self::apply_edit`] after [`Self::rebase_edit`].
     ///
     /// # Errors

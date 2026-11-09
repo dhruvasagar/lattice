@@ -191,6 +191,12 @@ pub struct DispatchEnv {
     /// `None` — the default — discards the report, which is right for every
     /// caller that keeps no goal column.
     pub curswant_out: Option<Arc<std::sync::Mutex<Option<lattice_grammar::Curswant>>>>,
+    /// The `text_version` the dispatch's caret and `selection` were read
+    /// against. The actor moves both over the appends made since, in the
+    /// turn it runs the command, so an operator typed while an answer streams
+    /// into the buffer acts on the text the caret visibly was on
+    /// (owner-write-caret §10.1). `None` — the default — uses them as given.
+    pub based_on: Option<u64>,
 }
 
 /// Handle-layer abstraction over a buffer. See module docs.

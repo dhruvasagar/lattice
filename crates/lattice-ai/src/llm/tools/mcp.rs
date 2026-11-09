@@ -56,6 +56,11 @@ pub const STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
 /// own `read_file` uses.
 pub const MAX_RESULT_BYTES: usize = super::lattice::MAX_BYTES;
 
+/// How long one tool call may take unless the server's table sets `timeout`.
+/// A call that runs past it is cancelled on the server and fails, so a hung
+/// server cannot hold a request until the user notices and stops it.
+pub const DEFAULT_CALL_TIMEOUT: Duration = Duration::from_secs(300);
+
 /// Providers accept tool names of `[A-Za-z0-9_-]`, at most this long.
 const MAX_WIRE_NAME: usize = 64;
 
@@ -70,6 +75,8 @@ pub struct McpServerConfig {
     pub transport: McpTransport,
     /// Tools that run without asking, by their name on this server.
     pub allow: BTreeSet<String>,
+    /// How long one call may take ([`DEFAULT_CALL_TIMEOUT`] unless set).
+    pub call_timeout: Duration,
 }
 
 /// How lattice reaches a server. `Debug` shows what [`label`](Self::label)
@@ -838,9 +845,17 @@ impl ToolSource for McpServer {
             let params: CallToolRequestParams =
                 serde_json::from_value(json!({ "name": name, "arguments": arguments }))
                     .map_err(|e| ToolError::InvalidArguments(e.to_string()))?;
-            // Dropping this future (the request stopped) sends the server
-            // `notifications/cancelled` for the call.
-            match peer.call_tool_once(params).await {
+            // Dropping this future (the request stopped, or the call ran out
+            // of time) sends the server `notifications/cancelled` for it.
+            let limit = self.config.call_timeout;
+            let Ok(called) = tokio::time::timeout(limit, peer.call_tool_once(params)).await else {
+                return Err(ToolError::Failed(format!(
+                    "`{server}.{name}` took longer than {}s and was cancelled \
+                     (`timeout` in [llm.mcp.{server}] allows longer)",
+                    limit.as_secs()
+                )));
+            };
+            match called {
                 Ok(CallToolResponse::Complete(result)) => result_output(result),
                 Ok(_) => Err(ToolError::Failed(format!(
                     "`{server}.{name}` asked for input or started a background task, \

@@ -87,6 +87,7 @@ fn bench(c: &mut Criterion) {
             cwd: None,
         },
         allow: BTreeSet::from(["echo".to_string()]),
+        call_timeout: lattice_ai::llm::tools::mcp::DEFAULT_CALL_TIMEOUT,
     };
     let offer = rt.block_on(async {
         let broker = ToolBroker::new();

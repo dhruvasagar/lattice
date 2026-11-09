@@ -34,9 +34,13 @@ headers = { Authorization = "Bearer $DOCS_TOKEN" }
 | `url` | A server reached over MCP's streamable HTTP |
 | `headers` | Sent with every request to it |
 | `allow` | Tools, by their name on this server, that run without asking |
+| `timeout` | Seconds one tool call may take, 1 to 3600 (300 by default) |
 
 Give `command` or `url`, not both. A name is letters, digits and `-`, and
 cannot be `lattice`.
+
+A call that runs past `timeout` is cancelled on the server and fails, and
+the model is told it took too long; the server stays up for the next call.
 
 **Keep tokens out of the file.** A value in `env` or `headers` may name a
 variable, `$NAME` or `${NAME}` (`$$` is a literal `$`); it is read when the

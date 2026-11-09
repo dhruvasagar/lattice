@@ -214,6 +214,7 @@ fn config(name: &str, allow: &[&str]) -> McpServerConfig {
             cwd: None,
         },
         allow: allow.iter().map(|s| s.to_string()).collect(),
+        call_timeout: lattice_ai::llm::tools::mcp::DEFAULT_CALL_TIMEOUT,
     }
 }
 
@@ -565,6 +566,39 @@ async fn a_stopped_call_is_cancelled_on_the_server() {
     assert_eq!(github.state(), ServerState::Running);
 }
 
+/// A call that runs past the server's `timeout` fails, saying how to allow
+/// longer, and is cancelled on the server, which stays up.
+#[tokio::test]
+async fn a_call_past_its_timeout_is_cancelled_and_fails() {
+    let fixture = InProcess::new(Fixture::new(vec![tool("hang", false)]));
+    let (on_change, _rx) = changes();
+    let github = Arc::new(McpServer::new(
+        McpServerConfig {
+            call_timeout: std::time::Duration::from_millis(200),
+            ..config("github", &["hang"])
+        },
+        fixture.connect(),
+        tokio::runtime::Handle::current(),
+        on_change,
+    ));
+    let broker = ToolBroker::new();
+    broker.add_source("github", github.clone());
+    let offer = within("the offer", broker.offer(&selection(&["github.*"]))).await;
+    let seen = fixture.fixture.seen.clone();
+    let err = within(
+        "the call to time out",
+        offer.call("github__hang", json!({}), CallContext::default()),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(&err, ToolError::Failed(why) if why.contains("took longer") && why.contains("timeout")),
+        "{err:?}"
+    );
+    within("the server to hear the cancel", seen.cancelled.notified()).await;
+    assert_eq!(github.state(), ServerState::Running);
+}
+
 /// Stopping a stdio server kills its child and the child's own children:
 /// the tree runs in its own process group.
 #[cfg(unix)]
@@ -693,6 +727,7 @@ async fn streamable_http_sends_the_expanded_header_and_calls_a_tool() {
             headers: BTreeMap::from([("Authorization".to_string(), "Bearer ${PATH}".to_string())]),
         },
         allow: BTreeSet::from(["echo".to_string()]),
+        call_timeout: lattice_ai::llm::tools::mcp::DEFAULT_CALL_TIMEOUT,
     };
     let (on_change, _rx) = changes();
     let docs = Arc::new(McpServer::new(

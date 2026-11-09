@@ -416,7 +416,8 @@ fn parse_mcp_server(
         !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
     if !valid_name {
         return Err(format!(
-            "llm: MCP server `{name}`: a server name is letters, digits and `-` only              (its tools are `{name}.<tool>`)"
+            "llm: MCP server `{name}`: a server name is letters, digits and `-` only \
+             (its tools are `{name}.<tool>`)"
         ));
     }
     if name == super::tools::broker::LATTICE {
@@ -498,8 +499,22 @@ fn parse_mcp_server(
         }
     };
     let known: &[&str] = match transport {
-        McpTransport::Stdio { .. } => &["command", "args", "env", "cwd", "allow"],
-        McpTransport::Http { .. } => &["url", "headers", "allow"],
+        McpTransport::Stdio { .. } => &["command", "args", "env", "cwd", "allow", "timeout"],
+        McpTransport::Http { .. } => &["url", "headers", "allow", "timeout"],
+    };
+    let call_timeout = match t.get("timeout") {
+        None => super::tools::mcp::DEFAULT_CALL_TIMEOUT,
+        Some(v) => match v.as_integer().filter(|n| (1..=3600).contains(n)) {
+            Some(secs) => std::time::Duration::from_secs(secs as u64),
+            None => {
+                warnings.push(format!(
+                    "llm: MCP server `{name}`: `timeout` is whole seconds from 1 to 3600; \
+                     the default ({}s) applies",
+                    super::tools::mcp::DEFAULT_CALL_TIMEOUT.as_secs()
+                ));
+                super::tools::mcp::DEFAULT_CALL_TIMEOUT
+            }
+        },
     };
     for key in t.keys().filter(|k| !known.contains(&k.as_str())) {
         warnings.push(format!(
@@ -512,6 +527,7 @@ fn parse_mcp_server(
             name: name.to_string(),
             transport,
             allow,
+            call_timeout,
         },
         warnings,
     ))
@@ -734,6 +750,7 @@ mod tests {
             args = ["stdio"]
             env = { GITHUB_PERSONAL_ACCESS_TOKEN = "$GITHUB_TOKEN" }
             allow = ["get_issue"]
+            timeout = 30
             [llm.mcp.docs]
             url = "https://example.com/mcp"
             headers = { Authorization = "Bearer $DOCS_TOKEN" }
@@ -743,6 +760,17 @@ mod tests {
         assert_eq!(names, ["docs", "github"]);
         let github = &c.mcp[1];
         assert!(github.allow.contains("get_issue"));
+        assert_eq!(github.call_timeout, std::time::Duration::from_secs(30));
+        assert_eq!(
+            c.mcp[0].call_timeout,
+            crate::llm::tools::mcp::DEFAULT_CALL_TIMEOUT
+        );
+        let bad = cfg("[llm.mcp.x]\ncommand = \"x\"\ntimeout = 0\n");
+        assert!(
+            bad.warnings.iter().any(|w| w.contains("timeout")),
+            "{:?}",
+            bad.warnings
+        );
         match &github.transport {
             McpTransport::Stdio {
                 command, args, env, ..

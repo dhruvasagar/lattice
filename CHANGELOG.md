@@ -134,6 +134,11 @@
   (`:set messages.filter=info,rmcp=debug` to see it).
 
 ### Fixed
+- **An MCP tool call can no longer hang a request.** A call to an
+  external MCP server had no time limit, so a stuck server held the
+  request until you stopped it. Calls now stop after 300 seconds (set
+  `timeout` in the server's `[llm.mcp.<name>]` table, 1 to 3600): the
+  call is cancelled on the server and the model is told it timed out.
 - **A project or session file that switches the LLM provider says so.**
   `.lattice/llm.toml` and a resumed session may choose the model, which
   could quietly send a chat to another of your providers (a paid or

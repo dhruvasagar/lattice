@@ -774,3 +774,73 @@ connection ending kill the child's whole process group. Design §6 records why.
 Also: `lattice_core::process::{own_process_group, kill_process_tree}` made public (the existing group-kill,
 reused rather than copied); `*llm-mcp*` (`llm-mcp-mode`, `r` / `dd`, self-repainting on
 `McpServersChanged`); `docs/user/llm-mcp-mode.md`. Bench: `llm_mcp_call`.
+
+## Release readiness
+
+The checklist for shipping the LLM layer in a major release. Updated with each commit;
+this is the place to look for where the work stands. ✅ done · 🚧 in progress · 📝 next ·
+❓ needs Dhruva's decision · ⛔ deferred.
+
+Commits are on `feat/llm-layer`, **unpushed**. Each was verified with targeted tests,
+production clippy (zero warnings) and the docs gate for its crates. **No whole-crate test
+gate has run**: CI is the full suite once the branch is pushed.
+
+### 1. Review findings (two whole-branch reviews, 2026-11-08 and -09)
+
+- ✅ Security: a command question shows the whole command, capped (`b24693c2`); a chat's
+  command allow is keyed on the exact call (`7f8a8ca1`); a trusted edit drops the chat's
+  allowed commands, so an unseen `build.rs` cannot run under an allowed `cargo test`
+  (`530b330a`); `.git` matched without case (`e428772d`).
+- ✅ Privacy: `llm.exclude` through composed views (`5341e281`); URLs without user part or
+  query values (`9729e3e2`); MCP tokens hidden in labels and start-up errors (`081ca2e8`);
+  masked keys scrubbed (`c0fbd568`); saved chats owner-only via an unguessable temp file
+  (`ca782c5d`); org export cannot produce a live link (`ae545e37`); warning when a project or
+  session file picks another provider (`373d5cde`).
+- ✅ Protocol robustness: bare `[DONE]` after tool calls (`bbc6fa8c`); SSE bare CR
+  (`892a1204`); MCP call timeout (`4492467e`); MCP group kill checks the pid was not reused
+  (`d9c098cb`); transient HTTP failures retried with `Retry-After` (`38324de4`); TOML errors
+  named, never panicking (`f5a29d76`).
+- ✅ IDE protocol: connection counted after auth, bounded handshake (`df798303`);
+  `:claude-code-start` reports failure (`23426f0b`); percent-encoded URIs (`b7ade1bb`); a late
+  agent is told the active editor (`2274935f`).
+- ✅ Correctness and lifecycle: early stop reaches its waiter (`7d6142ff`); MCP warns once
+  (`8e036687`); poisoned lock recovered (`1d64b62c`); refreshing views (`a33756c5`); stale
+  `dd` in `*llm-context*` (`3a4c6155`); draft prompt kept (`8e7e28ee`); held prompts keep
+  order (`74ca77d9`); per-buffer state dropped on close (`6efd2787`); rewrite span released
+  on every exit (`bf3ba96a`); Visual anchor carried by appends (`694fb80c`); closed pane's
+  anchor untracked (`8f13164d`); one teardown for transient buffers (`f3738712`); diff
+  refinement dropped on teardown (`d99a3453`); late transcript guard (`9ebc89ab`); fold
+  threshold outside markdown (`48abbf44`); first-bind warning (`fab37afe`); `<Tab>` inside an
+  open pattern (`4a93250b`).
+- ✅ Async edit races: batch rebase primitive with `BaseMismatch` (`d2ae0b36`); operators and
+  host batches rebased over a stream's appends (`c3c77e92`).
+- ✅ Rewrite apply race: the reviewed replacement applies with `BaseMismatch::Refuse` and
+  re-reads on `Stale`, so a key typed between the check and the write is never overwritten
+  (this commit). The window itself cannot be forced from a test; the refusal it rests on is
+  covered at core and actor level (`d2ae0b36`).
+- ✅ Test coverage: LLM end to end in both renderers (`af72045d`); pre-existing completion
+  test failure fixed (`cc13f6a4`); `sor<Tab>` ranking (`cdf8cc05`).
+
+### 2. Documentation
+
+- ✅ Dedicated user guide `:help llm-guide`, a "Language models" site section, README and
+  "Why Lattice?" sections (`e4e57d07`).
+- ✅ Design fragment status corrected; batch rebase designed in owner-write-caret §10.1.
+- ❓ `:llm-send` / `<leader>as` and `<leader>aR` are designed (llm-layer.md §2) but were never
+  built or recorded as dropped. Build them, or mark them ❌ with the reason.
+
+### 3. Release review (after §1 and §2 close)
+
+- 📝 Design review of the whole layer against the four paramount goals, UX as the higher
+  court, and the standing rules (mode ownership, everything-is-a-buffer, no UI-thread work,
+  TUI/GPUI parity, async results without a keypress).
+- 📝 Code review of the whole branch diff (`main..feat/llm-layer`), including the 45
+  fix commits above, which no review has yet read.
+- 📝 Fix what the reviews find, one commit each, then a final docs gate.
+- 📝 Push; CI runs the full suite.
+
+### 4. Found outside the branch (not LLM work)
+
+- ❓ Nothing publishes `Event::DocumentClosed` in production, so the multibuffer,
+  LSP-references, magit and VCS close cleanups never run.
+- ❓ `lattice-multibuffer` does not build with `--no-default-features`.

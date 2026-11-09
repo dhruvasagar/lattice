@@ -135,6 +135,7 @@
   (`:set messages.filter=info,rmcp=debug` to see it).
 
 ### Fixed
+- Accepting an llm rewrite can no longer overwrite a key typed in the rewritten text at the moment it applies. The check that the text is unchanged and the replacement now happen together, and a key landing between them makes the rewrite read the text again.
 - An operator (`dd`, `cw`, `>>`...) or a format run while an llm answer streams into the same buffer now acts on the text the cursor is on. It used to act on the line the cursor had been on before the latest chunk arrived, so `dd` could delete part of the answer.
 - An llm chat with edits trusted (`<C-t>`) can no longer run code you have not seen through a command you allowed "for this chat". An edit applied without review now drops the chat's allowed commands, so the next `cargo test` asks again: the model could otherwise change `build.rs` or a test unseen and then run it.
 - **Completion ranks a word that starts with what you typed above one

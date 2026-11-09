@@ -41,6 +41,8 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 use lattice_core::BufferId;
+use lattice_core::CoreError;
+use lattice_core::document::BaseMismatch;
 use lattice_core::tracked::{Stickiness, TrackedRangeChange, TrackedRangeId};
 use lattice_grammar::CommandError;
 use lattice_grammar::effect::{EchoLevel, Effect};
@@ -482,7 +484,9 @@ impl Task {
                     return;
                 }
             };
-            match span_now(&self.store, buffer, self.held.tracked) {
+            match apply_if_unchanged(&self.store, buffer, self.held.tracked, &baseline, &accepted)
+                .await
+            {
                 None => {
                     untrack(&self.store, buffer, self.held.tracked);
                     let name = self.session.name.clone();
@@ -491,8 +495,7 @@ impl Task {
                     )));
                     return;
                 }
-                Some(now) if now == baseline => {
-                    apply(&self.store, buffer, self.held.tracked, &accepted);
+                Some(Applied::Yes) => {
                     self.rewrites.send(vec![echo(
                         EchoLevel::Info,
                         "llm: rewrite applied".to_string(),
@@ -501,7 +504,7 @@ impl Task {
                 }
                 // Changed under the review: review again against what is
                 // there now, so accepting is a deliberate choice made seeing it.
-                Some(now) => {
+                Some(Applied::Changed(now)) => {
                     self.rewrites.send(vec![echo(
                         EchoLevel::Info,
                         format!(
@@ -518,38 +521,80 @@ impl Task {
     }
 }
 
-/// The text the tracked span holds now, or `None` if it was deleted.
-fn span_now(
+/// How [`apply_if_unchanged`] ended, when the span still exists.
+enum Applied {
+    /// The span held the reviewed text, and now holds the accepted text.
+    Yes,
+    /// The span holds other text: this.
+    Changed(String),
+}
+
+/// Give up re-reading after this many writes refused in a row; each needs a
+/// fresh edit to the buffer, so reaching it means the user is typing in the
+/// span, and the review is shown again against what is there.
+const APPLY_ATTEMPTS: usize = 8;
+
+/// Replace the tracked span with `accepted` if it still holds `baseline`,
+/// then stop tracking it. `None` when the span or its buffer is gone.
+///
+/// The span is read and the write positioned from ONE snapshot, and the write
+/// is refused (`BaseMismatch::Refuse`) if anything but a stream's append
+/// changed the text after that snapshot. The comparison and the write are so
+/// one decision: a key typed between them makes the write refuse, the span is
+/// read again, and the key is never overwritten (owner-write-caret §10.1).
+async fn apply_if_unchanged(
     store: &BufferStoreHandle,
     buffer: BufferId,
     tracked: TrackedRangeId,
-) -> Option<String> {
-    let snap = store.handle_for(buffer)?.snapshot();
-    let range = snap.tracked_ranges.get(tracked)?;
-    if range.collapsed {
-        return None;
+    baseline: &str,
+    accepted: &str,
+) -> Option<Applied> {
+    let handle = store.handle_for(buffer)?;
+    let mut now = String::new();
+    for _ in 0..APPLY_ATTEMPTS {
+        let snap = handle.snapshot();
+        let range = snap.tracked_ranges.get(tracked)?;
+        if range.collapsed {
+            return None;
+        }
+        now = snap
+            .buffer
+            .as_string()
+            .get(range.start..range.end)?
+            .to_string();
+        if now != baseline {
+            return Some(Applied::Changed(now));
+        }
+        let (Ok(start), Ok(end)) = (
+            snap.buffer.byte_to_position(range.start),
+            snap.buffer.byte_to_position(range.end),
+        ) else {
+            return None;
+        };
+        let version = snap.text_version;
+        drop(snap);
+        match handle
+            .apply_edit_batch_based_on(
+                vec![Edit::replace(Range::new(start, end), accepted)],
+                version,
+                BaseMismatch::Refuse,
+            )
+            .await
+        {
+            Ok(_) => {
+                drop(handle.update_tracked_ranges(vec![TrackedRangeChange::Untrack(tracked)]));
+                return Some(Applied::Yes);
+            }
+            Err(lattice_runtime::RuntimeError::Core(CoreError::Stale)) => {
+                tracing::debug!("llm: rewrite write refused as stale; reading the span again");
+            }
+            Err(e) => {
+                tracing::warn!("llm: rewrite could not be applied: {e}");
+                return None;
+            }
+        }
     }
-    let text = snap.buffer.as_string();
-    text.get(range.start..range.end).map(str::to_string)
-}
-
-/// Replace the tracked span with `text` as one edit, then stop tracking it.
-fn apply(store: &BufferStoreHandle, buffer: BufferId, tracked: TrackedRangeId, text: &str) {
-    let Some(handle) = store.handle_for(buffer) else {
-        return;
-    };
-    let snap = handle.snapshot();
-    let Some(range) = snap.tracked_ranges.get(tracked) else {
-        return;
-    };
-    let (Ok(start), Ok(end)) = (
-        snap.buffer.byte_to_position(range.start),
-        snap.buffer.byte_to_position(range.end),
-    ) else {
-        return;
-    };
-    drop(handle.apply_edit_batch(vec![Edit::replace(Range::new(start, end), text)]));
-    drop(handle.update_tracked_ranges(vec![TrackedRangeChange::Untrack(tracked)]));
+    Some(Applied::Changed(now))
 }
 
 /// Register `operator:llm-rewrite` and the action its prompt fires.

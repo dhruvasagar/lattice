@@ -134,6 +134,12 @@
   (`:set messages.filter=info,rmcp=debug` to see it).
 
 ### Fixed
+- **Saved and exported LLM chats are private.** `:llm-save` and
+  `:llm-export` wrote files anyone on the machine could read, though a
+  chat holds file contents and tool output; a new file is now readable
+  by you alone, and one overwritten keeps its mode. The temporary file
+  has an unguessable name, and without `!` an existing file is never
+  replaced, even one created a moment before.
 - **A rejected LLM key is not half-shown in the error.** A provider that
   echoes the key masked (`sk-proj-****abcd`) gave away its prefix and
   last characters in the chat's error; anything shaped like a masked key

@@ -683,24 +683,90 @@ fn is_org(path: &Path) -> bool {
 }
 
 /// Write `text` to `path` whole or not at all: to a sibling first, then
-/// renamed over it, so a failed write never leaves half a file. Without
-/// `overwrite` an existing file is kept, as `:w` keeps one.
+/// moved into place, so a failed write never leaves half a file. Without
+/// `overwrite` an existing file is kept, as `:w` keeps one, and that holds
+/// even if one appears meanwhile: the move is a link that fails on an
+/// existing name.
+///
+/// A chat holds file contents and tool output, so a new file is the owner's
+/// alone (`0600`); one overwritten keeps the mode it had. The sibling has an
+/// unguessable name and is created only if nothing is there, so a link
+/// planted at it cannot redirect the write.
 async fn write_file(path: &Path, shown: &str, text: String, overwrite: bool) -> Result<(), String> {
-    if !overwrite && tokio::fs::try_exists(path).await.unwrap_or(false) {
-        return Err(format!("llm: {shown} exists (add ! to overwrite)"));
+    let (path, shown) = (path.to_path_buf(), shown.to_string());
+    tokio::task::spawn_blocking(move || write_file_blocking(&path, &shown, &text, overwrite))
+        .await
+        .unwrap_or_else(|e| Err(format!("llm: the write stopped ({e})")))
+}
+
+fn write_file_blocking(
+    path: &Path,
+    shown: &str,
+    text: &str,
+    overwrite: bool,
+) -> Result<(), String> {
+    use std::io::Write as _;
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let exists = |shown: &str| format!("llm: {shown} exists (add ! to overwrite)");
+    if !overwrite && path.symlink_metadata().is_ok() {
+        return Err(exists(shown));
     }
     let name = path
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let tmp = path.with_file_name(format!(".{name}.lattice-tmp"));
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.subsec_nanos());
+    let tmp = path.with_file_name(format!(
+        ".{name}.{}-{}-{nonce:x}.lattice-tmp",
+        std::process::id(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
     let fail = |e: std::io::Error| format!("llm: cannot write {shown}: {}", e.kind());
-    tokio::fs::write(&tmp, text).await.map_err(fail)?;
-    if let Err(e) = tokio::fs::rename(&tmp, path).await {
-        let _ = tokio::fs::remove_file(&tmp).await;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.mode(0o600);
+    }
+    let written = (|| {
+        let mut file = options.open(&tmp)?;
+        file.write_all(text.as_bytes())?;
+        if let Ok(kept) = std::fs::metadata(path) {
+            file.set_permissions(kept.permissions())?;
+        }
+        file.sync_all()
+    })();
+    if let Err(e) = written {
+        let _ = std::fs::remove_file(&tmp);
         return Err(fail(e));
     }
-    Ok(())
+    let placed = if overwrite {
+        std::fs::rename(&tmp, path)
+    } else {
+        match std::fs::hard_link(&tmp, path) {
+            // A filesystem without links: check, then move, as before.
+            Err(e) if e.kind() != std::io::ErrorKind::AlreadyExists => {
+                if path.symlink_metadata().is_ok() {
+                    Err(std::io::ErrorKind::AlreadyExists.into())
+                } else {
+                    std::fs::rename(&tmp, path)
+                }
+            }
+            linked => linked,
+        }
+    };
+    let _ = std::fs::remove_file(&tmp).or_else(|e| match e.kind() {
+        std::io::ErrorKind::NotFound => Ok(()),
+        _ => Err(e),
+    });
+    match placed {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(exists(shown)),
+        Err(e) => Err(fail(e)),
+    }
 }
 
 fn arg_text(args: &Args) -> String {
@@ -765,6 +831,34 @@ pub fn register(registry: &mut CommandRegistry, files: LlmSessionFilesHandle) {
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
+
+    /// A new save is the owner's alone, an overwritten one keeps its mode,
+    /// and without `!` an existing file is never replaced.
+    #[cfg(unix)]
+    #[test]
+    fn a_saved_chat_is_private_and_never_clobbered() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = std::env::temp_dir().join(format!("lattice-save-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("chat.json");
+        write_file_blocking(&path, "chat.json", "one", false).unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600, "{mode:o}");
+
+        let err = write_file_blocking(&path, "chat.json", "two", false).unwrap_err();
+        assert!(err.contains("exists"), "{err}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "one");
+
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        write_file_blocking(&path, "chat.json", "three", true).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "three");
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o644, "{mode:o}");
+        let left: Vec<_> = std::fs::read_dir(&dir).unwrap().collect();
+        assert_eq!(left.len(), 1, "no temp file left behind");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn the_checksum_is_fixed_for_a_given_text() {

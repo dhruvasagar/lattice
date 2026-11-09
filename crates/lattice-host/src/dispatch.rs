@@ -24029,8 +24029,14 @@ impl Editor {
         let last_seen = self.seen_text_version();
         let has_editable_tail = self.active_editable_tail().is_some();
         if should_adopt_owner_write(has_editable_tail, doc_tv, snap.append_version, last_seen) {
-            let head = snap.selections.primary().head;
-            self.cursor = head;
+            let primary = snap.selections.primary();
+            self.cursor = primary.head;
+            // In Visual the document holds the anchor too (`write_through_caret`)
+            // and moved it with the head; leaving the host's where it was
+            // would stretch the selection over the appended text.
+            if self.visual_anchor.is_some() {
+                self.visual_anchor = Some(primary.anchor);
+            }
             self.last_seen_text_version.insert(buf_id, doc_tv);
         }
     }

@@ -134,6 +134,10 @@
   (`:set messages.filter=info,rmcp=debug` to see it).
 
 ### Fixed
+- **A Visual selection stays on its text while output streams above it.**
+  The caret moved with text an LLM answer or another stream inserted
+  above it, but the selection's other end did not, so the selection
+  stretched over the new lines.
 - **A rewrite you abandon stops being tracked.** The span under a rewrite
   prompt dismissed with `<Esc>`, a rewrite whose text was deleted during
   review, or one whose request vanished stayed tracked in the buffer for

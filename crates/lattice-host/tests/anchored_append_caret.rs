@@ -239,3 +239,33 @@ async fn the_wake_after_an_append_moves_the_caret_without_a_key() {
     let _ = editor.run_tick_pending();
     assert_eq!(editor.cursor, Position::new(2, 1), "still on `cd`'s `d`");
 }
+
+/// A Visual selection below a stream keeps covering the same text: the
+/// append moves its anchor with its head, so it does not stretch over the
+/// lines that arrived.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_append_moves_a_visual_selection_whole() {
+    let mut editor = boot("ab\ncd\nef\n");
+    editor.set_cursor_clamped(Position::new(1, 0));
+    key(&mut editor, Action::None);
+    let mut partial = Vec::new();
+    let _ = editor.dispatch_chord(lattice_host::chord::KeyChord::char('v'), &mut partial);
+    let _ = editor.dispatch_chord(lattice_host::chord::KeyChord::char('j'), &mut partial);
+    key(&mut editor, Action::None);
+    assert_eq!(editor.visual_anchor, Some(Position::new(1, 0)));
+    assert_eq!(editor.cursor.line, 2);
+
+    let id = anchor(&editor, 0).await;
+    editor
+        .document
+        .append_to_tracked(id, "new\n".to_string())
+        .await
+        .unwrap();
+    key(&mut editor, Action::None);
+    assert_eq!(
+        editor.visual_anchor,
+        Some(Position::new(2, 0)),
+        "anchor moved"
+    );
+    assert_eq!(editor.cursor.line, 3, "head moved");
+}

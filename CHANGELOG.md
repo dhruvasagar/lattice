@@ -134,6 +134,11 @@
   (`:set messages.filter=info,rmcp=debug` to see it).
 
 ### Fixed
+- **An MCP server's tokens stay hidden in more places.** `*llm-mcp*` and
+  logs no longer show a token passed as an argument (`--token X`,
+  `--api-key=X`, or one shaped like a token) or in an HTTP server's URL
+  path; a stdio server's start-up failure is scrubbed like its other
+  output; and the token inside a `Bearer …` header is scrubbed on its own.
 - **A key in a custom LLM `base_url` is never shown.** A URL carrying a
   password (`https://user:key@host`) or a key in its query (`?key=…`)
   appeared as written in connection errors and `:llm-inspect`. Both now

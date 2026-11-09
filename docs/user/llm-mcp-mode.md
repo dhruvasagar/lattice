@@ -42,8 +42,12 @@ cannot be `lattice`.
 variable, `$NAME` or `${NAME}` (`$$` is a literal `$`); it is read when the
 server starts, and a variable that is not set stops the server with a message
 naming it. Neither the values nor the variables are ever shown in
-`*llm-mcp*`, and anything the server prints that contains one is shown as
-`***`.
+`*llm-mcp*`, and anything the server prints that contains one (or the
+token inside a `Bearer …` value) is shown as `***`. A token passed as an
+argument is hidden the same way: the value after a flag naming one
+(`--token X`, `--api-key=X`), and any argument or URL path segment shaped
+like a token. Values under six characters are settings, not tokens, and
+are left alone.
 
 ## Use its tools
 

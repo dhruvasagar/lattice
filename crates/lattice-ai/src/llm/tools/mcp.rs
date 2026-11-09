@@ -113,25 +113,83 @@ impl std::fmt::Debug for McpTransport {
 }
 
 impl McpTransport {
-    /// What `*llm-mcp*` shows: the command, or the URL without its query or
-    /// credentials (either can hold a token).
+    /// What `*llm-mcp*` shows: the command and its arguments, or the URL
+    /// without its query or credentials. Anything that can hold a token is
+    /// written `***`: the argument after a flag naming one (`--token X`), a
+    /// flag's own value (`--api-key=X`), and an argument or path segment that
+    /// looks like one.
     pub fn label(&self) -> String {
         match self {
             Self::Stdio { command, args, .. } if args.is_empty() => format!("stdio: {command}"),
-            Self::Stdio { command, args, .. } => format!("stdio: {command} {}", args.join(" ")),
+            Self::Stdio { command, args, .. } => {
+                format!("stdio: {command} {}", shown_args(args).join(" "))
+            }
             Self::Http { url, .. } => format!("http: {}", shown_url(url)),
         }
     }
 }
 
-/// `url` with any `user:pass@` and everything from `?` or `#` removed.
+/// `args` with every token-shaped value written `***`.
+fn shown_args(args: &[String]) -> Vec<String> {
+    let mut out = Vec::with_capacity(args.len());
+    let mut after_secret_flag = false;
+    for arg in args {
+        let shown = if after_secret_flag {
+            "***".to_string()
+        } else if let Some((flag, _)) = arg.split_once('=').filter(|(f, _)| names_secret(f)) {
+            format!("{flag}=***")
+        } else if looks_secret(arg) {
+            "***".to_string()
+        } else {
+            arg.clone()
+        };
+        after_secret_flag = arg.starts_with('-') && !arg.contains('=') && names_secret(arg);
+        out.push(shown);
+    }
+    out
+}
+
+/// A flag whose name says its value is a credential.
+fn names_secret(flag: &str) -> bool {
+    let f = flag.to_ascii_lowercase();
+    f.starts_with('-')
+        && [
+            "token",
+            "key",
+            "secret",
+            "password",
+            "passwd",
+            "auth",
+            "credential",
+        ]
+        .iter()
+        .any(|w| f.contains(w))
+}
+
+/// Text shaped like a credential: long, one unbroken run of letters, digits,
+/// `-` and `_`, holding both letters and digits. Package names, paths and
+/// words are not (they have `/`, `@` or `.`, or no digits).
+fn looks_secret(s: &str) -> bool {
+    s.len() >= 24
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        && s.chars().any(|c| c.is_ascii_digit())
+        && s.chars().any(|c| c.is_ascii_alphabetic())
+}
+
+/// `url` with any `user:pass@` and everything from `?` or `#` removed, and a
+/// token-shaped path segment written `***`.
 fn shown_url(url: &str) -> String {
     let cut = url.find(['?', '#']).map_or(url, |i| &url[..i]);
     match cut.split_once("://") {
         Some((scheme, rest)) => {
             let (host, path) = rest.split_at(rest.find('/').unwrap_or(rest.len()));
             let host = host.rsplit_once('@').map_or(host, |(_, h)| h);
-            format!("{scheme}://{host}{path}")
+            let path: Vec<&str> = path
+                .split('/')
+                .map(|seg| if looks_secret(seg) { "***" } else { seg })
+                .collect();
+            format!("{scheme}://{host}{}", path.join("/"))
         }
         None => cut.to_string(),
     }
@@ -181,15 +239,28 @@ fn expand_with(value: &str, lookup: impl Fn(&str) -> Option<String>) -> Result<S
     Ok(out)
 }
 
-/// Replaces each secret it was given with `***`.
+/// Replaces each secret it was given with `***`, and the credential inside an
+/// `Authorization`-style value (`Bearer <token>`) on its own, since a server
+/// that echoes the token rarely echoes the scheme with it.
 #[derive(Clone, Default)]
 struct Redactor(Arc<Vec<String>>);
 
 impl Redactor {
     fn new(secrets: impl IntoIterator<Item = String>) -> Self {
-        // Short values ("1", "true") would scrub ordinary text and hide
-        // nothing worth hiding.
-        let mut v: Vec<String> = secrets.into_iter().filter(|s| s.len() >= 6).collect();
+        // Values under 6 characters ("1", "true", "debug") are settings, not
+        // credentials; scrubbing them would garble every line that held the
+        // letters and hide nothing a token-shaped secret does not.
+        let mut v: Vec<String> = secrets
+            .into_iter()
+            .flat_map(|s| {
+                let inner = s
+                    .split_once(' ')
+                    .map(|(_, rest)| rest.trim().to_string())
+                    .filter(|rest| !rest.is_empty() && !rest.contains(' '));
+                std::iter::once(s).chain(inner)
+            })
+            .filter(|s| s.len() >= 6)
+            .collect();
         v.sort_by_key(|s| std::cmp::Reverse(s.len()));
         Self(Arc::new(v))
     }
@@ -950,7 +1021,17 @@ async fn connect_stdio(
             expand_env(v).map_err(|e| format!("env {k}: {e}"))?,
         ));
     }
-    let redactor = Redactor::new(expanded.iter().map(|(_, v)| v.clone()));
+    // What the label hides of the arguments is scrubbed from stderr too.
+    let hidden_args = args
+        .iter()
+        .zip(shown_args(args))
+        .filter(|(arg, shown)| *arg != shown)
+        .map(|(arg, _)| {
+            arg.split_once('=')
+                .map_or(arg.clone(), |(_, v)| v.to_string())
+        });
+    let redactor = Redactor::new(expanded.iter().map(|(_, v)| v.clone()).chain(hidden_args));
+    let failed = redactor.clone();
     let mut cmd = tokio::process::Command::new(command);
     cmd.args(args).envs(expanded).kill_on_drop(true);
     if let Some(dir) = cwd {
@@ -991,7 +1072,7 @@ async fn connect_stdio(
                 let _ = tokio::time::timeout(Duration::from_millis(500), reader).await;
             }
             let note = tail.last().map(|l| format!(": {l}")).unwrap_or_default();
-            Err(format!("initialize failed ({e}){note}"))
+            Err(failed.scrub(&format!("initialize failed ({e}){note}")))
         }
     }
 }
@@ -1066,12 +1147,36 @@ mod tests {
             cwd: None,
         };
         assert_eq!(stdio.label(), "stdio: npx -y server");
+        let stdio = McpTransport::Stdio {
+            command: "srv".to_string(),
+            args: vec![
+                "--token".into(),
+                "abc".into(),
+                "--api-key=xyz".into(),
+                "ghp_0123456789abcdefghijklmnopqrstuv".into(),
+                "@scope/package-name".into(),
+            ],
+            env: BTreeMap::new(),
+            cwd: None,
+        };
+        assert_eq!(
+            stdio.label(),
+            "stdio: srv --token *** --api-key=*** *** @scope/package-name"
+        );
+        let http = McpTransport::Http {
+            url: "https://mcp.example.com/k/a1b2c3d4e5f6a7b8c9d0e1f2/sse".to_string(),
+            headers: BTreeMap::new(),
+        };
+        assert_eq!(http.label(), "http: https://mcp.example.com/k/***/sse");
     }
 
     #[test]
     fn secrets_are_scrubbed_and_short_values_are_not() {
         let r = Redactor::new(["sekrit-123".to_string(), "1".to_string()]);
         assert_eq!(r.scrub("token sekrit-123 at 1"), "token *** at 1");
+        // A header's token alone, as a server echoes it.
+        let r = Redactor::new(["Bearer sekrit-456".to_string()]);
+        assert_eq!(r.scrub("bad token sekrit-456"), "bad token ***");
     }
 
     #[test]

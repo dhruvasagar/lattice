@@ -134,6 +134,10 @@
   (`:set messages.filter=info,rmcp=debug` to see it).
 
 ### Fixed
+- **An ask sent into a chat waits behind prompts a failure held.** After a
+  failed reply the chat's queued prompts wait for your next send; an ask
+  sent in with `destination=` skipped ahead of them instead of resuming
+  them in order.
 - **Sending an ask into an open chat keeps the prompt you were typing.**
   `destination=` on an ask, which continues a chat from another buffer,
   counted as sending that chat's prompt and wiped whatever you had

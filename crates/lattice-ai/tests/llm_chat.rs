@@ -406,6 +406,64 @@ async fn a_failed_reply_holds_the_queue_until_the_next_send() {
     );
 }
 
+/// An ask sent into the chat from another buffer (`destination=`) while a
+/// failure holds the queue goes behind the held prompts, not ahead of them.
+#[tokio::test]
+async fn a_source_sent_into_a_held_queue_waits_its_turn() {
+    let bodies = Arc::new(Mutex::new(Vec::<String>::new()));
+    let seen = bodies.clone();
+    let addr = serve(move |req, mut s| {
+        let seen = seen.clone();
+        async move {
+            let n = {
+                let mut g = seen.lock().unwrap();
+                g.push(req);
+                g.len()
+            };
+            if n == 1 {
+                tokio::time::sleep(Duration::from_millis(150)).await;
+                let body = r#"{"error":{"message":"overloaded"}}"#;
+                let raw = format!(
+                    "HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = s.write_all(raw.as_bytes()).await;
+            } else {
+                let _ = s.write_all(&sse(OPENAI_OK_BODY)).await;
+                let _ = s.shutdown().await;
+            }
+        }
+    })
+    .await;
+    let chats = chats_with(config_for(addr, ""));
+    let session = chats.create();
+    chats.submit(&session, "first".into());
+    chats.submit(&session, "second".into());
+    until("the failure", || {
+        !session.is_busy() && session.store.snapshot().error.is_some()
+    })
+    .await;
+
+    chats.submit_source(
+        &session,
+        lattice_ai::conversation::Block::Source {
+            label: "a.rs:1".into(),
+            lang: "rust".into(),
+            text: "fn a() {}".into(),
+            link: None,
+        },
+        "explain".into(),
+        Default::default(),
+    );
+    until("both replies", || {
+        texts(&session).len() == 5 && !session.is_busy()
+    })
+    .await;
+    let t = texts(&session);
+    assert_eq!(t[1].1, "second", "the held prompt goes first: {t:?}");
+    assert!(t[3].1.contains("fn a() {}"), "{t:?}");
+}
+
 /// The queue and `busy` are decided together: prompts submitted from many
 /// threads while turns end are all eventually sent, none stranded.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

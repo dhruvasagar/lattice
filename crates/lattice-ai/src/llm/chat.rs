@@ -1323,8 +1323,10 @@ impl LlmChats {
 
     /// LL.10b: send `source` from a buffer, with the typed `instruction`, as
     /// the first turn of a chat [`create_for_source`](Self::create_for_source)
-    /// made. A chat that already has a turn running queues it as text instead,
-    /// which only a caller reusing a chat (LL.10c's `destination=`) can reach.
+    /// made. A chat that already has a turn running, or prompts a failure
+    /// held, queues it as text behind them instead, so it never jumps the
+    /// queue; only a caller reusing a chat (LL.10c's `destination=`) can
+    /// reach that.
     pub fn submit_source(
         self: &Arc<Self>,
         session: &Arc<ChatSession>,
@@ -1339,7 +1341,9 @@ impl LlmChats {
         }
         let started = {
             let mut turn = session.turn();
-            if turn.busy {
+            // Read under the turn lock, which every change to the queue holds.
+            let held = !session.store.snapshot().queued.is_empty();
+            if turn.busy || held {
                 false
             } else {
                 session.store.mutate(&session.key, |c| {

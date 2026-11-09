@@ -134,6 +134,12 @@
   (`:set messages.filter=info,rmcp=debug` to see it).
 
 ### Fixed
+- **A rate-limited or overloaded LLM request is retried.** HTTP 429, 502,
+  503, 504 and 529 used to fail the request at once. It is now sent again
+  up to twice, waiting as long as the provider asks (or a few seconds),
+  and `:llm-requests` shows it as `retrying` meanwhile. A provider asking
+  for more than 30 seconds is not waited for: the failure says how long
+  it asked.
 - **Stopping an MCP server cannot kill an unrelated process (Linux).**
   An MCP server is stopped by killing its process group. If the server
   had already exited and the system had reused its id for another

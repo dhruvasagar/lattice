@@ -130,6 +130,14 @@ them from anywhere:
 Stopping works like `<C-c>` in a chat: an answer being written into the
 buffer keeps what arrived and ends with `[interrupted]`.
 
+A request the provider turns away for now (rate limited, overloaded, or a
+gateway that could not reach it: HTTP 429, 502, 503, 504, 529) is sent
+again, up to twice, before it fails. It waits as long as the provider asks,
+or a few seconds, and `:llm-requests` shows it as `retrying` with the
+reason meanwhile. A provider asking for more than 30 seconds is not waited
+for: the request fails, saying how long it asked for. Stopping a request
+ends the wait at once.
+
 While any request runs, the modeline shows `llm` (`llm 3` for three), so
 one running in a chat you closed the window of, or writing into another
 buffer, is never out of sight. A chat whose window you closed keeps

@@ -38,6 +38,41 @@ const MAX_ERROR_BODY_BYTES: usize = 16 * 1024;
 /// How much of an error body is shown, in characters.
 pub const MAX_ERROR_EXCERPT_CHARS: usize = 300;
 
+/// How many times a request refused for now (see [`is_transient`]) is sent
+/// again before its failure is reported.
+pub const MAX_RETRIES: u32 = 2;
+
+/// The longest a retry waits. A provider asking (`Retry-After`) for longer
+/// than this is not waited for: the failure is reported with the wait it
+/// asked for, rather than the request sitting silent for minutes.
+pub const MAX_RETRY_WAIT: Duration = Duration::from_secs(30);
+
+/// Statuses that mean "not now" rather than "no": rate limited, overloaded,
+/// or a gateway that could not reach the provider. The request was not
+/// processed, so sending it again is safe. A plain 500 is not one of them:
+/// it may fail the same way every time.
+pub fn is_transient(code: u16) -> bool {
+    matches!(code, 429 | 502 | 503 | 504 | 529)
+}
+
+/// The wait before retry `n` (0-based) when the provider names none.
+fn backoff(n: u32) -> Duration {
+    Duration::from_secs(2u64 << n.min(4))
+}
+
+/// A `Retry-After` given in seconds. The HTTP-date form is not read; the
+/// default backoff applies then.
+fn retry_after(resp: &reqwest::Response) -> Option<Duration> {
+    resp.headers()
+        .get(reqwest::header::RETRY_AFTER)?
+        .to_str()
+        .ok()?
+        .trim()
+        .parse::<u64>()
+        .ok()
+        .map(Duration::from_secs)
+}
+
 /// Whether the sink wants more events.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SinkFlow {
@@ -272,8 +307,14 @@ pub struct Exchange<'a> {
 }
 
 /// Execute `http`, decode the stream and hand each batch of events to
-/// `on_events` (which reports whether to continue). `on_state_streaming` is
+/// `on_events` (which reports whether to continue). `on_streaming` is
 /// called once, when a healthy event-stream response begins.
+///
+/// A [transient](is_transient) refusal, which comes before any of the body,
+/// is retried up to [`MAX_RETRIES`] times, waiting what `Retry-After` asks
+/// (up to [`MAX_RETRY_WAIT`]) or a short backoff. `on_retry(n, why)` is
+/// called before retry `n` (1-based) starts waiting, so the request can be
+/// shown as retrying rather than silent. The token cuts a wait short.
 ///
 /// Returns when the provider finishes, the sink stops, the token fires, or the
 /// request fails. Dropping the response on any exit closes the socket.
@@ -282,6 +323,7 @@ pub async fn run(
     http: HttpRequest,
     mut decoder: Box<dyn StreamDecoder>,
     mut on_streaming: impl FnMut(),
+    mut on_retry: impl FnMut(u32, &'static str),
     mut on_events: impl FnMut(Vec<StreamEvent>) -> SinkFlow,
 ) -> Outcome {
     let Exchange {
@@ -294,19 +336,49 @@ pub async fn run(
         Ok(m) => m,
         Err(_) => return Outcome::Failed(format!("invalid HTTP method {:?}", http.method)),
     };
-    let mut builder = client.request(method, &http.url).body(http.body);
-    for (name, value) in &http.headers {
-        builder = builder.header(name, value);
-    }
-
-    let sent = tokio::select! {
-        biased;
-        _ = cancel.cancelled() => return Outcome::Cancelled,
-        r = builder.send() => r,
-    };
-    let resp = match sent {
-        Ok(r) => r,
-        Err(e) => return Outcome::Failed(scrub(&describe_error(&e), key)),
+    let mut retries = 0u32;
+    let mut asked_wait: Option<Duration> = None;
+    let resp = loop {
+        let mut builder = client
+            .request(method.clone(), &http.url)
+            .body(http.body.clone());
+        for (name, value) in &http.headers {
+            builder = builder.header(name, value);
+        }
+        let sent = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => return Outcome::Cancelled,
+            r = builder.send() => r,
+        };
+        let resp = match sent {
+            Ok(r) => r,
+            Err(e) => return Outcome::Failed(scrub(&describe_error(&e), key)),
+        };
+        let code = resp.status().as_u16();
+        if !is_transient(code) || retries >= MAX_RETRIES {
+            break resp;
+        }
+        let asked = retry_after(&resp);
+        let wait = asked.unwrap_or_else(|| backoff(retries));
+        if wait > MAX_RETRY_WAIT {
+            asked_wait = asked;
+            break resp;
+        }
+        // The refusal's body is not read: the next answer is what counts.
+        drop(resp);
+        retries += 1;
+        tracing::debug!(
+            code,
+            retries,
+            wait_ms = wait.as_millis() as u64,
+            "llm request retrying"
+        );
+        on_retry(retries, status_label(code));
+        tokio::select! {
+            biased;
+            _ = cancel.cancelled() => return Outcome::Cancelled,
+            _ = tokio::time::sleep(wait) => {}
+        }
     };
 
     let code = resp.status().as_u16();
@@ -330,7 +402,17 @@ pub async fn run(
             _ = cancel.cancelled() => return Outcome::Cancelled,
             b = read_error_body(resp, idle) => b,
         };
-        return http_failure(code, &excerpt(&body, key));
+        let failed = http_failure(code, &excerpt(&body, key));
+        return match (failed, asked_wait, retries) {
+            (Outcome::Failed(m), Some(wait), _) => Outcome::Failed(format!(
+                "{m} (the provider asks to wait {}s; send again then)",
+                wait.as_secs()
+            )),
+            (Outcome::Failed(m), None, n) if n > 0 => {
+                Outcome::Failed(format!("{m} (after {} attempts)", n + 1))
+            }
+            (other, ..) => other,
+        };
     }
     if !is_event_stream(&resp) {
         let ctype = resp

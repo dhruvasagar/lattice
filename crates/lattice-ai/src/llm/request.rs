@@ -45,6 +45,12 @@ pub enum RequestState {
     Streaming,
     AwaitingTool,
     AwaitingReview,
+    /// Refused for now (rate limited, overloaded); sending again shortly.
+    /// `attempt` is the retry about to be made, from 1.
+    Retrying {
+        attempt: u32,
+        reason: String,
+    },
     Done,
     Failed(String),
     Cancelled,
@@ -460,6 +466,15 @@ async fn run_request(
         http,
         decoder,
         || shared.transition(id, RequestState::Streaming),
+        |attempt, why| {
+            shared.transition(
+                id,
+                RequestState::Retrying {
+                    attempt,
+                    reason: why.to_string(),
+                },
+            )
+        },
         |events| {
             let mut flow = SinkFlow::Continue;
             for ev in events {

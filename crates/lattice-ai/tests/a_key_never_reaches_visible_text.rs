@@ -74,7 +74,7 @@ async fn a_proxy_html_page_quoting_the_header_is_scrubbed_and_bounded() {
             "<p>filler</p>".repeat(500)
         );
         let raw = format!(
-            "HTTP/1.1 502 Bad Gateway\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            "HTTP/1.1 502 Bad Gateway\r\nContent-Type: text/html\r\nRetry-After: 0\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
             body.len()
         );
         let _ = s.write_all(raw.as_bytes()).await;

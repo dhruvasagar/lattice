@@ -138,8 +138,9 @@ async fn cancel_while_the_server_never_answers() {
 }
 
 async fn failed_for(status_line: &str, body: &str) -> String {
+    // `Retry-After: 0` so a transient status's retries do not wait.
     let raw = format!(
-        "HTTP/1.1 {status_line}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        "HTTP/1.1 {status_line}\r\nContent-Type: application/json\r\nRetry-After: 0\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     );
     let addr = serve_bytes(raw.into_bytes()).await;
@@ -176,6 +177,150 @@ async fn http_429_is_rate_limited() {
     assert!(
         m.contains("rate limited") && m.contains("429") && m.contains("Slow down"),
         "{m}"
+    );
+}
+
+fn refusal(status_line: &str, retry_after: &str) -> Vec<u8> {
+    let body = r#"{"error":{"message":"Slow down"}}"#;
+    format!(
+        "HTTP/1.1 {status_line}\r\nContent-Type: application/json\r\nRetry-After: {retry_after}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    )
+    .into_bytes()
+}
+
+/// A server that refuses the first `refusals` requests with `status_line`
+/// (asking to wait `retry_after`) and streams a reply after that. Returns
+/// its address and a count of the requests it saw.
+async fn refuses_then_answers(
+    refusals: usize,
+    status_line: &'static str,
+    retry_after: &'static str,
+) -> (std::net::SocketAddr, Arc<std::sync::atomic::AtomicUsize>) {
+    use std::sync::atomic::Ordering;
+    let seen = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let count = seen.clone();
+    let addr = serve(move |_, mut s| {
+        let n = count.fetch_add(1, Ordering::SeqCst);
+        async move {
+            let bytes = if n < refusals {
+                refusal(status_line, retry_after)
+            } else {
+                format!("{SSE_HEAD}{OPENAI_OK_BODY}").into_bytes()
+            };
+            let _ = s.write_all(&bytes).await;
+            let _ = s.shutdown().await;
+        }
+    })
+    .await;
+    (addr, seen)
+}
+
+/// Rate limited or overloaded is "not now": the request is sent again, and
+/// the reply that follows streams as if nothing happened. Meanwhile the
+/// request shows as retrying, not silent.
+#[tokio::test]
+async fn a_transient_refusal_is_retried() {
+    use std::sync::atomic::Ordering;
+    for status in [
+        "429 Too Many Requests",
+        "529 Overloaded",
+        "503 Service Unavailable",
+    ] {
+        let (addr, seen) = refuses_then_answers(2, status, "0").await;
+        let reg = registry();
+        let rec = Recorder::default();
+        let id = reg.start_with_key(
+            target(),
+            request(),
+            provider_for(addr),
+            key(),
+            Box::new(rec.clone()),
+        );
+        assert_eq!(
+            wait_terminal(&reg, id, WAIT).await,
+            RequestState::Done,
+            "{status}"
+        );
+        assert_eq!(rec.text(), "Héllo → 世界 ✓", "{status}");
+        assert_eq!(seen.load(Ordering::SeqCst), 3, "{status}: sent three times");
+    }
+}
+
+/// After the last retry the failure is reported, saying it was retried.
+#[tokio::test]
+async fn a_refusal_that_persists_fails_after_its_retries() {
+    use std::sync::atomic::Ordering;
+    let (addr, seen) = refuses_then_answers(usize::MAX, "429 Too Many Requests", "0").await;
+    let reg = registry();
+    let id = reg.start_with_key(
+        target(),
+        request(),
+        provider_for(addr),
+        key(),
+        Box::new(Recorder::default()),
+    );
+    let m = failed_message(wait_terminal(&reg, id, WAIT).await);
+    assert!(m.contains("rate limited") && m.contains("Slow down"), "{m}");
+    assert!(m.contains("after 3 attempts"), "{m}");
+    assert_eq!(seen.load(Ordering::SeqCst), 3);
+}
+
+/// A provider asking for a longer wait than is worth sitting silent for is
+/// not waited on: the failure names the wait, and nothing is sent again.
+#[tokio::test]
+async fn a_long_retry_after_is_reported_not_waited() {
+    use std::sync::atomic::Ordering;
+    let (addr, seen) = refuses_then_answers(usize::MAX, "429 Too Many Requests", "600").await;
+    let reg = registry();
+    let at = Instant::now();
+    let id = reg.start_with_key(
+        target(),
+        request(),
+        provider_for(addr),
+        key(),
+        Box::new(Recorder::default()),
+    );
+    let m = failed_message(wait_terminal(&reg, id, WAIT).await);
+    assert!(m.contains("asks to wait 600s"), "{m}");
+    assert_eq!(seen.load(Ordering::SeqCst), 1);
+    assert!(at.elapsed() < Duration::from_secs(2));
+}
+
+/// A request waiting to retry is shown as retrying, and stopping it ends
+/// the wait at once.
+#[tokio::test]
+async fn a_retry_wait_shows_and_stops_at_once() {
+    let (addr, _) = refuses_then_answers(usize::MAX, "529 Overloaded", "30").await;
+    let reg = registry();
+    let id = reg.start_with_key(
+        target(),
+        request(),
+        provider_for(addr),
+        key(),
+        Box::new(Recorder::default()),
+    );
+    let t = Instant::now();
+    loop {
+        let state = info(&reg, id).map(|i| i.state);
+        if let Some(RequestState::Retrying { attempt, reason }) = state {
+            assert_eq!(attempt, 1);
+            assert_eq!(reason, "provider overloaded");
+            break;
+        }
+        assert!(t.elapsed() < WAIT, "never showed as retrying: {state:?}");
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    let at = Instant::now();
+    reg.cancel(id);
+    assert_eq!(
+        wait_terminal(&reg, id, Duration::from_secs(2)).await,
+        RequestState::Cancelled
+    );
+    assert!(
+        at.elapsed() < Duration::from_millis(200),
+        "{:?}",
+        at.elapsed()
     );
 }
 

@@ -275,6 +275,12 @@ pub fn render(requests: &[RequestInfo]) -> String {
     }
     for r in running {
         out.push_str(&row(r));
+        if let RequestState::Retrying { attempt, reason } = &r.state {
+            out.push_str(&format!(
+                "        {reason}; retry {attempt} of {}\n",
+                crate::llm::transport::MAX_RETRIES
+            ));
+        }
     }
     if !finished.is_empty() {
         out.push_str("\nFinished\n");
@@ -294,6 +300,7 @@ fn state_label(state: &RequestState) -> &'static str {
         RequestState::Streaming => "streaming",
         RequestState::AwaitingTool => "awaiting tool",
         RequestState::AwaitingReview => "awaiting review",
+        RequestState::Retrying { .. } => "retrying",
         RequestState::Done => "done",
         RequestState::Failed(_) => "failed",
         RequestState::Cancelled => "stopped",

@@ -266,7 +266,7 @@ async fn a_server_error_is_shown_not_swallowed() {
     let addr = serve(|_, mut s| async move {
         let body = r#"{"error":{"message":"overloaded"}}"#;
         let raw = format!(
-            "HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
             body.len()
         );
         let _ = s.write_all(raw.as_bytes()).await;
@@ -277,7 +277,7 @@ async fn a_server_error_is_shown_not_swallowed() {
     chats.submit(&session, "x".into());
     until("failure", || !session.is_busy()).await;
     let err = session.store.snapshot().error.unwrap();
-    assert!(err.contains("503") || err.contains("overloaded"), "{err}");
+    assert!(err.contains("500") && err.contains("overloaded"), "{err}");
 }
 
 /// Closing the buffer cancels the request in flight; interrupt does the same
@@ -360,7 +360,7 @@ async fn a_failed_reply_holds_the_queue_until_the_next_send() {
                 tokio::time::sleep(Duration::from_millis(150)).await;
                 let body = r#"{"error":{"message":"overloaded"}}"#;
                 let raw = format!(
-                    "HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                     body.len()
                 );
                 let _ = s.write_all(raw.as_bytes()).await;
@@ -424,7 +424,7 @@ async fn a_source_sent_into_a_held_queue_waits_its_turn() {
                 tokio::time::sleep(Duration::from_millis(150)).await;
                 let body = r#"{"error":{"message":"overloaded"}}"#;
                 let raw = format!(
-                    "HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                     body.len()
                 );
                 let _ = s.write_all(raw.as_bytes()).await;

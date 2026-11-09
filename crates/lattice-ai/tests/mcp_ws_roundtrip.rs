@@ -222,6 +222,89 @@ async fn broadcast_notification_reaches_a_connected_client() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// An agent that connects while the user stays in one buffer is told which
+/// file is active once it has initialized. The notifier announces an active
+/// editor only when it changes, so before this the agent learned it only
+/// when the user moved to another buffer.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_late_agent_is_told_the_active_editor() {
+    use lattice_protocol::ids::DocumentId;
+    use lattice_protocol::{Event, Position, Selection, SelectionSet};
+    let dir = unique_dir("late");
+    let events = bus();
+    let handle = spawn(
+        ServerConfig {
+            workspace_folders: vec![],
+            lock_dir: dir.clone(),
+        },
+        events.clone(),
+        &tokio::runtime::Handle::current(),
+    );
+    // The user is in `a.rs` before any agent exists.
+    events.publish(Event::DocumentOpened {
+        id: DocumentId::new(1),
+        path: Some(PathBuf::from("/work/late/a.rs")),
+        version: 1,
+        text: "fn main() {}\n".to_string(),
+    });
+    events.publish(Event::SelectionsChanged {
+        id: DocumentId::new(1),
+        version: 1,
+        selections: SelectionSet::single(Selection {
+            anchor: Position::new(0, 3),
+            head: Position::new(0, 3),
+            visual: None,
+        }),
+    });
+    handle.start();
+    let (port, token) = wait_for_lockfile(&dir).await;
+
+    let mut request = format!("ws://127.0.0.1:{port}")
+        .into_client_request()
+        .expect("client request");
+    request
+        .headers_mut()
+        .insert(AUTH_HEADER, HeaderValue::from_str(&token).unwrap());
+    let (mut ws, _resp) = tokio_tungstenite::connect_async(request)
+        .await
+        .expect("authorized connect succeeds");
+    send_request(
+        &mut ws,
+        1,
+        "initialize",
+        Some(json!({
+            "protocolVersion": "2024-11-05",
+            "capabilities": {},
+            "clientInfo": { "name": "claude-code", "version": "2.1.319" },
+        })),
+    )
+    .await;
+    let _ = read_response(&mut ws).await;
+    let initialized = json!({ "jsonrpc": "2.0", "method": "notifications/initialized" });
+    ws.send(WsMessage::Text(initialized.to_string()))
+        .await
+        .expect("send");
+
+    let mut seen = Vec::new();
+    let found = tokio::time::timeout(Duration::from_secs(5), async {
+        while let Some(Ok(frame)) = ws.next().await {
+            let text = frame.to_text().unwrap_or_default().to_string();
+            let done = text.contains("didChangeActiveEditor") && text.contains("/work/late/a.rs");
+            seen.push(text);
+            if done {
+                return true;
+            }
+        }
+        false
+    })
+    .await
+    .unwrap_or(false);
+    assert!(found, "the active editor was announced: {seen:?}");
+
+    handle.stop();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stop_closes_live_connections() {
     // I7: `:claude-code-stop` must disconnect a live agent, not leave it

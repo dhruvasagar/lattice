@@ -134,6 +134,10 @@
   (`:set messages.filter=info,rmcp=debug` to see it).
 
 ### Fixed
+- **Claude Code knows the open file as soon as it connects.** An agent
+  started while you stayed in one buffer was told the active file only
+  when you switched to another; it is now sent the active file and
+  selection once it connects.
 - **Claude Code is sent valid file URIs for paths with spaces, `#`, `%`
   or non-ASCII names.** The selection, open-editor and workspace-folder
   replies wrote `file://` plus the raw path, so a `#` cut the path short

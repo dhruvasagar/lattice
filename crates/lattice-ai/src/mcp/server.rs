@@ -666,8 +666,14 @@ async fn serve_connection(
 
     // rmcp runs each request on its own task, so a blocking `openDiff` (an
     // unbounded, user-paced wait) never holds up the frames after it.
+    let editor = ctx.reads.editor.clone();
     match rmcp::service::serve_server(LatticeServer::new(ctx), ws_transport).await {
         Ok(running) => {
+            // Initialized: tell the agent where the user is now, which the
+            // broadcast says only when it changes.
+            for frame in crate::mcp::notifications::current_state_frames(&editor) {
+                let _ = out_tx.send(frame);
+            }
             let _ = running.waiting().await;
         }
         Err(e) => tracing::debug!(error = %e, "claude-code: MCP initialization failed"),

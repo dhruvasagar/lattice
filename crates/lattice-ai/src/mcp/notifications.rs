@@ -75,7 +75,27 @@ pub fn spawn_notifier(
 
 /// Build the `selection_changed` notification frame (PROVISIONAL shape).
 pub fn selection_changed_frame(selections: &SelectionSet, path: Option<&Path>) -> String {
-    let sel = selections.primary();
+    selection_frame(selections.primary(), path)
+}
+
+/// The frames a newly connected agent is sent once it has initialized: the
+/// active editor and its selection as they are now. The notifier announces
+/// an active editor only when it changes, so an agent that connects while
+/// the user stays in one buffer would otherwise not know which file is open
+/// until they moved to another. Empty when no buffer has been active.
+pub fn current_state_frames(editor: &lattice_agent::EditorAccess) -> Vec<String> {
+    let Some(info) = editor.current_selection() else {
+        return Vec::new();
+    };
+    let path = info.file_path.as_deref();
+    let mut frames = vec![did_change_active_editor_frame(path)];
+    if let Some(sel) = info.selection {
+        frames.push(selection_frame(&sel, path));
+    }
+    frames
+}
+
+fn selection_frame(sel: &lattice_protocol::Selection, path: Option<&Path>) -> String {
     let (start, end) = ordered(sel.anchor, sel.head);
     json!({
         "jsonrpc": "2.0",

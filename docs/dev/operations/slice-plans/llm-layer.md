@@ -870,9 +870,10 @@ Fix now (clear defects, one commit each):
   fail on the old code (the key landed inside the streamed text).
 - 📝 R.4 **`llm.exclude` globs containing `/` never match** (globset anchors at the start of
   the absolute path), so `secrets/*` excludes nothing.
-- 📝 R.5 **The command popup's invisible-character list is incomplete**: variation selectors,
+- ✅ R.5 **The command popup's invisible-character list is incomplete**: variation selectors,
   tag characters, Hangul fillers, U+034F, U+2800 and the Unicode spaces pass through
-  unescaped and uncollapsed.
+  unescaped and uncollapsed. Fixed: every blank but space/tab and every blank-rendering
+  character is escaped; `blank_rendering_characters_are_written_out`.
 - 📝 R.6 **A busy hidden session can be evicted** past `UNBOUND_CAP`, so quitting stops
   warning about it and `:llm-last` cannot reopen it.
 - 📝 R.7 **`read_file` reads a FIFO or huge file whole** before its caps, hanging a blocking

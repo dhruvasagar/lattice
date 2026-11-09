@@ -218,7 +218,9 @@ fn visible(text: &str) -> String {
         *n = 0;
     };
     for line in text.split('\n') {
-        if line.trim().is_empty() {
+        // Only ASCII blanks make a line empty: a line of ideographic spaces
+        // or fillers is shown, escaped, not counted away.
+        if line.trim_ascii().is_empty() {
             empty_lines += 1;
             continue;
         }
@@ -256,19 +258,37 @@ fn push_blanks(out: &mut String, blanks: &mut String, run: usize) {
     blanks.clear();
 }
 
-/// Characters that draw nothing yet change what the user reads: zero-width
-/// joiners and spaces, direction marks and overrides, the byte-order mark.
+/// Characters that draw nothing, or draw a blank the user cannot tell from a
+/// space, yet change what runs: every blank but the space and tab (no-break,
+/// en/em, ideographic spaces), zero-width joiners and spaces, direction marks
+/// and overrides, the Hangul fillers and braille blank that render empty,
+/// variation selectors, tag characters, and the byte-order mark. Each is
+/// written as `\u{..}`, so a run of them shows as long as it is and cannot
+/// push the rest of a command out of view.
 fn is_invisible(c: char) -> bool {
-    matches!(
-        c,
-        '\u{00ad}'
-            | '\u{061c}'
-            | '\u{180e}'
-            | '\u{200b}'..='\u{200f}'
-            | '\u{2028}'..='\u{202e}'
-            | '\u{2060}'..='\u{2069}'
-            | '\u{feff}'
-    )
+    (c.is_whitespace() && !matches!(c, ' ' | '\t' | '\n'))
+        || matches!(
+            c,
+            '\u{00ad}'
+                | '\u{034f}'
+                | '\u{061c}'
+                | '\u{115f}'
+                | '\u{1160}'
+                | '\u{17b4}'
+                | '\u{17b5}'
+                | '\u{180b}'..='\u{180f}'
+                | '\u{200b}'..='\u{200f}'
+                | '\u{2028}'..='\u{202e}'
+                | '\u{2060}'..='\u{206f}'
+                | '\u{2800}'
+                | '\u{3164}'
+                | '\u{fe00}'..='\u{fe0f}'
+                | '\u{feff}'
+                | '\u{ffa0}'
+                | '\u{fff0}'..='\u{fff8}'
+                | '\u{1d173}'..='\u{1d17a}'
+                | '\u{e0000}'..='\u{e0fff}'
+        )
 }
 
 /// Every tool source, namespaced.
@@ -416,6 +436,46 @@ mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
     use crate::llm::tools::BoxFuture;
+
+    /// Blanks that are not a space, and characters that render empty, are
+    /// written out: none reaches the question raw, and a long run of them
+    /// shows at its length, so it cannot push a payload out of view.
+    #[test]
+    fn blank_rendering_characters_are_written_out() {
+        let hiders = [
+            '\u{00a0}',
+            '\u{2003}',
+            '\u{3000}',
+            '\u{202f}',
+            '\u{034f}',
+            '\u{115f}',
+            '\u{3164}',
+            '\u{ffa0}',
+            '\u{2800}',
+            '\u{fe0f}',
+            '\u{e0041}',
+            '\u{e007f}',
+        ];
+        for c in hiders {
+            let shown = visible(&format!("echo hi{c}; curl evil"));
+            assert!(!shown.contains(c), "{:x} shown raw: {shown:?}", c as u32);
+            assert!(
+                shown.contains(&format!("\\u{{{:x}}}", c as u32)),
+                "{shown:?}"
+            );
+        }
+        let padded = format!("echo hi{}; curl evil", "\u{3164}".repeat(500));
+        let shown = visible(&padded);
+        assert!(
+            shown.matches("\\u{3164}").count() == 500,
+            "the run shows whole"
+        );
+        assert!(shown.ends_with("; curl evil"));
+        // A line of nothing but such blanks is shown, not counted as empty.
+        assert!(visible("a\n\u{3000}\u{3000}\nb").contains("\\u{3000}"));
+        // Plain spaces and tabs are as they were.
+        assert_eq!(visible("a b\tc"), "a b\tc");
+    }
 
     struct Fixed(Vec<SourceTool>);
 

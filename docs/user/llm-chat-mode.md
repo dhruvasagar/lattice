@@ -255,9 +255,11 @@ Closing a chat closes any diff it still has open.
 runs, with three answers: allow once, allow this command for this chat,
 or deny.
 The menu shows the whole command, so nothing in it can hide the rest:
-invisible characters (zero-width, direction overrides) are written as
-`\u{..}`, a long run of blanks as `␣×N` and a run of empty lines as one
-line counting them. A command longer than 40 lines or 4 000 characters
+characters that draw nothing or a blank you cannot tell from a space
+(zero-width, direction overrides, no-break and ideographic spaces, fillers,
+tag and variation characters) are written as `\u{..}`, a long run of
+spaces or tabs as `␣×N` and a run of empty lines as one line counting
+them. A command longer than 40 lines or 4 000 characters
 is refused without asking, and the model is told to put it in a script.
 Move to one and press `<CR>`. A denial is passed to the model, which is
 told not to try again unless you ask. `<Esc>` decides later: the request

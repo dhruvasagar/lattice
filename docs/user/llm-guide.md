@@ -459,9 +459,10 @@ still has open.
 
 **Every command asks first.** A menu shows the command and where it runs, with three
 answers: allow once, allow this command for this chat, or deny. The menu shows the whole
-command so nothing can hide the rest: invisible characters (zero-width, direction
-overrides) are written as `\u{..}`, a long run of blanks as `␣×N`, and a run of empty
-lines as one line counting them. A command over 40 lines or 4000 characters is refused
+command so nothing can hide the rest: characters that draw nothing or a blank you cannot
+tell from a space (zero-width, direction overrides, no-break and ideographic spaces,
+fillers) are written as `\u{..}`, a long run of spaces or tabs as `␣×N`, and a run of
+empty lines as one line counting them. A command over 40 lines or 4000 characters is refused
 without asking, and the model is told to put it in a script. A denial is passed to the
 model, which is told not to try again unless you ask. `<Esc>` decides later: the request
 waits and `:ai-permission` brings the question back.

@@ -137,6 +137,7 @@
   (`:set messages.filter=info,rmcp=debug` to see it).
 
 ### Fixed
+- The question before a model's command runs shows every character that draws nothing or a blank you cannot tell from a space (no-break and ideographic spaces, Hangul fillers, the braille blank, tag and variation characters) as `\u{..}`, so none can hide the rest of the command.
 - After `dd`, `x`, `p`, `u` or `<C-r>` while an LLM answer streams into the buffer, the next key lands where the caret is. Before, it could land inside the streamed text.
 - A long LLM chat no longer slows typing while a reply streams. The transcript is rebuilt on a background runtime, not on the thread that handles your keys; `:llm-context`, `:llm-requests` and `:llm-mcp` refresh there too.
 - Closing a buffer now releases what other parts of the editor kept for it: its diff session, its git-HEAD gutter diff, its place in multibuffer views and LSP reference views. The close event they listen for was never sent, so each closed buffer's state stayed until exit. **For plugins:** every document event (`document-opened`, `document-changed`, `document-saved`, `document-closed`, `selections-changed`) now carries the same id for a buffer, its buffer id; `document-changed` used to carry a different one.

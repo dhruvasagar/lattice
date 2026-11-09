@@ -86,6 +86,7 @@ pub fn install(
         diffs.clone(),
     ));
     rewrites.set_effects(boot.inbound::<super::rewrite::RewriteEffects, _>(|e| e.0));
+    rewrites.set_store(boot.buffer_store().clone());
     // LL.20: `:llm-save`, `:llm-resume` and `:llm-export` read and write on
     // the runtime; their result (an echo, the resumed chat's buffer) comes
     // back with a wake.

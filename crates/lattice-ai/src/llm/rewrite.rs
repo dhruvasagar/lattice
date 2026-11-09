@@ -88,6 +88,9 @@ pub struct LlmRewrites {
     effects: Mutex<Option<InboundBus<RewriteEffects>>>,
     /// The host's diff bus. `None` in a harness without one: rewrites refuse.
     diffs: Option<lattice_diff::ProgrammaticDiffBus>,
+    /// The host's buffers, to untrack a span whose prompt was dismissed or
+    /// pushed out. Set at install; absent, such a span stays tracked.
+    store: std::sync::OnceLock<BufferStoreHandle>,
 }
 
 pub type LlmRewritesHandle = Arc<LlmRewrites>;
@@ -98,6 +101,7 @@ impl LlmRewrites {
             runtime,
             next: Mutex::new(0),
             pending: Mutex::new(VecDeque::new()),
+            store: std::sync::OnceLock::new(),
             review_gate: Arc::new(tokio::sync::Mutex::new(())),
             effects: Mutex::new(None),
             diffs,
@@ -115,12 +119,47 @@ impl LlmRewrites {
         *next
     }
 
+    /// Connect the host's buffers.
+    pub fn set_store(&self, store: BufferStoreHandle) {
+        let _ = self.store.set(store);
+    }
+
+    /// Hold a span until its prompt is answered. A span whose prompt is no
+    /// longer shown (dismissed with `<Esc>`: nothing calls back) is let go
+    /// here, since a new rewrite starting means its prompt is not the one
+    /// being typed in, and so is
+    /// the oldest past the cap; either way its tracked range is untracked,
+    /// or it would follow every later edit of its buffer for good.
     fn hold(&self, held: Held) -> u64 {
         let token = self.token();
-        let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
-        pending.push_back((token, held));
-        while pending.len() > PENDING_CAP {
-            pending.pop_front();
+        let dropped: Vec<Held> = {
+            let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+            let mut dropped = Vec::new();
+            if let Some(store) = self.store.get() {
+                pending.retain(|(t, h)| {
+                    // A dismissed prompt's buffer stays registered, hidden;
+                    // shown is what says it is still being answered.
+                    let open = store
+                        .find_by_name(&prompt_buffer_name(*t))
+                        .is_some_and(|b| store.is_displayed(b));
+                    if !open {
+                        dropped.push(h.clone());
+                    }
+                    open
+                });
+            }
+            pending.push_back((token, held));
+            while pending.len() > PENDING_CAP {
+                if let Some((_, h)) = pending.pop_front() {
+                    dropped.push(h);
+                }
+            }
+            dropped
+        };
+        if let Some(store) = self.store.get() {
+            for h in dropped {
+                untrack(store, h.source.buffer, h.tracked);
+            }
         }
         token
     }
@@ -397,7 +436,10 @@ impl Task {
                 )]);
                 return;
             }
-            Err(_) => return,
+            Err(_) => {
+                untrack(&self.store, buffer, self.held.tracked);
+                return;
+            }
         };
         let proposed = replacement(&reply, &self.held.source.text);
 
@@ -442,6 +484,7 @@ impl Task {
             };
             match span_now(&self.store, buffer, self.held.tracked) {
                 None => {
+                    untrack(&self.store, buffer, self.held.tracked);
                     let name = self.session.name.clone();
                     self.rewrites.send(self.show_session(format!(
                         "llm: the rewritten text was deleted; the rewrite is in {name}"

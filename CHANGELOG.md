@@ -134,6 +134,11 @@
   (`:set messages.filter=info,rmcp=debug` to see it).
 
 ### Fixed
+- **A rewrite you abandon stops being tracked.** The span under a rewrite
+  prompt dismissed with `<Esc>`, a rewrite whose text was deleted during
+  review, or one whose request vanished stayed tracked in the buffer for
+  the rest of the session, adjusted on every later edit. They are now
+  released.
 - **Closing a buffer drops what the LLM layer kept for it.** Attached
   context, menu choices, buffer-local `llm.*` values, the last request
   shown by `:llm-inspect` and similar per-buffer state stayed for the

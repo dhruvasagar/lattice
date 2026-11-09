@@ -397,6 +397,38 @@ mod tests {
         assert_eq!(source_text(&a), TEXT);
     }
 
+    /// A span whose prompt was dismissed is let go by the next rewrite: its
+    /// tracked range is untracked rather than following every later edit.
+    #[test]
+    fn a_dismissed_prompt_releases_its_span() {
+        let mut a = app_with(TEXT, 10);
+        // By id: the focus moves to the prompt, so the source is not
+        // `editor.document` while one is open.
+        let source = a.editor.active_buffer_id();
+        let tracked = move |a: &App| {
+            a.editor
+                .buffers
+                .document_handle(source)
+                .unwrap()
+                .snapshot()
+                .tracked_ranges
+                .len()
+        };
+        let before = tracked(&a);
+        press_chars(&mut a, " arj");
+        key(&mut a, KeyCode::Esc);
+        key(&mut a, KeyCode::Esc);
+        assert_eq!(tracked(&a), before + 1, "held while nothing replaced it");
+        press_chars(&mut a, " arj");
+        assert_eq!(rewrites(&a).pending_count(), 1, "the dismissed one went");
+        // Untracking goes to the document's actor; give it its turn.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while tracked(&a) != before + 1 && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(tracked(&a), before + 1, "only the live span is tracked");
+    }
+
     /// `repeatable` now means something, so yank stopped claiming it: `.`
     /// after `yy` still repeats the change before it.
     #[test]

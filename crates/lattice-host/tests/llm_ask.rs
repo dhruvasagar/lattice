@@ -332,7 +332,8 @@ async fn an_excluded_file_is_refused_by_name_and_nothing_is_sent() {
     assert!(bodies.lock().unwrap().is_empty(), "nothing sent");
 }
 
-/// The value replaces the default list, and a bad glob is refused by `:set`.
+/// The value replaces the default list, and a bad pattern is refused by `:set`.
+/// `a{b` is the probe: an unclosed `[` is a literal to gitignore, as to git.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn llm_exclude_replaces_the_default_and_refuses_a_bad_glob() {
     let (addr, bodies) = serve();
@@ -340,9 +341,9 @@ async fn llm_exclude_replaces_the_default_and_refuses_a_bad_glob() {
 
     let mut notes = boot_at(&dir.join("notes.txt"), "private notes\n");
     chats(&notes).set_config(config_for(addr));
-    ex(&mut notes, "set llm.exclude=[");
+    ex(&mut notes, "set llm.exclude=a{b");
     assert!(
-        message(&notes).contains("not a glob"),
+        message(&notes).contains("not a gitignore pattern"),
         "{}",
         message(&notes)
     );

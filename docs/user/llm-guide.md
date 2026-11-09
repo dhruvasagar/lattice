@@ -1,6 +1,6 @@
 ---
 summary: "The LLM layer from start to finish. Setup, chat, asking about text from any buffer, context, tools with review, MCP servers, profiles, watching and stopping requests, the privacy model, and how it differs from the agent integrations."
-related: [llm, llm-chat-mode, llm-mode, llm-mcp-mode, llm-system-mode, ai-conversation-mode, claude-code-mode]
+related: [llm, llm-chat-mode, llm-mode, llm-mcp-mode, llm-system-mode, llm-context-mode, llm-inspect-mode, llm-requests-mode, ai-conversation-mode, claude-code-mode]
 ---
 
 # Language models
@@ -835,5 +835,7 @@ warnings the layer raised.
 - [`llm-mode`](help:llm-mode): the ask and rewrite operators, destinations, context, `llm.exclude`.
 - [`llm-mcp-mode`](help:llm-mcp-mode): external MCP servers.
 - [`llm-system-mode`](help:llm-system-mode): editing the system prompt.
+- [`llm-context-mode`](help:llm-context-mode), [`llm-inspect-mode`](help:llm-inspect-mode),
+  [`llm-requests-mode`](help:llm-requests-mode): the context list, the request view, the request list.
 - [`ai-conversation-mode`](help:ai-conversation-mode), [`ai-permission-mode`](help:ai-permission-mode),
   [`claude-code-mode`](help:claude-code-mode): the agent integrations.

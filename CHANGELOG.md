@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Added
+- `:help llm-context-mode`, `:help llm-inspect-mode` and `:help llm-requests-mode`: pages for the `*llm-context*`, `*llm-inspect*` and `*llm-requests*` views.
 - **LLM requests read `AGENTS.md`.** The nearest `AGENTS.md` between the file you are asking about and the project root joins the system prompt after yours, capped at 32 KiB, held to `llm.exclude` and shown by `:llm-inspect`. It instructs the model and can turn nothing on. `:set llm.agents_md=false` leaves it out.
 - **LLM allow and deny rules.** `llm.allow = ["run_command(cargo test *)"]` runs a command without asking when every command in its line matches (split on `&&`, `||`, `;`, `|`); a line with `$(…)`, backticks or a redirect into a file always asks. `llm.deny = ["run_command(git push *)", "edit_file(secrets/**)", "shell.*"]` refuses a call without asking and tells the model why. File tools take gitignore patterns, MCP tools are named `server.tool` or `server.*`, and a project may add `deny` rules but never `allow`.
 - **A project can add to the LLM exclude list.** `exclude = [...]` in `.lattice/llm.toml`, and the `.aiexclude`, `.aiignore` and `.agentignore` files other AI tools read, are added to your `llm.exclude` and matched on their own, so a project can never re-include one of your entries. A project `allow` is refused.

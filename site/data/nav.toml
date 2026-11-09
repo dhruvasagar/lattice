@@ -162,6 +162,9 @@ docs = [
   "llm-mode",
   "llm-mcp-mode",
   "llm-system-mode",
+  "llm-context-mode",
+  "llm-inspect-mode",
+  "llm-requests-mode",
 ]
 
 [[section]]

@@ -134,6 +134,10 @@
   (`:set messages.filter=info,rmcp=debug` to see it).
 
 ### Fixed
+- **`<Tab>` inside a `:/pattern` range no longer appends a command to the
+  pattern.** Since `<Tab>` learned to complete after a range, `:/TODO<Tab>`
+  took the open pattern for a finished range and offered every command
+  after it.
 - **Ending a review diff frees its changed-word marks.** Each
   `openDiff` review (Claude Code, an LLM edit, a rewrite) kept its hunks
   and refined lines in memory after `:diff-accept` / `:diff-reject`

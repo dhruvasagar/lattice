@@ -463,6 +463,15 @@ impl LlmChats {
 
     /// Replace the configuration new chats are created from. A chat already open
     /// resolves against it on its next request, like any other layer.
+    /// The variables the configured providers' keys are in, as configured
+    /// now (P.1): what a command or MCP server the model starts is not given.
+    pub fn key_variables(&self) -> Vec<String> {
+        self.config
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .key_variables()
+    }
+
     pub fn set_config(&self, config: LlmConfig) {
         *self.config.write().unwrap_or_else(|e| e.into_inner()) = config;
     }

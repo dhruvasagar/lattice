@@ -534,6 +534,8 @@ tool does is not trusted.
   fails, and the model is told it took too long. The server stays up.
 - Stopping a request cancels its call on the server. Stopping a server kills its whole
   process tree, so one started through `npx` or a shell leaves nothing behind.
+- A server does not inherit the variables your providers' `api_key_env` name. To give one
+  a key, name it in its `env`.
 - A value in `env` or `headers` may name a variable (`$NAME` or `${NAME}`), read when the
   server starts. Neither values nor variable names are shown in `*llm-mcp*`, and anything
   the server prints that contains a token is shown as `***`.
@@ -665,6 +667,9 @@ Everything the layer does for safety, in one place.
 It never appears in `:llm-inspect` (`<redacted>`), logs, debug output, session files, exports
 or error text. A provider's rejection is shown with the key scrubbed, and a key embedded in a
 custom `base_url` is never shown. A failing key command reports its exit status, not its output.
+A command the model runs and an MCP server lattice starts do not inherit the variables
+`api_key_env` names, so `echo $ANTHROPIC_API_KEY` prints nothing. An MCP server's own `env` can
+still pass one on purpose.
 
 **What leaves the machine.** What a request sends is visible beforehand with `:llm-inspect`.
 Text is sent only from what you ask about, what you attached, and what a tool you enabled

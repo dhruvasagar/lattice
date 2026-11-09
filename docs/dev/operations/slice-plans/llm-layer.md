@@ -897,10 +897,14 @@ Fix now (clear defects, one commit each):
 
 Security policy (Dhruva decided 2026-11-09, the recommended option each time):
 
-- 📝 P.1 **Strip the key variables.** Child processes (`run_command`, stdio MCP servers) inherit the editor's whole
+- ✅ P.1 **Strip the key variables.** Child processes (`run_command`, stdio MCP servers) inherit the editor's whole
   environment, including the variable `api_key_env` names. An allowed `env` sends the key
   to the model and into saved sessions and exports. Remove every `api_key_env` variable
   the config names from children; an MCP server's own `env` may still pass one.
+  Fixed: `LlmConfig::key_variables`, read live at each start, removed in `run_command` and
+  `connect_stdio` (before the server's own `env` applies). Pinned end to end by
+  `a_command_does_not_inherit_the_key_variables` and
+  `a_stdio_server_does_not_inherit_the_key_variables`, both fail without the removal.
 - 📝 P.2 **Fence `.git`, `.hg`, `.jj` and `.lattice`.** A trusted chat (`<C-t>`) writes everything but `.git` unreviewed, including
   `.lattice/llm.toml`, `.lattice/config.toml`, `.envrc`, `.cargo/config.toml`, CI
   workflows and `.hg`/`.jj`.

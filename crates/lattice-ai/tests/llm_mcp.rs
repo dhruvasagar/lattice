@@ -442,7 +442,7 @@ async fn a_missing_command_fails_with_its_name() {
     let (on_change, _rx) = changes();
     let s = McpServer::new(
         cfg,
-        connect_transport(),
+        connect_transport(Arc::new(Vec::new)),
         tokio::runtime::Handle::current(),
         on_change,
     );
@@ -621,7 +621,7 @@ async fn stopping_a_stdio_server_kills_its_process_tree() {
     let (on_change, _rx) = changes();
     let s = Arc::new(McpServer::new(
         cfg,
-        connect_transport(),
+        connect_transport(Arc::new(Vec::new)),
         tokio::runtime::Handle::current(),
         on_change,
     ));
@@ -655,6 +655,61 @@ async fn stopping_a_stdio_server_kills_its_process_tree() {
         }
     })
     .await;
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A stdio server does not inherit the providers' key variables, so a
+/// third-party server never sees a model key; one its own `env` names is
+/// passed, since that is the user giving it (P.1). `HOME` stands in for a
+/// key variable: it is set in every test process, and setting one here would
+/// race the other tests' threads.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_stdio_server_does_not_inherit_the_key_variables() {
+    assert!(std::env::var_os("HOME").is_some(), "the stand-in is set");
+    let dir = std::env::temp_dir().join(format!("lattice-mcp-env-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let out = dir.join("env.txt");
+    let _ = std::fs::remove_file(&out);
+    let script = format!(
+        "printf '[%s][%s]' \"${{HOME:-}}\" \"${{GIVEN:-}}\" > '{}.tmp' && mv '{0}.tmp' '{0}'; sleep 600",
+        out.display()
+    );
+    let mut cfg = config("env", &[]);
+    cfg.transport = McpTransport::Stdio {
+        command: "sh".to_string(),
+        args: vec!["-c".to_string(), script],
+        env: BTreeMap::from([("GIVEN".to_string(), "given".to_string())]),
+        cwd: None,
+    };
+    let (on_change, _rx) = changes();
+    let withheld = vec!["HOME".to_string(), "GIVEN".to_string()];
+    let s = Arc::new(McpServer::new(
+        cfg,
+        connect_transport(Arc::new(move || withheld.clone())),
+        tokio::runtime::Handle::current(),
+        on_change,
+    ));
+    let waiting = tokio::spawn({
+        let s = s.clone();
+        async move { s.ensure_running().await }
+    });
+    // Written by a process outside the runtime; polled, bounded by the guard.
+    let seen = within("the server's environment", async {
+        loop {
+            if let Ok(t) = std::fs::read_to_string(&out) {
+                break t;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    assert_eq!(
+        seen, "[][given]",
+        "withheld, unless the server's own env names it"
+    );
+    s.stop();
+    let _ = within("the waiter", waiting).await;
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -732,7 +787,7 @@ async fn streamable_http_sends_the_expanded_header_and_calls_a_tool() {
     let (on_change, _rx) = changes();
     let docs = Arc::new(McpServer::new(
         cfg,
-        connect_transport(),
+        connect_transport(Arc::new(Vec::new)),
         tokio::runtime::Handle::current(),
         on_change,
     ));

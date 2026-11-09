@@ -52,11 +52,20 @@ mod tests {
     /// An editor over a temp project whose model is the mock and whose
     /// requests may use `tools`.
     fn app(calls: Vec<(&'static str, Value)>, tools: &str) -> (App, Log, tempfile::TempDir) {
+        app_keyed(calls, tools, "")
+    }
+
+    /// [`app`], with `provider` added to the mock provider's table.
+    fn app_keyed(
+        calls: Vec<(&'static str, Value)>,
+        tools: &str,
+        provider: &str,
+    ) -> (App, Log, tempfile::TempDir) {
         let (addr, log) = serve(calls);
         let dir = tempfile::tempdir().unwrap();
         let a = app_with("scratch\n", 10);
         let toml = format!(
-            "[llm]\ntools = \"{tools}\"\n[llm.providers.mock]\nkind = \"openai-compatible\"\nbase_url = \"http://{addr}/v1\"\nmodel = \"mock-model\"\n"
+            "[llm]\ntools = \"{tools}\"\n[llm.providers.mock]\nkind = \"openai-compatible\"\nbase_url = \"http://{addr}/v1\"\nmodel = \"mock-model\"\n{provider}"
         );
         chats(&a).set_config(LlmConfig::from_table(&toml.parse::<toml::Table>().unwrap()));
         chats(&a).set_project_root(dir.path().to_path_buf());
@@ -298,6 +307,25 @@ mod tests {
             &said[..80]
         );
         assert!(said.len() < 31_000, "{}", said.len());
+    }
+
+    /// A provider's key variable is not passed to a command the model runs:
+    /// `echo $VAR` prints nothing, so the key cannot be read back into the
+    /// transcript (P.1). `HOME` stands in for the key variable because it is
+    /// set in every test process, and setting a variable here would race the
+    /// other tests' threads.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_command_does_not_inherit_the_key_variables() {
+        assert!(std::env::var_os("HOME").is_some(), "the stand-in is set");
+        let (mut a, log, _dir) = app_keyed(
+            vec![run("echo \"[${HOME:-}]\"")],
+            "lattice.exec",
+            "api_key_env = \"HOME\"\n",
+        );
+        send(&mut a, "show it").await;
+        answer(&mut a, 1).await;
+        second_request(&mut a, &log).await;
+        assert_eq!(results(&log), ["exit status 0\n--- stdout ---\n[]\n"]);
     }
 
     /// A project's `.lattice/llm.toml` cannot switch exec on: the user's

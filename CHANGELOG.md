@@ -137,6 +137,7 @@
   (`:set messages.filter=info,rmcp=debug` to see it).
 
 ### Fixed
+- A command an LLM runs, and an MCP server lattice starts, no longer inherit the variables your providers' `api_key_env` name. Before, an allowed `env` or `echo $ANTHROPIC_API_KEY` sent the key to the model and into saved chats. To give a key to an MCP server on purpose, name it in that server's `env`.
 - An LLM's `read_file` on a named pipe, a device or a file over 16 MiB is refused with a reason. Before, it hung waiting on the pipe or read the whole file into memory.
 - An LLM ask or rewrite still running is no longer forgotten once more than 32 other chats or asks have started since. Quitting warns about it, and `:llm-last` can reopen its answer.
 - The question before a model's command runs shows every character that draws nothing or a blank you cannot tell from a space (no-break and ideographic spaces, Hangul fillers, the braille blank, tag and variation characters) as `\u{..}`, so none can hide the rest of the command.

@@ -249,6 +249,13 @@ by it.
 	destination = "below"
 	tools = []
 
+A key's variable belongs to lattice, not to what the model can start. `run_command` and
+every stdio MCP server are spawned without the variables `api_key_env` names (read when
+each starts, so a reloaded config applies). Without that, one allowed `env` would carry the
+key into the transcript, then into saved sessions and exports, breaking the standing rule
+that keys appear in none of them. An MCP server whose own `env` names the variable still
+gets it: the user giving a key to a server is explicit.
+
 ### Overriding on the go
 
 Model and provider, system prompt, temperature, max tokens, reasoning effort,

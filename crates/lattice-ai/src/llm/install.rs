@@ -126,6 +126,13 @@ pub fn install(
                     .map_or(Some("(closing)".to_string()), |c| c.excluded(p))
             }),
         );
+        let keys_of = Arc::downgrade(&chats);
+        tools = tools.without_variables(Arc::new(move || {
+            keys_of
+                .upgrade()
+                .map(|c| c.key_variables())
+                .unwrap_or_default()
+        }));
         if let Some(diffs) = diffs {
             let effects = Arc::downgrade(&rewrites);
             tools = tools.with_review(super::tools::lattice::Review {
@@ -155,7 +162,15 @@ pub fn install(
         let bus = boot.event_bus().clone();
         Arc::new(super::tools::mcp::McpServers::new(
             &mcp_configs,
-            super::tools::mcp::connect_transport(),
+            super::tools::mcp::connect_transport({
+                let chats = Arc::downgrade(&chats);
+                Arc::new(move || {
+                    chats
+                        .upgrade()
+                        .map(|c| c.key_variables())
+                        .unwrap_or_default()
+                })
+            }),
             boot.runtime_handle(),
             Arc::new(move || bus.publish_typed(super::tools::mcp::McpServersChanged)),
         ))

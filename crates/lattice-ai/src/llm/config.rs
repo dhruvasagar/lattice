@@ -270,6 +270,19 @@ impl LlmConfig {
         }
     }
 
+    /// The environment variables the configured providers read their keys
+    /// from. A process the model can start (a command, an MCP server) does not
+    /// inherit them: the key is lattice's to send, not the model's to read.
+    pub fn key_variables(&self) -> Vec<String> {
+        self.providers
+            .values()
+            .filter_map(|p| match &p.key {
+                KeySource::Env(var) => Some(var.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
     pub fn provider_names(&self) -> impl Iterator<Item = &str> {
         self.providers.keys().map(String::as_str)
     }

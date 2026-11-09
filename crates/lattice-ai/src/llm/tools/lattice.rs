@@ -52,6 +52,10 @@ pub type RootFn = Arc<dyn Fn() -> PathBuf + Send + Sync>;
 /// The `llm.exclude` glob that matches a path, if any.
 pub type ExcludeFn = Arc<dyn Fn(&Path) -> Option<String> + Send + Sync>;
 
+/// The environment variables a started process must not inherit: the
+/// providers' key variables, read when each process starts (P.1).
+pub type KeyVariablesFn = Arc<dyn Fn() -> Vec<String> + Send + Sync>;
+
 /// Closes every review a session opened: sends `Effect::CloseSessionDiffs`.
 pub type CloseFn = Arc<dyn Fn(u64) + Send + Sync>;
 
@@ -72,6 +76,7 @@ pub struct LatticeTools {
     root: RootFn,
     exclude: ExcludeFn,
     review: Option<Review>,
+    key_variables: Option<KeyVariablesFn>,
 }
 
 impl LatticeTools {
@@ -81,7 +86,14 @@ impl LatticeTools {
             root,
             exclude,
             review: None,
+            key_variables: None,
         }
+    }
+
+    /// Withhold these variables from every command `run_command` starts.
+    pub fn without_variables(mut self, key_variables: KeyVariablesFn) -> Self {
+        self.key_variables = Some(key_variables);
+        self
     }
 
     /// With the edit tools, whose changes go through `review`.
@@ -681,6 +693,11 @@ impl LatticeTools {
             .clamp(1, MAX_EXEC_TIMEOUT);
         let mut command = shell(&args.command);
         command.current_dir(&dir);
+        // The providers' keys stay with lattice: a command the model wrote
+        // must not be able to read and print them (P.1).
+        for var in self.key_variables.as_ref().map(|f| f()).unwrap_or_default() {
+            command.env_remove(var);
+        }
         let token = lattice_protocol::CancellationToken::new();
         let _stop = CancelOnDrop(token.clone());
         let run = {

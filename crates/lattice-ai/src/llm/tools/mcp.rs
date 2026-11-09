@@ -1007,8 +1007,14 @@ impl McpServers {
 }
 
 /// The editor's [`Connect`]: a stdio child or streamable HTTP, per config.
-pub fn connect_transport() -> Connect {
-    Arc::new(|config: McpServerConfig, client: McpClient| {
+///
+/// A stdio server does not inherit `key_variables` (the providers' key
+/// variables, read as each starts), so a third-party server never sees a model
+/// key it was not given. One its own `env` names is passed: that is the user
+/// giving it on purpose.
+pub fn connect_transport(key_variables: super::lattice::KeyVariablesFn) -> Connect {
+    Arc::new(move |config: McpServerConfig, client: McpClient| {
+        let withheld = key_variables();
         Box::pin(async move {
             match &config.transport {
                 McpTransport::Stdio {
@@ -1016,7 +1022,18 @@ pub fn connect_transport() -> Connect {
                     args,
                     env,
                     cwd,
-                } => connect_stdio(&config.name, command, args, env, cwd.as_ref(), client).await,
+                } => {
+                    connect_stdio(
+                        &config.name,
+                        command,
+                        args,
+                        env,
+                        cwd.as_ref(),
+                        &withheld,
+                        client,
+                    )
+                    .await
+                }
                 McpTransport::Http { url, headers } => connect_http(url, headers, client).await,
             }
         })
@@ -1029,6 +1046,7 @@ async fn connect_stdio(
     args: &[String],
     env: &BTreeMap<String, String>,
     cwd: Option<&PathBuf>,
+    withheld: &[String],
     client: McpClient,
 ) -> Result<Connection, String> {
     let mut expanded = Vec::with_capacity(env.len());
@@ -1050,6 +1068,9 @@ async fn connect_stdio(
     let redactor = Redactor::new(expanded.iter().map(|(_, v)| v.clone()).chain(hidden_args));
     let failed = redactor.clone();
     let mut cmd = tokio::process::Command::new(command);
+    for var in withheld {
+        cmd.env_remove(var);
+    }
     cmd.args(args).envs(expanded).kill_on_drop(true);
     if let Some(dir) = cwd {
         cmd.current_dir(dir);

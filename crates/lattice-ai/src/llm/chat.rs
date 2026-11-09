@@ -1832,11 +1832,11 @@ impl LlmChats {
         let closed = session.closed.load(Ordering::Acquire);
         let failed = error.is_some();
         let interrupted = session.turn().interrupted;
-        let told = match &error {
-            Some(e) => Err(e.clone()),
-            None if interrupted => Err("interrupted".to_string()),
-            None => Ok(()),
-        };
+        // A reply the provider ended early (a safety stop, a refusal, the
+        // token limit) finishes as `Done` with the reason in the transcript's
+        // error; whoever waits on the turn (a rewrite, an answer for the echo
+        // area or a register) gets that reason, not the partial text.
+        let mut ended_early = None;
         let started_next = {
             let mut turn = session.turn();
             let mut started = false;
@@ -1844,7 +1844,9 @@ impl LlmChats {
                 c.status = SessionStatus::Idle;
                 c.settle_tool_calls(super::tool_loop::STOPPED);
                 if failed {
-                    c.error = error;
+                    c.error = error.clone();
+                } else {
+                    ended_early = c.error.clone();
                 }
                 if !failed && !closed && !c.queued.is_empty() {
                     let next = c.queued.remove(0);
@@ -1863,6 +1865,12 @@ impl LlmChats {
                 RequestOverrides::default()
             };
             started
+        };
+        let told = match (&error, ended_early) {
+            (Some(e), _) => Err(e.clone()),
+            (None, _) if interrupted => Err("interrupted".to_string()),
+            (None, Some(why)) => Err(why),
+            (None, None) => Ok(()),
         };
         let waiters: Vec<_> = std::mem::take(
             &mut *session
@@ -2184,6 +2192,35 @@ mod tests {
             reg.ended_early
                 .contains_key(&RequestId(ENDED_EARLY_CAP as u64))
         );
+    }
+
+    /// A reply the provider cut short (a safety stop, the token limit) is
+    /// not handed to whoever waits on the turn as if it were the answer.
+    #[tokio::test]
+    async fn a_reply_stopped_early_reaches_a_waiter_as_the_reason() {
+        let handle = Handle::current();
+        let bus = Arc::new(lattice_runtime::EventBus::new());
+        let requests: RequestRegistryHandle = Arc::new(RequestRegistry::new(
+            handle.clone(),
+            Some(bus.clone()),
+            None,
+        ));
+        let chats = Arc::new(LlmChats::new(handle, requests, bus, LlmConfig::default()));
+        let session = chats.create_with(None, None);
+        let ended = session.wait_turn_end();
+        session.store.mutate(&session.key, |c| {
+            c.error = Some("the model stopped: safety".to_string());
+        });
+        chats.end_turn(&session, None);
+        assert_eq!(
+            ended.await.unwrap(),
+            Err("the model stopped: safety".to_string())
+        );
+        // A clean end still hands over the reply.
+        let ended = session.wait_turn_end();
+        session.store.mutate(&session.key, |c| c.error = None);
+        chats.end_turn(&session, None);
+        assert!(ended.await.unwrap().is_ok());
     }
 
     #[cfg(unix)]

@@ -134,6 +134,12 @@
   (`:set messages.filter=info,rmcp=debug` to see it).
 
 ### Fixed
+- **An LLM answer cut short says so wherever it goes.** A reply the
+  provider stopped early (Gemini's safety stops, a refusal, a content
+  filter, the output token limit) was noted in a chat but handed to a
+  rewrite, the echo area or a register as if it were the whole answer.
+  Those now report why it stopped instead; the partial reply stays in
+  its chat to read.
 - **A failed MCP server warns once.** Every request that selected a
   server that could not start logged the same warning to `*messages*`;
   it now warns once, and again only if the server fails after working.

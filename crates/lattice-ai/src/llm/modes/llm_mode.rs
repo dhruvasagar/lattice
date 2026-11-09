@@ -215,7 +215,9 @@ impl LlmKeys {
     /// Bind the chords under the current prefix, replacing the ones under the
     /// old one. Nothing until the handles are attached; nothing when the
     /// prefix has not changed. A prefix that does not parse keeps the old
-    /// chords and says so.
+    /// chords and says so. `llm.prefix` is validated when set, so that is a
+    /// leader that does not parse once substituted; at the first bind there
+    /// are no chords to keep, and the warning says that instead.
     pub fn rebind(&self) {
         use lattice_keymap::{BindingMode, KeymapLayer};
         use lattice_protocol::chord::ChordPattern;
@@ -229,7 +231,15 @@ impl LlmKeys {
         }
         let parse = |keys: &str| lattice_protocol::parse_chord_sequence(&wirer.expand_leader(keys));
         let Ok(head) = parse(&prefix) else {
-            tracing::warn!(target: "lattice::llm", "llm.prefix: `{prefix}` is not a key sequence; the llm chords stay where they were");
+            let expanded = wirer.expand_leader(&prefix);
+            match bound.as_deref() {
+                Some(old) => {
+                    tracing::warn!(target: "lattice::llm", "llm.prefix: `{prefix}` (`{expanded}`) is not a key sequence; the llm chords stay under `{old}`")
+                }
+                None => {
+                    tracing::warn!(target: "lattice::llm", "llm.prefix: `{prefix}` (`{expanded}`) is not a key sequence; the llm chords are not bound (check `leader`)")
+                }
+            }
             return;
         };
         let layer = KeymapLayer::MinorMode(LlmMode::mode_id());
@@ -294,4 +304,73 @@ pub fn spawn_prefix_listener(
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+    use std::sync::{Arc, Mutex};
+
+    /// A binder whose leader does not parse once substituted.
+    struct BadLeader;
+    impl lattice_mode::OperatorChordWirer for BadLeader {
+        fn wire(
+            &self,
+            _: lattice_grammar::registry::OperatorId,
+            _: &str,
+            _: Option<char>,
+            _: lattice_mode::ModeId,
+            _: lattice_mode::PluginOrigin<'_>,
+            _: bool,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+        fn bind_in(
+            &self,
+            _: lattice_keymap::KeymapLayer,
+            _: lattice_grammar::SourceLocation,
+            _: &[lattice_protocol::chord::KeyChord],
+            _: lattice_grammar::registry::OperatorId,
+            _: Option<lattice_protocol::chord::KeyChord>,
+            _: bool,
+        ) {
+        }
+        fn expand_leader(&self, chord: &str) -> String {
+            chord.replace("<leader>", "<Nope")
+        }
+    }
+
+    #[derive(Clone, Default)]
+    struct Log(Arc<Mutex<Vec<u8>>>);
+    impl std::io::Write for Log {
+        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(b);
+            Ok(b.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// At the first bind there are no chords to keep, so the warning does
+    /// not say they "stay where they were": it says none are bound, and
+    /// what to check.
+    #[test]
+    fn a_first_bind_that_fails_says_nothing_is_bound() {
+        let log = Log::default();
+        let sink = log.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(move || sink.clone())
+            .with_ansi(false)
+            .finish();
+        let keys = LlmKeys::new(PrefixBindings::default(), None);
+        tracing::subscriber::with_default(subscriber, || {
+            keys.attach(lattice_keymap::KeymapHandle::new(), Arc::new(BadLeader));
+        });
+        assert_eq!(keys.bound(), None);
+        let said = String::from_utf8(log.0.lock().unwrap().clone()).unwrap();
+        assert!(said.contains("are not bound"), "{said}");
+        assert!(!said.contains("stay"), "{said}");
+    }
 }

@@ -134,6 +134,11 @@
   (`:set messages.filter=info,rmcp=debug` to see it).
 
 ### Fixed
+- **The llm chords say when they could not be bound at all.** If the
+  `leader` did not make a valid key sequence with `llm.prefix` when
+  `llm-mode` first started, the warning said the chords "stay where they
+  were", when there were none; it now says they are not bound and names
+  the expanded keys.
 - **`:claude-code-start` says when the IDE server failed to start.** It
   always reported "starting IDE server", even when the server could not
   bind; it now names the port on success and reports a failure as an

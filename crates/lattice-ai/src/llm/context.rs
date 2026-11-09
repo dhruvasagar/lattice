@@ -181,11 +181,14 @@ pub fn rows(items: &[Attached], store: &BufferStoreHandle) -> Vec<Row> {
 
 /// Read every item as it is now and fence it for the request, or say which
 /// item cannot be sent as the list shows it. `excluded` names the
-/// `llm.exclude` glob a path matches. `Ok(None)` when nothing is attached.
+/// `llm.exclude` glob a path matches, `composed` why a composed view's text
+/// may not go (it shows an excluded file). `Ok(None)` when nothing is
+/// attached.
 pub async fn read(
     items: &[Attached],
     store: Option<&BufferStoreHandle>,
     excluded: impl Fn(&Path) -> Option<String>,
+    composed: impl Fn(BufferId) -> Option<String>,
 ) -> Result<Option<String>, String> {
     if items.is_empty() {
         return Ok(None);
@@ -211,6 +214,13 @@ pub async fn read(
                 })?;
                 if let Some(why) = store.and_then(|s| s.path_for(*b)).and_then(|p| refuse(&p)) {
                     return Err(why);
+                }
+                // Checked when sent: a view's files change as results stream in.
+                if let Some(why) = composed(*b) {
+                    return Err(format!(
+                        "llm: context `{}`: {why}; nothing was sent ({fix})",
+                        a.name
+                    ));
                 }
                 let snap = handle.snapshot();
                 match &a.item {
@@ -297,12 +307,19 @@ fn echo(level: lattice_grammar::effect::EchoLevel, text: String) -> lattice_gram
     lattice_grammar::Effect::Echo { level, text }
 }
 
-/// Why `buffer`'s text may not be attached: its file matches `llm.exclude`.
+/// Why `buffer`'s text may not be attached: its file matches `llm.exclude`,
+/// or it is a composed view showing one.
 fn excluded_buffer(
     chats: &LlmChats,
     store: &BufferStoreHandle,
     buffer: BufferId,
 ) -> Option<lattice_grammar::Effect> {
+    if let Some(why) = chats.composed_refusal(buffer) {
+        return Some(echo(
+            lattice_grammar::effect::EchoLevel::Error,
+            format!("llm: {why}; not attached"),
+        ));
+    }
     let path = store.path_for(buffer)?;
     let glob = chats.excluded(&path)?;
     Some(echo(
@@ -641,16 +658,16 @@ mod tests {
 
     #[tokio::test]
     async fn nothing_attached_reads_as_nothing_and_a_missing_file_refuses() {
-        assert_eq!(read(&[], None, |_| None).await, Ok(None));
+        assert_eq!(read(&[], None, |_| None, |_| None).await, Ok(None));
         let missing = Attached {
             item: ContextItem::File(PathBuf::from("/nonexistent/lattice-ctx.txt")),
             name: "lattice-ctx.txt".into(),
         };
-        let err = read(std::slice::from_ref(&missing), None, |_| None)
+        let err = read(std::slice::from_ref(&missing), None, |_| None, |_| None)
             .await
             .unwrap_err();
         assert!(err.contains("could not be read"), "{err}");
-        let err = read(&[missing], None, |_| Some(".env".into()))
+        let err = read(&[missing], None, |_| Some(".env".into()), |_| None)
             .await
             .unwrap_err();
         assert!(err.contains("matches llm.exclude"), "{err}");

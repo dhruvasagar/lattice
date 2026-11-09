@@ -15,7 +15,7 @@ acp = ["dep:agent-client-protocol", "dep:tokio-util", "dep:linkme", "tokio/proce
 # the protocol-neutral `conversation` model with `acp`; never depends on it.
 # LL.24: external MCP servers are tool sources, through rmcp's client over a
 # stdio child or streamable HTTP (reqwest + rustls, as the providers use).
-llm = ["dep:linkme", "dep:tokio-util", "dep:reqwest", "dep:toml", "dep:regex", "dep:ignore", "tokio/net", "tokio/process", "dep:rmcp", "rmcp/client", "rmcp/transport-child-process", "rmcp/transport-streamable-http-client-reqwest", "rmcp/reqwest"]
+llm = ["dep:linkme", "dep:tokio-util", "dep:reqwest", "dep:toml", "dep:regex", "dep:ignore", "tokio/net", "tokio/process", "dep:rmcp", "rmcp/client", "rmcp/transport-child-process", "rmcp/transport-streamable-http-client-reqwest", "rmcp/reqwest", "dep:lattice-multibuffer"]
 # MCP IDE-peer transport (Claude Code, folded in by AG-4): the loopback
 # WebSocket server + the read / write / diff tools it exposes.
 mcp = ["dep:rmcp", "dep:tokio-tungstenite", "dep:dirs", "dep:getrandom", "dep:lattice-lsp", "tokio/net"]
@@ -36,6 +36,10 @@ lattice-cells = { path = "../lattice-cells" }
 # depends on neither this crate nor anything that does.
 lattice-picker = { path = "../lattice-picker" }
 lattice-agent = { path = "../lattice-agent" }
+# llm: `llm.exclude` looks through a composed view (search results, a
+# multibuffer) to the files it shows, via the view's sources. No cycle:
+# lattice-multibuffer depends on nothing here.
+lattice-multibuffer = { path = "../lattice-multibuffer", optional = true }
 # acp: the Agent Client Protocol schema + JSON-RPC types the connection speaks.
 agent-client-protocol = { version = "1.2.0", optional = true }
 # acp: adapts tokio's AsyncRead/AsyncWrite to the futures-io traits

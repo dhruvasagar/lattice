@@ -67,6 +67,14 @@ pub fn install(
     }
     // `chats` reads context from the host's buffers when a request is sent.
     chats.set_store(boot.buffer_store().clone());
+    // `llm.exclude` sees through composed views by their sources. Installed
+    // before this crate, so the registry is here already.
+    if let Some(views) = boot
+        .services_mut()
+        .get::<lattice_multibuffer::MultibufferRegistryHandle>()
+    {
+        chats.set_composed((*views).clone());
+    }
     // LL.11b: the rewrite. Its answer reaches review, and its result the
     // editor, from a task; the inbound bus carries that back with a wake, so a
     // finished rewrite shows without a keystroke.

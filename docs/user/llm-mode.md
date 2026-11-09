@@ -293,8 +293,11 @@ other buffer it shows the last request sent from it.
 
 `llm.exclude` is a list of globs naming files whose text is never sent.
 Asking from one is refused before the prompt opens, with the file and the
-glob it matched, and so is attaching one as context. The default covers files that hold secrets by
-convention:
+glob it matched, and so is attaching one as context. A view composed
+from several files (search results, a multibuffer) counts as every file
+it shows: one showing an excluded file is refused the same way, checked
+again when the request is sent, since results keep arriving. The default
+covers files that hold secrets by convention:
 
 ```toml
 [llm]

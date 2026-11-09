@@ -683,6 +683,21 @@ impl Editor {
         boot.register_service::<lattice_picker::TransientSourceRegistryHandle>(
             std::sync::Arc::new(lattice_picker::TransientSourceRegistry::new()),
         );
+        // multibuffer (BC.7): `multibuffer-mode` + `narrow-mode` + the
+        // project-search mode, the excerpt-jump motions + `:multibuffer-*` /
+        // `:narrow` / `:widen` / `:search` ex-commands + the `zn` operator SPEC,
+        // the `MultibufferRegistryHandle` + project-search services, and the
+        // `MultibufferExcerptsReady` off-keystroke wake. The registry handle is
+        // crate-owned (no host-state dependency). Residue staying host-side
+        // (NOT mode-ownership violations): the universal `zn` operator BINDING
+        // at the `Builtin` operator-pending layer (resolved by name below —
+        // BC.7 decision A) and the `AppEffect::{Search,Narrow,MultibufferExpand}`
+        // dispatch arms (Effect-vocabulary-is-the-host-boundary) — see
+        // `lattice_multibuffer::install` for the full rationale.
+        // Before `lattice_ai::install`: `llm.exclude` looks through a composed
+        // view to its files with this registry, and the AI install takes it
+        // from the services as it runs. Nothing here looks anything up.
+        lattice_multibuffer::install(&mut boot);
         lattice_ai::install(&mut boot);
         // NOTIF.1a: the notification store + the inbound bus expiry
         // rides on. Installed early because it owns no modes and no
@@ -703,18 +718,6 @@ impl Editor {
         // is fully mode-owned (MO.x): `DiffMode::keymap()` + the K.2.4 pass —
         // see `lattice_diff::install` for the full rationale.
         lattice_diff::install(&mut boot);
-        // multibuffer (BC.7): `multibuffer-mode` + `narrow-mode` + the
-        // project-search mode, the excerpt-jump motions + `:multibuffer-*` /
-        // `:narrow` / `:widen` / `:search` ex-commands + the `zn` operator SPEC,
-        // the `MultibufferRegistryHandle` + project-search services, and the
-        // `MultibufferExcerptsReady` off-keystroke wake. The registry handle is
-        // crate-owned (no host-state dependency). Residue staying host-side
-        // (NOT mode-ownership violations): the universal `zn` operator BINDING
-        // at the `Builtin` operator-pending layer (resolved by name below —
-        // BC.7 decision A) and the `AppEffect::{Search,Narrow,MultibufferExpand}`
-        // dispatch arms (Effect-vocabulary-is-the-host-boundary) — see
-        // `lattice_multibuffer::install` for the full rationale.
-        lattice_multibuffer::install(&mut boot);
         // CM.1: native compilation subsystem — registers
         // `compilation-mode` (major, ReadOnly + NoFile), the
         // `:compile`/`:recompile`/`:make` ex-commands (return

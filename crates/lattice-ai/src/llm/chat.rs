@@ -379,6 +379,10 @@ pub struct LlmChats {
     /// The host's buffers: context is read from them when a request is sent,
     /// and the list names them. Set once, at install; absent in bare tests.
     store: std::sync::OnceLock<lattice_mode::BufferStoreHandle>,
+    /// The multibuffer views, so `llm.exclude` can see which files a composed
+    /// view shows. Set once, at install; absent, every composed view is
+    /// refused, since nothing can tell what it holds.
+    composed: std::sync::OnceLock<lattice_multibuffer::MultibufferRegistryHandle>,
     /// Context attached in buffers that are not chats, per buffer (LL.15). A
     /// chat's own is on its session.
     source_context: RwLock<HashMap<BufferId, Vec<Attached>>>,
@@ -424,6 +428,7 @@ impl LlmChats {
             last_ask: Mutex::new(None),
             done_hook: std::sync::OnceLock::new(),
             store: std::sync::OnceLock::new(),
+            composed: std::sync::OnceLock::new(),
             source_context: RwLock::new(HashMap::new()),
             listing_owner: Mutex::new(None),
             context_watch: Arc::default(),
@@ -864,6 +869,38 @@ impl LlmChats {
     /// The host's buffers, which context is read from. Once, at install.
     pub fn set_store(&self, store: lattice_mode::BufferStoreHandle) {
         let _ = self.store.set(store);
+    }
+
+    /// The multibuffer views, through which a composed view's files are
+    /// found. Once, at install.
+    pub fn set_composed(&self, views: lattice_multibuffer::MultibufferRegistryHandle) {
+        let _ = self.composed.set(views);
+    }
+
+    /// Why `buffer`'s text may not be sent when it is a composed view (search
+    /// results, a multibuffer): it shows a file `llm.exclude` names, or it is
+    /// not a view whose files can be told. `None` for any other buffer.
+    pub fn composed_refusal(&self, buffer: BufferId) -> Option<String> {
+        let store = self.store.get()?;
+        let handle = store.handle_for(buffer)?;
+        handle.display_line_numbers()?;
+        let Some(view) = self.composed.get().and_then(|v| v.handle(buffer)) else {
+            return Some(
+                "this view shows several files and which is not known; use the file itself"
+                    .to_string(),
+            );
+        };
+        view.source_buffer_ids().into_iter().find_map(|source| {
+            let path = view.source_path(source)?;
+            let glob = self.excluded(&path)?;
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| path.display().to_string());
+            Some(format!(
+                "this view shows {name}, which matches llm.exclude (`{glob}`)"
+            ))
+        })
     }
 
     /// What requests from `buffer` carry as context (LL.15): a chat's own, or
@@ -1665,8 +1702,13 @@ impl LlmChats {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone();
-        if let Some(block) =
-            super::context::read(&items, self.store.get(), |p| self.excluded(p)).await?
+        if let Some(block) = super::context::read(
+            &items,
+            self.store.get(),
+            |p| self.excluded(p),
+            |b| self.composed_refusal(b),
+        )
+        .await?
         {
             super::context::prepend(&mut messages, &block);
         }

@@ -134,6 +134,11 @@
   (`:set messages.filter=info,rmcp=debug` to see it).
 
 ### Fixed
+- **`llm.exclude` holds in search results and multibuffers.** Asking from,
+  or attaching, a view composed from several files counted as no file at
+  all, so lines from an excluded file in it went to the model. Such a view
+  now counts as every file it shows: one showing an excluded file is
+  refused, naming it, and is checked again when the request is sent.
 - **A command allowed for an LLM chat is remembered by its exact
   arguments.** A command whose text ended like a working directory
   (`make\n  in /x`) could pass for that command run in `/x`; the allow is

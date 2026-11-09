@@ -204,6 +204,12 @@ pub(crate) fn refusal(
     store: Option<&BufferStoreHandle>,
     buffer: BufferId,
 ) -> Option<Effect> {
+    if let Some(why) = chats.composed_refusal(buffer) {
+        return Some(echo(
+            EchoLevel::Error,
+            format!("llm: {why}; nothing was sent"),
+        ));
+    }
     let path = store?.path_for(buffer)?;
     let glob = chats.excluded(&path)?;
     let name = path

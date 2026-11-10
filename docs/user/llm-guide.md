@@ -713,9 +713,11 @@ Reference: [`llm`](help:llm).
 
 A request keeps running when you move on, so you can see and stop any of them from anywhere.
 
-- `:llm-requests` (`<leader>aq`) opens `*llm-requests*`: every running request and the last
-  few that finished, with its model and where its answer is going (`below main.rs:4`, `echo`,
-  `register "a`, a chat, a rewrite). It updates itself; `dd` on a row stops that request.
+- `:llm-requests` (`<leader>aq`) opens `*llm-requests*`: every request since the editor
+  started, running ones first, with its model, when it started, how long it took and where
+  its answer is going (`below main.rs:4`, `echo`, `register "a`, a chat, a rewrite). It
+  updates itself; `dd` on a row stops that request, and `<CR>` shows what it sent in
+  `*llm-inspect*`. `:llm-inspect 12` shows request #12 from anywhere.
 - `:llm-stop` (`<leader>ak`) stops this buffer's request: the chat's, or the one an ask from
   this buffer started. With none here it stops the only one running; when that would be a
   guess, it opens `:llm-requests` instead.

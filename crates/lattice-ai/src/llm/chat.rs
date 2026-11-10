@@ -1431,7 +1431,16 @@ impl LlmChats {
 
     /// `:llm-inspect` anywhere else: the last request sent from `buffer`.
     pub fn inspect_last(&self, buffer: BufferId) -> bool {
-        match self.last_sent(buffer) {
+        match self.requests.latest_sent_for(buffer) {
+            Some(id) => self.inspect_request(id),
+            None => false,
+        }
+    }
+
+    /// `:llm-inspect <id>`, `<CR>` in `*llm-requests*`: show request `id`.
+    /// `false` when the registry never had it.
+    pub fn inspect_request(&self, id: super::request::RequestId) -> bool {
+        match self.shown_request(id) {
             Some(shown) => {
                 self.set_inspect(shown);
                 true

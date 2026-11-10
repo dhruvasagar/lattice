@@ -1,5 +1,5 @@
 ---
-summary: "llm-requests-mode: *llm-requests*, every LLM request since the editor started, running first, with state, model, start time, how long it took and destination. dd on a row stops it. Read-only; updates itself."
+summary: "llm-requests-mode: *llm-requests*, every LLM request since the editor started, running first, with state, model, start time, how long it took and destination. dd on a row stops it; <CR> shows what it sent. Read-only; updates itself."
 related: [llm-guide, llm-mode, llm-chat-mode, llm-context-mode, requests]
 ---
 
@@ -14,6 +14,7 @@ it started, how long it took once it has finished, and where its answer is going
 | Keys | Effect |
 |---|---|
 | `dd` | Stop the request on this line, as `<C-c>` stops a chat's. An answer being written into a buffer keeps what arrived and ends with `[interrupted]`. |
+| `<CR>` | Show what the request on this line sent, every exchange of it, in [`*llm-inspect*`](help:llm-inspect-mode) beside the list. Works for any request of the run, finished or not. |
 
 The list is read-only and keeps itself current: a request starting or finishing shows
 without a keystroke. `:llm-stop` (`<leader>ak`) stops the current buffer's request without

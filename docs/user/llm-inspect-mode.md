@@ -14,6 +14,9 @@ with the address, the headers and the body. The key is always shown as `<redacte
   request (model, start time, state, where the answer went), then each exchange it sent
   under its own rule. A request that ran tools sent one exchange per round.
 
+`:llm-inspect 12` shows request #12, from any buffer: the numbers are the ones
+[`*llm-requests*`](help:llm-requests-mode) lists, and `<CR>` on a row there does the same.
+
 What requests sent is kept for the editor run, up to `llm.history_mib` (64 MiB). Past it
 the oldest text is dropped first, and its exchange says so; the newest is always kept.
 

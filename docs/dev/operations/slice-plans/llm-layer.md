@@ -838,10 +838,16 @@ text is always kept, whatever its size. The view's text: a line naming the reque
 headers directly (the byte-for-byte test reads it unchanged). "Which chat" is the row's
 destination label, which names the chat for a chat's requests.
 
-### LL.29 — `<CR>` opens a request 📝
+### LL.29 — `<CR>` opens a request ✅
 
 `<CR>` on a `*llm-requests*` row shows that request in `*llm-inspect*`, its rounds in
 order; `:llm-inspect <id>` from the command line.
+
+Built: `<CR>` (`action:llm-requests-open`) at the mode's major layer beside `dd`, and the
+two now share one row lookup. `:llm-inspect` takes `12` or `#12`; anything else is refused
+with what it takes. The view is a snapshot at the moment it is opened: a running request's
+later rounds show on the next `<CR>`, not live (the view repaints on its own watch, which
+only these commands bump).
 
 ## Release readiness
 

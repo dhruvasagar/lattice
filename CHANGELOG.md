@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Added
+- `<CR>` on a row of `*llm-requests*` shows what that request sent, every exchange of it, in `*llm-inspect*`; `:llm-inspect 12` shows request #12 from any buffer. Both reach any request since the editor started, including ones from a buffer since closed.
 - `:'<,'>llm-menu` opens the LLM settings menu holding an ask about the range's lines, as `<leader>aA` does, and `:'<,'>llm-menu rewrite` holds a rewrite, as `<leader>aR` does: choose the model or other settings, then `a` to type the instruction. Without a range, `:llm-menu ask` and `:llm-menu rewrite` take the current line. Plain `:llm-menu` is unchanged.
 - `:'<,'>llm-rewrite {instruction}` rewrites the range's lines from the command line, as `<leader>ar` does, with the same leading `key=value` words as `:llm-ask` (`model=local/qwen`). The answer opens as a diff to accept or reject. With no instruction it opens the instruction prompt. A read-only buffer refuses it.
 - `:help llm-context-mode`, `:help llm-inspect-mode` and `:help llm-requests-mode`: pages for the `*llm-context*`, `*llm-inspect*` and `*llm-requests*` views.

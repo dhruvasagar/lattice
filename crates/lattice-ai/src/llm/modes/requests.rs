@@ -14,6 +14,10 @@
 //! request finishing shows without a keystroke. The text is replaced only when
 //! it differs. Usage updates publish nothing and are not shown.
 //!
+//! **`<CR>` on a row shows what that request sent** (LL.29): every exchange,
+//! in `*llm-inspect*` beside the list, for any request of the run, finished or
+//! not, whatever buffer sent it.
+//!
 //! Read-only by the two declarations: `ReadOnly = true` stops typing,
 //! `read-only-mode` (implied) refuses operators. `dd` is this mode's chord,
 //! at the major-mode layer, so it shadows the operator.
@@ -39,6 +43,9 @@ pub const REQUESTS_BUFFER: &str = "*llm-requests*";
 
 /// `dd`: stop the request on the caret's row.
 pub const ACTION_STOP: &str = "action:llm-requests-stop";
+
+/// `<CR>`: show the request on the caret's row in `*llm-inspect*`.
+pub const ACTION_OPEN: &str = "action:llm-requests-open";
 
 pub struct LlmRequestsMode {
     chats: LlmChatsHandle,
@@ -118,10 +125,16 @@ impl Mode for LlmRequestsMode {
     }
 
     fn action_handlers(&self) -> Vec<ActionHandlerContribution> {
-        vec![ActionHandlerContribution {
-            action_name: ACTION_STOP,
-            handler: stop_handler(self.chats.clone()),
-        }]
+        vec![
+            ActionHandlerContribution {
+                action_name: ACTION_STOP,
+                handler: stop_handler(self.chats.clone()),
+            },
+            ActionHandlerContribution {
+                action_name: ACTION_OPEN,
+                handler: open_handler(self.chats.clone()),
+            },
+        ]
     }
 
     fn on_activate(&self, ctx: ModeContext) -> LifecycleFuture<'_, Self::Guard> {
@@ -165,11 +178,18 @@ impl Mode for LlmRequestsMode {
 fn keymap_entries() -> &'static [KeymapEntry] {
     static ENTRIES: OnceLock<Vec<KeymapEntry>> = OnceLock::new();
     ENTRIES.get_or_init(|| {
-        vec![keymap_entry! {
-            mode: Normal, chord: "dd",
-            doc: "llm-requests: stop the request on this line",
-            cmd: "action:llm-requests-stop"
-        }]
+        vec![
+            keymap_entry! {
+                mode: Normal, chord: "dd",
+                doc: "llm-requests: stop the request on this line",
+                cmd: "action:llm-requests-stop"
+            },
+            keymap_entry! {
+                mode: Normal, chord: "<CR>",
+                doc: "llm-requests: show what the request on this line sent",
+                cmd: "action:llm-requests-open"
+            },
+        ]
     })
 }
 
@@ -350,13 +370,45 @@ pub fn id_on(line: &str) -> Option<RequestId> {
     digits.parse().ok().map(RequestId)
 }
 
+/// The request on the caret's row of the list, or what to say instead.
+fn row_request(ctx: &ActionContext<'_>) -> Result<RequestId, Effect> {
+    let none = || say(EchoLevel::Info, "llm: no request on this line");
+    let store = ctx.services.get::<BufferStoreHandle>().ok_or_else(none)?;
+    let handle = store
+        .handle_for(lattice_core::BufferId(ctx.buffer_id.0 as u32))
+        .ok_or_else(none)?;
+    let line = handle
+        .snapshot()
+        .buffer
+        .line(ctx.cursor.line)
+        .ok_or_else(none)?;
+    id_on(&line).ok_or_else(none)
+}
+
+/// `<CR>`: what the row's request sent, every exchange of it, in
+/// `*llm-inspect*` beside the list.
+fn open_handler(chats: LlmChatsHandle) -> ActionHandler {
+    Arc::new(move |ctx: &ActionContext<'_>| -> Option<Effect> {
+        let id = match row_request(ctx) {
+            Ok(id) => id,
+            Err(why) => return Some(why),
+        };
+        if chats.inspect_request(id) {
+            Some(crate::llm::context::inspect_view())
+        } else {
+            Some(say(
+                EchoLevel::Info,
+                "llm: that request is no longer listed",
+            ))
+        }
+    })
+}
+
 fn stop_handler(chats: LlmChatsHandle) -> ActionHandler {
     Arc::new(move |ctx: &ActionContext<'_>| -> Option<Effect> {
-        let store = ctx.services.get::<BufferStoreHandle>()?;
-        let handle = store.handle_for(lattice_core::BufferId(ctx.buffer_id.0 as u32))?;
-        let line = handle.snapshot().buffer.line(ctx.cursor.line)?;
-        let Some(id) = id_on(&line) else {
-            return Some(say(EchoLevel::Info, "llm: no request on this line"));
+        let id = match row_request(ctx) {
+            Ok(id) => id,
+            Err(why) => return Some(why),
         };
         let snapshot = chats.requests().snapshot();
         let Some(info) = snapshot.iter().find(|r| r.id == id) else {
@@ -393,6 +445,14 @@ pub fn register_actions(registry: &mut lattice_grammar::CommandRegistry) {
     registry.register_action(
         ACTION_STOP,
         "llm-requests: stop the request on this line.",
+        ActionSpec {
+            apply: Arc::new(|_| Ok(Effect::None)),
+            args_schema: vec![],
+        },
+    );
+    registry.register_action(
+        ACTION_OPEN,
+        "llm-requests: show what the request on this line sent, in *llm-inspect*.",
         ActionSpec {
             apply: Arc::new(|_| Ok(Effect::None)),
             args_schema: vec![],

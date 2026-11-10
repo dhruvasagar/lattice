@@ -533,8 +533,24 @@ fn inspect_effect(
     store: &BufferStoreHandle,
     anchors: &crate::conversation::transcript::PromptAnchors,
     buffer: BufferId,
+    args: &str,
 ) -> lattice_grammar::Effect {
-    use super::modes::context::{INSPECT_BUFFER, LlmInspectMode};
+    let args = args.trim();
+    if !args.is_empty() {
+        let Ok(n) = args.trim_start_matches('#').parse::<u64>() else {
+            return echo(
+                lattice_grammar::effect::EchoLevel::Error,
+                format!("llm: :llm-inspect takes a request number (`#12`), not `{args}`"),
+            );
+        };
+        if !chats.inspect_request(super::request::RequestId(n)) {
+            return echo(
+                lattice_grammar::effect::EchoLevel::Info,
+                format!("llm: no request #{n} (`:llm-requests` lists them)"),
+            );
+        }
+        return inspect_view();
+    }
     if chats.for_buffer(buffer).is_some() {
         let prompt = store.handle_for(buffer).and_then(|h| {
             let anchor = anchors.get(buffer)?;
@@ -549,6 +565,13 @@ fn inspect_effect(
                 .to_string(),
         );
     }
+    inspect_view()
+}
+
+/// Show `*llm-inspect*` beside the current buffer, with whatever it was last
+/// given to show.
+pub(crate) fn inspect_view() -> lattice_grammar::Effect {
+    use super::modes::context::{INSPECT_BUFFER, LlmInspectMode};
     lattice_grammar::Effect::DisplaySyntheticBuffer {
         name: INSPECT_BUFFER.to_string(),
         mode_id: LlmInspectMode::mode_id().as_str().to_string(),
@@ -632,13 +655,26 @@ pub fn register(
     registry.register_ex_command(
         "llm-inspect",
         "Show exactly what an LLM request sends, key redacted: in a chat, what sending the \
-         prompt now would send; elsewhere, the last request sent from this buffer.",
+         prompt now would send; elsewhere, the last request sent from this buffer, every \
+         exchange of it. `:llm-inspect 12` shows request #12 from `:llm-requests`.",
         ExCommandSpec {
             latency_class: LatencyClass::Reflex,
             accepts_bang: false,
             accepts_range: false,
             parse_args: Arc::new(lattice_agent::parse_rest_as_text),
-            apply: Arc::new(move |ctx| Ok(inspect_effect(&chats, &store, &anchors, ctx.buffer_id))),
+            apply: Arc::new(move |ctx| {
+                let args = match &ctx.args {
+                    lattice_grammar::args::Args::String(t) => t.as_str(),
+                    _ => "",
+                };
+                Ok(inspect_effect(
+                    &chats,
+                    &store,
+                    &anchors,
+                    ctx.buffer_id,
+                    args,
+                ))
+            }),
             args_schema: vec![],
             surface_form: SurfaceForm::Keyword,
         },

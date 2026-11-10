@@ -596,6 +596,57 @@ mod tests {
         assert_eq!(list_text(&a), before);
     }
 
+    fn inspect_text(a: &App) -> String {
+        a.editor
+            .buffers
+            .by_name("*llm-inspect*")
+            .and_then(|b| a.editor.buffers.document_handle(b))
+            .map(|h| h.text())
+            .unwrap_or_default()
+    }
+
+    /// LL.29: `<CR>` on a finished row shows what that request sent, in
+    /// `*llm-inspect*`, without another keystroke; `:llm-inspect 1` shows it
+    /// from anywhere, and a number the run never had is said so.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn enter_on_a_row_shows_what_the_request_sent() {
+        let (mut a, release) = app_streaming(&["one ", "two"], End::Done, 200);
+        ask_below(&mut a);
+        release.send(()).unwrap();
+        release.send(()).unwrap();
+        ex(&mut a, "llm-requests");
+        assert!(
+            settle_woken(&mut a, |a| list_text(a).contains("done")).await,
+            "{:?}",
+            list_text(&a)
+        );
+        // Running, (none), blank, Finished, then the row.
+        press_chars(&mut a, "5G");
+        key(&mut a, KeyCode::Enter);
+        assert!(
+            settle_woken(&mut a, |a| inspect_text(a).starts_with("Request #1")).await,
+            "{:?} / {}",
+            inspect_text(&a),
+            message(&a)
+        );
+        let shown = inspect_text(&a);
+        assert!(shown.contains("── Round 1 of 1"), "{shown}");
+        assert!(shown.contains("POST "), "{shown}");
+        assert!(shown.contains("alpha beta"), "the request's text: {shown}");
+
+        // From whatever buffer has the focus: the number names the request.
+        submit_ex(&mut a, "llm-inspect 99");
+        assert!(message(&a).contains("no request #99"), "{}", message(&a));
+        submit_ex(&mut a, "llm-inspect two");
+        assert!(message(&a).contains("request number"), "{}", message(&a));
+        submit_ex(&mut a, "llm-inspect #1");
+        assert!(
+            settle_woken(&mut a, |a| inspect_text(a).starts_with("Request #1")).await,
+            "{}",
+            message(&a)
+        );
+    }
+
     /// `dd` on a row stops that request through its session: the inline
     /// answer gets its marker, and the row says it stopped.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

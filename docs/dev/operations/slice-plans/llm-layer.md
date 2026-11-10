@@ -795,11 +795,13 @@ refused by the command itself**: the host's read-only gate (`run_read_only_motio
 operators and motions, not ex-commands, and accepting the diff would write the buffer
 through its handle.
 
-### LL.26 — `:[range]llm-menu [ask|rewrite]` 📝
+### LL.26 — `:[range]llm-menu [ask|rewrite]` ✅
 
 With a range (or an `ask` / `rewrite` word, the caret's line then), the menu opens
 holding an ask or a rewrite over those lines, as `<leader>aA` / `<leader>aR` do; `a`
-types the instruction. Bare `:llm-menu` is unchanged.
+types the instruction. Bare `:llm-menu` is unchanged. The command moved from
+`commands.rs` into `menu.rs`, registered after the asks and rewrites it holds; an
+unknown word is refused rather than read as "ask".
 
 ### LL.27 — Every request of the run, with times 📝
 

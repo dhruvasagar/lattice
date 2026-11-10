@@ -357,6 +357,48 @@ mod tests {
         );
     }
 
+    /// `:1,2llm-menu` is `<leader>aA` from the command line: the menu opens
+    /// holding an ask over the range's lines, and `a` moves it on.
+    #[test]
+    fn the_menu_command_with_a_range_holds_an_ask() {
+        let mut a = app_with(TEXT, 10);
+        let source = a.editor.document_buffer_id;
+        submit_ex(&mut a, "1,2llm-menu");
+        let title = picker_title(&a).unwrap_or_default();
+        assert!(
+            title.contains("LLM settings"),
+            "the menu is open: {title:?}"
+        );
+        let held = chats(&a).menu_ask(source).expect("holding the ask");
+        assert_eq!(held.kind, lattice_ai::llm::chat::MenuHold::Ask);
+        press_chars(&mut a, "a");
+        assert!(prompt_is_open(&a), "active: {}", active_name(&a));
+        assert_eq!(
+            asks(&a).take(1).map(|s| s.text),
+            Some("alpha beta\ngamma delta".into())
+        );
+    }
+
+    /// `:llm-menu ask` without a range holds the caret's line; a word it does
+    /// not know is refused and opens nothing.
+    #[test]
+    fn the_menu_command_names_what_it_holds() {
+        let mut a = app_with(TEXT, 10);
+        let source = a.editor.document_buffer_id;
+        submit_ex(&mut a, "llm-menu ask");
+        assert!(chats(&a).menu_ask(source).is_some(), "{}", message(&a));
+        press_chars(&mut a, "a");
+        assert_eq!(asks(&a).take(1).map(|s| s.text), Some("alpha beta".into()));
+        key(&mut a, KeyCode::Esc);
+        submit_ex(&mut a, "llm-menu explain");
+        assert!(
+            message(&a).contains("`ask` or `rewrite`"),
+            "{}",
+            message(&a)
+        );
+        assert!(chats(&a).menu_ask(source).is_none());
+    }
+
     /// A menu opened by hand after a dismissed `<leader>aA` holds no ask.
     #[test]
     fn a_menu_opened_by_hand_holds_no_stale_ask() {

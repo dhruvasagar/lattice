@@ -307,7 +307,9 @@ value came from and names the session the next request would use. You can change
 model, temperature or destination there. `=` switches the change between the
 **session** and the **next request only**; `x` clears. `<leader>aA{motion}` opens it
 before the prompt, so you choose, then press `a` to type the instruction. `q` dismisses
-it and sends nothing.
+it and sends nothing. `:'<,'>llm-menu` does the same for the range's lines, and
+`:'<,'>llm-menu rewrite` is `<leader>aR`'s form; without a range, `:llm-menu ask` and
+`:llm-menu rewrite` take the current line.
 
 ### Rewriting
 

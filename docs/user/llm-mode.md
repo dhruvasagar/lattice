@@ -51,6 +51,11 @@ then press `a` to type the instruction. Choices made in the menu's
 next-request scope apply to this ask only; in its session scope they stay
 on the buffer you asked from. `q` dismisses the menu and sends nothing.
 
+From the command line, `:'<,'>llm-menu` does the same for the range's
+lines, and `:'<,'>llm-menu rewrite` does what `<leader>aR` does. Without a
+range, `:llm-menu ask` and `:llm-menu rewrite` hold the current line; plain
+`:llm-menu` opens the menu holding nothing.
+
 ### Continuing a chat
 
 An ask normally opens a new chat. To add it to one already open, name that

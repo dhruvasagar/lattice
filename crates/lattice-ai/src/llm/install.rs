@@ -300,6 +300,15 @@ pub fn install(
     let rewrite_ops =
         super::rewrite::register(boot.commands_mut(), chats.clone(), rewrites.clone(), store);
     super::commands::register(boot.commands_mut(), chats.clone());
+    // LL.26: after the asks and rewrites, since `:'<,'>llm-menu` holds one.
+    let store = boot.buffer_store().clone();
+    super::menu::register_ex(
+        boot.commands_mut(),
+        chats.clone(),
+        asks.clone(),
+        rewrites.clone(),
+        store,
+    );
     // LL.15b: every chord sits under `llm.prefix`; `llm-mode` binds them on
     // its first activation and the listener rebinds them when it changes.
     let keys: super::modes::llm_mode::LlmKeysHandle = {

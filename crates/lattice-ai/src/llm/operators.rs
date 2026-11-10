@@ -54,7 +54,7 @@ use lattice_core::BufferId;
 use lattice_grammar::CommandError;
 use lattice_grammar::effect::{EchoLevel, Effect};
 use lattice_grammar::registry::{
-    ActionSpec, CommandRegistry, OperatorContext, OperatorId, OperatorSpec,
+    ActionSpec, CommandRegistry, ExCommandContext, OperatorContext, OperatorId, OperatorSpec,
 };
 use lattice_mode::{ActionContext, ActionHandler, BufferStoreHandle};
 use lattice_protocol::position::Range;
@@ -711,6 +711,47 @@ pub fn register(
     AskOperators { ask, ask_menu }
 }
 
+/// The lines an ex-command's range names (the caret's line without one), as an
+/// ask's source: linewise, the final newline left out of the text.
+fn lines_source(ctx: &ExCommandContext) -> Result<AskSource, Effect> {
+    use lattice_protocol::position::Position;
+    let (a, b) = match super::commands::range_lines(ctx) {
+        Ok(Some(lines)) => lines,
+        Ok(None) => (ctx.cursor.line, ctx.cursor.line),
+        Err(e) => return Err(echo(EchoLevel::Error, e)),
+    };
+    let text = super::commands::lines_text(ctx, a, b);
+    if text.trim().is_empty() {
+        return Err(echo(
+            EchoLevel::Info,
+            "llm: nothing to ask about (the lines are empty)".to_string(),
+        ));
+    }
+    Ok(AskSource {
+        buffer: ctx.buffer_id,
+        range: Range::new(Position::new(a, 0), Position::new(b + 1, 0)),
+        text,
+        register: lattice_grammar::Register::Unnamed,
+    })
+}
+
+/// `:[range]llm-menu ask`: hold an ask over the command's lines for the menu,
+/// as `<leader>aA` holds its span: its token and the lines it covers, or the
+/// effect that refuses it (an excluded file, a composed view, empty lines).
+pub(crate) fn hold_ask_lines(
+    chats: &LlmChats,
+    asks: &LlmAsks,
+    store: &BufferStoreHandle,
+    ctx: &ExCommandContext,
+) -> Result<(u64, String), Effect> {
+    if let Some(refused) = refusal(chats, Some(store), ctx.buffer_id) {
+        return Err(refused);
+    }
+    let source = lines_source(ctx)?;
+    let lines = line_span(source.range);
+    Ok((asks.hold(source), lines))
+}
+
 /// Register `:llm-ask`: `:'<,'>llm-ask [key=value…] instruction` asks about the
 /// range's lines (the current line without one), with no prompt, so a script or
 /// a binding can ask. `store` names the source buffer, as the action's does.
@@ -737,32 +778,13 @@ pub fn register_ex(
             accepts_range: true,
             parse_args: Arc::new(parse_rest_as_text),
             apply: Arc::new(move |ctx| {
-                let (a, b) = match super::commands::range_lines(ctx) {
-                    Ok(Some(lines)) => lines,
-                    Ok(None) => (ctx.cursor.line, ctx.cursor.line),
-                    Err(e) => {
-                        return Ok(Effect::Echo {
-                            level: EchoLevel::Error,
-                            text: e,
-                        });
-                    }
+                let source = match lines_source(ctx) {
+                    Ok(source) => source,
+                    Err(why) => return Ok(why),
                 };
-                let text = super::commands::lines_text(ctx, a, b);
-                if text.trim().is_empty() {
-                    return Ok(Effect::Echo {
-                        level: EchoLevel::Info,
-                        text: "llm: nothing to ask about (the lines are empty)".to_string(),
-                    });
-                }
                 let instruction = match &ctx.args {
                     Args::String(t) => t.clone(),
                     _ => String::new(),
-                };
-                let source = AskSource {
-                    buffer: ctx.buffer_id,
-                    range: Range::new(Position::new(a, 0), Position::new(b + 1, 0)),
-                    text,
-                    register: lattice_grammar::Register::Unnamed,
                 };
                 Ok(ask_effect(
                     &chats,

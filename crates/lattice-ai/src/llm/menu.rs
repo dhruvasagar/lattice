@@ -39,6 +39,78 @@ use super::settings::{MessageScope, SettingKey, Settings, validate};
 /// The transient source `:llm-menu` and the chat chord open.
 pub const MENU_SOURCE: &str = "llm-menu";
 
+/// Register `:[range]llm-menu [ask|rewrite]`. Bare, it opens the menu holding
+/// nothing. With a range, or an `ask` / `rewrite` word (the caret's line then),
+/// it holds an ask or a rewrite over those lines, as `<leader>aA` /
+/// `<leader>aR` hold their span, and the menu gains the row that types its
+/// instruction.
+pub fn register_ex(
+    registry: &mut CommandRegistry,
+    chats: LlmChatsHandle,
+    asks: super::operators::LlmAsksHandle,
+    rewrites: super::rewrite::LlmRewritesHandle,
+    store: BufferStoreHandle,
+) {
+    use lattice_grammar::command::LatencyClass;
+    use lattice_grammar::registry::{ExCommandSpec, SurfaceForm};
+    registry.register_ex_command(
+        "llm-menu",
+        "Show every LLM setting for this buffer's session with where each value came from, and \
+         change them. `=` switches between the session and the next request only. With a \
+         range (`:'<,'>llm-menu`), it holds an ask about those lines, as `<leader>aA` does; \
+         `:'<,'>llm-menu rewrite` holds a rewrite, as `<leader>aR` does. `a` then types the \
+         instruction.",
+        ExCommandSpec {
+            latency_class: LatencyClass::Reflex,
+            accepts_bang: false,
+            accepts_range: true,
+            parse_args: Arc::new(lattice_agent::parse_rest_as_text),
+            apply: Arc::new(move |ctx| Ok(open_menu(&chats, &asks, &rewrites, &store, ctx))),
+            args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
+}
+
+fn open_menu(
+    chats: &LlmChats,
+    asks: &super::operators::LlmAsks,
+    rewrites: &super::rewrite::LlmRewrites,
+    store: &BufferStoreHandle,
+    ctx: &lattice_grammar::registry::ExCommandContext,
+) -> Effect {
+    let open = Effect::OpenTransient {
+        source: MENU_SOURCE.to_string(),
+        args: Args::None,
+    };
+    let word = match &ctx.args {
+        Args::String(t) => t.trim().to_string(),
+        _ => String::new(),
+    };
+    let held = match word.as_str() {
+        "" if ctx.range.is_none() => {
+            // Opened by hand, the menu holds nothing: drop what a dismissed
+            // `<leader>aA` / `<leader>aR` menu left behind.
+            chats.disarm_menu_ask(ctx.buffer_id);
+            return open;
+        }
+        "" | "ask" => super::operators::hold_ask_lines(chats, asks, store, ctx)
+            .map(|(token, lines)| chats.arm_menu_ask(ctx.buffer_id, token, lines)),
+        "rewrite" => super::rewrite::hold_lines_for_menu(chats, rewrites, store, ctx)
+            .map(|(token, lines)| chats.arm_menu_rewrite(ctx.buffer_id, token, lines)),
+        other => {
+            return Effect::Echo {
+                level: EchoLevel::Error,
+                text: format!("llm: :llm-menu takes `ask` or `rewrite`, not `{other}`"),
+            };
+        }
+    };
+    match held {
+        Ok(()) => open,
+        Err(why) => why,
+    }
+}
+
 pub const ACTION_EDIT: &str = "action:llm-menu-edit";
 pub const ACTION_APPLY: &str = "action:llm-menu-apply";
 pub const ACTION_SCOPE: &str = "action:llm-menu-scope";

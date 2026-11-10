@@ -241,6 +241,28 @@ mod tests {
         assert_eq!(source_text(&a), TEXT);
     }
 
+    /// `:1,2llm-menu rewrite` is `<leader>aR` from the command line: the menu
+    /// holds a rewrite over the lines, `a` opens its prompt, and it runs to
+    /// its diff.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_menu_command_holds_a_rewrite() {
+        let (mut a, _release) = app_answering("ALPHA BETA\nGAMMA DELTA", false);
+        let src = a.editor.document_buffer_id;
+        submit_ex(&mut a, "1,2llm-menu rewrite");
+        let held = chats(&a).menu_ask(src).expect("holding the rewrite");
+        assert_eq!(held.kind, lattice_ai::llm::chat::MenuHold::Rewrite);
+        assert_eq!(rewrites(&a).pending_count(), 1);
+        press_chars(&mut a, "a");
+        assert!(a.editor.buffers.by_name("*llm-rewrite:1*").is_some());
+        press_chars(&mut a, "uppercase it");
+        key(&mut a, KeyCode::Enter);
+        assert!(
+            settle_woken(&mut a, |a| diffs_open(a) == 1).await,
+            "the diff never opened: {}",
+            message(&a)
+        );
+    }
+
     /// The operator changes text, so a read-only buffer refuses it.
     #[test]
     fn a_read_only_buffer_refuses_a_rewrite() {

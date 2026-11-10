@@ -27,7 +27,6 @@ use lattice_grammar::effect::{EchoLevel, Effect};
 use lattice_grammar::registry::{CommandRegistry, ExCommandSpec, SurfaceForm};
 
 use super::chat::{LlmChats, LlmChatsHandle, MenuScope};
-use super::menu::MENU_SOURCE;
 use super::modes::chat::LlmChatMode;
 use super::modes::requests::{LlmRequestsMode, REQUESTS_BUFFER};
 use super::modes::system::LlmSystemMode;
@@ -383,29 +382,6 @@ pub fn register(registry: &mut CommandRegistry, chats: LlmChatsHandle) {
                     return Ok(echo(EchoLevel::Info, text));
                 }
                 Ok(switch_profile(&profile_chats, ctx.buffer_id, &name))
-            }),
-            args_schema: vec![],
-            surface_form: SurfaceForm::Keyword,
-        },
-    );
-    let menu_chats = chats.clone();
-    registry.register_ex_command(
-        "llm-menu",
-        "Show every LLM setting for this buffer's session with where each value came from, and \
-         change them. `=` switches between the session and the next request only.",
-        ExCommandSpec {
-            latency_class: LatencyClass::Reflex,
-            accepts_bang: false,
-            accepts_range: false,
-            parse_args: Arc::new(parse_rest_as_text),
-            apply: Arc::new(move |ctx| {
-                // Opened by hand, the menu holds no ask: drop one a dismissed
-                // `<leader>aA` menu left behind.
-                menu_chats.disarm_menu_ask(ctx.buffer_id);
-                Ok(Effect::OpenTransient {
-                    source: MENU_SOURCE.to_string(),
-                    args: Args::None,
-                })
             }),
             args_schema: vec![],
             surface_form: SurfaceForm::Keyword,

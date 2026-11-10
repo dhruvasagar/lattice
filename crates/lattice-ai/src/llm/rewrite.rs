@@ -425,6 +425,20 @@ fn held_lines(
     })
 }
 
+/// `:[range]llm-menu rewrite`: hold a rewrite over the command's lines for the
+/// menu, as `<leader>aR` holds its span: its token and the lines it covers, or
+/// the effect that refuses it.
+pub(crate) fn hold_lines_for_menu(
+    chats: &LlmChats,
+    rewrites: &LlmRewrites,
+    store: &BufferStoreHandle,
+    ctx: &ExCommandContext,
+) -> Result<(u64, String), Effect> {
+    let held = held_lines(chats, store, ctx)?;
+    let lines = line_span(held.source.range);
+    Ok((rewrites.hold(held), lines))
+}
+
 /// `:[range]llm-rewrite [key=value…] instruction`: send at once, or open the
 /// instruction prompt when nothing was typed.
 fn ex_rewrite(

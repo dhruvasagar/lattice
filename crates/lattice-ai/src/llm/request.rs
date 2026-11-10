@@ -22,9 +22,20 @@
 //! Rows are shared (`Arc<RequestInfo>`), so publishing a change copies
 //! pointers, not rows: a usage update arrives with every streamed chunk, and
 //! the list only grows.
+//!
+//! # What was sent
+//!
+//! Every exchange a request sends (each round of a tool loop, not only the
+//! first) is recorded as `:llm-inspect` shows it, built again with the key's
+//! place redacted (LL.28). A retry resends the same exchange and is not
+//! recorded twice. Those texts carry the whole history and context each time,
+//! so they live under a byte budget (`llm.history_mib`, handed in by whoever
+//! starts the request): past it the oldest texts are dropped first, the row
+//! and its round count stay, and the newest text is always kept.
 
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime};
 
 use arc_swap::ArcSwap;
@@ -85,6 +96,85 @@ pub struct RequestInfo {
     pub finished: Option<SystemTime>,
 }
 
+/// One exchange a request sent, as `:llm-inspect` shows it (the key's place
+/// redacted), and when. `shown` is `None` once the budget dropped it.
+#[derive(Debug, Clone)]
+pub struct SentRound {
+    pub at: SystemTime,
+    pub shown: Option<Arc<String>>,
+}
+
+/// What `llm.history_mib` defaults to, in bytes.
+pub const DEFAULT_HISTORY_BYTES: usize = 64 * 1024 * 1024;
+
+/// The texts requests sent, and the order to drop them in.
+#[derive(Default)]
+struct Sent {
+    rounds: HashMap<RequestId, Vec<SentRound>>,
+    /// Texts still held, oldest first: request, round, size.
+    held: VecDeque<(RequestId, usize, usize)>,
+    bytes: usize,
+}
+
+impl Sent {
+    fn record(&mut self, id: RequestId, shown: String, budget: usize) {
+        let size = shown.len();
+        let rounds = self.rounds.entry(id).or_default();
+        rounds.push(SentRound {
+            at: SystemTime::now(),
+            shown: Some(Arc::new(shown)),
+        });
+        self.held.push_back((id, rounds.len() - 1, size));
+        self.bytes += size;
+        // The newest is always kept, whatever its size: it is the one most
+        // likely to be looked at.
+        while self.bytes > budget && self.held.len() > 1 {
+            let Some((old, round, size)) = self.held.pop_front() else {
+                break;
+            };
+            if let Some(r) = self.rounds.get_mut(&old).and_then(|r| r.get_mut(round)) {
+                r.shown = None;
+            }
+            self.bytes -= size;
+        }
+    }
+}
+
+#[cfg(test)]
+mod sent_tests {
+    use super::*;
+
+    fn kept(sent: &Sent, id: u64) -> Vec<bool> {
+        sent.rounds[&RequestId(id)]
+            .iter()
+            .map(|r| r.shown.is_some())
+            .collect()
+    }
+
+    /// Past the budget the oldest texts go first; the rounds stay listed.
+    #[test]
+    fn the_oldest_text_is_dropped_first() {
+        let mut sent = Sent::default();
+        sent.record(RequestId(1), "a".repeat(10), 25);
+        sent.record(RequestId(1), "b".repeat(10), 25);
+        sent.record(RequestId(2), "c".repeat(10), 25);
+        assert_eq!(kept(&sent, 1), [false, true], "the oldest went");
+        assert_eq!(kept(&sent, 2), [true]);
+        assert_eq!(sent.bytes, 20);
+    }
+
+    /// The newest is kept whatever its size, even over a zero budget.
+    #[test]
+    fn the_newest_text_is_always_kept() {
+        let mut sent = Sent::default();
+        sent.record(RequestId(1), "a".repeat(10), 0);
+        sent.record(RequestId(2), "b".repeat(100), 0);
+        assert_eq!(kept(&sent, 1), [false]);
+        assert_eq!(kept(&sent, 2), [true]);
+        assert_eq!(sent.bytes, 100);
+    }
+}
+
 /// Published on the event bus on every state change.
 #[derive(Debug, Clone)]
 pub struct RequestStateChanged {
@@ -123,6 +213,8 @@ struct Shared {
     bus: Option<Arc<EventBus>>,
     notify: Option<Notify>,
     idle: Duration,
+    sent: std::sync::Mutex<Sent>,
+    budget: AtomicUsize,
 }
 
 pub struct RequestRegistry {
@@ -155,6 +247,8 @@ impl RequestRegistry {
                 bus,
                 notify,
                 idle,
+                sent: std::sync::Mutex::new(Sent::default()),
+                budget: AtomicUsize::new(DEFAULT_HISTORY_BYTES),
             }),
         }
     }
@@ -249,6 +343,34 @@ impl RequestRegistry {
     /// Every request of the run, live and finished, in start order.
     pub fn snapshot(&self) -> Arc<Vec<Arc<RequestInfo>>> {
         self.shared.snapshot.load_full()
+    }
+
+    /// How many bytes of what requests sent to keep (`llm.history_mib`).
+    /// Applies from the next exchange recorded.
+    pub fn set_history_budget(&self, bytes: usize) {
+        self.shared.budget.store(bytes, Ordering::Relaxed);
+    }
+
+    /// What request `id` sent, one entry per exchange, oldest first.
+    pub fn sent(&self, id: RequestId) -> Vec<SentRound> {
+        self.shared
+            .sent
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .rounds
+            .get(&id)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// The latest request aimed at `buffer` that has sent something.
+    pub fn latest_sent_for(&self, buffer: BufferId) -> Option<RequestId> {
+        let sent = self.shared.sent.lock().unwrap_or_else(|e| e.into_inner());
+        self.snapshot()
+            .iter()
+            .rev()
+            .find(|r| r.target.buffer == buffer && sent.rounds.contains_key(&r.id))
+            .map(|r| r.id)
     }
 }
 
@@ -449,6 +571,16 @@ async fn run_request(
         Ok(h) => h,
         Err(e) => return Outcome::Failed(scrub(&e.to_string(), key)),
     };
+    // What `:llm-inspect` shows for this exchange: the same request, built
+    // with the key's place redacted, never the one carrying the key.
+    if let Ok(shown) = provider.build(req, &ApiKey::new(super::context::REDACTED)) {
+        let budget = shared.budget.load(Ordering::Relaxed);
+        shared
+            .sent
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .record(id, super::context::show(&shown), budget);
+    }
     let decoder = provider.decoder();
     let ex = transport::Exchange {
         client,

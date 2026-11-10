@@ -430,8 +430,6 @@ pub struct LlmChats {
     /// What `*llm-inspect*` shows, and its counter.
     inspect: Mutex<String>,
     inspect_watch: WatchHandle,
-    /// The last request sent from each buffer, as `:llm-inspect` shows it.
-    last_sent: RwLock<HashMap<BufferId, Arc<String>>>,
     /// LL.16: every tool source, namespaced; a request's tools are an offer
     /// made from it when the request starts.
     tools: super::tools::ToolBrokerHandle,
@@ -474,7 +472,6 @@ impl LlmChats {
             context_watch: Arc::default(),
             inspect: Mutex::new(String::new()),
             inspect_watch: Arc::default(),
-            last_sent: RwLock::new(HashMap::new()),
             tools: Arc::default(),
             next_chat: AtomicU32::new(1),
             next_system: AtomicU32::new(1),
@@ -706,7 +703,6 @@ impl LlmChats {
         keep(&self.next_request, open);
         keep(&self.menu_scope, open);
         keep(&self.menu_ask, open);
-        keep(&self.last_sent, open);
         let gone = {
             let mut ctx = self
                 .source_context
@@ -1360,13 +1356,38 @@ impl LlmChats {
         self.inspect_watch.bump();
     }
 
-    /// The last request sent from `buffer`, as `:llm-inspect` shows it.
-    pub fn last_sent(&self, buffer: BufferId) -> Option<Arc<String>> {
-        self.last_sent
+    /// What the latest request aimed at `buffer` sent, as `:llm-inspect`
+    /// shows it; `None` when nothing has been sent from it.
+    pub fn last_sent(&self, buffer: BufferId) -> Option<String> {
+        let id = self.requests.latest_sent_for(buffer)?;
+        self.shown_request(id)
+    }
+
+    /// Request `id` as `:llm-inspect` shows it: its row, then each exchange it
+    /// sent. `None` for an id the registry never had.
+    pub fn shown_request(&self, id: super::request::RequestId) -> Option<String> {
+        let snapshot = self.requests.snapshot();
+        let info = snapshot.iter().find(|r| r.id == id)?;
+        let rounds = self.requests.sent(id);
+        Some(super::context::show_request(
+            info,
+            &rounds,
+            super::modes::requests::local_clock,
+        ))
+    }
+
+    /// `llm.history_mib`, in bytes: how much of what requests sent to keep.
+    fn history_bytes(&self) -> usize {
+        self.registry
             .read()
             .unwrap_or_else(|e| e.into_inner())
-            .get(&buffer)
-            .cloned()
+            .as_ref()
+            .and_then(|r| r.get_typed::<super::options::LlmHistoryMib>())
+            .map(|v| *v)
+            .unwrap_or(super::options::DEFAULT_HISTORY_MIB)
+            .max(0) as usize
+            * 1024
+            * 1024
     }
 
     /// `:llm-inspect` in a chat: show what sending `prompt` now would send,
@@ -1412,7 +1433,7 @@ impl LlmChats {
     pub fn inspect_last(&self, buffer: BufferId) -> bool {
         match self.last_sent(buffer) {
             Some(shown) => {
-                self.set_inspect((*shown).clone());
+                self.set_inspect(shown);
                 true
             }
             None => false,
@@ -1935,18 +1956,10 @@ impl LlmChats {
                     .unwrap_or(BufferId(0)),
                 label: session.destination(),
             };
-            // What `:llm-inspect` shows for this buffer from now on: the same
-            // request, built with the key's place redacted (LL.15).
-            if let Ok(http) = provider_cfg
-                .build()
-                .build(&req, &ApiKey::new(super::context::REDACTED))
-            {
-                chats
-                    .last_sent
-                    .write()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .insert(target.buffer, Arc::new(super::context::show(&http)));
-            }
+            // The registry records what each exchange sends, for
+            // `:llm-inspect` (LL.28); the budget is read here, at the start
+            // of every request, so a `:set` applies from the next one.
+            chats.requests.set_history_budget(chats.history_bytes());
             let id = if offer.is_empty() {
                 chats.requests.start_with_key(
                     target,

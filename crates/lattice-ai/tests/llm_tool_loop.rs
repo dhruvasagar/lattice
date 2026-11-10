@@ -47,6 +47,30 @@ async fn the_loop_runs_a_tool_and_answers_from_its_result() {
 
     let sent = log.lock().unwrap().clone();
     assert_eq!(sent.len(), 2);
+    // LL.28: the registry recorded both exchanges, not just the first, each
+    // as the server received it; `:llm-inspect` shows them under one row.
+    let id = chats.requests().snapshot()[0].id;
+    let recorded = chats.requests().sent(id);
+    assert_eq!(recorded.len(), 2, "every exchange recorded");
+    for (round, received) in recorded.iter().zip(&sent) {
+        let shown = round.shown.as_deref().expect("kept");
+        let body: serde_json::Value =
+            serde_json::from_str(lattice_ai::llm::context::shown_body(shown)).unwrap();
+        assert_eq!(body, body_json(received));
+    }
+    let inspect = chats.shown_request(id).expect("listed");
+    assert!(
+        inspect.starts_with(&format!("Request #{}", id.0)),
+        "{inspect}"
+    );
+    assert!(inspect.contains("── Round 2 of 2"), "{inspect}");
+    let first: serde_json::Value =
+        serde_json::from_str(lattice_ai::llm::context::shown_body(&inspect)).unwrap();
+    assert_eq!(
+        first,
+        body_json(&sent[0]),
+        "the first round's body reads alone"
+    );
     assert_eq!(offered_tools(&sent[0]), ["lattice__echo"]);
     strictly_valid(&sent[1]).unwrap();
     let second = body_json(&sent[1]);

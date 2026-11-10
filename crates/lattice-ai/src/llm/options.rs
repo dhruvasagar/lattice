@@ -336,6 +336,25 @@ lattice_config::options! {
     #[name("llm.tool_rounds")]
     #[validate(v_tool_rounds)]
     pub LlmToolRounds: i64 = DEFAULT_TOOL_ROUNDS;
+
+    /// How much of what requests sent `:llm-inspect` keeps for the editor
+    /// run, in MiB. Every request keeps its row in `*llm-requests*`; past
+    /// this, the oldest requests' text is dropped first, and the newest is
+    /// always kept. Global only.
+    #[name("llm.history_mib")]
+    #[validate(v_history_mib)]
+    pub LlmHistoryMib: i64 = DEFAULT_HISTORY_MIB;
+}
+
+/// `llm.history_mib` when nothing sets it.
+pub const DEFAULT_HISTORY_MIB: i64 = 64;
+
+fn v_history_mib(v: &i64) -> Result<(), String> {
+    if *v >= 0 {
+        Ok(())
+    } else {
+        Err(format!("llm.history_mib cannot be negative, not {v}"))
+    }
 }
 
 /// `llm.tool_rounds` when nothing sets it.

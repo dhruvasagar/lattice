@@ -817,7 +817,7 @@ a workspace dependency) and a finished request's duration. A running request sho
 running time: the list repaints on state changes, and a ticking clock would need a
 repaint a second. The chat link is LL.28's: it rides with the recorded rounds.
 
-### LL.28 — Every round's wire form, under a budget 📝
+### LL.28 — Every round's wire form, under a budget ✅
 
 Each HTTP request the registry sends (every round of a tool loop, not just the first) is
 recorded with the key redacted, against its request id; this replaces the per-buffer
@@ -825,6 +825,18 @@ recorded with the key redacted, against its request id; this replaces the per-bu
 `llm.history-bytes` (64 MiB default), oldest dropped first; the row stays and says so.
 Rejected: unbounded (memory grows for the life of the run) and writing bodies to disk
 (code and prompts on disk unasked).
+
+Built: the option is **`llm.history_mib`** (64), not the `llm.history-bytes` the plan named:
+the `llm.*` options are underscored (`llm.tool_rounds`, `llm.agents_md`), and a size in MiB
+reads better than one in bytes. The registry records in `run_request`, once per exchange (a
+retry resends the same one), building the request a second time with `REDACTED` for the
+key; `LlmChats::last_sent` is now a registry lookup, and the per-buffer slot is gone. The
+budget is handed to the registry by `LlmChats` at the start of every request, the one place
+every request passes, so a `:set` applies from the next one with no listener. The newest
+text is always kept, whatever its size. The view's text: a line naming the request, then
+`── Round i of n · time ──` and the exchange, so the first round's body still follows its
+headers directly (the byte-for-byte test reads it unchanged). "Which chat" is the row's
+destination label, which names the chat for a chat's requests.
 
 ### LL.29 — `<CR>` opens a request 📝
 

@@ -249,16 +249,19 @@ fn changed_lines(old: &str, new: &str) -> Option<LineChange> {
 /// The listing's text: running requests in start order, then finished ones,
 /// newest first. Start times are the local clock's.
 pub fn render(requests: &[Arc<RequestInfo>]) -> String {
-    render_with(requests, |t| {
-        chrono::DateTime::<chrono::Local>::from(t)
-            .format("%H:%M:%S")
-            .to_string()
-    })
+    render_with(requests, local_clock)
+}
+
+/// A time on the local clock, as the llm views show one: `14:03:21`.
+pub(crate) fn local_clock(t: std::time::SystemTime) -> String {
+    chrono::DateTime::<chrono::Local>::from(t)
+        .format("%H:%M:%S")
+        .to_string()
 }
 
 /// How long a finished request took, in the coarsest unit that still says
 /// something: `0.4s`, `12.0s`, `3m12s`, `1h04m`.
-fn took(d: std::time::Duration) -> String {
+pub(crate) fn took(d: std::time::Duration) -> String {
     let secs = d.as_secs();
     if secs < 60 {
         format!("{:.1}s", d.as_secs_f64())
@@ -323,7 +326,7 @@ pub fn render_with(
     out
 }
 
-fn state_label(state: &RequestState) -> &'static str {
+pub(crate) fn state_label(state: &RequestState) -> &'static str {
     match state {
         RequestState::Pending => "starting",
         RequestState::Streaming => "streaming",

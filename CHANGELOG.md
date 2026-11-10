@@ -124,6 +124,7 @@
   `.env`, `*.pem`, `*.key` and SSH keys.
 
 ### Changed
+- `:llm-inspect` shows every exchange a request sent, not only its first: a request that ran tools sent one per round. It starts with a line naming the request (model, start time, state, destination), and still works after the buffer that sent it is closed. What requests sent is kept for the editor run up to the new `llm.history_mib` option (64 MiB); past it the oldest is dropped first and the newest is always kept.
 - `*llm-requests*` lists every LLM request since the editor started, not just the last 16 finished, and each row shows when it started and, once finished, how long it took.
 - The Rust API reference on the docs site links each item's "Source" to the file on GitHub, at the commit the docs were built from, instead of publishing its own copy of the source. The copy was a fifth of the site and the deploy was outgrowing GitHub Pages' ten-minute limit.
 - `llm.exclude` entries are gitignore patterns, relative to the project root: a bare name matches anywhere, `secrets/*.txt` and `/build.log` match from the root, `.aws/` covers a directory, and `!pattern` re-includes. Before, a pattern containing `/` never matched anything. The default list adds `.npmrc`, `.pgpass`, `credentials`, `credentials.json`, `credentials.db`, `.aws/`, `*.p12` and `*.pfx`. The LLM read tools never read, list or search inside `.git`.

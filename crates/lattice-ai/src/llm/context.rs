@@ -296,10 +296,57 @@ pub fn show(http: &HttpRequest) -> String {
     out
 }
 
-/// The body of a shown request ([`show`]): everything after the first blank
-/// line. For tests comparing it with what a server received.
+/// The rule above each exchange of a recorded request ([`show_request`]).
+const ROUND_RULE: &str = "── Round ";
+
+/// A request the registry recorded, as `:llm-inspect` shows it: a line naming
+/// it, then each exchange it sent under a rule, as [`show`] renders it. The
+/// first exchange's body follows its headers directly, so [`shown_body`]
+/// reads it whether or not the request had more.
+pub fn show_request(
+    info: &super::request::RequestInfo,
+    rounds: &[super::request::SentRound],
+    clock: impl Fn(std::time::SystemTime) -> String,
+) -> String {
+    let state = super::modes::requests::state_label(&info.state);
+    let took = info
+        .finished
+        .and_then(|f| f.duration_since(info.started).ok())
+        .map(|d| format!(" in {}", super::modes::requests::took(d)))
+        .unwrap_or_default();
+    let mut out = format!(
+        "Request #{} · {} · started {} · {state}{took} · {}\n",
+        info.id.0,
+        info.model,
+        clock(info.started),
+        info.target.label
+    );
+    let n = rounds.len();
+    for (i, round) in rounds.iter().enumerate() {
+        out.push_str(&format!(
+            "{ROUND_RULE}{} of {n} · {} ──\n",
+            i + 1,
+            clock(round.at)
+        ));
+        match &round.shown {
+            Some(shown) => out.push_str(shown),
+            None => {
+                out.push_str("(not kept: llm.history_mib keeps the newest of what requests sent)\n")
+            }
+        }
+    }
+    out
+}
+
+/// The body of a shown request ([`show`], or the first exchange of a
+/// [`show_request`]): after the first blank line, up to the next exchange's
+/// rule. For tests comparing it with what a server received.
 pub fn shown_body(shown: &str) -> &str {
-    shown.split_once("\n\n").map(|(_, b)| b).unwrap_or("")
+    let body = shown.split_once("\n\n").map(|(_, b)| b).unwrap_or("");
+    match body.find(&format!("\n{ROUND_RULE}")) {
+        Some(end) => &body[..=end],
+        None => body,
+    }
 }
 
 /// `<leader>ac{motion}`'s name in the registry.

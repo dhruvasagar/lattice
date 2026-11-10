@@ -206,12 +206,14 @@ mod tests {
             .await
         );
         ex(&mut a, "llm-inspect");
+        // A sent request shows its row, then each exchange under a rule.
         assert!(
             settle_woken(&mut a, |a| buffer_text(a, "*llm-inspect*")
-                .starts_with("POST"))
+                .starts_with("Request #"))
             .await
         );
         let shown = buffer_text(&a, "*llm-inspect*");
+        assert!(shown.contains("── Round 1 of 1"), "{shown}");
         let value: serde_json::Value = serde_json::from_str(shown_body(&shown)).unwrap();
         assert_eq!(serde_json::to_vec(&value).unwrap(), received(&log)[0].body);
         assert!(!shown.contains(SECRET), "{shown}");

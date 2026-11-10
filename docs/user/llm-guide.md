@@ -401,8 +401,15 @@ item.
 `:llm-inspect` (`<leader>ai`) shows a request as it goes to the provider: the address, the
 headers and the body, with the key shown as `<redacted>`. In a chat it shows what sending
 the prompt you have typed would send, before anything is sent, with settings, system
-prompt and context included. In any other buffer it shows the last request sent from it.
-When a reply surprises you, this is the first place to look.
+prompt and context included. In any other buffer it shows the last request sent from it:
+a line naming it (model, start time, state, where the answer went), then every exchange it
+sent, under a rule each. A request that used tools sent one per round. When a reply
+surprises you, this is the first place to look.
+
+What requests sent is kept for the whole editor run, up to `llm.history_mib` (64 MiB by
+default; each exchange carries the chat's history and context, so a long chat with files
+attached adds up). Past it, the oldest requests' text is dropped first; their rows stay in
+`*llm-requests*`, and the newest is always kept.
 
 ## Tools
 
@@ -655,6 +662,7 @@ asking. `@unknown` is just text.
 | `llm.allow`, `llm.deny` | Tool rules that run without asking, or are refused; global only |
 | `llm.agents_md` | Read the project's `AGENTS.md` into the system prompt (on); global only |
 | `llm.tool_rounds` | Rounds of tool calls one request may run; global only |
+| `llm.history_mib` | How much of what requests sent `:llm-inspect` keeps for the run, in MiB (64); global only |
 | `llm.prefix` | The keys every llm chord starts with; global only |
 
 `:set llm.model?` shows value and layer, `:setlocal llm.model=x` changes it for this buffer,

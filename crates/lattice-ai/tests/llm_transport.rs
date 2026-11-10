@@ -243,6 +243,17 @@ async fn a_transient_refusal_is_retried() {
         );
         assert_eq!(rec.text(), "Héllo → 世界 ✓", "{status}");
         assert_eq!(seen.load(Ordering::SeqCst), 3, "{status}: sent three times");
+        // LL.28: what it sent is recorded once (a retry resends the same
+        // exchange), with the key's place redacted.
+        let sent = reg.sent(id);
+        assert_eq!(sent.len(), 1, "{status}: one exchange, retried");
+        let shown = sent[0].shown.as_deref().expect("kept");
+        assert!(shown.starts_with("POST "), "{status}: {shown}");
+        assert!(
+            !shown.contains("SECRET"),
+            "{status}: the key leaked: {shown}"
+        );
+        assert!(shown.contains("<redacted>"), "{status}: {shown}");
     }
 }
 

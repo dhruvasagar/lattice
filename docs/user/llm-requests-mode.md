@@ -1,14 +1,15 @@
 ---
-summary: "llm-requests-mode: *llm-requests*, every LLM request running and the last few finished, with state, model and destination. dd on a row stops it. Read-only; updates itself."
+summary: "llm-requests-mode: *llm-requests*, every LLM request since the editor started, running first, with state, model, start time, how long it took and destination. dd on a row stops it. Read-only; updates itself."
 related: [llm-guide, llm-mode, llm-chat-mode, llm-context-mode, requests]
 ---
 
 # llm-requests-mode
 
-`:llm-requests` (`<leader>aq`) opens `*llm-requests*`: every request running, then the last
-few that finished, newest first. Each row shows its state (`streaming`, `retrying` with the
-reason, `awaiting review`, ...), its model and where its answer is going (`below main.rs:4`,
-`echo`, `register "a`, a chat, a rewrite).
+`:llm-requests` (`<leader>aq`) opens `*llm-requests*`: every request since the editor
+started, the running ones first, then the finished ones, newest first. Each row shows its
+state (`streaming`, `retrying` with the reason, `awaiting review`, ...), its model, the time
+it started, how long it took once it has finished, and where its answer is going
+(`below main.rs:4`, `echo`, `register "a`, a chat, a rewrite).
 
 | Keys | Effect |
 |---|---|

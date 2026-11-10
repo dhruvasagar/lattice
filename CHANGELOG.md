@@ -124,6 +124,7 @@
   `.env`, `*.pem`, `*.key` and SSH keys.
 
 ### Changed
+- `*llm-requests*` lists every LLM request since the editor started, not just the last 16 finished, and each row shows when it started and, once finished, how long it took.
 - The Rust API reference on the docs site links each item's "Source" to the file on GitHub, at the commit the docs were built from, instead of publishing its own copy of the source. The copy was a fifth of the site and the deploy was outgrowing GitHub Pages' ten-minute limit.
 - `llm.exclude` entries are gitignore patterns, relative to the project root: a bare name matches anywhere, `secrets/*.txt` and `/build.log` match from the root, `.aws/` covers a directory, and `!pattern` re-includes. Before, a pattern containing `/` never matched anything. The default list adds `.npmrc`, `.pgpass`, `credentials`, `credentials.json`, `credentials.db`, `.aws/`, `*.p12` and `*.pfx`. The LLM read tools never read, list or search inside `.git`.
 - The "allow for this chat" answer for an MCP server's tool now reads "Allow this tool for this chat (any arguments)": it covers every later call of that tool, whatever its arguments.

@@ -21,6 +21,7 @@ llm = ["dep:linkme", "dep:tokio-util", "dep:reqwest", "dep:toml", "dep:regex", "
 mcp = ["dep:rmcp", "dep:tokio-tungstenite", "dep:dirs", "dep:getrandom", "dep:lattice-lsp", "tokio/net"]
 
 [dependencies]
+chrono = { workspace = true }
 lattice-protocol = { path = "../lattice-protocol" }
 lattice-mode = { path = "../lattice-mode" }
 lattice-keymap = { path = "../lattice-keymap" }

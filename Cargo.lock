@@ -5397,6 +5397,7 @@ version = "0.9.14"
 dependencies = [
  "agent-client-protocol",
  "arc-swap",
+ "chrono",
  "criterion",
  "dirs 5.0.1",
  "futures",

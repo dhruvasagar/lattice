@@ -137,7 +137,10 @@ impl Recorder {
 }
 
 pub fn info(reg: &RequestRegistry, id: RequestId) -> Option<RequestInfo> {
-    reg.snapshot().iter().find(|i| i.id == id).cloned()
+    reg.snapshot()
+        .iter()
+        .find(|i| i.id == id)
+        .map(|i| (**i).clone())
 }
 
 /// Poll until the request is terminal; panics after `limit`.

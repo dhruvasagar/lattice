@@ -803,11 +803,19 @@ types the instruction. Bare `:llm-menu` is unchanged. The command moved from
 `commands.rs` into `menu.rs`, registered after the asks and rewrites it holds; an
 unknown word is refused rather than read as "ask".
 
-### LL.27 — Every request of the run, with times 📝
+### LL.27 — Every request of the run, with times ✅
 
 The registry keeps a row per request for the whole run (id, start/end, model,
 destination, state, usage, chat) instead of the last 16 finished. `*llm-requests*` lists
 them all, live first, then newest first.
+
+Built: rows became `Arc<RequestInfo>` (copy-on-write per row), because the snapshot is
+republished on every usage update, which arrives per streamed chunk, and the list now
+only grows: a change copies pointers, not rows. Rows gained `started` / `finished`
+(`SystemTime`); the view shows the local start time (`chrono`, new to `lattice-ai`, already
+a workspace dependency) and a finished request's duration. A running request shows no
+running time: the list repaints on state changes, and a ticking clock would need a
+repaint a second. The chat link is LL.28's: it rides with the recorded rounds.
 
 ### LL.28 — Every round's wire form, under a budget 📝
 

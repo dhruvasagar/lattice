@@ -1,9 +1,10 @@
-//! `llm-requests-mode`: `*llm-requests*`, every LLM request running and the
-//! last few finished (LL.14b, design `llm-layer.md` §5).
+//! `llm-requests-mode`: `*llm-requests*`, every LLM request of the editor run
+//! (LL.14b, LL.27; design `llm-layer.md` §5).
 //!
 //! A request outlives the surface that started it, so this is where all of
 //! them are seen: running first, then finished, newest first, each with its
-//! state, model and where its answer is going. `dd` on a row stops that
+//! state, model, when it started (and, finished, how long it took) and where
+//! its answer is going. `dd` on a row stops that
 //! request, as `<C-c>` stops a chat's: through its session, so an inline
 //! answer ends with its `[interrupted]` line and a quiet one says it stopped.
 //!
@@ -246,8 +247,33 @@ fn changed_lines(old: &str, new: &str) -> Option<LineChange> {
 }
 
 /// The listing's text: running requests in start order, then finished ones,
-/// newest first. Pure, for tests.
-pub fn render(requests: &[RequestInfo]) -> String {
+/// newest first. Start times are the local clock's.
+pub fn render(requests: &[Arc<RequestInfo>]) -> String {
+    render_with(requests, |t| {
+        chrono::DateTime::<chrono::Local>::from(t)
+            .format("%H:%M:%S")
+            .to_string()
+    })
+}
+
+/// How long a finished request took, in the coarsest unit that still says
+/// something: `0.4s`, `12.0s`, `3m12s`, `1h04m`.
+fn took(d: std::time::Duration) -> String {
+    let secs = d.as_secs();
+    if secs < 60 {
+        format!("{:.1}s", d.as_secs_f64())
+    } else if secs < 3600 {
+        format!("{}m{:02}s", secs / 60, secs % 60)
+    } else {
+        format!("{}h{:02}m", secs / 3600, (secs % 3600) / 60)
+    }
+}
+
+/// [`render`] with the clock's format given. Pure, for tests.
+pub fn render_with(
+    requests: &[Arc<RequestInfo>],
+    clock: impl Fn(std::time::SystemTime) -> String,
+) -> String {
     let running: Vec<_> = requests.iter().filter(|r| !r.state.is_terminal()).collect();
     let finished: Vec<_> = requests
         .iter()
@@ -257,10 +283,18 @@ pub fn render(requests: &[RequestInfo]) -> String {
     let model_width = requests.iter().map(|r| r.model.len()).max().unwrap_or(0);
     let row = |r: &RequestInfo| {
         let id = format!("#{}", r.id.0);
+        // A running request's time so far would need a repaint every second;
+        // the list repaints on state changes, so only a finished one says.
+        let took = r
+            .finished
+            .and_then(|f| f.duration_since(r.started).ok())
+            .map(took)
+            .unwrap_or_default();
         format!(
-            "  {id:<5} {:<15} {:<model_width$}  {}\n",
+            "  {id:<5} {:<15} {:<model_width$}  {} {took:>6}  {}\n",
             state_label(&r.state),
             r.model,
+            clock(r.started),
             r.target.label
         )
     };
@@ -421,8 +455,13 @@ mod tests {
         assert!(!bus.unsubscribe(id), "already gone");
     }
 
-    fn info(id: u64, state: RequestState, label: &str) -> RequestInfo {
-        RequestInfo {
+    fn info(id: u64, state: RequestState, label: &str) -> Arc<RequestInfo> {
+        use std::time::{Duration, UNIX_EPOCH};
+        let started = UNIX_EPOCH + Duration::from_secs(id * 60);
+        let finished = state
+            .is_terminal()
+            .then(|| started + Duration::from_millis(1500 * id));
+        Arc::new(RequestInfo {
             id: RequestId(id),
             target: RequestTarget {
                 buffer: BufferId(1),
@@ -431,29 +470,51 @@ mod tests {
             model: "mock".to_string(),
             state,
             usage: None,
-        }
+            started,
+            finished,
+        })
+    }
+
+    /// Minutes since the epoch, so the rows' times are fixed.
+    fn clock(t: std::time::SystemTime) -> String {
+        let secs = t
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        format!("t+{}m", secs / 60)
     }
 
     #[test]
     fn running_come_first_then_finished_newest_first() {
-        let text = render(&[
-            info(1, RequestState::Done, "echo, from a.rs:1"),
-            info(2, RequestState::Streaming, "below a.rs:3"),
-            info(
-                3,
-                RequestState::Failed("overloaded\nmore".into()),
-                "*llm:4*",
-            ),
-        ]);
+        let text = render_with(
+            &[
+                info(1, RequestState::Done, "echo, from a.rs:1"),
+                info(2, RequestState::Streaming, "below a.rs:3"),
+                info(
+                    3,
+                    RequestState::Failed("overloaded\nmore".into()),
+                    "*llm:4*",
+                ),
+            ],
+            clock,
+        );
         assert_eq!(
             text,
-            "Running\n  #2    streaming       mock  below a.rs:3\n\nFinished\n  #3    failed          mock  *llm:4*\n        overloaded\n  #1    done            mock  echo, from a.rs:1\n"
+            "Running\n  #2    streaming       mock  t+2m         below a.rs:3\n\nFinished\n  #3    failed          mock  t+3m   4.5s  *llm:4*\n        overloaded\n  #1    done            mock  t+1m   1.5s  echo, from a.rs:1\n"
         );
     }
 
     #[test]
     fn an_empty_list_says_nothing_is_running() {
         assert_eq!(render(&[]), "Running\n  (none)\n");
+    }
+
+    #[test]
+    fn a_duration_reads_in_its_coarsest_useful_unit() {
+        use std::time::Duration;
+        assert_eq!(took(Duration::from_millis(400)), "0.4s");
+        assert_eq!(took(Duration::from_secs(192)), "3m12s");
+        assert_eq!(took(Duration::from_secs(3840)), "1h04m");
     }
 
     #[test]

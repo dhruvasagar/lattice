@@ -13,14 +13,19 @@
 //!
 //! # Retention
 //!
-//! A request in a terminal state (`Done`, `Failed`, `Cancelled`) leaves the live
-//! set but stays in the snapshot as history: the [`RETAINED_TERMINAL`] most
-//! recently finished ones are kept, oldest evicted first. Live requests are
-//! never evicted. A terminal state is final: later transitions are ignored.
+//! Every request of the editor run stays in the snapshot (LL.27): a request in
+//! a terminal state (`Done`, `Failed`, `Cancelled`) leaves the live set, keeps
+//! its row, and gains its finish time. A row is a few short strings, so the
+//! list is not capped; what a request *sent* is kept elsewhere, under a byte
+//! budget. A terminal state is final: later transitions are ignored.
+//!
+//! Rows are shared (`Arc<RequestInfo>`), so publishing a change copies
+//! pointers, not rows: a usage update arrives with every streamed chunk, and
+//! the list only grows.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use arc_swap::ArcSwap;
 use lattice_core::BufferId;
@@ -32,9 +37,6 @@ use super::provider::Provider;
 use super::tools::BoxFuture;
 use super::transport::{self, Outcome, SinkFlow, scrub};
 use super::{ApiKey, LlmRequest, StopReason, StreamEvent, Usage};
-
-/// How many finished requests the snapshot keeps for display.
-pub const RETAINED_TERMINAL: usize = 16;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct RequestId(pub u64);
@@ -78,6 +80,9 @@ pub struct RequestInfo {
     pub state: RequestState,
     /// Latest cumulative usage the provider reported, if any.
     pub usage: Option<Usage>,
+    /// When it started, and when it reached a terminal state.
+    pub started: SystemTime,
+    pub finished: Option<SystemTime>,
 }
 
 /// Published on the event bus on every state change.
@@ -105,14 +110,14 @@ pub type RequestRegistryHandle = Arc<RequestRegistry>;
 type Notify = Arc<dyn Fn() + Send + Sync>;
 
 struct Inner {
-    entries: Vec<RequestInfo>,
+    entries: Vec<Arc<RequestInfo>>,
     tokens: std::collections::HashMap<RequestId, CancellationToken>,
 }
 
 struct Shared {
     handle: Handle,
     client: Result<reqwest::Client, String>,
-    snapshot: ArcSwap<Vec<RequestInfo>>,
+    snapshot: ArcSwap<Vec<Arc<RequestInfo>>>,
     inner: std::sync::Mutex<Inner>,
     next_id: AtomicU64,
     bus: Option<Arc<EventBus>>,
@@ -213,6 +218,8 @@ impl RequestRegistry {
                 model: req.model.clone(),
                 state: RequestState::Pending,
                 usage: None,
+                started: SystemTime::now(),
+                finished: None,
             },
             token.clone(),
         );
@@ -239,8 +246,8 @@ impl RequestRegistry {
         }
     }
 
-    /// Live requests and recently finished ones, in start order.
-    pub fn snapshot(&self) -> Arc<Vec<RequestInfo>> {
+    /// Every request of the run, live and finished, in start order.
+    pub fn snapshot(&self) -> Arc<Vec<Arc<RequestInfo>>> {
         self.shared.snapshot.load_full()
     }
 }
@@ -257,7 +264,7 @@ impl Shared {
         {
             let mut g = self.lock();
             g.tokens.insert(id, token);
-            g.entries.push(info);
+            g.entries.push(Arc::new(info));
             self.snapshot.store(Arc::new(g.entries.clone()));
         }
         self.announce(id, state);
@@ -277,10 +284,11 @@ impl Shared {
             if entry.state.is_terminal() || entry.state == state {
                 return;
             }
+            let entry = Arc::make_mut(entry);
             entry.state = state.clone();
             if state.is_terminal() {
+                entry.finished = Some(SystemTime::now());
                 g.tokens.remove(&id);
-                evict_old_terminal(&mut g.entries);
             }
             self.snapshot.store(Arc::new(g.entries.clone()));
         }
@@ -290,7 +298,7 @@ impl Shared {
     fn set_usage(&self, id: RequestId, usage: Usage) {
         let mut g = self.lock();
         if let Some(e) = g.entries.iter_mut().find(|e| e.id == id) {
-            e.usage = Some(usage);
+            Arc::make_mut(e).usage = Some(usage);
             self.snapshot.store(Arc::new(g.entries.clone()));
         }
     }
@@ -303,19 +311,6 @@ impl Shared {
             n();
         }
     }
-}
-
-fn evict_old_terminal(entries: &mut Vec<RequestInfo>) {
-    let terminal = entries.iter().filter(|e| e.state.is_terminal()).count();
-    let mut excess = terminal.saturating_sub(RETAINED_TERMINAL);
-    entries.retain(|e| {
-        if excess > 0 && e.state.is_terminal() {
-            excess -= 1;
-            false
-        } else {
-            true
-        }
-    });
 }
 
 #[allow(clippy::too_many_arguments)]

@@ -6,7 +6,6 @@ mod llm_support;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use lattice_ai::llm::request::RETAINED_TERMINAL;
 use lattice_ai::llm::{RequestRegistry, RequestState, StreamEvent};
 use llm_support::*;
 use tokio::io::AsyncWriteExt;
@@ -478,13 +477,15 @@ async fn a_sink_stop_ends_the_request() {
     );
 }
 
+/// LL.27: every request of the run keeps its row, with when it started and
+/// finished; there was a cap of 16 finished rows, and this runs past it.
 #[tokio::test]
-async fn terminal_requests_are_retained_to_a_bound() {
+async fn every_request_of_the_run_is_kept_with_its_times() {
     let body = format!("{SSE_HEAD}{OPENAI_OK_BODY}");
     let addr = serve_bytes(body.into_bytes()).await;
     let reg = registry();
     let mut ids = Vec::new();
-    for _ in 0..RETAINED_TERMINAL + 4 {
+    for _ in 0..20 {
         let id = reg.start(
             target(),
             request(),
@@ -495,24 +496,29 @@ async fn terminal_requests_are_retained_to_a_bound() {
         ids.push(id);
     }
     let snap = reg.snapshot();
-    assert_eq!(snap.len(), RETAINED_TERMINAL);
-    assert!(snap.iter().all(|i| i.state.is_terminal()));
     assert_eq!(
-        snap.last().map(|i| i.id),
-        ids.last().copied(),
-        "most recent kept"
+        snap.iter().map(|i| i.id).collect::<Vec<_>>(),
+        ids,
+        "all kept, in start order"
     );
-    assert!(snap.iter().all(|i| i.id != ids[0]), "oldest evicted");
+    for i in snap.iter() {
+        let finished = i.finished.expect("a terminal row has a finish time");
+        assert!(
+            finished >= i.started,
+            "#{}: finished before it started",
+            i.id.0
+        );
+    }
 }
 
+/// A live request has no finish time; stopping it gives it one and keeps it.
 #[tokio::test]
-async fn a_live_request_is_never_evicted() {
+async fn a_stopped_request_keeps_its_row() {
     let stall = serve(|_, s| async move {
         let _held = s; // keep the socket open and silent
         tokio::time::sleep(Duration::from_secs(60)).await
     })
     .await;
-    let ok = serve_bytes(format!("{SSE_HEAD}{OPENAI_OK_BODY}").into_bytes()).await;
     let reg = registry();
     let live = reg.start(
         target(),
@@ -520,28 +526,11 @@ async fn a_live_request_is_never_evicted() {
         provider_for(stall),
         Box::new(Recorder::default()),
     );
-    for _ in 0..RETAINED_TERMINAL + 3 {
-        let id = reg.start(
-            target(),
-            request(),
-            provider_for(ok),
-            Box::new(Recorder::default()),
-        );
-        wait_terminal(&reg, id, WAIT).await;
-    }
-    assert!(
-        !info(&reg, live)
-            .expect("live request retained")
-            .state
-            .is_terminal()
-    );
-    // Once cancelled it is just the oldest terminal entry and may be evicted.
+    assert!(info(&reg, live).expect("listed").finished.is_none());
     reg.cancel(live);
-    let t = Instant::now();
-    while info(&reg, live).is_some() {
-        assert!(t.elapsed() < WAIT, "cancelled request never aged out");
-        tokio::time::sleep(Duration::from_millis(5)).await;
-    }
+    let state = wait_terminal(&reg, live, WAIT).await;
+    assert_eq!(state, RequestState::Cancelled);
+    assert!(info(&reg, live).expect("still listed").finished.is_some());
 }
 
 #[tokio::test]

@@ -326,6 +326,10 @@ lost. A reply that is one fenced block is unwrapped before the diff.
 `<leader>aR{motion}` does the same but opens `:llm-menu` first, as `<leader>aA` does for an
 ask: change the model or temperature for this rewrite, then press `a` to type the instruction.
 
+From the command line, `:'<,'>llm-rewrite make this a match` rewrites the range's lines (the
+current line without one), with the same leading `key=value` words as `:llm-ask`. With no
+instruction it opens the prompt, since an empty rewrite asks for nothing.
+
 Rewrites queue: a second waits for the first diff to be settled, so a macro that
 rewrites several places shows them one at a time. A rewrite is refused, with the reason,
 in a read-only buffer, in a composed view (rewrite in the file), over a block selection,

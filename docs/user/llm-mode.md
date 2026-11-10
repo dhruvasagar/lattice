@@ -169,6 +169,12 @@ The keys are `model`, `profile`, `temperature`, `max_tokens` and the other
 because a system prompt is a paragraph and has `:llm-system`. A bad value
 is named and nothing is sent.
 
+`:'<,'>llm-rewrite make this a match` is the rewrite operator from the
+command line, with the same range and `key=value` words. Its answer opens as
+a diff, as below. With no instruction it opens the instruction prompt
+instead: an empty ask still sends the text, but an empty rewrite asks for
+nothing.
+
 ## Sending a buffer as the prompt
 
 `:llm-send` (`<leader>as`) sends the buffer from its first line to the line the cursor
@@ -189,6 +195,7 @@ directly: the answer opens as a **diff** for you to accept or reject.
 | `<leader>arr` | This line |
 | `<leader>ar` in Visual | The selection |
 | `<leader>aR{motion}` | The same, opening [`:llm-menu`](help:llm) first: change the model or other settings for this rewrite, then `a` for the instruction |
+| `:'<,'>llm-rewrite {instruction}` | The range's lines (this line without one); no instruction opens the prompt |
 
 A prompt takes the instruction (`make this a match`, `fix the grammar`);
 `<CR>` sends, `<Esc>` sends nothing, and an empty instruction sends

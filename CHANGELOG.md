@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Added
+- `:'<,'>llm-rewrite {instruction}` rewrites the range's lines from the command line, as `<leader>ar` does, with the same leading `key=value` words as `:llm-ask` (`model=local/qwen`). The answer opens as a diff to accept or reject. With no instruction it opens the instruction prompt. A read-only buffer refuses it.
 - `:help llm-context-mode`, `:help llm-inspect-mode` and `:help llm-requests-mode`: pages for the `*llm-context*`, `*llm-inspect*` and `*llm-requests*` views.
 - **LLM requests read `AGENTS.md`.** The nearest `AGENTS.md` between the file you are asking about and the project root joins the system prompt after yours, capped at 32 KiB, held to `llm.exclude` and shown by `:llm-inspect`. It instructs the model and can turn nothing on. `:set llm.agents_md=false` leaves it out.
 - **LLM allow and deny rules.** `llm.allow = ["run_command(cargo test *)"]` runs a command without asking when every command in its line matches (split on `&&`, `||`, `;`, `|`); a line with `$(…)`, backticks or a redirect into a file always asks. `llm.deny = ["run_command(git push *)", "edit_file(secrets/**)", "shell.*"]` refuses a call without asking and tells the model why. File tools take gitignore patterns, MCP tools are named `server.tool` or `server.*`, and a project may add `deny` rules but never `allow`.

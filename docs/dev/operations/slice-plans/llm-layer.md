@@ -776,6 +776,51 @@ Also: `lattice_core::process::{own_process_group, kill_process_tree}` made publi
 reused rather than copied); `*llm-mcp*` (`llm-mcp-mode`, `r` / `dd`, self-repainting on
 `McpServersChanged`); `docs/user/llm-mcp-mode.md`. Bench: `llm_mcp_call`.
 
+## Command forms and request history (2026-11-10)
+
+Dhruva, 2026-11-10: `<leader>aA` has no command, and neither has the rewrite operator;
+`*llm-requests*` / `*llm-inspect*` should reach every request of the editor run, not the
+last 16 and the last per buffer. Decided: bodies under a byte budget (option (a) below),
+`<CR>` opens a row, history spans the editor run (not one chat). Branch
+`feat/llm-commands-history`.
+
+### LL.25 — `:[range]llm-rewrite` ✅
+
+The rewrite operator from the command line: the range's lines (the caret's line without
+one), the instruction with its `key=value` words, through the operator's own `start`. No
+instruction opens the prompt (an empty rewrite asks for nothing; an empty `:llm-ask`
+still sends the text). The span is tracked through the document handle, on the
+document's queue, since an ex-command has no `&mut Document`. **A read-only buffer is
+refused by the command itself**: the host's read-only gate (`run_read_only_motion`) stops
+operators and motions, not ex-commands, and accepting the diff would write the buffer
+through its handle.
+
+### LL.26 — `:[range]llm-menu [ask|rewrite]` 📝
+
+With a range (or an `ask` / `rewrite` word, the caret's line then), the menu opens
+holding an ask or a rewrite over those lines, as `<leader>aA` / `<leader>aR` do; `a`
+types the instruction. Bare `:llm-menu` is unchanged.
+
+### LL.27 — Every request of the run, with times 📝
+
+The registry keeps a row per request for the whole run (id, start/end, model,
+destination, state, usage, chat) instead of the last 16 finished. `*llm-requests*` lists
+them all, live first, then newest first.
+
+### LL.28 — Every round's wire form, under a budget 📝
+
+Each HTTP request the registry sends (every round of a tool loop, not just the first) is
+recorded with the key redacted, against its request id; this replaces the per-buffer
+`last_sent` slot, so `:llm-inspect` survives the buffer closing. Bodies live under
+`llm.history-bytes` (64 MiB default), oldest dropped first; the row stays and says so.
+Rejected: unbounded (memory grows for the life of the run) and writing bodies to disk
+(code and prompts on disk unasked).
+
+### LL.29 — `<CR>` opens a request 📝
+
+`<CR>` on a `*llm-requests*` row shows that request in `*llm-inspect*`, its rounds in
+order; `:llm-inspect <id>` from the command line.
+
 ## Release readiness
 
 The checklist for shipping the LLM layer in a major release. Updated with each commit;

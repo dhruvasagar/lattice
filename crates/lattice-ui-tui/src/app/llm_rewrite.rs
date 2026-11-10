@@ -180,6 +180,67 @@ mod tests {
         );
     }
 
+    /// `:1,2llm-rewrite` is the operator from the command line: the lines go
+    /// to the model with the instruction, the answer opens as a diff, and
+    /// accepting replaces them as one undoable edit. The span is tracked
+    /// through the document's handle here, not by the operator, so this is
+    /// also what proves it lands where the lines are.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_command_rewrites_the_range_through_review() {
+        let (mut a, _release) = app_answering("ALPHA BETA\nGAMMA DELTA", false);
+        let src = a.editor.document_buffer_id;
+        submit_ex(&mut a, "1,2llm-rewrite uppercase it");
+        assert!(
+            settle_woken(&mut a, |a| diffs_open(a) == 1).await,
+            "the diff never opened: {}",
+            message(&a)
+        );
+        submit_ex(&mut a, "diff-accept");
+        assert!(
+            settle_woken(&mut a, |a| text_of(a, src).starts_with("ALPHA")).await,
+            "not applied: {:?} / {}",
+            text_of(&a, src),
+            message(&a)
+        );
+        assert_eq!(text_of(&a, src), "ALPHA BETA\nGAMMA DELTA\nepsilon zeta\n");
+        press_chars(&mut a, "u");
+        assert_eq!(text_of(&a, src), TEXT, "one `u` undoes the whole rewrite");
+    }
+
+    /// With no instruction the command opens the prompt over its lines, as
+    /// the operator does, rather than sending an empty rewrite.
+    #[test]
+    fn the_command_without_an_instruction_opens_the_prompt() {
+        let mut a = app_with(TEXT, 10);
+        submit_ex(&mut a, "llm-rewrite");
+        assert_eq!(rewrites(&a).pending_count(), 1, "{}", message(&a));
+        assert!(a.editor.buffers.by_name("*llm-rewrite:1*").is_some());
+    }
+
+    /// The host's read-only gate stops operators, not ex-commands, so the
+    /// command refuses a read-only buffer itself: accepting its diff would
+    /// write the buffer through its handle.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_command_refuses_a_read_only_buffer() {
+        let (mut a, _release) = app_answering("NOPE", false);
+        let buffer = a.editor.document_buffer_id;
+        lattice_mode::ModeActivator::activate_minor_by_id(
+            &mut a.editor,
+            buffer,
+            ReadOnlyMode::mode_id(),
+        );
+        let llm = chats(&a);
+        assert!(
+            settle(&mut a, |_| llm.is_read_only(buffer)).await,
+            "the read-only option never reached the llm layer"
+        );
+        submit_ex(&mut a, "1,2llm-rewrite change it");
+        assert!(message(&a).contains("read-only"), "{}", message(&a));
+        assert_eq!(rewrites(&a).pending_count(), 0, "nothing held");
+        assert_eq!(diffs_open(&a), 0);
+        assert_eq!(source_text(&a), TEXT);
+    }
+
     /// The operator changes text, so a read-only buffer refuses it.
     #[test]
     fn a_read_only_buffer_refuses_a_rewrite() {

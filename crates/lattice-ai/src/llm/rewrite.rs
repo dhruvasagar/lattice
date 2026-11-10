@@ -28,8 +28,16 @@
 //! replaying one) waits for the first review to close.
 //!
 //! Refused up front, with the reason: a read-only buffer (the operator
-//! mutates, so the host refuses it), a composed view such as a multibuffer
-//! (its lines are not its own text), an `llm.exclude` file, an empty span.
+//! mutates, so the host refuses it; `:llm-rewrite` checks it itself, since
+//! the host's gate stops operators, not ex-commands), a composed view such as
+//! a multibuffer (its lines are not its own text), an `llm.exclude` file, an
+//! empty span.
+//!
+//! **`:[range]llm-rewrite [key=value…] instruction`** is the operator from the
+//! command line: the range's lines (the caret's line without one), the
+//! instruction and its `key=value` words as the prompt would take them. With
+//! no instruction it opens the prompt instead, since an empty rewrite asks
+//! for nothing (an empty `:llm-ask` still sends the text alone).
 //!
 //! **`.` repeats a rewrite** (LL.11c): the operator declares `repeatable`, so
 //! the host records it though its effect is a prompt, and `.` opens that
@@ -47,12 +55,12 @@ use lattice_core::tracked::{Stickiness, TrackedRangeChange, TrackedRangeId};
 use lattice_grammar::CommandError;
 use lattice_grammar::effect::{EchoLevel, Effect};
 use lattice_grammar::registry::{
-    ActionSpec, CommandRegistry, OperatorContext, OperatorId, OperatorSpec,
+    ActionSpec, CommandRegistry, ExCommandContext, OperatorContext, OperatorId, OperatorSpec,
 };
 use lattice_mode::inbound::InboundBus;
 use lattice_mode::{ActionContext, ActionHandler, BufferStoreHandle};
 use lattice_protocol::edit::Edit;
-use lattice_protocol::position::Range;
+use lattice_protocol::position::{Position, Range};
 use tokio::runtime::Handle;
 
 use super::chat::{ChatSession, LlmChats, LlmChatsHandle};
@@ -290,7 +298,7 @@ fn hold_rewrite(
     store: &BufferStoreHandle,
     ctx: &mut OperatorContext,
 ) -> Result<Result<(u64, String), Effect>, CommandError> {
-    if let Some(refused) = refusal(chats, Some(store), ctx.buffer_id) {
+    if let Some(refused) = rewrite_refusal(chats, store, ctx.buffer_id) {
         return Ok(Err(refused));
     }
     if matches!(
@@ -301,17 +309,6 @@ fn hold_rewrite(
             EchoLevel::Error,
             "llm: a rewrite replaces one span; a block is a column of pieces, so select \
              it charwise or linewise"
-                .to_string(),
-        )));
-    }
-    if store
-        .handle_for(ctx.buffer_id)
-        .is_some_and(|h| h.display_line_numbers().is_some())
-    {
-        return Ok(Err(echo(
-            EchoLevel::Error,
-            "llm: a rewrite changes a file's own text; this view is composed from several, \
-             so rewrite in the file itself"
                 .to_string(),
         )));
     }
@@ -340,6 +337,116 @@ fn hold_rewrite(
     let lines = line_span(source.range);
     let token = rewrites.hold(Held { source, tracked });
     Ok(Ok((token, lines)))
+}
+
+/// Why a rewrite of `buffer` is refused before anything is captured, if it is.
+fn rewrite_refusal(
+    chats: &LlmChats,
+    store: &BufferStoreHandle,
+    buffer: BufferId,
+) -> Option<Effect> {
+    if let Some(refused) = refusal(chats, Some(store), buffer) {
+        return Some(refused);
+    }
+    // The operator never gets here in a read-only buffer (it mutates, so the
+    // host refuses it first); an ex-command does, and the diff it opens would
+    // write the buffer through its handle on accept.
+    if chats.is_read_only(buffer) {
+        return Some(echo(
+            EchoLevel::Error,
+            "llm: the buffer is read-only, and a rewrite changes its text".to_string(),
+        ));
+    }
+    if store
+        .handle_for(buffer)
+        .is_some_and(|h| h.display_line_numbers().is_some())
+    {
+        return Some(echo(
+            EchoLevel::Error,
+            "llm: a rewrite changes a file's own text; this view is composed from several, \
+             so rewrite in the file itself"
+                .to_string(),
+        ));
+    }
+    None
+}
+
+/// Capture and track the lines an ex-command's range names (the caret's line
+/// without one), as the operator does its span: linewise, the final newline
+/// left out of the text and of the tracked bytes.
+fn held_lines(
+    chats: &LlmChats,
+    store: &BufferStoreHandle,
+    ctx: &ExCommandContext,
+) -> Result<Held, Effect> {
+    let buffer = ctx.buffer_id;
+    if let Some(refused) = rewrite_refusal(chats, store, buffer) {
+        return Err(refused);
+    }
+    let (a, b) = match super::commands::range_lines(ctx) {
+        Ok(Some(lines)) => lines,
+        Ok(None) => (ctx.cursor.line, ctx.cursor.line),
+        Err(e) => return Err(echo(EchoLevel::Error, e)),
+    };
+    let text = super::commands::lines_text(ctx, a, b);
+    if text.trim().is_empty() {
+        return Err(echo(
+            EchoLevel::Info,
+            "llm: nothing to rewrite (the lines are empty)".to_string(),
+        ));
+    }
+    let (Ok(start), Some(handle)) = (
+        ctx.buffer.position_to_byte(Position::new(a, 0)),
+        store.handle_for(buffer),
+    ) else {
+        return Err(echo(
+            EchoLevel::Error,
+            "llm: the lines are outside the buffer".to_string(),
+        ));
+    };
+    // Sent now, on the document's own queue, so it lands before any edit made
+    // after this command.
+    let tracked = TrackedRangeId::next();
+    drop(
+        handle.update_tracked_ranges(vec![TrackedRangeChange::Track {
+            id: tracked,
+            bytes: start..start + text.len(),
+            stickiness: Stickiness::NeverGrows,
+        }]),
+    );
+    Ok(Held {
+        source: AskSource {
+            buffer,
+            range: Range::new(Position::new(a, 0), Position::new(b + 1, 0)),
+            text,
+            register: lattice_grammar::Register::Unnamed,
+        },
+        tracked,
+    })
+}
+
+/// `:[range]llm-rewrite [key=value…] instruction`: send at once, or open the
+/// instruction prompt when nothing was typed.
+fn ex_rewrite(
+    chats: &Arc<LlmChats>,
+    rewrites: &Arc<LlmRewrites>,
+    store: &BufferStoreHandle,
+    ctx: &ExCommandContext,
+) -> Effect {
+    let held = match held_lines(chats, store, ctx) {
+        Ok(held) => held,
+        Err(why) => return why,
+    };
+    let instruction = match &ctx.args {
+        lattice_grammar::args::Args::String(t) => t.clone(),
+        _ => String::new(),
+    };
+    if instruction.trim().is_empty() {
+        let lines = line_span(held.source.range);
+        let token = rewrites.hold(held);
+        return instruction_prompt(token, &lines);
+    }
+    start(chats, rewrites, store, held, &instruction)
 }
 
 /// The instruction prompt for held rewrite `token`, covering `lines`.
@@ -712,9 +819,33 @@ pub fn register(
             }),
         },
     );
+    {
+        use lattice_grammar::command::LatencyClass;
+        use lattice_grammar::registry::{ExCommandSpec, SurfaceForm};
+        let (chats, rewrites, store) = (chats.clone(), rewrites.clone(), store.clone());
+        registry.register_ex_command(
+            "llm-rewrite",
+            "Rewrite the range's lines (the current line without a range) with a language \
+             model, with the rest of the line as the instruction: `:'<,'>llm-rewrite make \
+             this a match`. Leading `key=value` words set this request only \
+             (`model=local/qwen`). The answer opens as a diff against the lines; nothing \
+             changes until you accept it. Without an instruction, the prompt opens.",
+            ExCommandSpec {
+                latency_class: LatencyClass::Reflex,
+                accepts_bang: false,
+                accepts_range: true,
+                parse_args: Arc::new(lattice_agent::parse_rest_as_text),
+                apply: Arc::new(move |ctx| Ok(ex_rewrite(&chats, &rewrites, &store, ctx))),
+                args_schema: vec![],
+                surface_form: SurfaceForm::Keyword,
+            },
+        );
+    }
     let rewrite_menu = registry.register_operator(
         REWRITE_MENU_OPERATOR,
-        "Rewrite the {motion}/{text-object} that follows, opening `:llm-menu` first: change          the model, temperature or other settings for this rewrite, then `a` to type the          instruction.",
+        "Rewrite the {motion}/{text-object} that follows, opening `:llm-menu` first: change \
+         the model, temperature or other settings for this rewrite, then `a` to type the \
+         instruction.",
         OperatorSpec {
             mutates: true,
             // The prompt opens from the menu's row, not from this effect, so

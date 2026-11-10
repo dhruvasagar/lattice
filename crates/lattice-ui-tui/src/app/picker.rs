@@ -826,13 +826,16 @@ mod tests {
         app.apply(Action::EnterCommandLine);
         crate::app::test_helpers::press_chars(&mut app, "files-refresh");
         app.apply(Action::CommandLineSubmit);
-        let pending = app
-            .editor
-            .pending_picker_refresh
-            .as_ref()
-            .expect("the command starts a re-read");
-        assert_eq!(pending.source_id, "files");
-        assert!(pending.announce, "a command the user ran reports back");
+        // Judged by the report, not the in-flight state: `apply`'s tail
+        // drains the refresh, and a fast walk has already landed by then
+        // (macOS CI), so the pending slot can be empty on a passing run.
+        settle_refresh(&mut app, |a| {
+            a.editor
+                .last_message
+                .as_ref()
+                .is_some_and(|m| m.text.contains("files: re-read,"))
+        });
+        app.editor.last_message = None;
 
         // The report itself, on a small root rather than the test's cwd.
         let tmp = files_tempdir("command");

@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.10.0 — 2026-11-10
 
 ### Added
 - `<CR>` on a row of `*llm-requests*` shows what that request sent, every exchange of it, in `*llm-inspect*`; `:llm-inspect 12` shows request #12 from any buffer. Both reach any request since the editor started, including ones from a buffer since closed.

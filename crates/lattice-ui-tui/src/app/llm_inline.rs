@@ -390,10 +390,17 @@ mod tests {
         assert!(settle_woken(&mut a, |a| text(a).contains("start")).await);
         press_chars(&mut a, "3GA");
         release.send(()).unwrap();
-        assert!(settle_woken(&mut a, |a| text(a).matches("\nx").count() >= 30).await);
+        // The write lands in the document off-thread, and the caret (and the
+        // view with it) is adopted on the wake after it: wait for both, or
+        // the check can fall between the two (Windows CI did).
+        let followed = settle_woken(&mut a, |a| {
+            text(a).matches("\nx").count() >= 30 && a.editor.scroll > 0
+        })
+        .await;
         assert!(
-            a.editor.scroll > 0,
-            "the caret at the end took the view with it"
+            followed,
+            "the caret at the end took the view with it (scroll {})",
+            a.editor.scroll
         );
         key(&mut a, KeyCode::Esc);
         release.send(()).unwrap();

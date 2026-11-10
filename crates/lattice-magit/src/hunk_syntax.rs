@@ -345,16 +345,18 @@ pub(crate) fn styled_diff(diff: &str, registry: Option<&Arc<LangRegistry>>) -> S
 
 /// DS.5 — the grammar registry to highlight with, or `None`.
 ///
-/// `None` when there is no grammar service (a stripped harness) or
-/// when `magit.hunk.syntax-highlight` is off. Both collapse to the
-/// same answer on purpose: the flat classifier is the degradation
-/// path, so the option turns the feature off by taking the same route
-/// a missing grammar already takes.
+/// `None` when `magit.hunk.syntax-highlight` is off: the flat classifier
+/// is the degradation path, so the option turns the feature off by taking
+/// the route a missing grammar already takes.
 ///
-/// Resolved at USE time rather than stored, so `:set` lands on the
-/// next refresh — the contract `magit.hunk.context-lines` set.
+/// Resolved at USE time rather than stored, so `:set` lands on the next
+/// refresh — the contract `magit.hunk.context-lines` set. The registry is
+/// resolved then too, from [`lattice_syntax::registry::live`], and never
+/// held: a plugin language (org) registers after boot by REPLACING the
+/// live registry, so an `Arc` captured earlier can never highlight it.
+/// That is how org hunks and org files at a revision painted plain while
+/// the same file opened directly was coloured.
 pub(crate) fn syntax_registry(
-    registry: Option<Arc<LangRegistry>>,
     config: Option<&Arc<lattice_config::ConfigRegistry>>,
 ) -> Option<Arc<LangRegistry>> {
     let enabled = config
@@ -363,7 +365,18 @@ pub(crate) fn syntax_registry(
         // No config registry ⇒ the option's own default, not `false`:
         // a harness without config should behave like a default install.
         .unwrap_or(true);
-    registry.filter(|_| enabled)
+    if !enabled {
+        return None;
+    }
+    match lattice_syntax::registry::live() {
+        Ok(live) => Some(live),
+        Err(e) => {
+            // A bundled query that does not compile: deterministic, and
+            // the flat classifier is still a correct diff.
+            tracing::debug!(error = ?e, "magit: no live grammar registry; flat diff colouring");
+            None
+        }
+    }
 }
 
 /// DS.4 — spans for a buffer whose diff occupies only part of it.
@@ -1057,7 +1070,7 @@ diff --git a/a.rs b/a.rs
             .set_typed::<crate::options::MagitHunkSyntaxHighlight>(false)
             .expect("the option is declared, so it can be set");
         assert!(
-            syntax_registry(Some(registry()), Some(&config)).is_none(),
+            syntax_registry(Some(&config)).is_none(),
             "syntax-highlight=off must yield no registry"
         );
     }
@@ -1065,26 +1078,57 @@ diff --git a/a.rs b/a.rs
     #[test]
     fn the_option_defaults_on_and_survives_a_missing_config() {
         assert!(
-            syntax_registry(Some(registry()), None).is_some(),
+            syntax_registry(None).is_some(),
             "a harness without config must behave like a default install"
         );
         let config = Arc::new(lattice_config::ConfigRegistry::new());
         assert!(
-            syntax_registry(Some(registry()), Some(&config)).is_some(),
+            syntax_registry(Some(&config)).is_some(),
             "an unregistered option falls back to its default, which is on"
         );
         let booted = Arc::new(lattice_config::ConfigRegistry::new());
         booted.init_from_linkme();
         assert!(
-            syntax_registry(Some(registry()), Some(&booted)).is_some(),
+            syntax_registry(Some(&booted)).is_some(),
             "and the declared default is on"
         );
     }
 
-    /// No grammar service ⇒ `None` regardless of the option.
+    /// A language registered after boot — how org arrives — is highlighted
+    /// in a hunk. The registry the gate returns is resolved when it is
+    /// asked, so it is the one the registration swapped in.
     #[test]
-    fn no_registry_stays_none_however_the_option_is_set() {
-        assert!(syntax_registry(None, None).is_none());
+    fn a_language_registered_after_the_gate_was_built_is_highlighted() {
+        let before = lattice_syntax::LangRegistry::standard().expect("registry");
+        let spec = lattice_syntax::registry::GrammarSpec {
+            grammar: tree_sitter_rust::LANGUAGE.into(),
+            highlights: Some(tree_sitter_rust::HIGHLIGHTS_QUERY.to_string()),
+            folds: None,
+            injections: None,
+            indents: None,
+            textobjects: None,
+            conceal_rules: Vec::new(),
+        };
+        lattice_syntax::plugin_lang::register_with_grammar(
+            "testlang-hunk",
+            &["testlang-hunk"],
+            &spec,
+            0x4E_5E_01,
+        )
+        .expect("the test language registers");
+        let diff = "diff --git a/x.testlang-hunk b/x.testlang-hunk\n\
+                    --- a/x.testlang-hunk\n\
+                    +++ b/x.testlang-hunk\n\
+                    @@ -1 +1 @@\n\
+                    -fn old() {}\n\
+                    +fn new() {}\n";
+        let flat = diff_spans(diff, Some(&before));
+        let live = diff_spans(diff, syntax_registry(None).as_ref());
+        assert_ne!(
+            flat, live,
+            "the hunk over a post-boot language must gain syntax spans; a \
+             registry held from before the registration never can"
+        );
     }
 
     #[test]

@@ -238,11 +238,6 @@ impl Mode for MagitStatusMode {
                     cursor_bus: ctx
                         .service::<crate::cursor_restore::CursorBusHandle>()
                         .map(|outer| (*outer).clone()),
-                    // DS.3: the grammar registry for diff syntax. Same
-                    // service the file-revision view already reads.
-                    lang_registry: ctx
-                        .service::<std::sync::Arc<lattice_syntax::LangRegistry>>()
-                        .map(|outer| (*outer).clone()),
                 }));
             if let Some(states) = ctx.service::<actions::StatusStatesHandle>() {
                 states.publish_shared(buffer_id, shared_state.clone());
@@ -264,8 +259,6 @@ impl Mode for MagitStatusMode {
                 // use, so a status buffer looks the same however it got
                 // rendered.
                 let lang_registry = crate::hunk_syntax::syntax_registry(
-                    ctx.service::<std::sync::Arc<lattice_syntax::LangRegistry>>()
-                        .map(|outer| (*outer).clone()),
                     ctx.service::<std::sync::Arc<lattice_config::ConfigRegistry>>()
                         .map(|outer| (*outer).clone())
                         .as_ref(),

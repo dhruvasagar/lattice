@@ -96,9 +96,10 @@ pub fn open_plugin_view(
             message: format!("{}: command registry unavailable", spec.id),
         };
     };
-    let lang_registry = services
-        .get::<Arc<lattice_syntax::LangRegistry>>()
-        .map(|h| (*h).clone());
+    // Only the "highlighting is wired" gate: excerpts resolve grammars from
+    // the LIVE registry (AH.1). There is no service to read: a boot-time
+    // `Arc` could never see a plugin language.
+    let lang_registry = lattice_syntax::LangRegistry::standard().ok();
 
     // SECURITY: reuse only a view THIS provider made.
     //

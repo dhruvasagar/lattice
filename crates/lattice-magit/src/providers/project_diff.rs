@@ -1147,7 +1147,11 @@ pub fn open_project_diff(
                 .to_string(),
         };
     };
-    let lang_registry = services.get::<Arc<LangRegistry>>().map(|h| (*h).clone());
+    // The multibuffer reads a stored registry only as its "highlighting is
+    // wired" gate and resolves grammars from the LIVE one per excerpt (AH.1),
+    // so this snapshot's value never colours anything. There is no service
+    // to read it from: a boot-time `Arc` could never see a plugin language.
+    let lang_registry = LangRegistry::standard().ok();
 
     let reopened = existing_view(&services);
     let view = match reopened {

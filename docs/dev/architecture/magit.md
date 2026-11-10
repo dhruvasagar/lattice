@@ -408,13 +408,19 @@ not the buffer's identity. Here the content IS the file and its name
 says which one — the same derivation `lattice-multibuffer` and
 `grep_highlight.rs` already make.
 
-**`Arc<LangRegistry>` became a service for this.** The host already
-owned one; a mode building its own `LangRegistry::standard()` would
-load every grammar a second time and drift from whatever the host is
-configured with. Pinned by `lang_registry_service_present_at_boot`,
-because a `TypeId` mismatch here fails in the worst way available: the
-lookup returns `None`, the mode falls back to plain text, and the only
-symptom is an uncoloured buffer that looks like a missing *grammar*.
+**The grammar comes from `lattice_syntax::registry::live()`, read when
+the blob is parsed.** MG.26c first made `Arc<LangRegistry>` a host
+service for this, and that was wrong: `LangRegistry::standard()` returns
+a *snapshot* of the live registry, and a plugin language (org) registers
+after boot by replacing it. The service held the bundled-only set
+forever, so `.org` was detected by extension but had no grammar, and an
+org file at a revision — and every org hunk in a magit diff — painted
+plain. The same trap AH.1 removed from grep previews and multibuffer
+excerpts. The rule now: **never store an `Arc<LangRegistry>`**; take one
+per operation. `standard()` is already the shared handle, so reading it
+costs an `ArcSwap` load and loads nothing twice. The service is gone and
+`lang_registry_is_not_a_service` pins its absence. Slice plan:
+[`magit.md`](../operations/slice-plans/magit.md) MG.55.
 
 **Retired with it:** `*magit:blame:<path>*`,
 `*magit:blame-reverse:<rev>:<path>*`, the blame *major*,

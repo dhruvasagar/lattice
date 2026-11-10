@@ -57,6 +57,9 @@ criterion = { workspace = true }
 # `CommandRegistryHandle` (an `ArcSwap`) even though these buffers
 # dispatch nothing.
 arc-swap = { workspace = true }
+# A grammar to register under a test name AFTER boot: the post-boot
+# language tests (org arrives that way) need one that is not bundled.
+tree-sitter-rust = { workspace = true }
 
 # MG.14: the headerline's per-tick `version()` cost. It resolves theme
 # colours live (so `:colorscheme` lands on the row) rather than

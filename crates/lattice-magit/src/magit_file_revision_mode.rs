@@ -253,15 +253,12 @@ impl Mode for MagitFileRevisionMode {
             // splitting it into a second task would mean reading the
             // text back out of the buffer to parse it.
             let wd = workdir.clone();
-            let registry = ctx
-                .service::<std::sync::Arc<lattice_syntax::LangRegistry>>()
-                .map(|outer| (*outer).clone());
             let (text, spans) = tokio::task::spawn_blocking(move || match parsed {
                 Some((git_ref, path)) => {
                     let text = run_show_file(&wd, &git_ref, &path);
-                    let spans = registry
-                        .as_ref()
-                        .and_then(|r| crate::highlight::file_syntax_spans(&path, &text, r));
+                    // The grammar is resolved from the LIVE registry inside,
+                    // so a plugin language (org) loaded after boot is seen.
+                    let spans = crate::highlight::file_syntax_spans(&path, &text);
                     (text, spans)
                 }
                 None => ("No file/ref given.\n".to_string(), None),

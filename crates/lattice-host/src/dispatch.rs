@@ -5034,12 +5034,17 @@ impl Editor {
                     .get::<crate::ui::theme::ThemeRegistryHandle>()
                     .map(|r| r.resolved())
                     .unwrap_or_default();
-                Some(crate::diff::overlay::SyntaxContext {
-                    lang,
-                    registry: self.lang_registry.clone(),
-                    resolved,
-                    ids: self.builtin_element_ids,
-                })
+                // The LIVE registry, as of this open: the refresh task keeps
+                // it for the overlay's life, and a boot-time snapshot has no
+                // plugin grammar, so an org file's deletion blocks were plain.
+                lattice_syntax::LangRegistry::standard()
+                    .ok()
+                    .map(|registry| crate::diff::overlay::SyntaxContext {
+                        lang,
+                        registry,
+                        resolved,
+                        ids: self.builtin_element_ids,
+                    })
             }
         };
         let forwarder = crate::diff::overlay::DiffOverlayRefreshTask::spawn(
@@ -7438,11 +7443,14 @@ impl Editor {
             .document_handle(id)
             .map(|h| h.text_version())
             .unwrap_or(0);
+        // The LIVE registry, not a boot-time snapshot: a proposal for an org
+        // file needs the plugin's grammar, which registers after boot.
+        let Ok(registry) = lattice_syntax::LangRegistry::standard() else {
+            self.install_document_syntax(id, None, version);
+            return;
+        };
         let handle: Option<lattice_syntax::SyntaxHandle> =
-            match lattice_syntax::Syntax::for_language_with_registry(
-                lang,
-                self.lang_registry.clone(),
-            ) {
+            match lattice_syntax::Syntax::for_language_with_registry(lang, registry) {
                 Ok(Some(mut s)) => {
                     s.parse_at(text, version);
                     let al = self.async_landed.clone();
@@ -11993,7 +12001,7 @@ impl Editor {
                             };
                         let query_for_echo = query.clone();
                         let registry_for_search = self.registry.clone();
-                        let lr_for_search = Some(self.lang_registry.clone());
+                        let lr_for_search = lattice_syntax::LangRegistry::standard().ok();
                         match lattice_multibuffer::providers::search::project_search(
                             self,
                             query,
@@ -12201,7 +12209,7 @@ impl Editor {
                     Some((source_id, source_handle, start, end)) => {
                         let label = self.buffers.name_of(source_id).unwrap_or_default();
                         let registry = self.registry.clone();
-                        let lr = Some(self.lang_registry.clone());
+                        let lr = lattice_syntax::LangRegistry::standard().ok();
                         let view_id = lattice_multibuffer::providers::narrow::create_narrow_view(
                             self,
                             lattice_multibuffer::providers::narrow::NarrowRegion {
@@ -12262,7 +12270,7 @@ impl Editor {
                     Some((source_id, source_handle, start, end)) => {
                         let label = self.buffers.name_of(source_id).unwrap_or_default();
                         let registry = self.registry.clone();
-                        let lr = Some(self.lang_registry.clone());
+                        let lr = lattice_syntax::LangRegistry::standard().ok();
                         let view_id = lattice_multibuffer::providers::narrow::create_narrow_view(
                             self,
                             lattice_multibuffer::providers::narrow::NarrowRegion {
@@ -14949,7 +14957,7 @@ impl Editor {
     fn open_problems_view(&mut self) -> Option<crate::buffers::BufferId> {
         let entries = self.error_list().entries().to_vec();
         let registry = self.registry.clone();
-        let lang_registry = Some(self.lang_registry.clone());
+        let lang_registry = lattice_syntax::LangRegistry::standard().ok();
         let view = lattice_multibuffer::providers::problems::create_problems_view(
             self,
             &entries,
@@ -14987,7 +14995,7 @@ impl Editor {
             symbol: symbol.to_string(),
         };
         let registry = self.registry.clone();
-        let lang = Some(self.lang_registry.clone());
+        let lang = lattice_syntax::LangRegistry::standard().ok();
         match create_references_view(self, locations, origin, registry, lang) {
             Some(view) => {
                 let _ = self.activate_buffer(view);
@@ -17336,9 +17344,10 @@ impl Editor {
         version: u64,
     ) -> (Option<lattice_syntax::SyntaxHandle>, bool) {
         let sync = text.len() <= Self::SYNC_PARSE_MAX_BYTES;
-        // LIVE registry, not `self.lang_registry`.
+        // LIVE registry, not a boot-time snapshot (the `Editor::lang_registry`
+        // field this used to fall back to is gone for this reason).
         //
-        // `lang_registry` is a snapshot taken at boot. A plugin language RCUs
+        // A registry captured at boot is a snapshot. A plugin language RCUs
         // its compiled grammar into the process-wide registry when the plugin
         // loads — which is always AFTER boot — so the cached snapshot never
         // contains it. The symptom is the nastiest kind: the extension map is
@@ -17349,14 +17358,9 @@ impl Editor {
         //
         // `standard()` is a wait-free `ArcSwap` load, so reading it per buffer
         // open costs one atomic — there was never a reason to cache it here.
-        let registry = match lattice_syntax::LangRegistry::standard() {
-            Ok(r) => r,
-            // The bundled set failed to compile, which is deterministic and
-            // fatal everywhere else; degrade to the boot snapshot rather than
-            // lose highlighting for built-in languages too.
-            Err(_) => self.lang_registry.clone(),
-        };
-        let handle = match lattice_syntax::Syntax::for_language_with_registry(lang, registry) {
+        let handle = match lattice_syntax::LangRegistry::standard()
+            .and_then(|registry| lattice_syntax::Syntax::for_language_with_registry(lang, registry))
+        {
             Ok(Some(mut s)) => {
                 if sync {
                     s.parse_at(text, version);
@@ -26410,11 +26414,10 @@ impl Editor {
         // `build_open_syntax` rather than `install_inmemory_syntax`, for two
         // reasons that both matter:
         //
-        //   * it reads the **live** language registry. `install_inmemory_syntax`
-        //     uses `self.lang_registry`, a boot snapshot, and a plugin language
-        //     RCUs its grammar in after boot — so for org, the language this bug
-        //     was reported against, the snapshot answers `None` and the fix
-        //     would appear to work on native languages only.
+        //   * it reads the **live** language registry. (So does
+        //     `install_inmemory_syntax` now; when this was written it used a
+        //     boot snapshot, which answered `None` for org — a plugin language
+        //     that registers after boot.)
         //   * it chooses sync vs async parse by `SYNC_PARSE_MAX_BYTES`.
         //     `install_inmemory_syntax` always parses inline, and a capture
         //     target is exactly the kind of file that grows large — filing one
@@ -51192,11 +51195,6 @@ mod tests {
 
         let mut editor = Editor::default();
         editor.config.init_from_linkme();
-        // The derived `Editor::default()` carries an empty `lang_registry`;
-        // install the standard one (as boot does) so the Rust grammar resolves
-        // for `.rs`. Without this, both handles would be None (plain-text).
-        editor.lang_registry =
-            lattice_syntax::LangRegistry::standard().expect("standard lang registry");
 
         let (tx, _rx) = oneshot::channel::<crate::diff::subsystem::DiffOutcome>();
         editor.open_programmatic_diff(lattice_diff::ProgrammaticDiffRequest {
@@ -51222,6 +51220,61 @@ mod tests {
         );
 
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// The baseline pane highlights in a language registered AFTER the
+    /// editor was built — how org arrives. The baseline is pathless, so it
+    /// goes through `install_inmemory_syntax`, which read the boot-time
+    /// `Editor::lang_registry` snapshot: it never held a plugin grammar, so
+    /// an org proposal's baseline pane was plain. The Rust twin above could
+    /// not see that; Rust is bundled.
+    #[tokio::test]
+    async fn open_programmatic_diff_highlights_a_language_registered_after_boot() {
+        use tokio::sync::oneshot;
+        let mut editor = Editor::default();
+        editor.config.init_from_linkme();
+
+        let spec = lattice_syntax::registry::GrammarSpec {
+            grammar: tree_sitter_rust::LANGUAGE.into(),
+            highlights: Some(tree_sitter_rust::HIGHLIGHTS_QUERY.to_string()),
+            folds: None,
+            injections: None,
+            indents: None,
+            textobjects: None,
+            conceal_rules: Vec::new(),
+        };
+        lattice_syntax::plugin_lang::register_with_grammar(
+            "testlang-pdiff",
+            &["testlang-pdiff"],
+            &spec,
+            0x4E_5E_03,
+        )
+        .expect("the test language registers");
+
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "lattice-pdiff-{}.testlang-pdiff",
+            std::process::id()
+        ));
+        std::fs::write(&path, "fn main() {}\n").expect("write baseline");
+        let (tx, _rx) = oneshot::channel::<crate::diff::subsystem::DiffOutcome>();
+        editor.open_programmatic_diff(lattice_diff::ProgrammaticDiffRequest {
+            old_file_path: path.clone(),
+            new_file_path: path.clone(),
+            new_contents: "fn main() { todo!() }\n".to_string(),
+            tab_name: "demo".to_string(),
+            origin_session: 0,
+            baseline: lattice_diff::DiffBaseline::Disk,
+            on_accept: lattice_diff::OnAccept::Save,
+            response: tx,
+        });
+
+        let baseline_id = editor.pane_tree.leaves()[1].buffer_id;
+        let _ = std::fs::remove_file(&path);
+        assert!(
+            editor.document_syntax_for(baseline_id).is_some(),
+            "the pathless baseline pane must find a grammar registered after boot"
+        );
     }
 
     /// D-fix.5: openDiff auto-scrolls the proposed (active) pane to the

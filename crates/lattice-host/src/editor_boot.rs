@@ -1198,12 +1198,13 @@ impl Editor {
         // line on the grep blocking task (off the render thread; the
         // picker crate has no syntax dep). See picker-preview-highlight.md §7.
         let lang_registry = LangRegistry::standard().expect("standard lang registry");
-        // MG.26c: expose the SAME registry every buffer's grammar comes
-        // from, so a mode that owns a pathless synthetic buffer can
-        // highlight it. Building a second `LangRegistry::standard()`
-        // inside such a mode would load every grammar twice and would
-        // drift from whatever the host is actually configured with.
-        boot.register_service::<Arc<LangRegistry>>(lang_registry.clone());
+        // NOT a service. MG.26c registered this `Arc` so magit could
+        // highlight a file at a revision, but `standard()` returns a
+        // SNAPSHOT of the live registry, and a plugin language (org)
+        // registers later by replacing it. Every reader of the service saw
+        // the boot-time set forever: `.org` at a revision, and org hunks in
+        // every magit diff, painted plain. A consumer reads
+        // `lattice_syntax::registry::live()` when it needs a grammar.
         let grep_highlighter: Option<
             Arc<dyn lattice_picker::picker_sources::GrepPreviewHighlighter>,
         > = Some(crate::grep_highlight::SyntaxGrepHighlighter::new());
@@ -1381,9 +1382,10 @@ impl Editor {
             crate::host_generators::HistoryKindsGenerator,
         );
 
-        // `lang_registry` (one per Editor, shared between the document
-        // buffer's `Syntax`, every `HelpBuffer`, and the grep preview
-        // highlighter) was created above with the picker registry.
+        // `lang_registry` is the live registry as of boot: right for the
+        // initial document, which is parsed now. It is not kept — a plugin
+        // grammar registers later by replacing the live registry, so every
+        // later reader takes `LangRegistry::standard()` at its own moment.
         let lang = Lang::detect_from_path(document.path());
         // Build the underlying `Syntax` synchronously + seed it
         // with one parse of the initial text so the renderer's
@@ -2221,7 +2223,6 @@ impl Editor {
             pending_message_event_rx: Some(message_event_rx),
             option_change_rx: Some(option_change_rx),
             pending_catalog_change_rx: Some(catalog_change_rx),
-            lang_registry: lang_registry.clone(),
             syntax,
             last_parsed_text_version,
             picker_registry: picker_registry.clone(),

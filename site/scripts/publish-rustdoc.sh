@@ -26,6 +26,58 @@ fi
 rm -rf "$dst"
 cp -r "$src" "$dst"
 
+# Source pages point at the file on GitHub instead of being published. They
+# were 60 MB and 765 files of a 310 MB, 9k-file site, and GitHub Pages must
+# finish processing an upload within deploy-pages' 10-minute limit; GitHub
+# has the same source, at the commit the docs were built from.
+# (`--html-no-source` would skip generating them, but is nightly-only.)
+cargo metadata --no-deps --format-version 1 >"$dst/.metadata.json"
+GITHUB_BLOB="https://github.com/dhruvasagar/lattice/blob/${GITHUB_SHA:-$(git rev-parse HEAD)}" \
+python3 - "$dst" <<'PY'
+import json, os, re, sys
+dst = sys.argv[1]
+blob = os.environ['GITHUB_BLOB']
+root = os.getcwd()
+meta = json.load(open(os.path.join(dst, '.metadata.json')))
+# rustdoc names a source dir after the target, and mirrors paths relative to
+# the directory of the target's root file.
+dirs = {}
+for pkg in meta['packages']:
+    for t in pkg['targets']:
+        name = t['name'].replace('-', '_')
+        d = os.path.relpath(os.path.dirname(t['src_path']), root).replace(os.sep, '/')
+        dirs.setdefault(name, d)
+link = re.compile(r'href="((?:\.\./)*)src/([A-Za-z0-9_]+)/([^"#]+)\.html(?:#(\d+)(?:-(\d+))?)?"')
+def to_github(m):
+    crate, path, a, b = m.group(2), m.group(3), m.group(4), m.group(5)
+    base = dirs.get(crate)
+    if base is None:
+        return 'href="' + blob + '"'
+    if not os.path.isfile(os.path.join(root, base, path)):
+        # A build script's output (`include!(concat!(env!("OUT_DIR"), …))`)
+        # is not in the repository: point at the crate's source instead.
+        return f'href="{blob}/{base}"'
+    url = f'{blob}/{base}/{path}'
+    if a:
+        url += f'#L{a}' + (f'-L{b}' if b else '')
+    return f'href="{url}"'
+rewritten = 0
+for here, _, files in os.walk(dst):
+    if os.path.relpath(here, dst).split(os.sep)[0] == 'src':
+        continue
+    for f in files:
+        if not f.endswith('.html'):
+            continue
+        p = os.path.join(here, f)
+        html = open(p, encoding='utf-8').read()
+        new, n = link.subn(to_github, html)
+        if n:
+            rewritten += n
+            open(p, 'w', encoding='utf-8').write(new)
+print(f'publish-rustdoc: {rewritten} source links point at GitHub')
+PY
+rm -rf "$dst/src" "$dst/src-files.js" "$dst/.metadata.json"
+
 # Workspace crates only (target/doc also holds rustdoc's own static files).
 mapfile -t crates < <(
     for d in "$dst"/*/; do

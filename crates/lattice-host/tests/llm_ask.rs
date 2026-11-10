@@ -494,8 +494,11 @@ async fn a_destination_not_built_yet_opens_a_new_buffer_and_says_so() {
 /// not repainted yet, the row no longer names the same item: nothing is
 /// removed and the user is told to look again.
 ///
-/// `current_thread`, so the view's refresher cannot repaint between the
-/// change and the `dd`: the window the bug lived in is held open.
+/// The refresher runs on the LLM runtime's own threads, so the test cannot
+/// rely on timing to catch the view before it repaints (CI did, on a fast
+/// runner, and `dd` then rightly removed the item the repainted row named).
+/// It holds the window open instead: let the refresher repaint, then put the
+/// list the user was looking at back in the buffer.
 #[tokio::test]
 async fn dd_on_a_stale_context_row_removes_nothing() {
     let dir = scratch_dir("ctx-dd");
@@ -522,7 +525,27 @@ async fn dd_on_a_stale_context_row_removes_nothing() {
     assert!(settle(&mut editor, shows_both).await, "the list opens");
 
     // The first item goes elsewhere; the view still shows it on row 1.
+    let view = editor.active_buffer_id();
+    let seen = text_of(&editor, view);
     chats(&editor).detach(owner, 0);
+    // The header names the owner (a.txt), so "repainted" is "changed".
+    let repainted = |e: &Editor| text_of(e, view) != seen;
+    assert!(settle(&mut editor, repainted).await, "the view repaints");
+    let handle = editor.buffers.document_handle(view).unwrap();
+    let snap = handle.snapshot();
+    let last = snap.buffer.rope_line_count().saturating_sub(1);
+    let end = Position::new(
+        last,
+        snap.buffer.line(last).unwrap_or_default().len() as u32,
+    );
+    handle
+        .apply_edit_batch(vec![lattice_protocol::edit::Edit::replace(
+            lattice_protocol::position::Range::new(Position::new(0, 0), end),
+            seen.clone(),
+        )])
+        .await
+        .unwrap();
+    assert_eq!(text_of(&editor, view), seen, "the stale list is back");
     editor.cursor = lattice_protocol::position::Position::new(1, 0);
     // The action `dd` resolves to in this mode (the chord's binding is pinned
     // by the mode's keymap; `dispatch_chord` does not compose two-key chords).

@@ -64,13 +64,13 @@ a kind of read.
 | `web.fetch` | GET a URL; HTML converted to text; capped, with an offset to read on | Asks, per domain |
 
 	[llm.web]
-	search = "brave"	# or "searxng"
-	
-	[llm.web.brave]
-	api_key_env = "BRAVE_API_KEY"
+	search = "searxng"	# or "brave"
 	
 	[llm.web.searxng]
 	base_url = "http://localhost:8888"	# a self-hosted instance; no key
+	
+	[llm.web.brave]
+	api_key_env = "BRAVE_API_KEY"	# hosted; paid past a monthly credit
 
 **Why search runs and fetch asks.** A search goes to a backend the user chose, with a query
 the user can read in the transcript. A fetch can go anywhere. A model holding private data
@@ -99,7 +99,26 @@ A project file can deny a host and cannot allow one, as for every other list.
 - The request runs on the layer's runtime and is dropped on cancel, like every other call.
 
 Search backends are a small enum, not a plugin seam: two are enough to prove the shape, one
-keyed (Brave) and one keyless and self-hostable (SearXNG). Others are added when someone asks.
+keyless and self-hostable (SearXNG) and one hosted and keyed (Brave). **SearXNG leads**: the
+assistant this serves is local and private by default, and a hosted search API would send
+every query to a third party behind an account and a card (Brave's free plan ended in 2026;
+it is now a monthly credit, then paid). Anything else reaches the model through MCP today
+(`[llm.mcp.*]`), with no lattice code.
+
+**Why two tools, not one.** Search is discovery (a query in, a few pointers out); fetch is
+retrieval (a URL in, a page out). Merged, either every search fetches every result, which
+floods the context, or the model can never read the page it chose. More decisively, they
+differ in trust: a search's destination is fixed by the user, a fetch's is chosen by the
+model, possibly from text it just read. One tool would carry one permission, and either
+choice is wrong for half of it. Each is also useful alone: fetching a URL the user pasted,
+answering from a snippet.
+
+**Considered for later, in the slice plan:** a keyless DuckDuckGo backend (gptel-agent's
+choice: it scrapes `html.duckduckgo.com`, so it works with no setup and breaks when the
+markup changes or a CAPTCHA appears; opt-in, never the default); provider-native search
+(Anthropic's, OpenAI's and Gemini's server tools, no extra key but hosted models only, and
+each adapter must round-trip its own result blocks); readability scoring before conversion,
+to drop a page's boilerplate before it reaches a small model's context.
 
 ## 4. Built-in profiles
 

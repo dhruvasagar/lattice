@@ -165,6 +165,23 @@ pub fn install(
             .tools()
             .add_source(super::tools::broker::LATTICE, Arc::new(tools));
     }
+    // AT.2: `web.search` and `web.fetch`, beside lattice's own. The table is
+    // read per call, so a reloaded `[llm.web]` applies to the next search.
+    {
+        let config_of = Arc::downgrade(&chats);
+        let web = super::tools::web::WebTools::new(Arc::new(move || {
+            config_of
+                .upgrade()
+                .map(|c| c.web_config())
+                .unwrap_or_default()
+        }));
+        match web {
+            Ok(web) => chats
+                .tools()
+                .add_source(super::tools::broker::WEB, Arc::new(web)),
+            Err(e) => tracing::warn!(target: "lattice::llm", "llm: no web tools: {e}"),
+        }
+    }
     // LL.24: each `[llm.mcp.<name>]` server is a tool source of its own. None
     // starts here: a server starts when a request's `llm.tools` first selects
     // it. A change of state publishes `McpServersChanged`, which repaints

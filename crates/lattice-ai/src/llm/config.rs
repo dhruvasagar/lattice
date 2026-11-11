@@ -91,6 +91,33 @@ pub struct ProviderConfig {
     pub output_cost_per_mtok: Option<f64>,
 }
 
+/// `[llm.web]`: what `web.search` asks (AT.2). Only ever from the user's own
+/// file: a backend holds a key source, which a project may not name.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WebConfig {
+    /// `search = "brave" | "searxng"`. `None` lists no `web.search` tool.
+    pub search: Option<SearchBackend>,
+}
+
+/// A search backend and what it needs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SearchBackend {
+    /// The Brave Search API: a subscription key.
+    Brave { key: KeySource },
+    /// A SearXNG instance, usually self-hosted, with its JSON format enabled.
+    Searxng { base_url: String },
+}
+
+impl SearchBackend {
+    /// Its name as `search = ...` spells it.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::Brave { .. } => "brave",
+            Self::Searxng { .. } => "searxng",
+        }
+    }
+}
+
 impl ProviderKind {
     /// The tag on reasoning data this kind of provider writes and accepts
     /// back, `None` for one that round-trips none.
@@ -130,6 +157,8 @@ pub struct LlmConfig {
     /// `[llm.mcp.<name>]`, in name order. Only ever from the user's own file:
     /// a project file cannot declare one (settings' trust table).
     pub mcp: Vec<super::tools::mcp::McpServerConfig>,
+    /// `[llm.web]` (AT.2), from the user's own file only.
+    pub web: WebConfig,
     /// Problems found while reading, for the log. A bad provider is skipped,
     /// not fatal: one typo must not take the others down.
     pub warnings: Vec<String>,
@@ -214,6 +243,12 @@ impl LlmConfig {
                 }
             }
         }
+        if let Some(web) = llm.get("web") {
+            match web.as_table() {
+                Some(t) => cfg.web = parse_web(t, &mut cfg.warnings),
+                None => cfg.warnings.push("llm: `web` must be a table".to_string()),
+            }
+        }
         if let Some(providers) = llm.get("providers").and_then(toml::Value::as_table) {
             for (name, value) in providers {
                 match value.as_table() {
@@ -274,9 +309,15 @@ impl LlmConfig {
     /// from. A process the model can start (a command, an MCP server) does not
     /// inherit them: the key is lattice's to send, not the model's to read.
     pub fn key_variables(&self) -> Vec<String> {
+        let search = match &self.web.search {
+            Some(SearchBackend::Brave { key }) => Some(key),
+            _ => None,
+        };
         self.providers
             .values()
-            .filter_map(|p| match &p.key {
+            .map(|p| &p.key)
+            .chain(search)
+            .filter_map(|key| match key {
                 KeySource::Env(var) => Some(var.clone()),
                 _ => None,
             })
@@ -416,6 +457,70 @@ fn parse_provider(name: &str, t: &toml::Table) -> Result<(ProviderConfig, Vec<St
     ))
 }
 
+/// `[llm.web]`. A table naming no backend, or one that is misconfigured, is
+/// no `web.search` and a warning saying why; `web.fetch` needs nothing here.
+fn parse_web(t: &toml::Table, warnings: &mut Vec<String>) -> WebConfig {
+    for key in t.keys() {
+        if !matches!(key.as_str(), "search" | "brave" | "searxng") {
+            warnings.push(format!("llm: unknown key llm.web.{key}"));
+        }
+    }
+    let Some(name) = t.get("search") else {
+        return WebConfig::default();
+    };
+    let section = |key: &str| t.get(key).and_then(toml::Value::as_table);
+    let search = match name.as_str() {
+        Some("brave") => {
+            let b = section("brave");
+            let get = |k: &str| b.and_then(|b| str_of(b, k));
+            match (get("api_key_env"), get("api_key_command")) {
+                (Some(var), _) => Some(SearchBackend::Brave {
+                    key: KeySource::Env(var),
+                }),
+                (None, Some(cmd)) => Some(SearchBackend::Brave {
+                    key: KeySource::Command(cmd),
+                }),
+                (None, None) => {
+                    warnings.push(
+                        "llm: web search `brave` needs [llm.web.brave] api_key_env or \
+                         api_key_command; web.search is off"
+                            .to_string(),
+                    );
+                    None
+                }
+            }
+        }
+        Some("searxng") => match section("searxng").and_then(|s| str_of(s, "base_url")) {
+            Some(url) if url.starts_with("http://") || url.starts_with("https://") => {
+                Some(SearchBackend::Searxng {
+                    base_url: url.trim_end_matches('/').to_string(),
+                })
+            }
+            Some(_) => {
+                warnings.push(
+                    "llm: [llm.web.searxng] base_url must be an http(s) URL; web.search is off"
+                        .to_string(),
+                );
+                None
+            }
+            None => {
+                warnings.push(
+                    "llm: web search `searxng` needs [llm.web.searxng] base_url; web.search is off"
+                        .to_string(),
+                );
+                None
+            }
+        },
+        _ => {
+            warnings.push(format!(
+                "llm: llm.web.search must be \"brave\" or \"searxng\", not {name}; web.search is off"
+            ));
+            None
+        }
+    };
+    WebConfig { search }
+}
+
 /// One `[llm.mcp.<name>]` table. Exactly one of `command` (stdio) and `url`
 /// (streamable HTTP). Values are never echoed: `env` and `headers` can hold
 /// tokens.
@@ -433,8 +538,10 @@ fn parse_mcp_server(
              (its tools are `{name}.<tool>`)"
         ));
     }
-    if name == super::tools::broker::LATTICE {
-        return Err("llm: MCP server `lattice`: that name is lattice's own tools".to_string());
+    if super::tools::broker::NATIVE.contains(&name) {
+        return Err(format!(
+            "llm: MCP server `{name}`: that name is lattice's own tools"
+        ));
     }
     let strings = |key: &str, warnings: &mut Vec<String>| -> Vec<String> {
         match t.get(key) {
@@ -636,6 +743,19 @@ pub async fn resolve_key(provider: &ProviderConfig) -> Result<ApiKey, String> {
     }
 }
 
+/// Resolve the key of something that is not a provider: `whom` names it in
+/// errors (`web search brave`), in place of the key. `None` is the empty key.
+pub async fn resolve_key_source(whom: &str, key: &KeySource) -> Result<ApiKey, String> {
+    match key {
+        KeySource::None => Ok(ApiKey::new("")),
+        KeySource::Env(var) => match std::env::var(var) {
+            Ok(v) if !v.trim().is_empty() => Ok(ApiKey::new(v.trim())),
+            _ => Err(format!("environment variable {var} is not set ({whom})")),
+        },
+        KeySource::Command(cmd) => run_key_command(whom, cmd).await,
+    }
+}
+
 async fn run_key_command(provider: &str, cmd: &str) -> Result<ApiKey, String> {
     run_key_command_within(provider, cmd, KEY_COMMAND_TIMEOUT).await
 }
@@ -689,6 +809,74 @@ mod tests {
 
     fn cfg(text: &str) -> LlmConfig {
         LlmConfig::from_table(&text.parse::<toml::Table>().unwrap())
+    }
+
+    #[test]
+    fn a_web_search_backend_is_read_with_what_it_needs() {
+        let c =
+            cfg("[llm.web]\nsearch = \"brave\"\n[llm.web.brave]\napi_key_env = \"BRAVE_KEY\"\n");
+        assert_eq!(
+            c.web.search,
+            Some(SearchBackend::Brave {
+                key: KeySource::Env("BRAVE_KEY".into())
+            })
+        );
+        // The key's variable is withheld from commands and MCP servers like a
+        // provider's.
+        assert!(c.key_variables().contains(&"BRAVE_KEY".to_string()));
+
+        let c = cfg(
+            "[llm.web]\nsearch = \"searxng\"\n[llm.web.searxng]\nbase_url = \"http://localhost:8888/\"\n",
+        );
+        assert_eq!(
+            c.web.search,
+            Some(SearchBackend::Searxng {
+                base_url: "http://localhost:8888".into()
+            })
+        );
+        assert!(c.warnings.is_empty(), "{:?}", c.warnings);
+    }
+
+    #[test]
+    fn a_web_backend_missing_what_it_needs_is_off_and_says_why() {
+        for (text, says) in [
+            ("[llm.web]\nsearch = \"brave\"\n", "api_key_env"),
+            ("[llm.web]\nsearch = \"searxng\"\n", "base_url"),
+            (
+                "[llm.web]\nsearch = \"searxng\"\n[llm.web.searxng]\nbase_url = \"file:///x\"\n",
+                "http(s)",
+            ),
+            (
+                "[llm.web]\nsearch = \"google\"\n",
+                "\"brave\" or \"searxng\"",
+            ),
+            ("[llm.web]\nsearhc = \"brave\"\n", "llm.web.searhc"),
+        ] {
+            let c = cfg(text);
+            assert_eq!(c.web.search, None, "{text}");
+            assert!(
+                c.warnings.iter().any(|w| w.contains(says)),
+                "{text}: {:?}",
+                c.warnings
+            );
+        }
+        // No `[llm.web]` at all is no search and nothing to warn about.
+        let c = cfg("[llm]\nmodel = \"m\"\n");
+        assert_eq!(c.web, WebConfig::default());
+        assert!(c.warnings.is_empty());
+    }
+
+    #[test]
+    fn an_mcp_server_may_not_take_a_native_sources_name() {
+        for name in ["lattice", "web"] {
+            let c = cfg(&format!("[llm.mcp.{name}]\ncommand = \"x\"\n"));
+            assert!(c.mcp.is_empty(), "{name}");
+            assert!(
+                c.warnings.iter().any(|w| w.contains("lattice's own tools")),
+                "{name}: {:?}",
+                c.warnings
+            );
+        }
     }
 
     #[test]

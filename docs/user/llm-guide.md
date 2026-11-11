@@ -488,6 +488,48 @@ waits and `:ai-permission` brings the question back.
 closes or an edit is applied without review (see `<C-t>` above). The same `cargo test`
 runs again without asking; any other command asks. It is never saved.
 
+### `web.search` and `web.fetch`
+
+| Tool | Does |
+|---|---|
+| `search` | Searches the web through the backend you configure: title, URL and snippet per result |
+| `fetch` | Reads a page as markdown, links kept, up to 40,000 characters at a time |
+
+Select them as `web.*`, or one at a time. `fetch` needs no setup. `search` is offered
+only once you name a backend. **SearXNG is the one to start with**: a metasearch engine you
+run yourself (one container), so it needs no account or key and your queries stay on your
+machine. Turn on `json` in its `search.formats`. **Brave** is the hosted option: it needs an
+account with a card, and is paid beyond a small monthly credit.
+
+```toml
+[llm.web]
+search = "searxng"
+
+[llm.web.searxng]
+base_url = "http://localhost:8888"
+
+# or the paid, hosted Brave Search API
+# search = "brave"
+# [llm.web.brave]
+# api_key_env = "BRAVE_API_KEY"    # or api_key_command
+```
+
+**A search runs without asking**: it goes to the backend you chose, and the query is in
+the transcript. **A fetch asks**, showing the URL, because a page can go anywhere and could
+carry what the model has read out with it. "Allow this site for this chat" covers that
+host (and port) for the rest of the chat; any other site asks.
+
+A fetch reads public sites only. `localhost`, private networks (`10.x`, `192.168.x`,
+`fd00::`) and link-local addresses (including cloud metadata at `169.254.169.254`) are
+refused, whether written in the URL or what a name resolves to. A redirect within the
+site is followed; one to another site is not, and the model is told where it leads, so
+following it asks again. A body over 2 MiB is read only to there, and a file that is not
+text (a PDF, an image) is named but not read.
+
+`[llm.web]` comes from your own config only: a project file that sets it is refused, as
+for providers. The key's variable is kept from `run_command` and MCP servers like a
+provider's.
+
 ### Allow and deny rules
 
 For what you always or never want, write rules in your config. They use the shape other AI

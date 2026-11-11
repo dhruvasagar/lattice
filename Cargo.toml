@@ -203,6 +203,11 @@ tar = { version = "0.4", default-features = false }
 # `gitignore::GitignoreBuilder` API directly, not the walker.
 ignore = "0.4"
 
+# HTML to markdown for the llm layer's `web.fetch` (AT.2). Markdown, not
+# plain text, because the links a page carries are what a model follows
+# when it researches; html5ever underneath, so real-world HTML parses.
+htmd = "0.5.6"
+
 # LSP (Phase 4 -- lattice-lsp). `lsp-types` models the LSP 3.17
 # wire types; we hand-roll the JSON-RPC client + framing per
 # DESIGN.md §5.4 (tower-lsp is server-side). `serde_json` is the

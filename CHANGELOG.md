@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- **Web tools for LLM chats.** `web.fetch` reads a page as markdown, links kept; it asks before each new site, and "allow this site for this chat" covers that host only. It reaches public sites only: `localhost`, private networks and cloud metadata addresses are refused, and a redirect to another site is reported rather than followed. `web.search` searches through your own SearXNG (no key, queries stay local) or the paid Brave Search API, set in `[llm.web]`, and runs without asking. Select them with `llm.tools = ["web.*"]`.
+
 ## 0.10.0 — 2026-11-10
 
 ### Added

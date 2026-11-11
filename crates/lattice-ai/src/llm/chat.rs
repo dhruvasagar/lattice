@@ -491,6 +491,15 @@ impl LlmChats {
             .key_variables()
     }
 
+    /// `[llm.web]` as it is now (AT.2).
+    pub fn web_config(&self) -> super::config::WebConfig {
+        self.config
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .web
+            .clone()
+    }
+
     pub fn set_config(&self, config: LlmConfig) {
         *self.config.write().unwrap_or_else(|e| e.into_inner()) = config;
     }

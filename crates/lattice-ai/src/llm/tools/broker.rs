@@ -30,8 +30,15 @@ use super::{
 use crate::conversation::ToolKind;
 use crate::llm::ToolDescriptor;
 
-/// Lattice's own namespace; the only source whose tool kinds are trusted.
+/// Lattice's own namespace.
 pub const LATTICE: &str = "lattice";
+
+/// The native web tools' namespace (AT.2).
+pub const WEB: &str = "web";
+
+/// The sources lattice builds itself: the only ones whose tool kinds are
+/// believed, and names no configured server may take.
+pub const NATIVE: [&str; 2] = [LATTICE, WEB];
 
 /// Wire-name separator between server and tool.
 const SEP: &str = "__";
@@ -155,7 +162,9 @@ impl Offer {
                 }
                 ChatAllow::Call(input.to_string())
             } else {
-                ChatAllow::Tool
+                source
+                    .chat_scope(&tool.name, &input)
+                    .unwrap_or(ChatAllow::Tool)
             };
             let detail = described.unwrap_or_else(|| arguments_shown(&input));
             let question = Question {
@@ -423,9 +432,10 @@ fn group_of(kind: ToolKind) -> Option<&'static str> {
 /// asking (only an external server's tool can be; lattice's own follow the
 /// table).
 fn offered(server: &str, tool: &SourceTool, allowed: bool) -> OfferedTool {
-    let ours = server == LATTICE;
-    // Kinds are believed for lattice's tools only; another server's tool is
-    // shown as `Other` and asks unless the user allowed it by name.
+    let ours = NATIVE.contains(&server);
+    // Kinds are believed for lattice's own sources only; another server's
+    // tool is shown as `Other` and asks unless the user allowed it by name.
+    // A native tool of kind `Other` (`web.fetch`) asks too.
     let kind = if ours { tool.kind } else { ToolKind::Other };
     let permission = match (ours, kind) {
         (true, ToolKind::Read | ToolKind::Search) => Permission::Run,
@@ -718,6 +728,68 @@ mod tests {
             .map(Question::allow_key)
             .collect();
         assert_ne!(keys[0], keys[1]);
+    }
+
+    /// AT.2: the web source is native, so its kinds are believed: a search
+    /// runs, a fetch (kind `Other`) asks, and "allow for this chat" on a
+    /// fetch covers its host only. Kind groups still select lattice's tools
+    /// only.
+    #[tokio::test]
+    async fn web_search_runs_and_a_fetch_asks_by_host() {
+        use crate::llm::config::{SearchBackend, WebConfig};
+        let b = ToolBroker::new();
+        let web = super::super::web::WebTools::new(Arc::new(|| WebConfig {
+            search: Some(SearchBackend::Searxng {
+                base_url: "http://localhost:1".into(),
+            }),
+        }))
+        .unwrap();
+        b.add_source(WEB, Arc::new(web));
+        assert!(b.offer(&pick(&["web.read"])).await.is_empty());
+        let o = b.offer(&pick(&["web.*"])).await;
+        let perms: Vec<(&str, Permission)> = o
+            .tools()
+            .iter()
+            .map(|t| (t.wire.as_str(), t.permission))
+            .collect();
+        assert_eq!(
+            perms,
+            [
+                ("web__search", Permission::Run),
+                ("web__fetch", Permission::Ask)
+            ]
+        );
+        let asked: Arc<std::sync::Mutex<Vec<Question>>> = Arc::default();
+        let ctx = || {
+            let asked = asked.clone();
+            CallContext {
+                ask: Some(Arc::new(move |q| {
+                    asked.lock().unwrap().push(q);
+                    // Denied, so nothing is fetched.
+                    Box::pin(async { Answer::Deny })
+                })),
+                ..CallContext::default()
+            }
+        };
+        for url in [
+            "https://docs.rs/serde",
+            "https://docs.rs/tokio/latest",
+            "https://evil.example/?q=notes",
+        ] {
+            let r = o
+                .call("web__fetch", serde_json::json!({ "url": url }), ctx())
+                .await;
+            assert!(matches!(r, Err(ToolError::Refused(_))), "{url}: {r:?}");
+        }
+        let asked = asked.lock().unwrap();
+        let keys: Vec<String> = asked.iter().map(Question::allow_key).collect();
+        assert_eq!(keys[0], keys[1], "one site, one allow");
+        assert_ne!(keys[1], keys[2], "another site asks again");
+        assert_eq!(asked[0].chat_allow_label(), "Allow this site for this chat");
+        assert_eq!(
+            asked[2].detail.as_deref(),
+            Some("GET https://evil.example/?q=notes")
+        );
     }
 
     /// A server that cannot list is said once, not on every request, and

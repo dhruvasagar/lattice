@@ -6,7 +6,7 @@
 
 Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred · ❌ dropped.
 
-**Status: 🚧 AT.1 ✅; AT.2 next.**
+**Status: 🚧 AT.1–AT.2 ✅; AT.3 next.**
 
 **Goal:** native web tools, a WIT seam through which a plugin gives the model tools and
 profiles, and an org assistant built on both, measured by an eval that decides whether a
@@ -36,8 +36,8 @@ UI-thread work, async results landing through `inbound`. In addition:
 | ID | Slice | Depends on | Status |
 |---|---|---|---|
 | AT.1 | Tool descriptions without stray indentation | — | ✅ |
-| AT.2 | `web.search`, `web.fetch`, the `web` source | — | 📝 |
-| AT.3 | Per-domain grants and `web.fetch(<host>)` rules | AT.2 | 📝 |
+| AT.2 | `web.search`, `web.fetch`, the `web` source, per-host grants | — | ✅ |
+| AT.3 | `web.fetch(<host>)` rules; a private host allowed by name | AT.2 | 📝 |
 | AT.4 | Built-in profiles; `:llm <profile> <prompt…>` | AT.2 | 📝 |
 | AT.5 | `llm-tools` WIT interface and `PluginToolSource` | — | 📝 |
 | AT.6 | Plugin profiles, trusted like project config | AT.4, AT.5 | 📝 |
@@ -49,6 +49,9 @@ UI-thread work, async results landing through `inbound`. In addition:
 | AT.12 | Bundled local model (managed `llama-server`) | AT.10's numbers | ⛔ |
 | AT.13 | Constrained decoding for tool arguments | AT.12 | ⛔ |
 | AT.14 | Plugin tool sources served to external agents over `LatticeServer` | AT.5 | ⛔ |
+| AT.15 | Keyless DuckDuckGo search backend, opt-in | AT.2 | 📝 |
+| AT.16 | Provider-native search (Anthropic, OpenAI, Gemini server tools) | AT.2 | ⛔ |
+| AT.17 | Readability scoring before HTML conversion | AT.2 | ⛔ |
 
 ### AT.1 — Tool descriptions without stray indentation ✅
 
@@ -58,7 +61,16 @@ receives runs of about 18 spaces. Fix both. Add a test that no descriptor in any
 holds two consecutive spaces, so the next one cannot come back. Not user-visible; no
 CHANGELOG line.
 
-### AT.2 — The `web` source
+### AT.2 — The `web` source ✅
+
+**Absorbed AT.3's grant key.** Shipping `web.fetch` with "allow for this chat" covering every
+URL, even for one commit, would have been the weaker permission the design rejects. So the
+broker learned `ToolSource::chat_scope` and `ChatAllow::Host` here, and AT.3 keeps the rules.
+The converter is `htmd` 0.5.6 (markdown, links kept; html5ever underneath), chosen with
+Dhruva on 2026-11-11. Private addresses are refused twice: on a literal host, and in the
+fetch client's resolver (`PublicOnly`), so a name re-resolved at connect cannot slip past.
+Search uses a second client without the filter, because a SearXNG is often on localhost.
+
 
 `tools/web.rs`: a `ToolSource` with `search` and `fetch`, registered with the broker beside
 `LatticeTools`. Config `[llm.web]` with the `brave` and `searxng` backends. Keys go through
@@ -75,15 +87,17 @@ Tests: each backend's response decoded from a fixture without a socket; a local 
 fetch covering redirect to another host, a private address, an oversized body, a binary type
 and a cancel mid-body; the key never in a tool result or `*messages*`.
 
-### AT.3 — Per-domain grants and rules
+### AT.3 — `web.fetch(<host>)` rules
 
-The broker learns a per-call grant key from its source. `run_command` keeps the exact call;
-`web.fetch` names the host. `rules.rs` accepts `web.fetch(<host-glob>)` in `allow` and `deny`;
-a project `allow` is refused as today.
+The per-host grant landed with AT.2. What is left: `rules.rs` accepts `web.fetch(<host-glob>)`
+in `allow` and `deny`, and a host the user's own `allow` names by exact name may be private
+(design §3: "refused unless a rule allows that host by name"), which needs the resolver to
+learn the allowed set. A project `allow` is refused as today.
 
-Tests: an allowed host runs without asking; another host on the same chat asks; "allow for
-this chat" then covers that host only; a project file denying a host wins over the user's
-allow; a project allow is refused and named.
+Tests: an allowed host runs without asking; a glob matches subdomains and not lookalikes
+(`*.rust-lang.org` against `rust-lang.org.evil.example`); a project file denying a host wins
+over the user's allow; a project allow is refused and named; a private host allowed by name
+is fetched and one not named is still refused.
 
 ### AT.4 — Built-in profiles; `:llm <profile> <prompt…>`
 
@@ -186,3 +200,26 @@ OpenAI-compatible adapter.
 Plugin tool sources served through `LatticeServer`, so Claude Code and other MCP clients can
 use org's tools. Deferred until someone wants it: the design's reason for not building an org
 MCP server is that this costs one slice whenever it is wanted.
+
+### AT.15 — Keyless DuckDuckGo search
+
+`search = "duckduckgo"`: the `html.duckduckgo.com` results page, parsed for result links and
+snippets, as gptel-agent does through eww. It needs no account or server, which makes it the
+zero-setup option. It is scraping, so it is **opt-in and never the default**, and the guide
+says plainly that it can break from a markup change or a CAPTCHA. At most two searches in
+flight, like gptel-agent's, so a model looping on search does not get the user rate-limited.
+Tests: a fixture page decoded without a socket; a CAPTCHA or changed page is an error that
+names the backend and suggests SearXNG, never an empty result that reads as "nothing found".
+
+### AT.16 — Provider-native search ⛔
+
+Anthropic's `web_search`, OpenAI's `web_search` and Gemini's Google Search grounding, as
+`search = "provider"`. No extra key for a hosted model, and nothing for a local one. Deferred
+because each adapter must carry its own result blocks (some with encrypted content that
+round-trips) through the conversation store, and the local-first assistant does not need it.
+
+### AT.17 — Readability before conversion ⛔
+
+Score the page for its main content before `htmd`, so navigation and boilerplate the skip
+list misses stay out of a small model's context. Deferred until the eval (AT.10) shows fetched
+pages crowding the context.

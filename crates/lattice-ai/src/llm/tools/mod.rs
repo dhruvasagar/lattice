@@ -14,6 +14,7 @@ pub mod broker;
 pub mod lattice;
 pub mod mcp;
 pub mod rules;
+pub mod web;
 
 use std::future::Future;
 use std::pin::Pin;
@@ -118,6 +119,10 @@ pub enum ChatAllow {
     /// that runs commands: allowing `cargo test` must not allow
     /// whatever a prompt-injected tool result asks for next.
     Call(String),
+    /// Later calls to this host: `web.fetch` (AT.2). One host per grant, so
+    /// allowing a documentation site does not allow the next host a page
+    /// sends the model to, and each page of the same site does not ask again.
+    Host(String),
 }
 
 impl Question {
@@ -126,6 +131,7 @@ impl Question {
         match &self.chat_allow {
             ChatAllow::Tool => self.tool.clone(),
             ChatAllow::Call(call) => format!("{}\n{call}", self.tool),
+            ChatAllow::Host(host) => format!("{}\nhost:{host}", self.tool),
         }
     }
 
@@ -137,6 +143,7 @@ impl Question {
             // so it is allowed whole or asked each time (P.3).
             ChatAllow::Tool => "Allow this tool for this chat (any arguments)",
             ChatAllow::Call(_) => "Allow this command for this chat",
+            ChatAllow::Host(_) => "Allow this site for this chat",
         }
     }
 }
@@ -192,5 +199,12 @@ pub trait ToolSource: Send + Sync {
     /// server says about itself.
     fn allowed(&self, _name: &str) -> bool {
         false
+    }
+
+    /// What "allow for this chat" covers for a call that asks, when it is
+    /// narrower than the whole tool: the host, for `web.fetch`. `None` is
+    /// the tool. A command's exact call is decided by its kind, not here.
+    fn chat_scope(&self, _name: &str, _input: &Value) -> Option<ChatAllow> {
+        None
     }
 }

@@ -103,7 +103,7 @@ pub fn install(
     // buffers by path, so a read sees unsaved text). Offered only to requests
     // whose `llm.tools` selects them. LL.17: with a diff bus, the edit tools
     // too, reviewed one diff at a time with the rewrites.
-    {
+    let plugin_tools = {
         let cache =
             lattice_agent::state_cache::spawn_read_cache(boot.event_bus(), boot.runtime_handle());
         let access = lattice_agent::EditorAccess::new(
@@ -168,9 +168,12 @@ pub fn install(
         // AT.5: plugins exporting `llm-tools`, registered by the plugin
         // loader as they load. A proposal applies through lattice's own
         // `edit_file`, so it is reviewed and fenced as the model's edits are.
+        // A change publishes `PluginToolsChanged`, which repaints
+        // `*llm-tools*`.
         let configured = Arc::downgrade(&chats);
-        let plugin_tools: super::tools::plugin::PluginToolsHandle =
-            Arc::new(super::tools::plugin::PluginTools::new(
+        let bus = boot.event_bus().clone();
+        let plugin_tools: super::tools::plugin::PluginToolsHandle = Arc::new(
+            super::tools::plugin::PluginTools::new(
                 chats.tools().clone(),
                 tools,
                 Arc::new(move || {
@@ -179,9 +182,14 @@ pub fn install(
                         .map(|c| c.mcp_names())
                         .unwrap_or_default()
                 }),
-            ));
-        boot.register_service::<super::tools::plugin::PluginToolsHandle>(plugin_tools);
-    }
+            )
+            .on_change(Arc::new(move || {
+                bus.publish_typed(super::tools::plugin::PluginToolsChanged)
+            })),
+        );
+        boot.register_service::<super::tools::plugin::PluginToolsHandle>(plugin_tools.clone());
+        plugin_tools
+    };
     // AT.2: `web.search` and `web.fetch`, beside lattice's own. The table is
     // read per call, so a reloaded `[llm.web]` applies to the next search.
     {
@@ -202,7 +210,7 @@ pub fn install(
     // LL.24: each `[llm.mcp.<name>]` server is a tool source of its own. None
     // starts here: a server starts when a request's `llm.tools` first selects
     // it. A change of state publishes `McpServersChanged`, which repaints
-    // `*llm-mcp*`.
+    // `*llm-tools*`.
     let mcp: super::tools::mcp::McpServersHandle = {
         let bus = boot.event_bus().clone();
         Arc::new(super::tools::mcp::McpServers::new(
@@ -296,12 +304,18 @@ pub fn install(
         ))
         .expect("llm-requests-mode register");
     super::modes::requests::register_actions(boot.commands_mut());
-    // LL.24: `*llm-mcp*`, the servers and their tools.
+    // LL.24 / AT.5d: `*llm-tools*`, the tool sources beyond lattice's own:
+    // each MCP server with its state, each plugin offering tools.
     let bus = boot.event_bus().clone();
     boot.modes_mut()
-        .register(super::modes::mcp::LlmMcpMode::new(mcp, bus, inline.clone()))
-        .expect("llm-mcp-mode register");
-    super::modes::mcp::register(boot.commands_mut());
+        .register(super::modes::tools::LlmToolsMode::new(
+            mcp,
+            plugin_tools,
+            bus,
+            inline.clone(),
+        ))
+        .expect("llm-tools-mode register");
+    super::modes::tools::register(boot.commands_mut());
     // LL.15: what requests carry, and exactly what one sends. Both views
     // repaint themselves and wake the editor through the same bus.
     boot.modes_mut()

@@ -1,6 +1,6 @@
 ---
 summary: "The LLM layer from start to finish. Setup, chat, asking about text from any buffer, context, tools with review, MCP servers, profiles, watching and stopping requests, the privacy model, and how it differs from the agent integrations."
-related: [llm, llm-chat-mode, llm-mode, llm-mcp-mode, llm-system-mode, llm-context-mode, llm-inspect-mode, llm-requests-mode, ai-conversation-mode, claude-code-mode]
+related: [llm, llm-chat-mode, llm-mode, llm-tools-mode, llm-system-mode, llm-context-mode, llm-inspect-mode, llm-requests-mode, ai-conversation-mode, claude-code-mode]
 ---
 
 # Language models
@@ -42,7 +42,7 @@ per buffer, and a local server works the same as a hosted one.
 
 **Every surface is an ordinary buffer.** A chat transcript, the list of running
 requests (`*llm-requests*`), the list of attached context (`*llm-context*`), the
-MCP server list (`*llm-mcp*`) and the system prompt (`:llm-system`) are all
+MCP server list (`*llm-tools*`) and the system prompt (`:llm-system`) are all
 buffers. You search them, yank from them, split them, and close them with the
 commands you already know. Nothing lives in a sidebar or a panel with its own
 rules.
@@ -653,17 +653,19 @@ tool does is not trusted.
 - A server does not inherit the variables your providers' `api_key_env` name. To give one
   a key, name it in its `env`.
 - A value in `env` or `headers` may name a variable (`$NAME` or `${NAME}`), read when the
-  server starts. Neither values nor variable names are shown in `*llm-mcp*`, and anything
+  server starts. Neither values nor variable names are shown in `*llm-tools*`, and anything
   the server prints that contains a token is shown as `***`.
 
-`:llm-mcp` opens `*llm-mcp*`: each server, its state (`not started`, `starting`,
-`running`, `failed: ...`, `exited: ...`, `stopped`) and its tools, each marked `allowed`
-or `asks`. `r` starts the server on a line again, `dd` stops it. A server that failed to
+`:llm-tools` opens `*llm-tools*` (`:llm-mcp`, its old name, still works): each server,
+its state (`not started`, `starting`, `running`, `failed: ...`, `exited: ...`, `stopped`)
+and its tools, each marked `allowed` or `asks`; then each plugin that offers tools, with
+whether each runs, asks or is reviewed. A plugin's tools need no configuration: select
+them like any source's (`org.*`). `r` starts the server on a line again, `dd` stops it. A server that failed to
 start is not retried until you press `r`; one that was running and exited is started
 again by the next request that needs it. Changes to `[llm.mcp]` apply on the next start
 of lattice.
 
-Reference: [`llm-mcp-mode`](help:llm-mcp-mode).
+Reference: [`llm-tools-mode`](help:llm-tools-mode).
 
 ## Profiles, options and project config
 
@@ -914,7 +916,7 @@ See [`ai-conversation-mode`](help:ai-conversation-mode),
 | `:llm-retry` refused | A reply is still coming. `<C-c>` first |
 | `:llm-save` refused | The chat has not finished replying, or the file exists (use `!`) |
 | A resumed chat is refused | The file was edited after lattice wrote it, or written by a newer lattice |
-| A tool call "not offered" in `*llm-mcp*` | Its name has characters providers do not accept |
+| A tool call "not offered" in `*llm-tools*` | Its name has characters providers do not accept |
 | An MCP server stuck at `failed` | Fix the command, then `r` on its line; it is not retried on its own |
 | Tool run stops with a message about rounds | `llm.tool_rounds` was reached; send again to go on |
 | `:q` will not quit | A request is running. `:llm-stop`, or `:q!` |
@@ -929,7 +931,7 @@ warnings the layer raised.
 - [`llm`](help:llm): settings, layers, profiles, project config.
 - [`llm-chat-mode`](help:llm-chat-mode): the chat buffer, tools, export and resume, provider setup.
 - [`llm-mode`](help:llm-mode): the ask and rewrite operators, destinations, context, `llm.exclude`.
-- [`llm-mcp-mode`](help:llm-mcp-mode): external MCP servers.
+- [`llm-tools-mode`](help:llm-tools-mode): MCP servers and plugin tools.
 - [`llm-system-mode`](help:llm-system-mode): editing the system prompt.
 - [`llm-context-mode`](help:llm-context-mode), [`llm-inspect-mode`](help:llm-inspect-mode),
   [`llm-requests-mode`](help:llm-requests-mode): the context list, the request view, the request list.

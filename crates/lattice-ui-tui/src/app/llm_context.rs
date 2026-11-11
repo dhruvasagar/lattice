@@ -265,7 +265,7 @@ mod tests {
         for (cmd, name) in [
             ("llm-context", "*llm-context*"),
             ("llm-requests", "*llm-requests*"),
-            ("llm-mcp", "*llm-mcp*"),
+            ("llm-tools", "*llm-tools*"),
         ] {
             ex(&mut a, cmd);
             assert!(

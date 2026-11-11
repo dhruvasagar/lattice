@@ -10,7 +10,7 @@
 //! Starting (spawn or connect, `initialize`, `tools/list`) is bounded by
 //! [`STARTUP_TIMEOUT`]; a server that fails or times out is left out of that
 //! request's offer and the request goes on without it. The failure is shown
-//! in `*llm-mcp*` and is not retried until the user restarts the server
+//! in `*llm-tools*` and is not retried until the user restarts the server
 //! there: a wrong command fails the same way every time, and retrying it on
 //! every request would cost each one the attempt. A server that **was**
 //! running and then exited is restarted by the next request that needs it.
@@ -30,7 +30,7 @@
 //!
 //! **Secrets.** `env` and `headers` values may name environment variables
 //! (`"$GITHUB_TOKEN"`, `"Bearer ${TOKEN}"`); they are expanded when the
-//! server starts, never shown in `*llm-mcp*`, and scrubbed from the child's
+//! server starts, never shown in `*llm-tools*`, and scrubbed from the child's
 //! stderr before it is logged or shown.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -64,7 +64,7 @@ pub const DEFAULT_CALL_TIMEOUT: Duration = Duration::from_secs(300);
 /// Providers accept tool names of `[A-Za-z0-9_-]`, at most this long.
 const MAX_WIRE_NAME: usize = 64;
 
-/// Lines of a stdio server's stderr kept for `*llm-mcp*` and failure text.
+/// Lines of a stdio server's stderr kept for `*llm-tools*` and failure text.
 const STDERR_LINES: usize = 20;
 
 /// One `[llm.mcp.<name>]` table.
@@ -120,7 +120,7 @@ impl std::fmt::Debug for McpTransport {
 }
 
 impl McpTransport {
-    /// What `*llm-mcp*` shows: the command and its arguments, or the URL
+    /// What `*llm-tools*` shows: the command and its arguments, or the URL
     /// without its query or credentials. Anything that can hold a token is
     /// written `***`: the argument after a flag naming one (`--token X`), a
     /// flag's own value (`--api-key=X`), and an argument or path segment that
@@ -308,12 +308,12 @@ pub enum ServerState {
     NotStarted,
     Starting,
     Running,
-    /// It could not start. Not retried until restarted from `*llm-mcp*`.
+    /// It could not start. Not retried until restarted from `*llm-tools*`.
     Failed(String),
     /// It was running and its connection ended. The next request that
     /// needs it starts it again.
     Exited(String),
-    /// Stopped from `*llm-mcp*`; requests leave it alone.
+    /// Stopped from `*llm-tools*`; requests leave it alone.
     Stopped,
 }
 
@@ -330,7 +330,7 @@ impl std::fmt::Display for ServerState {
     }
 }
 
-/// One tool as `*llm-mcp*` lists it.
+/// One tool as `*llm-tools*` lists it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ListedTool {
     pub name: String,
@@ -343,7 +343,7 @@ pub struct ListedTool {
     pub skipped: Option<String>,
 }
 
-/// A server as `*llm-mcp*` lists it.
+/// A server as `*llm-tools*` lists it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServerStatus {
     pub name: String,
@@ -384,7 +384,7 @@ pub type Connect = Arc<
 pub type OnChange = Arc<dyn Fn() + Send + Sync>;
 
 /// Published on the event bus when a server's state or tools change, so
-/// `*llm-mcp*` repaints.
+/// `*llm-tools*` repaints.
 #[derive(Debug, Clone)]
 pub struct McpServersChanged;
 
@@ -547,7 +547,7 @@ impl McpServer {
         self.shared.lock().phase.clone()
     }
 
-    /// What `*llm-mcp*` shows for this server.
+    /// What `*llm-tools*` shows for this server.
     pub fn status(&self) -> ServerStatus {
         let g = self.shared.lock();
         let tools = g
@@ -597,11 +597,11 @@ impl McpServer {
                     ServerState::Running => return Ok(()),
                     ServerState::Failed(why) => {
                         return Err(format!(
-                            "it failed to start ({why}); restart it from :llm-mcp"
+                            "it failed to start ({why}); restart it from :llm-tools"
                         ));
                     }
                     ServerState::Stopped => {
-                        return Err("it was stopped from :llm-mcp".to_string());
+                        return Err("it was stopped from :llm-tools".to_string());
                     }
                     ServerState::Starting => false,
                     ServerState::NotStarted | ServerState::Exited(_) => {
@@ -961,7 +961,7 @@ pub struct McpServers {
     servers: Vec<Arc<McpServer>>,
 }
 
-/// Shared by the llm layer's install and `*llm-mcp*`.
+/// Shared by the llm layer's install and `*llm-tools*`.
 pub type McpServersHandle = Arc<McpServers>;
 
 impl McpServers {

@@ -196,20 +196,47 @@ impl ToolSource for PluginToolSource {
 
     fn permission(&self, name: &str) -> Option<Permission> {
         let tool = self.tools.iter().find(|t| t.descriptor.name == name)?;
-        Some(match (self.reach, tool.kind) {
-            (Reach::Outward, _) => Permission::Ask,
-            (Reach::Contained, ToolKind::Edit) => Permission::Review,
-            (Reach::Contained, _) => Permission::Run,
-        })
+        Some(row(self.reach, tool.kind))
     }
 }
+
+/// The row a plugin tool sits in: what the plugin can reach, then what the
+/// tool does with its result.
+fn row(reach: Reach, kind: ToolKind) -> Permission {
+    match (reach, kind) {
+        (Reach::Outward, _) => Permission::Ask,
+        (Reach::Contained, ToolKind::Edit) => Permission::Review,
+        (Reach::Contained, _) => Permission::Run,
+    }
+}
+
+/// One offered plugin tool, as `*llm-tools*` lists it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ListedPluginTool {
+    pub name: String,
+    pub description: String,
+    pub kind: ToolKind,
+    pub permission: Permission,
+}
+
+/// Fired when a plugin's tools are offered, refused or withdrawn, so
+/// `*llm-tools*` repaints.
+#[derive(Debug, Clone)]
+pub struct PluginToolsChanged;
+
+lattice_protocol::register_event!(
+    PluginToolsChanged,
+    "llm.plugin-tools-changed",
+    "Fired when a plugin's tools for the LLM assistant are offered, refused or withdrawn.",
+    "lattice-ai",
+);
 
 /// Where a plugin's tools stand, for the listing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PluginToolsStatus {
     /// Offered, with the tools that could not be.
     Offered {
-        tools: Vec<String>,
+        tools: Vec<ListedPluginTool>,
         reach: Reach,
         problems: Vec<String>,
     },
@@ -226,6 +253,8 @@ pub struct PluginTools {
     /// plugin registers.
     configured: Arc<dyn Fn() -> Vec<String> + Send + Sync>,
     status: Mutex<BTreeMap<String, PluginToolsStatus>>,
+    /// Called after the statuses change; publishes [`PluginToolsChanged`].
+    changed: Arc<dyn Fn() + Send + Sync>,
 }
 
 /// Shared by the llm layer and the plugin loader.
@@ -242,7 +271,14 @@ impl PluginTools {
             lattice,
             configured,
             status: Mutex::new(BTreeMap::new()),
+            changed: Arc::new(|| {}),
         }
+    }
+
+    /// Call `changed` whenever the statuses change, so a listing can repaint.
+    pub fn on_change(mut self, changed: Arc<dyn Fn() + Send + Sync>) -> Self {
+        self.changed = changed;
+        self
     }
 
     /// Offer `plugin`'s tools as `name.*`. Refused when the name is not
@@ -259,6 +295,7 @@ impl PluginTools {
             if record {
                 self.status()
                     .insert(name.to_string(), PluginToolsStatus::Refused(why.clone()));
+                (self.changed)();
             }
             Err(why)
         };
@@ -288,7 +325,15 @@ impl PluginTools {
         for p in &problems {
             tracing::warn!(target: "lattice::llm", "llm: plugin `{name}` tool left out: {p}");
         }
-        let names = tools.iter().map(|t| t.descriptor.name.clone()).collect();
+        let listed = tools
+            .iter()
+            .map(|t| ListedPluginTool {
+                name: t.descriptor.name.clone(),
+                description: t.descriptor.description.clone(),
+                kind: t.kind,
+                permission: row(reach, t.kind),
+            })
+            .collect();
         self.broker.add_source(
             name,
             Arc::new(PluginToolSource {
@@ -301,11 +346,12 @@ impl PluginTools {
         self.status().insert(
             name.to_string(),
             PluginToolsStatus::Offered {
-                tools: names,
+                tools: listed,
                 reach,
                 problems,
             },
         );
+        (self.changed)();
         Ok(())
     }
 
@@ -319,6 +365,7 @@ impl PluginTools {
         );
         if offered {
             self.broker.remove_source(name);
+            (self.changed)();
         }
         offered
     }

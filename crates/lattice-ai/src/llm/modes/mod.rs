@@ -3,9 +3,9 @@
 pub mod chat;
 pub mod context;
 pub mod llm_mode;
-pub mod mcp;
 pub mod requests;
 pub mod system;
+pub mod tools;
 
 use std::sync::OnceLock;
 
@@ -13,7 +13,7 @@ use lattice_config::OptionOverrideSet;
 use lattice_mode::ModeId;
 
 /// The options of a read-only listing buffer (`*llm-context*`,
-/// `*llm-requests*`, `*llm-mcp*`): no typing, no file.
+/// `*llm-requests*`, `*llm-tools*`): no typing, no file.
 ///
 /// One of TWO declarations a read-only major needs; the other is
 /// [`read_only_implied`]. Kept here, once, so a listing cannot ship with one

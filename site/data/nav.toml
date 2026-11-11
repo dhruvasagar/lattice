@@ -160,7 +160,7 @@ docs = [
   "llm",
   "llm-chat-mode",
   "llm-mode",
-  "llm-mcp-mode",
+  "llm-tools-mode",
   "llm-system-mode",
   "llm-context-mode",
   "llm-inspect-mode",

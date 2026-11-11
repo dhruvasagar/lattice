@@ -6,7 +6,7 @@
 
 Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred · ❌ dropped.
 
-**Status: 🚧 AT.1–AT.4 ✅; AT.5 in progress (AT.5a–c ✅, AT.5d next).**
+**Status: 🚧 AT.1–AT.4 ✅; AT.5 in progress (AT.5a–d ✅; AT.5e, the guest SDK, awaits a decision).**
 
 **Goal:** native web tools, a WIT seam through which a plugin gives the model tools and
 profiles, and an org assistant built on both, measured by an eval that decides whether a
@@ -43,7 +43,8 @@ UI-thread work, async results landing through `inbound`. In addition:
 | AT.5a | lattice-ai: `ToolPlugin`, `PluginToolSource`, `PluginTools` service | — | ✅ |
 | AT.5b | plugin host: `llm-tools` world, actor, client, fixture guest | — | ✅ |
 | AT.5c | loader: drain, adapter, teardown; round-trip bench | AT.5a, AT.5b | ✅ |
-| AT.5d | guest SDK trait; `*llm-tools*` listing | AT.5c | 📝 |
+| AT.5d | `*llm-tools*` listing; CHANGELOG | AT.5c | ✅ |
+| AT.5e | guest SDK ergonomics for `llm-tools` | AT.5b | 📝 |
 | AT.6 | Plugin profiles, trusted like project config | AT.4, AT.5 | 📝 |
 | AT.7 | Org read tools (plugin repo) | AT.5 + API release | 📝 |
 | AT.8 | `org.change` proposals (plugin repo) | AT.7 | 📝 |
@@ -167,8 +168,19 @@ any review.
   name, another plugin's) does not fail the load; the plugin's other seams still work.
   Tests drive the fixture through discovery: rows per grant, a call to the guest and back,
   a proposal through `edit_file`, unload withdrawing the tools, `web` refused and listed.
-- **AT.5d** — the guest SDK's trait and registration in `lattice-plugin-api`; `*llm-mcp*`
-  becomes `*llm-tools*` with a section per source, `:llm-mcp` kept as an alias.
+- **AT.5d** — `*llm-mcp*` becomes `*llm-tools*` (`llm-tools-mode`, `:help llm-tools-mode`)
+  with a section for MCP servers and one for plugins, each plugin tool marked with its row;
+  `:llm-mcp` kept as an alias. It repaints on `PluginToolsChanged` as on
+  `McpServersChanged`. lattice's own and `web`'s tools are not listed: they are fixed and
+  documented in `:help llm-chat-mode`, and the listing is for sources that can fail, be
+  refused or change. CHANGELOG for AT.5 as a whole, now that it is visible.
+- **AT.5e** — split from AT.5d, because the plan's "trait and registration macro in
+  `lattice-plugin-api`" does not fit either crate as built. `lattice-plugin-api` is the API
+  catalog and reference, not guest code; `lattice-plugin-sdk` is guest code but names no
+  WIT-generated type by rule, so it composes with every world. A trait over the world's
+  types would break that rule. Open: whether the SDK gains a world-agnostic piece instead (a
+  serde struct as a tool's JSON Schema plus its parse), or nothing, since the WIT world is
+  already three functions. The fixture guest is the worked example either way.
 
 The original plan for the whole slice:
 

@@ -202,7 +202,7 @@ async fn paint(handle: &Arc<dyn Document>, chats: &LlmChatsHandle, inline: &LlmI
 
 /// Make `handle`'s whole text `text`, if it is not already. `true` when it
 /// changed, so the caller wakes the editor. Shared by the llm layer's
-/// self-refreshing views (this list, `*llm-context*`, `*llm-mcp*`).
+/// self-refreshing views (this list, `*llm-context*`, `*llm-tools*`).
 ///
 /// Only the lines that differ are replaced, so the caret on a row that did
 /// not change stays where it is (a refresh while the user is moving to a

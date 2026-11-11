@@ -177,7 +177,7 @@ same surface).
 | Ask about any text         | [`llm-mode`](help:llm-mode) | ✅      |
 |   — settings and profiles  | [`llm`](help:llm)                        | ✅      |
 |   — system prompt          | [`llm-system-mode`](help:llm-system-mode) | ✅      |
-|   — MCP servers as tools   | [`llm-mcp-mode`](help:llm-mcp-mode) | ✅      |
+|   — MCP and plugin tools   | [`llm-tools-mode`](help:llm-tools-mode) | ✅      |
 |   — attached context       | [`llm-context-mode`](help:llm-context-mode) | ✅      |
 |   — what a request sends   | [`llm-inspect-mode`](help:llm-inspect-mode) | ✅      |
 |   — running requests       | [`llm-requests-mode`](help:llm-requests-mode) | ✅      |

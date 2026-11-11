@@ -14,7 +14,10 @@ use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 
 use lattice_ai::conversation::ToolKind;
-use lattice_ai::llm::tools::plugin::{PluginTools, PluginToolsHandle, PluginToolsStatus};
+use lattice_ai::llm::settings::SettingKey;
+use lattice_ai::llm::tools::plugin::{
+    PluginProfileStoreHandle, PluginTools, PluginToolsHandle, PluginToolsStatus,
+};
 use lattice_ai::llm::tools::{
     BoxFuture, CallContext, Permission, SourceTool, ToolBroker, ToolBrokerHandle, ToolError,
     ToolOutput, ToolSource,
@@ -63,6 +66,7 @@ struct Rig {
     loader: PluginLoader,
     broker: ToolBrokerHandle,
     tools: PluginToolsHandle,
+    profiles: PluginProfileStoreHandle,
     lattice: Arc<Lattice>,
     plugins: std::path::PathBuf,
     _base: tempfile::TempDir,
@@ -85,11 +89,11 @@ fn rig(id: &str, capabilities: &str) -> Option<Rig> {
 
     let broker: ToolBrokerHandle = Arc::new(ToolBroker::new());
     let lattice = Arc::new(Lattice::default());
-    let tools: PluginToolsHandle = Arc::new(PluginTools::new(
-        broker.clone(),
-        lattice.clone(),
-        Arc::new(Vec::new),
-    ));
+    let profiles: PluginProfileStoreHandle = Arc::default();
+    let tools: PluginToolsHandle = Arc::new(
+        PluginTools::new(broker.clone(), lattice.clone(), Arc::new(Vec::new))
+            .with_profiles(profiles.clone()),
+    );
     let host = Arc::new(
         lattice_plugin_host::PluginHost::with_dirs(
             base.path().join("cache"),
@@ -110,6 +114,7 @@ fn rig(id: &str, capabilities: &str) -> Option<Rig> {
         loader,
         broker,
         tools,
+        profiles,
         lattice,
         plugins,
         _base: base,
@@ -238,4 +243,32 @@ async fn a_plugin_named_like_a_native_source_loads_without_its_tools() {
         report.llm_tools, 0,
         "nothing was offered, so nothing is withdrawn"
     );
+}
+
+/// AT.6: the guest's profile crosses the WIT and is filtered on the way in.
+/// The fixture selects `fixture.outline`, which is not this plugin's (it is
+/// loaded as `notes`), so the selection is dropped and the system prompt kept.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_plugin_s_profile_is_taken_filtered_and_dropped_on_unload() {
+    let Some(rig) = rig("notes", "") else {
+        eprintln!("skipping: llm-tools-guest wasm not built");
+        return;
+    };
+    load(&rig).await;
+
+    let profiles = rig.profiles.snapshot();
+    let profile = &profiles["fixture-plan"];
+    assert_eq!(profile.plugin, "notes");
+    assert_eq!(profile.description, "Plan from the fixture's notes.");
+    assert_eq!(
+        profile
+            .settings
+            .get(&SettingKey::System)
+            .map(String::as_str),
+        Some("Plan the day.")
+    );
+    assert!(!profile.settings.contains_key(&SettingKey::Tools));
+
+    rig.loader.unload("notes").expect("unload succeeds");
+    assert!(rig.profiles.snapshot().is_empty());
 }

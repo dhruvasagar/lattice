@@ -276,6 +276,12 @@ or exec tools, another source's tools, a model or a provider. The plugin cannot 
 model the user has, and naming one would be a provider choice made by the wrong party. A
 refused key is named in `*messages*`, as for a project file.
 
+**A name belongs to whoever took it first.** A built-in profile's name is never a plugin's:
+`coding` from a plugin would change what `:llm coding` means for everyone who installed it.
+Between two plugins the first loaded keeps the name and the second is told, in
+`*llm-tools*` as well as `*messages*`, rather than one silently replacing the other. A
+plugin's profiles leave with it when it unloads.
+
 **The user overlays it,** as for built-in profiles: `[llm.profiles.org-plan] model =
 "local/qwen3"` picks the model for that workflow, and `tools = …` there widens it, since that
 is the user's own file.

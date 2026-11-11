@@ -185,7 +185,9 @@ pub fn install(
             )
             .on_change(Arc::new(move || {
                 bus.publish_typed(super::tools::plugin::PluginToolsChanged)
-            })),
+            }))
+            // AT.6: a plugin's profiles are taken as it registers, filtered.
+            .with_profiles(chats.plugin_profiles().clone()),
         );
         boot.register_service::<super::tools::plugin::PluginToolsHandle>(plugin_tools.clone());
         plugin_tools

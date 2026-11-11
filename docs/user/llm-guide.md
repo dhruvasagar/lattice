@@ -720,6 +720,22 @@ and replaces the tools, and one that sets only `model` keeps the built-in tools.
 still has no tools, and `@coding` in text you type cannot turn tools on, as for any profile.
 `web.search` is only offered once you have [set a backend](#web-search-and-web-fetch).
 
+#### Plugin profiles
+
+A plugin that offers tools can contribute profiles too, one per workflow: org's
+`org-plan` is a system prompt and a selection of org's tools. They come between the
+built-in profiles and yours, so `[llm.profiles.org-plan] model = "local/qwen3"` picks the
+model for that workflow, and `tools = [...]` there widens it, since that is your own file.
+`:llm-menu` shows `plugin profile: org-plan, from org` beside a value that came from one,
+and `*llm-tools*` lists each plugin's profiles.
+
+A plugin's profile is trusted like a project's file, because it arrives with something you
+installed rather than something you wrote. It may set a system prompt (text, not a path),
+parameters and a destination, and select its own tools, `lattice.read` and `web.*`. It may
+not choose a model, which the plugin cannot know you have, or select any other tools, and a
+built-in profile's name, or one another plugin already uses, is not taken. What it may not
+set is dropped and named in `*messages*` and `*llm-tools*`.
+
 `:llm writer` opens a chat from a profile. `:llm-profile writer` switches the current
 session, clearing its overrides and saying which. An unknown name lists the known ones.
 `@writer` in the text you type applies that profile to that one request, and its values win

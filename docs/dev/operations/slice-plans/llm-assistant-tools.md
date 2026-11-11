@@ -6,7 +6,7 @@
 
 Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred · ❌ dropped.
 
-**Status: 🚧 AT.1–AT.4 ✅; AT.5 in progress (AT.5a–d ✅; AT.5e, the guest SDK, awaits a decision).**
+**Status: 🚧 AT.1–AT.4 ✅, AT.6 ✅; AT.5 in progress (AT.5a–d ✅; AT.5e, the guest SDK, awaits a decision).**
 
 **Goal:** native web tools, a WIT seam through which a plugin gives the model tools and
 profiles, and an org assistant built on both, measured by an eval that decides whether a
@@ -45,7 +45,7 @@ UI-thread work, async results landing through `inbound`. In addition:
 | AT.5c | loader: drain, adapter, teardown; round-trip bench | AT.5a, AT.5b | ✅ |
 | AT.5d | `*llm-tools*` listing; CHANGELOG | AT.5c | ✅ |
 | AT.5e | guest SDK ergonomics for `llm-tools` | AT.5b | 📝 |
-| AT.6 | Plugin profiles, trusted like project config | AT.4, AT.5 | 📝 |
+| AT.6 | Plugin profiles, trusted like project config | AT.4, AT.5 | ✅ |
 | AT.7 | Org read tools (plugin repo) | AT.5 + API release | 📝 |
 | AT.8 | `org.change` proposals (plugin repo) | AT.7 | 📝 |
 | AT.9 | Org profiles and commands (plugin repo) | AT.6, AT.8 | 📝 |
@@ -213,6 +213,20 @@ offered and is listed as such. Bench: a plugin tool round trip, so the WASM per-
 Tests: a profile selecting `lattice.exec` loses that selection and says so; one naming a
 model loses it; a user overlay widens tools; two plugins contributing the same profile name
 keep the first and name the second.
+
+Landed as: `filter_plugin_profile` in `settings.rs` (the trust filter, one message per
+refusal) and a `PluginProfileStore` beside `PluginTools`, which fills it at registration and
+empties it per plugin on unregister. `Layers.plugin_profiles` is a snapshot per request, as
+the other layers are, applied between the built-in profile and the user's under
+`OptionOrigin::PluginProfile { name, plugin }`; `profile_names()` lists them, so `:llm
+org-plan`, `:llm-profile` and `@org-plan` reach them with no further change. Also refused:
+a built-in profile's name, and a name that is not one word. `*llm-tools*` lists each
+plugin's profiles under its tools, and refusals beside the tools' problems. The loader's
+`ClientPlugin` forwards `profiles()`; `llm_tools_drain.rs` proves the fixture's profile
+crosses the WIT filtered (its `fixture.outline` selection is not the plugin's own, loaded as
+`notes`) and leaves on unload. A plugin whose `profiles()` fails keeps its tools; the
+listing says the profiles could not be listed. No bench: the filter runs once per plugin
+load, and resolution clones one more map per request, of a handful of entries.
 
 ### AT.7 — Org read tools (plugin repo)
 

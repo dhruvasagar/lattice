@@ -30,6 +30,7 @@ use super::rules::Verdict;
 use super::{BoxFuture, CallContext, SourceTool, ToolError, ToolOutput, ToolSource};
 use crate::conversation::ToolKind;
 use crate::llm::ToolDescriptor;
+use crate::llm::settings::{PluginProfile, PluginProfiles, builtin_profile, filter_plugin_profile};
 
 /// What a plugin tool does, as the plugin declares it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -73,6 +74,102 @@ pub trait ToolPlugin: Send + Sync {
 
     /// Run `name` with the model's input as JSON text.
     fn call(&self, name: &str, args: String) -> BoxFuture<'_, Result<PluginToolResult, String>>;
+
+    /// The profiles it contributes (AT.6). Read once, at registration.
+    fn profiles(&self) -> BoxFuture<'_, Result<Vec<PluginProfileSpec>, String>> {
+        Box::pin(async { Ok(Vec::new()) })
+    }
+}
+
+/// A profile as a plugin lists it, before any filtering: keys as a profile
+/// file spells them, each with its value as text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PluginProfileSpec {
+    pub name: String,
+    pub description: String,
+    pub settings: Vec<(String, String)>,
+}
+
+/// The profiles plugins contribute, filtered, by profile name. The chats read
+/// it for every request; [`PluginTools`] writes it as plugins load and unload.
+#[derive(Debug, Default)]
+pub struct PluginProfileStore {
+    profiles: std::sync::RwLock<PluginProfiles>,
+}
+
+/// Shared by the chats (which resolve through it) and [`PluginTools`].
+pub type PluginProfileStoreHandle = Arc<PluginProfileStore>;
+
+impl PluginProfileStore {
+    /// The profiles in force, for one request's layers.
+    pub fn snapshot(&self) -> PluginProfiles {
+        self.read().clone()
+    }
+
+    /// Take `plugin`'s profiles. Returns the ones taken (name, description)
+    /// and a message for each profile or key refused. A profile is refused
+    /// when its name is a built-in profile's or another plugin's; a key is
+    /// refused by [`filter_plugin_profile`].
+    pub fn add(
+        &self,
+        plugin: &str,
+        specs: Vec<PluginProfileSpec>,
+    ) -> (Vec<(String, String)>, Vec<String>) {
+        let mut taken = Vec::new();
+        let mut problems = Vec::new();
+        let mut profiles = self.profiles.write().unwrap_or_else(|e| e.into_inner());
+        for spec in specs {
+            let name = spec.name.trim().to_string();
+            if name.is_empty() || name.chars().any(char::is_whitespace) {
+                problems.push(format!(
+                    "profile `{}`: a profile name is one word",
+                    spec.name
+                ));
+                continue;
+            }
+            if builtin_profile(&name).is_some() {
+                problems.push(format!(
+                    "profile `{name}`: a built-in profile has that name"
+                ));
+                continue;
+            }
+            if let Some(owner) = profiles.get(&name).filter(|p| p.plugin != plugin) {
+                problems.push(format!(
+                    "profile `{name}`: plugin `{}` contributes a profile of that name",
+                    owner.plugin
+                ));
+                continue;
+            }
+            let (settings, refused) = filter_plugin_profile(plugin, spec.settings);
+            problems.extend(
+                refused
+                    .into_iter()
+                    .map(|r| format!("profile `{name}`: {r}")),
+            );
+            taken.push((name.clone(), spec.description.clone()));
+            profiles.insert(
+                name,
+                PluginProfile {
+                    plugin: plugin.to_string(),
+                    description: spec.description,
+                    settings,
+                },
+            );
+        }
+        (taken, problems)
+    }
+
+    /// Drop every profile `plugin` contributed: it unloaded.
+    pub fn remove(&self, plugin: &str) {
+        self.profiles
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .retain(|_, p| p.plugin != plugin);
+    }
+
+    fn read(&self) -> std::sync::RwLockReadGuard<'_, PluginProfiles> {
+        self.profiles.read().unwrap_or_else(|e| e.into_inner())
+    }
 }
 
 /// What the plugin's capability grant lets it reach, read by the loader.
@@ -238,7 +335,10 @@ pub enum PluginToolsStatus {
     Offered {
         tools: Vec<ListedPluginTool>,
         reach: Reach,
+        /// Tools, profiles and profile keys that could not be taken.
         problems: Vec<String>,
+        /// The profiles it contributes (name, description), AT.6.
+        profiles: Vec<(String, String)>,
     },
     /// Not offered, and why.
     Refused(String),
@@ -255,6 +355,8 @@ pub struct PluginTools {
     status: Mutex<BTreeMap<String, PluginToolsStatus>>,
     /// Called after the statuses change; publishes [`PluginToolsChanged`].
     changed: Arc<dyn Fn() + Send + Sync>,
+    /// Where a plugin's profiles go (AT.6). `None` takes none.
+    profiles: Option<PluginProfileStoreHandle>,
 }
 
 /// Shared by the llm layer and the plugin loader.
@@ -272,7 +374,14 @@ impl PluginTools {
             configured,
             status: Mutex::new(BTreeMap::new()),
             changed: Arc::new(|| {}),
+            profiles: None,
         }
+    }
+
+    /// Take each plugin's profiles into `store` as it registers.
+    pub fn with_profiles(mut self, store: PluginProfileStoreHandle) -> Self {
+        self.profiles = Some(store);
+        self
     }
 
     /// Call `changed` whenever the statuses change, so a listing can repaint.
@@ -322,9 +431,6 @@ impl PluginTools {
             Err(e) => return refuse(format!("it could not list its tools: {e}"), true),
         };
         let (tools, problems) = PluginToolSource::describe_all(listed);
-        for p in &problems {
-            tracing::warn!(target: "lattice::llm", "llm: plugin `{name}` tool left out: {p}");
-        }
         let listed = tools
             .iter()
             .map(|t| ListedPluginTool {
@@ -334,6 +440,24 @@ impl PluginTools {
                 permission: row(reach, t.kind),
             })
             .collect();
+        let mut problems = problems;
+        let profiles = match &self.profiles {
+            None => Vec::new(),
+            Some(store) => match plugin.profiles().await {
+                Ok(specs) => {
+                    let (taken, refused) = store.add(name, specs);
+                    problems.extend(refused);
+                    taken
+                }
+                Err(e) => {
+                    problems.push(format!("its profiles could not be listed: {e}"));
+                    Vec::new()
+                }
+            },
+        };
+        for p in &problems {
+            tracing::warn!(target: "lattice::llm", "llm: plugin `{name}`: {p}");
+        }
         self.broker.add_source(
             name,
             Arc::new(PluginToolSource {
@@ -349,6 +473,7 @@ impl PluginTools {
                 tools: listed,
                 reach,
                 problems,
+                profiles,
             },
         );
         (self.changed)();
@@ -365,6 +490,9 @@ impl PluginTools {
         );
         if offered {
             self.broker.remove_source(name);
+            if let Some(store) = &self.profiles {
+                store.remove(name);
+            }
             (self.changed)();
         }
         offered
@@ -668,5 +796,112 @@ mod tests {
         tools.unregister("github");
         tools.unregister("org");
         assert!(broker.offer(&select(&["org.*"])).await.tools().is_empty());
+    }
+
+    fn spec(name: &str, settings: &[(&str, &str)]) -> PluginProfileSpec {
+        PluginProfileSpec {
+            name: name.into(),
+            description: format!("{name} workflow"),
+            settings: settings
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+        }
+    }
+
+    /// AT.6: two plugins contributing the same profile name keep the first
+    /// and name the second; a built-in profile's name is refused; unloading
+    /// a plugin takes its profiles with it.
+    #[test]
+    fn a_profile_name_is_the_first_plugin_s_and_never_a_builtin_one() {
+        let store = PluginProfileStore::default();
+        let (taken, problems) = store.add(
+            "org",
+            vec![
+                spec("org-plan", &[("tools", "org.*")]),
+                spec("coding", &[("tools", "org.*")]),
+            ],
+        );
+        assert_eq!(
+            taken,
+            vec![("org-plan".to_string(), "org-plan workflow".to_string())]
+        );
+        assert_eq!(
+            problems,
+            vec!["profile `coding`: a built-in profile has that name".to_string()]
+        );
+
+        let (taken, problems) = store.add("tasks", vec![spec("org-plan", &[])]);
+        assert!(taken.is_empty());
+        assert_eq!(
+            problems,
+            vec!["profile `org-plan`: plugin `org` contributes a profile of that name".to_string()]
+        );
+        assert_eq!(store.snapshot()["org-plan"].plugin, "org");
+
+        store.remove("org");
+        assert!(store.snapshot().is_empty());
+    }
+
+    /// Registering takes the plugin's profiles, filtered, and lists what was
+    /// refused; unregistering drops them.
+    #[tokio::test]
+    async fn a_plugin_s_profiles_arrive_with_its_tools_and_leave_with_them() {
+        struct WithProfiles(Arc<dyn ToolPlugin>);
+        impl ToolPlugin for WithProfiles {
+            fn tools(&self) -> BoxFuture<'_, Result<Vec<PluginTool>, String>> {
+                self.0.tools()
+            }
+            fn call(
+                &self,
+                name: &str,
+                args: String,
+            ) -> BoxFuture<'_, Result<PluginToolResult, String>> {
+                self.0.call(name, args)
+            }
+            fn profiles(&self) -> BoxFuture<'_, Result<Vec<PluginProfileSpec>, String>> {
+                Box::pin(async {
+                    Ok(vec![spec(
+                        "org-plan",
+                        &[("model", "x/y"), ("tools", "org.*,lattice.exec")],
+                    )])
+                })
+            }
+        }
+        let store: PluginProfileStoreHandle = Arc::default();
+        let broker: ToolBrokerHandle = Arc::new(ToolBroker::new());
+        let tools = PluginTools::new(broker, Arc::new(Lattice::default()), Arc::new(Vec::new))
+            .with_profiles(store.clone());
+        tools
+            .register(
+                "org",
+                Arc::new(WithProfiles(Fixture::new(vec![]))),
+                Reach::Contained,
+            )
+            .await
+            .unwrap();
+
+        let profile = &store.snapshot()["org-plan"];
+        assert_eq!(
+            profile.settings,
+            [(crate::llm::settings::SettingKey::Tools, "org.*".to_string())]
+                .into_iter()
+                .collect()
+        );
+        let Some(PluginToolsStatus::Offered {
+            profiles, problems, ..
+        }) = tools.statuses().remove("org")
+        else {
+            panic!("offered");
+        };
+        assert_eq!(profiles[0].0, "org-plan");
+        assert!(
+            problems.iter().any(|p| p.contains("`model`"))
+                && problems.iter().any(|p| p.contains("dropped lattice.exec")),
+            "{problems:?}"
+        );
+
+        tools.unregister("org");
+        assert!(store.snapshot().is_empty());
     }
 }

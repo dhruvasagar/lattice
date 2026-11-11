@@ -412,6 +412,85 @@ pub fn builtin_profile(name: &str) -> Option<RawSet> {
         })
 }
 
+/// AT.6: a profile a plugin contributes, already filtered (see
+/// [`filter_plugin_profile`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PluginProfile {
+    /// The plugin that contributed it.
+    pub plugin: String,
+    /// One line saying what the workflow is for.
+    pub description: String,
+    pub settings: RawSet,
+}
+
+/// The plugin profiles in force, by profile name.
+pub type PluginProfiles = BTreeMap<String, PluginProfile>;
+
+/// Filter a profile plugin `plugin` contributes. It is trusted like a
+/// project's file, because it arrives with something installed rather than
+/// something the user wrote: it may set a system prompt (text, not a path),
+/// parameters and a destination, and select its own tools, `lattice.read` and
+/// `web.*`. It may not choose a model, which the plugin cannot know you have,
+/// nor any other source's tools. What it may not set is dropped and returned,
+/// one message each.
+pub fn filter_plugin_profile(
+    plugin: &str,
+    entries: impl IntoIterator<Item = (String, String)>,
+) -> (RawSet, Vec<String>) {
+    let mut out = RawSet::new();
+    let mut refused = Vec::new();
+    for (name, text) in entries {
+        let Some(key) = SettingKey::from_file_key(&name) else {
+            refused.push(format!("`{name}`: not a setting a profile carries"));
+            continue;
+        };
+        if key == SettingKey::Model {
+            refused.push(
+                "`model`: a plugin cannot know which models you have; set one in your own \
+                 [llm.profiles.<name>]"
+                    .to_string(),
+            );
+            continue;
+        }
+        if let Err(e) = validate(key, &text) {
+            refused.push(format!("`{name}`: {e}"));
+            continue;
+        }
+        if key == SettingKey::System && system_is_path(&text) {
+            refused.push(
+                "`system`: must be text, not a file path, so a plugin cannot make the editor \
+                 read a file"
+                    .to_string(),
+            );
+            continue;
+        }
+        if key == SettingKey::Tools {
+            let own = format!("{plugin}.");
+            let (kept, dropped): (Vec<String>, Vec<String>) = parse_tools(&text)
+                .unwrap_or_default()
+                .into_iter()
+                .partition(|t| {
+                    t.starts_with(&own)
+                        || matches!(t.as_str(), "lattice.read" | "web.*")
+                        || t.starts_with("web.")
+                });
+            if !dropped.is_empty() {
+                refused.push(format!(
+                    "`tools`: dropped {}; a plugin's profile selects its own tools, \
+                     lattice.read and web.* only",
+                    dropped.join(", ")
+                ));
+            }
+            if !kept.is_empty() {
+                out.insert(key, kept.join(","));
+            }
+            continue;
+        }
+        out.insert(key, text);
+    }
+    (out, refused)
+}
+
 /// Every profile a session may name: the built-in ones and `user`'s, sorted,
 /// each once.
 pub fn profile_names<'a>(user: impl IntoIterator<Item = &'a str>) -> Vec<String> {
@@ -570,6 +649,9 @@ pub fn parse_profile(name: &str, table: &toml::Table, warnings: &mut Vec<String>
 pub struct Layers {
     pub global: RawSet,
     pub profiles: BTreeMap<String, RawSet>,
+    /// AT.6: profiles plugins contribute, between the built-in ones and the
+    /// user's.
+    pub plugin_profiles: PluginProfiles,
     /// The profile a session with none of its own starts from.
     pub default_profile: Option<String>,
     pub project: Option<ProjectLayer>,
@@ -798,12 +880,22 @@ pub fn resolve(
         .filter(|p| !p.trim().is_empty());
     let request_profile = req.profile.clone().filter(|p| !p.trim().is_empty());
     let profile_name = request_profile.clone().or(base_profile.clone());
-    // A profile's sets in the order they apply: the built-in one, then the
-    // user's of the same name over it, key by key.
+    // A profile's sets in the order they apply: the built-in one, then a
+    // plugin's, then the user's of the same name over it, key by key. A
+    // plugin's never shares a built-in's name (refused at registration).
     let lookup = |name: &String| -> Result<Vec<(RawSet, OptionOrigin)>, SettingsError> {
         let sets: Vec<(RawSet, OptionOrigin)> = builtin_profile(name)
             .map(|set| (set, OptionOrigin::BuiltinProfile { name: name.clone() }))
             .into_iter()
+            .chain(layers.plugin_profiles.get(name).map(|p| {
+                (
+                    p.settings.clone(),
+                    OptionOrigin::PluginProfile {
+                        name: name.clone(),
+                        plugin: p.plugin.clone(),
+                    },
+                )
+            }))
             .chain(
                 layers
                     .profiles
@@ -814,7 +906,13 @@ pub fn resolve(
         if sets.is_empty() {
             Err(SettingsError::UnknownProfile {
                 name: name.clone(),
-                known: profile_names(layers.profiles.keys().map(String::as_str)),
+                known: profile_names(
+                    layers
+                        .profiles
+                        .keys()
+                        .chain(layers.plugin_profiles.keys())
+                        .map(String::as_str),
+                ),
             })
         } else {
             Ok(sets)
@@ -1261,6 +1359,103 @@ mod tests {
             .insert("coding".into(), set(&[(SettingKey::Tools, "lattice.read")]));
         let r = run(&l, &req, Trust::User);
         assert_eq!(tools(&r), ["lattice.read"]);
+    }
+
+    fn pairs(p: &[(&str, &str)]) -> Vec<(String, String)> {
+        p.iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    /// AT.6: a plugin's profile keeps the system prompt, parameters and
+    /// destination; loses a model, a path for a system prompt, and any tool
+    /// selection but its own, `lattice.read` and `web.*`; and says why for each.
+    #[test]
+    fn a_plugin_profile_loses_what_a_plugin_may_not_choose() {
+        let (kept, refused) = filter_plugin_profile(
+            "org",
+            pairs(&[
+                ("system", "Plan the day."),
+                ("temperature", "0.2"),
+                ("destination", "chat"),
+                ("model", "openai/gpt-5"),
+                (
+                    "tools",
+                    "org.*,lattice.read,web.search,lattice.exec,github.*",
+                ),
+                ("api_key_command", "cat ~/.key"),
+            ]),
+        );
+        assert_eq!(
+            kept,
+            set(&[
+                (SettingKey::System, "Plan the day."),
+                (SettingKey::Temperature, "0.2"),
+                (SettingKey::Destination, "chat"),
+                (SettingKey::Tools, "lattice.read,org.*,web.search"),
+            ])
+        );
+        assert_eq!(refused.len(), 3, "{refused:?}");
+        assert!(refused[0].starts_with("`model`"), "{refused:?}");
+        assert!(
+            refused[1].contains("dropped github.*, lattice.exec"),
+            "{refused:?}"
+        );
+        assert!(refused[2].starts_with("`api_key_command`"), "{refused:?}");
+
+        let (kept, refused) = filter_plugin_profile("org", pairs(&[("system", "/etc/passwd")]));
+        assert!(kept.is_empty());
+        assert!(refused[0].contains("not a file path"), "{refused:?}");
+    }
+
+    /// A plugin's profile sits between the built-in ones and the user's: it
+    /// applies by name with its own origin, and a user profile of the same
+    /// name overlays it key by key, widening its tools if the user says so.
+    #[test]
+    fn a_user_profile_overlays_a_plugin_profile_and_may_widen_it() {
+        let mut l = Layers::default();
+        l.plugin_profiles.insert(
+            "org-plan".into(),
+            PluginProfile {
+                plugin: "org".into(),
+                description: "Plan a day".into(),
+                settings: set(&[
+                    (SettingKey::System, "Plan the day."),
+                    (SettingKey::Tools, "org.*"),
+                ]),
+            },
+        );
+        let req = RequestOverrides {
+            profile: Some("org-plan".into()),
+            ..Default::default()
+        };
+        let r = run(&l, &req, Trust::User);
+        assert_eq!(tools(&r), ["org.*"]);
+        assert_eq!(
+            origin(&r, SettingKey::System),
+            OptionOrigin::PluginProfile {
+                name: "org-plan".into(),
+                plugin: "org".into(),
+            }
+        );
+
+        l.profiles.insert(
+            "org-plan".into(),
+            set(&[
+                (SettingKey::Model, "local/qwen3"),
+                (SettingKey::Tools, "org.*,lattice.edit"),
+            ]),
+        );
+        let r = run(&l, &req, Trust::User);
+        assert_eq!(r.values.model.as_deref(), Some("local/qwen3"));
+        assert_eq!(tools(&r), ["lattice.edit", "org.*"]);
+        assert_eq!(r.values.system.as_deref(), Some("Plan the day."));
+        assert_eq!(
+            origin(&r, SettingKey::Tools),
+            OptionOrigin::Profile {
+                name: "org-plan".into()
+            }
+        );
     }
 
     /// `@coding` in a pasted prompt is pasted text: the built-in profile may

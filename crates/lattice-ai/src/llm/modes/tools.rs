@@ -267,6 +267,7 @@ fn render_plugins(out: &mut String, plugins: &[(String, PluginToolsStatus)]) {
                 tools,
                 reach,
                 problems,
+                profiles,
             } => {
                 out.push_str(&format!("{name}  plugin  offered"));
                 if *reach == Reach::Outward {
@@ -282,6 +283,11 @@ fn render_plugins(out: &mut String, plugins: &[(String, PluginToolsStatus)]) {
                         (Permission::Run, _) => "runs",
                     };
                     let line = format!("    {:<width$}  [{note}]  {}", t.name, t.description);
+                    out.push_str(line.trim_end());
+                    out.push('\n');
+                }
+                for (profile, description) in profiles {
+                    let line = format!("    profile {profile}  {description}");
                     out.push_str(line.trim_end());
                     out.push('\n');
                 }
@@ -496,6 +502,7 @@ mod tests {
                         ],
                         reach: Reach::Outward,
                         problems: vec![],
+                        profiles: vec![],
                     },
                 ),
                 (
@@ -507,6 +514,7 @@ mod tests {
                         ],
                         reach: Reach::Contained,
                         problems: vec!["`a.b`: bad name".into()],
+                        profiles: vec![("org-plan".into(), "Plan a day or a week".into())],
                     },
                 ),
                 (
@@ -526,6 +534,7 @@ mod tests {
              org  plugin  offered\n    \
              agenda  [runs]  agenda things\n    \
              change  [reviewed]  change things\n    \
+             profile org-plan  Plan a day or a week\n    \
              not offered: `a.b`: bad name\n\
              \n\
              web  plugin  not offered: `web` is lattice's own tools\n"

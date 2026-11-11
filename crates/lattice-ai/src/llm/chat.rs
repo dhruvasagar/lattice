@@ -405,6 +405,8 @@ pub struct LlmChats {
     /// The project's safety-list additions, compiled off-thread with the
     /// layer above and refreshed with it (design §6 "Safety lists").
     project_rules: Arc<RwLock<Option<Arc<ProjectRules>>>>,
+    /// AT.6: profiles plugins contribute, written as plugins load and unload.
+    plugin_profiles: super::tools::plugin::PluginProfileStoreHandle,
     /// The latest ask's session, by name, for `:llm-last` (LL.14a). Every ask
     /// has one, shown or hidden: echo, register, `below` and rewrite answers
     /// keep theirs so the full reply can be seen and followed up.
@@ -463,6 +465,7 @@ impl LlmChats {
             project_root: RwLock::new(None),
             project_cache: Arc::new(RwLock::new(None)),
             project_rules: Arc::new(RwLock::new(None)),
+            plugin_profiles: Arc::default(),
             last_ask: Mutex::new(None),
             done_hook: std::sync::OnceLock::new(),
             store: std::sync::OnceLock::new(),
@@ -556,12 +559,20 @@ impl LlmChats {
         self.refresh_project();
     }
 
-    /// The names of the configured profiles.
-    /// Every profile a session may name: lattice's built-in ones and the
-    /// user's, sorted.
+    /// Every profile a session may name: lattice's built-in ones, the ones
+    /// plugins contribute and the user's, sorted.
     pub fn profile_names(&self) -> Vec<String> {
         let cfg = self.config.read().unwrap_or_else(|e| e.into_inner());
-        super::settings::profile_names(cfg.profile_names())
+        let plugins = self.plugin_profiles.snapshot();
+        super::settings::profile_names(
+            cfg.profile_names()
+                .chain(plugins.keys().map(String::as_str)),
+        )
+    }
+
+    /// Where plugins' profiles are kept (AT.6).
+    pub fn plugin_profiles(&self) -> &super::tools::plugin::PluginProfileStoreHandle {
+        &self.plugin_profiles
     }
 
     fn global_layer(&self) -> RawSet {
@@ -612,6 +623,7 @@ impl LlmChats {
         Layers {
             global: self.global_layer(),
             profiles: cfg.profiles.clone(),
+            plugin_profiles: self.plugin_profiles.snapshot(),
             default_profile: cfg.default_profile.clone(),
             project: self
                 .project_cache

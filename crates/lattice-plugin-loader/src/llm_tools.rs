@@ -11,7 +11,8 @@
 
 use lattice_ai::llm::tools::BoxFuture;
 use lattice_ai::llm::tools::plugin::{
-    PluginTool, PluginToolKind, PluginToolResult, ProposedEdit, Reach, ToolPlugin,
+    PluginProfileSpec, PluginTool, PluginToolKind, PluginToolResult, ProposedEdit, Reach,
+    ToolPlugin,
 };
 use lattice_plugin_host::llm_tools_task::{LlmToolKind, LlmToolResult};
 use lattice_plugin_host::{CapabilityGrant, LlmToolsClient};
@@ -78,6 +79,24 @@ impl ToolPlugin for ClientPlugin {
                 .await
                 .map_err(|e| format!("plugin `{}`: {e}", self.plugin))??;
             Ok(from_wit(result))
+        })
+    }
+
+    fn profiles(&self) -> BoxFuture<'_, Result<Vec<PluginProfileSpec>, String>> {
+        Box::pin(async move {
+            let profiles = self
+                .client
+                .profiles()
+                .await
+                .map_err(|e| format!("plugin `{}`: {e}", self.plugin))?;
+            Ok(profiles
+                .into_iter()
+                .map(|p| PluginProfileSpec {
+                    name: p.name,
+                    description: p.description,
+                    settings: p.settings,
+                })
+                .collect())
         })
     }
 }

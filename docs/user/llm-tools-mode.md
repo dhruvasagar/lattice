@@ -131,6 +131,11 @@ A plugin named `lattice`, `web` or like one of your MCP servers, or offering
 tools under a name another plugin already uses, is not offered, and
 `*llm-tools*` says why. Its other features still work.
 
+A plugin can contribute **profiles** as well, one per workflow, opened with
+`:llm <profile>`. Your own `[llm.profiles.<name>]` of the same name overlays
+one; what a plugin's profile may set is in
+[`llm-guide`](help:llm-guide) under "Plugin profiles".
+
 ## `:llm-tools`
 
 `:llm-tools` opens `*llm-tools*` (`:llm-mcp` still works, the old name). It
@@ -140,8 +145,8 @@ has a section for each kind of source:
   started`, `starting`, `running`, `failed: …`, `exited: …`, `stopped`) and
   its tools, each marked `allowed` or `asks`.
 - **Plugins**: each plugin offering tools, and each tool marked `runs`,
-  `reviewed`, `asks` or `asks, then reviewed`; or why the plugin is not
-  offered.
+  `reviewed`, `asks` or `asks, then reviewed`, then its profiles; or why the
+  plugin is not offered.
 
 The list keeps itself current.
 

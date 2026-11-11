@@ -32,6 +32,14 @@ pub enum OptionOrigin {
         /// The profile's name.
         name: String,
     },
+    /// Supplied by a profile a plugin contributes (AT.6), between a built-in
+    /// profile and the user's, echoed as `(plugin profile: org-plan, from org)`.
+    PluginProfile {
+        /// The profile's name.
+        name: String,
+        /// The plugin that contributed it.
+        plugin: String,
+    },
     /// Supplied by project-level config checked in beside the code (LL.7),
     /// which is untrusted and so subject to a trust table.
     Project,
@@ -46,6 +54,9 @@ impl std::fmt::Display for OptionOrigin {
             Self::ModeContribution { mode_id } => write!(f, "mode: {mode_id}"),
             Self::Profile { name } => write!(f, "profile: {name}"),
             Self::BuiltinProfile { name } => write!(f, "builtin profile: {name}"),
+            Self::PluginProfile { name, plugin } => {
+                write!(f, "plugin profile: {name}, from {plugin}")
+            }
             Self::Project => f.write_str("project"),
         }
     }
@@ -64,6 +75,14 @@ mod tests {
             }
             .to_string(),
             "builtin profile: coding"
+        );
+        assert_eq!(
+            OptionOrigin::PluginProfile {
+                name: "org-plan".into(),
+                plugin: "org".into(),
+            }
+            .to_string(),
+            "plugin profile: org-plan, from org"
         );
         assert_eq!(OptionOrigin::GlobalConfig.to_string(), "global");
         assert_eq!(OptionOrigin::BufferLocal.to_string(), "buffer-local");

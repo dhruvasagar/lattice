@@ -1,0 +1,9 @@
+# The demo's LLM section (demo-script.md §4) runs under a throwaway
+# XDG_CONFIG_HOME holding only this file, so nothing from your own config is
+# on camera. The key is read from the environment, never written here.
+[llm]
+default_provider = "anthropic"
+model            = "claude-sonnet-4-5"
+
+[llm.providers.anthropic]
+api_key_env = "ANTHROPIC_API_KEY"

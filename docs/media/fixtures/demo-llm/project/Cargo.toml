@@ -1,0 +1,10 @@
+# The demo's LLM section (demo-script.md §4). It does not compile on purpose:
+# `greeting` is moved into a closure and then used again (E0382), which is
+# the error the section asks about and then rewrites away. The empty
+# `[workspace]` keeps it out of lattice's own workspace.
+[package]
+name = "demo"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]

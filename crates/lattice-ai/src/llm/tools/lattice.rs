@@ -159,7 +159,10 @@ impl LatticeTools {
         vec![
             tool(
                 "edit_file",
-                "Replace text in a file in the project. old_string must match the file as                  the editor has it (unsaved edits included) exactly once, unless                  replace_all is set. The user reviews the change as a diff and may accept,                  change or reject it; the result says which.",
+                "Replace text in a file in the project. old_string must match the file as \
+                 the editor has it (unsaved edits included) exactly once, unless \
+                 replace_all is set. The user reviews the change as a diff and may accept, \
+                 change or reject it; the result says which.",
                 json!({
                     "type": "object",
                     "properties": {
@@ -173,7 +176,8 @@ impl LatticeTools {
             ),
             tool(
                 "write_file",
-                "Create a file in the project, or replace all of one. The user reviews the                  change as a diff and may accept, change or reject it; the result says which.",
+                "Create a file in the project, or replace all of one. The user reviews the \
+                 change as a diff and may accept, change or reject it; the result says which.",
                 json!({
                     "type": "object",
                     "properties": {
@@ -1120,6 +1124,29 @@ mod tests {
             Arc::new(move |p| exclude_of.excluded(p)),
         );
         (tools, chats)
+    }
+
+    /// Every description reaches the model verbatim. A string literal
+    /// continued across lines without a trailing `\` sends its indentation
+    /// too, which is noise for every model and worse for a small one.
+    #[tokio::test]
+    async fn no_tool_description_carries_source_indentation() {
+        let dir = Scratch::new("descriptions");
+        let (tools, _chats) = tools_over(dir.path());
+        let all = tools
+            .catalogue()
+            .into_iter()
+            .chain(LatticeTools::edit_catalogue());
+        for tool in all {
+            let d = &tool.descriptor;
+            for text in [d.description.clone(), d.input_schema.to_string()] {
+                assert!(
+                    !text.contains("  "),
+                    "`{}` carries a run of spaces: {text:?}",
+                    d.name
+                );
+            }
+        }
     }
 
     async fn call(tools: &LatticeTools, name: &str, input: Value) -> Result<String, String> {

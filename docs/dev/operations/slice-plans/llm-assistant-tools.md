@@ -6,7 +6,7 @@
 
 Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred · ❌ dropped.
 
-**Status: 📝 planned 2026-11-11. Nothing built.**
+**Status: 🚧 AT.1 ✅; AT.2 next.**
 
 **Goal:** native web tools, a WIT seam through which a plugin gives the model tools and
 profiles, and an org assistant built on both, measured by an eval that decides whether a
@@ -35,7 +35,7 @@ UI-thread work, async results landing through `inbound`. In addition:
 
 | ID | Slice | Depends on | Status |
 |---|---|---|---|
-| AT.1 | Tool descriptions without stray indentation | — | 📝 |
+| AT.1 | Tool descriptions without stray indentation | — | ✅ |
 | AT.2 | `web.search`, `web.fetch`, the `web` source | — | 📝 |
 | AT.3 | Per-domain grants and `web.fetch(<host>)` rules | AT.2 | 📝 |
 | AT.4 | Built-in profiles; `:llm <profile> <prompt…>` | AT.2 | 📝 |
@@ -50,7 +50,7 @@ UI-thread work, async results landing through `inbound`. In addition:
 | AT.13 | Constrained decoding for tool arguments | AT.12 | ⛔ |
 | AT.14 | Plugin tool sources served to external agents over `LatticeServer` | AT.5 | ⛔ |
 
-### AT.1 — Tool descriptions without stray indentation
+### AT.1 — Tool descriptions without stray indentation ✅
 
 `edit_file` and `write_file` descriptions (`crates/lattice-ai/src/llm/tools/lattice.rs:162`,
 `:176`) continue string literals across lines without a trailing `\`, so every provider

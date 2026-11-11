@@ -6,7 +6,7 @@
 
 Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred · ❌ dropped.
 
-**Status: 🚧 AT.1–AT.6 ✅, AT.15 ✅; next is the plugin repo (AT.7–AT.10), after the plugin API release.**
+**Status: 🚧 AT.1–AT.6 ✅, AT.15 ✅, AT.7a–b ✅ (plugin branch `llm-tools`); next AT.7c.**
 
 **Goal:** native web tools, a WIT seam through which a plugin gives the model tools and
 profiles, and an org assistant built on both, measured by an eval that decides whether a
@@ -47,8 +47,8 @@ UI-thread work, async results landing through `inbound`. In addition:
 | AT.5e | guest SDK ergonomics for `llm-tools` | AT.5b | ✅ |
 | AT.6 | Plugin profiles, trusted like project config | AT.4, AT.5 | ✅ |
 | AT.7 | Org read tools (plugin repo) | AT.5 | 🚧 |
-| AT.7a | Repeaters expanded in the shared agenda scan | — | 📝 |
-| AT.7b | The `llm-tools` export; `org.agenda` with `match` | AT.7a | 📝 |
+| AT.7a | Repeaters expanded in the shared agenda scan | — | ✅ |
+| AT.7b | The `llm-tools` export; `org.agenda` with `match` | AT.7a | ✅ |
 | AT.7c | `org.query`, `org.entry`; refs | AT.7b | 📝 |
 | AT.7d | `org.clock` | AT.7b | 📝 |
 | AT.7e | `org.notes` | AT.7b | 📝 |
@@ -258,14 +258,25 @@ dates stay `org.agenda`'s, which takes a `match`, and `org.query` has no date te
 §6). Built on a plugin branch against the sibling checkout through an uncommitted
 `[patch.crates-io]`; the crates.io pins and `min_lattice` move when the API is published.
 
-- **AT.7a** — `agenda.rs`: a row whose stamp has a repeater yields one dated row per
-  occurrence inside the span (`repeat::next_date` from the stamp), the past stamp staying
-  the overdue one, as Org shows it. User-visible in `:org-agenda`. Tests: `+1d`, `+1w`,
-  `.+`/`++` cookies, a repeater starting after the span, a done item not repeated.
-- **AT.7b** — `export llm-tools` in the `org-plugin` world, `"llm-tools"` in `provides`,
-  `fs:read` reach via the existing grants. `org.agenda { range, match? }` over `scan_file`
-  (text, no tree: the tool runs with no buffer). Every answer opens with today. The tool
-  inputs are `lattice_plugin_sdk::llm` structs.
+- **AT.7a** ✅ — `agenda.rs`: a row whose stamp has a repeater yields one dated row per
+  occurrence inside the span, the past stamp staying the overdue one, as Org shows it.
+  User-visible in `:org-agenda`. Tests: `+1d`, `+1w`, `.+`/`++` cookies, a repeater starting
+  after the span, a done item not repeated. `Dated` carries the repeater; `repeats_in` steps
+  days and weeks arithmetically (an old daily repeater costs nothing) and walks months with
+  clamping; only `When::Days` sections take repeats, so Priority A lists a task once. `.+`
+  shows no future days (it counts from a completion that has not happened). It exposed an
+  off-by-one: the default dated window was `today ..= today + span`, eight days under a
+  seven-day header, fixed by passing `span - 1`. Plugin `0e46443`.
+- **AT.7b** ✅ — `export llm-tools` in the `org-plugin` world, `"llm-tools"` in `provides`,
+  read reach via the existing grants (the store is read-only). `org.agenda { range, from?,
+  to?, match? }`. The plan said `scan_file` because the tool has no buffer; it uses
+  `tree-sitter.parse-file` instead, which parses from the path under the grant, falling back
+  to `scan_file` as the view does — properties and inherited tags then match the view.
+  Every answer opens with today; overdue only when the window starts today; undated TODOs
+  are counted and pointed at `org.query`; 150 rows at most, the rest counted. The agenda's
+  per-section decision is `agenda::occurrences`, shared by the view and the tool. Pure in
+  `llm_tools.rs` (unit-tested), gathered through `host-services` in `lib.rs`; an integration
+  test loads the real component and calls the tool through the editor's own broker.
 - **AT.7c** — `org.query { match }` and `org.entry { ref }`; the ref is
   `path::line::heading` or the entry's `ID`, a stale one refused with "query again".
 - **AT.7d** — `org.clock { from, to, by }`, totals from `clock_scan::scan` cut to the range.

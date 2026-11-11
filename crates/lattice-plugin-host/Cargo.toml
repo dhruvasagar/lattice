@@ -217,6 +217,12 @@ harness = false
 name = "completion"
 harness = false
 
+# AT.5c: a warm plugin tool call through the LlmToolsClient bridge (channel +
+# guest export + result marshalling). Skips without the wasm target.
+[[bench]]
+name = "llm_tools"
+harness = false
+
 # PH7.7a: grammar-extension boundary marshalling — context projection +
 # result/effect `from_wit` (the < 5µs grammar round-trip budget's marshalling
 # component; the end-to-end guest↔host trampoline gate lands with PH7.7c/d).

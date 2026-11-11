@@ -6,7 +6,7 @@
 
 Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred · ❌ dropped.
 
-**Status: 🚧 AT.1–AT.4 ✅; AT.5 in progress (AT.5a–b ✅, AT.5c next).**
+**Status: 🚧 AT.1–AT.4 ✅; AT.5 in progress (AT.5a–c ✅, AT.5d next).**
 
 **Goal:** native web tools, a WIT seam through which a plugin gives the model tools and
 profiles, and an org assistant built on both, measured by an eval that decides whether a
@@ -42,7 +42,7 @@ UI-thread work, async results landing through `inbound`. In addition:
 | AT.5 | `llm-tools` WIT interface and `PluginToolSource` | — | 🚧 |
 | AT.5a | lattice-ai: `ToolPlugin`, `PluginToolSource`, `PluginTools` service | — | ✅ |
 | AT.5b | plugin host: `llm-tools` world, actor, client, fixture guest | — | ✅ |
-| AT.5c | loader: drain, adapter, teardown; round-trip bench | AT.5a, AT.5b | 📝 |
+| AT.5c | loader: drain, adapter, teardown; round-trip bench | AT.5a, AT.5b | ✅ |
 | AT.5d | guest SDK trait; `*llm-tools*` listing | AT.5c | 📝 |
 | AT.6 | Plugin profiles, trusted like project config | AT.4, AT.5 | 📝 |
 | AT.7 | Org read tools (plugin repo) | AT.5 + API release | 📝 |
@@ -160,7 +160,13 @@ any review.
   true; a host test deletes under an `fs:write` grant and is refused. The loader arm is a
   `debug!` placeholder until AT.5c drains the seam.
 - **AT.5c** — the loader's drain: grant → `Reach`, client → `ToolPlugin`, register, unregister
-  on unload. The round-trip bench.
+  on unload. The round-trip bench. `Reach` reads the grant the plugin was given after its
+  trust tier, so a user-installed plugin whose `proc:spawn` was dropped is contained.
+  Filesystem grants do not make a plugin outward: on this seam they are read-only (AT.5b),
+  and a read is what `lattice.read` runs unasked. A refused registration (a native or MCP
+  name, another plugin's) does not fail the load; the plugin's other seams still work.
+  Tests drive the fixture through discovery: rows per grant, a call to the guest and back,
+  a proposal through `edit_file`, unload withdrawing the tools, `web` refused and listed.
 - **AT.5d** — the guest SDK's trait and registration in `lattice-plugin-api`; `*llm-mcp*`
   becomes `*llm-tools*` with a section per source, `:llm-mcp` kept as an alias.
 

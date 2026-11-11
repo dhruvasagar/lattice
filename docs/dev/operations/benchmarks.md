@@ -71,6 +71,19 @@ target rather than just a slower number.
 
 ---
 
+## AT.5c — a plugin tool call (2026-11-11)
+
+`llm_tools_call_warm` in `crates/lattice-plugin-host/benches/llm_tools.rs` is one warm call
+of a plugin's tool through the `LlmToolsClient` bridge: the channel hop to the plugin's
+actor, fuel re-armed, the guest export, and the result back. **~52 µs** (49.6–55.2), the same
+as a completion source's `generate` (~47 µs, the PH7.6 row below), which is the same bridge.
+
+A model tool call waits on the model for hundreds of milliseconds, and the call runs on the
+assistant's request task, never on the keystroke path, so this is descriptive rather than a
+ratchet. It is here so the bridge growing a cost it should not have shows up.
+
+---
+
 ## LL.20 — session files and export (2026-11-08)
 
 `:llm-save`, `:llm-resume` and `:llm-export` encode, decode and render on the blocking pool,

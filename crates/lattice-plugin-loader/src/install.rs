@@ -325,6 +325,11 @@ pub fn install(boot: &mut impl SubsystemBoot) {
         transient_registry: boot
             .service::<lattice_picker::TransientSourceRegistryHandle>()
             .map(|h| (*h).clone()),
+        // AT.5c: registered by `lattice_ai::install`, which `editor_boot`
+        // runs in Phase B well before this line.
+        plugin_tools: boot
+            .service::<lattice_ai::llm::tools::plugin::PluginToolsHandle>()
+            .map(|h| (*h).clone()),
         tracer: Some(tracer.clone()),
     };
     if services.picker_registry.is_none() {

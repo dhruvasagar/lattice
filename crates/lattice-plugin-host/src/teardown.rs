@@ -118,6 +118,12 @@ pub struct PluginTeardown {
     /// a `TransientClient` whose actor has ended, so the chord would report a
     /// host error instead of "unknown source".
     pub transient_sources: Vec<String>,
+    /// AT.5: the name the plugin's llm tools are offered under, when they
+    /// were. Reversed by the LOADER, for `transient_sources`' reason: the
+    /// registry is lattice-ai's `PluginTools`, which this crate does not
+    /// depend on. Left registered, the model would be offered tools whose
+    /// actor has ended, and every call would fail.
+    pub llm_tools: Option<String>,
     /// TC.4: namespaced theme-element names the plugin registered. Reversed by
     /// `ThemeRegistry::unregister_element` so an unloaded plugin's elements stop
     /// appearing in `:customize` and stop resolving.
@@ -164,6 +170,7 @@ impl PluginTeardown {
             agenda_sources: Vec::new(),
             context_sources: Vec::new(),
             transient_sources: Vec::new(),
+            llm_tools: None,
             theme_elements: Vec::new(),
             signs: Vec::new(),
             modeline_namespace: None,
@@ -437,6 +444,8 @@ pub struct TeardownReport {
     /// Filled by the LOADER, like `help_topics` — see the field's doc on
     /// [`PluginTeardown`].
     pub transient_sources: usize,
+    /// AT.5: llm tool sources withdrawn (0 or 1). Filled by the loader.
+    pub llm_tools: usize,
     /// CM.6b: compilation parser factories unregistered.
     pub parser_factories: usize,
     /// CR.4: dashboard sections unregistered. Filled by the loader, for the
@@ -604,6 +613,7 @@ mod tests {
                 modeline_elements: 0,
                 parser_factories: 0,
                 transient_sources: 0,
+                llm_tools: 0,
                 // CR.3 / CR.4 / LG.3c: always 0 from `unload` — the loader
                 // fills these after reversing the help, dashboard and
                 // language registries, which live on its side of the crate

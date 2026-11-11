@@ -69,6 +69,8 @@ pub mod discovery;
 pub mod events;
 mod ex_commands;
 pub mod install;
+// AT.5c: a plugin's `llm-tools` client adapted to lattice-ai's `ToolPlugin`.
+mod llm_tools;
 pub mod pipeline;
 pub mod resolve;
 pub mod source_record;
@@ -663,6 +665,11 @@ pub struct LoaderServices {
     /// `editor_boot` since TR.1, which is what stops a plugin menu depending
     /// on whether magit happened to load.
     pub transient_registry: Option<lattice_picker::TransientSourceRegistryHandle>,
+    /// AT.5c: lattice-ai's plugin tool registry, where an `llm-tools` plugin's
+    /// tools are offered to the assistant beside lattice's own and each MCP
+    /// server's. Registered by `lattice_ai::install`, which runs before the
+    /// loader's.
+    pub plugin_tools: Option<lattice_ai::llm::tools::plugin::PluginToolsHandle>,
     /// PO.2: the boundary tracer the loader attaches to each async seam actor
     /// (`actor.with_tracer(...)` before spawning `run()`), so the actor emits a
     /// `PluginTraceRecord` per guest call. `None` degrades to no tracing.
@@ -709,6 +716,8 @@ pub struct WiredSeams {
     pub agenda_registry: bool,
     /// TR.2b: the transient-menu registry.
     pub transient_registry: bool,
+    /// AT.5c: lattice-ai's plugin tool registry.
+    pub plugin_tools: bool,
     /// MV.1: the multibuffer registry — where a plugin's declared views land.
     pub multibuffer_registry: bool,
     /// OA.23 / HB.2b: whether the HOST carries an excerpt-source resolver.
@@ -775,6 +784,7 @@ impl WiredSeams {
             && self.help_topics
             && self.dashboard_sections
             && self.transient_registry
+            && self.plugin_tools
             && self.multibuffer_registry
             && self.excerpt_source
             && self.view_args
@@ -1097,6 +1107,7 @@ impl PluginLoader {
             media_registry: self.env.media_registry.is_some(),
             agenda_registry: self.env.agenda_registry.is_some(),
             transient_registry: self.env.transient_registry.is_some(),
+            plugin_tools: self.env.plugin_tools.is_some(),
             multibuffer_registry: self.env.multibuffer_registry.is_some(),
             excerpt_source: self.host.excerpt_source_wired(),
             view_args: self.host.view_args_wired(),
@@ -1453,14 +1464,14 @@ impl PluginLoader {
                             .await?;
                         seam_ids.push(id);
                     }
-                    // AT.5: tools for the LLM assistant. The drain (grant →
-                    // permission row, register into lattice-ai) is AT.5c; until
-                    // it lands a plugin declaring the seam loads without them.
+                    // AT.5c: tools for the LLM assistant. Live, like
+                    // `transient-source`: the guest stays instantiated and is
+                    // called once per model tool call.
                     PluginSeam::LlmTools => {
-                        tracing::debug!(
-                            plugin = %manifest.id,
-                            "llm-tools seam declared; not drained yet"
-                        );
+                        let id = self
+                            .drain_llm_tools(&component, manifest, tier, &mut record)
+                            .await?;
+                        seam_ids.push(id);
                     }
                     // CR.3: the plugin's `:help` pages. Data, not a live
                     // guest — the bodies cross once here and the store is
@@ -3240,6 +3251,13 @@ impl PluginLoader {
                 }
             }
         }
+        // AT.5c: same placement and reasoning as `transient` above. Left
+        // registered, the model would keep being offered tools whose actor has
+        // ended, and every call would fail.
+        let mut llm_tools_removed = 0;
+        if let (Some(tools), Some(name)) = (self.env.plugin_tools.as_ref(), &teardown.llm_tools) {
+            llm_tools_removed = usize::from(tools.unregister(name));
+        }
         // MV.1: same placement and reasoning as `help` and `transient` above,
         // and it is a correctness point rather than tidiness. The guard below
         // is all-or-nothing — a missing command registry skips the ENTIRE
@@ -3285,6 +3303,7 @@ impl PluginLoader {
                 dashboard_sections: dashboard_sections_removed,
                 languages: languages_removed,
                 transient_sources: transient_sources_removed,
+                llm_tools: llm_tools_removed,
                 ..TeardownReport::default()
             };
         };
@@ -3361,6 +3380,7 @@ impl PluginLoader {
         let mut report = report;
         report.help_topics = help_topics_removed;
         report.transient_sources = transient_sources_removed;
+        report.llm_tools = llm_tools_removed;
         report.languages = languages_removed;
         report.dashboard_sections = dashboard_sections_removed;
         report
@@ -3747,6 +3767,65 @@ impl PluginLoader {
             menu = %name,
             "transient plugin registered its menu"
         );
+        Ok(id)
+    }
+
+    /// AT.5c: drain the `llm-tools` seam. Spawn the plugin's tool actor, adapt
+    /// its client to lattice-ai's `ToolPlugin`, and offer its tools under the
+    /// plugin's id. Whether they ask is decided here, from the grant the plugin
+    /// was actually given (after its trust tier), never from the plugin.
+    ///
+    /// A refused registration (the name is lattice's own, an MCP server's or
+    /// another plugin's) does not fail the load: the plugin's other seams still
+    /// work, the refusal is warned and listed, and the client is dropped,
+    /// which ends the actor.
+    async fn drain_llm_tools(
+        &self,
+        component: &lattice_plugin_host::Component,
+        manifest: &PluginManifest,
+        tier: TrustTier,
+        record: &mut LoadedRecord,
+    ) -> Result<PluginId, PluginLoaderError> {
+        let bus = self
+            .env
+            .bus
+            .as_ref()
+            .ok_or(PluginLoaderError::NotWired("llm-tools"))?;
+        let runtime = self
+            .env
+            .runtime
+            .as_ref()
+            .ok_or(PluginLoaderError::NotWired("llm-tools"))?;
+        let tools = self
+            .env
+            .plugin_tools
+            .as_ref()
+            .ok_or(PluginLoaderError::NotWired("llm-tools"))?;
+
+        let (client, actor) = self
+            .host
+            .spawn_llm_tools(
+                component,
+                manifest,
+                tier,
+                PluginBudget::default(),
+                bus,
+                self.env.config_registry.as_ref(),
+            )
+            .await?;
+        // The actor first: registering lists the tools, which is a guest call
+        // the running actor must answer.
+        let id = client.id();
+        let task = runtime.spawn(actor.with_tracer(self.env.tracer.clone()).run());
+        record.tasks.push(task);
+
+        let reach = llm_tools::reach(&self.host.grant_for(manifest, tier).grant);
+        let plugin = Arc::new(llm_tools::ClientPlugin::new(client, manifest.id.clone()));
+        // A refusal is already warned and listed by `register`.
+        if tools.register(&manifest.id, plugin, reach).await.is_ok() {
+            record.teardown.llm_tools = Some(manifest.id.clone());
+            tracing::debug!(plugin = %manifest.id, ?reach, "plugin offers llm tools");
+        }
         Ok(id)
     }
 

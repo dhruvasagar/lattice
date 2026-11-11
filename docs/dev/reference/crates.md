@@ -3,7 +3,7 @@
 
 # Crate map
 
-The workspace's 41 crates, layered by dependency: a crate appears in a layer above everything it depends on, so layer 0 is the foundation and layer 13 is the binary. Each summary is the first paragraph of the crate's own overview (`src/lib.rs`), and each name links to its published rustdoc. Only `lattice-*` runtime dependencies are shown — dev- and build-dependencies are not the architecture.
+The workspace's 41 crates, layered by dependency: a crate appears in a layer above everything it depends on, so layer 0 is the foundation and layer 15 is the binary. Each summary is the first paragraph of the crate's own overview (`src/lib.rs`), and each name links to its published rustdoc. Only `lattice-*` runtime dependencies are shown — dev- and build-dependencies are not the architecture.
 
 Why a crate exists at all is a design rule, not an accident of history: a new crate needs a new *mechanism* — a dependency surface it must keep out, enforced structurally — not merely a new feature. See heuristic #6 in `CLAUDE.md`.
 
@@ -84,35 +84,45 @@ Why a crate exists at all is a design rule, not an accident of history: a new cr
 | [`lattice-format`](https://dhruvasagar.github.io/lattice/api/lattice_format/) | External formatters, and how their output reaches a buffer. | `lattice-diff`, `lattice-protocol`, `lattice-syntax` | `lattice-host` |
 | [`lattice-lsp`](https://dhruvasagar.github.io/lattice/api/lattice_lsp/) | `lattice-lsp` -- the LSP client (DESIGN.md §5.4, Phase 4). | `lattice-completion`, `lattice-config`, `lattice-core`, `lattice-grammar`, `lattice-help`, `lattice-mode`, `lattice-multibuffer`, `lattice-protocol`, `lattice-runtime`, `lattice-syntax` | `lattice-ai`, `lattice-host`, `lattice-ui-gpui`, `lattice-ui-tui` |
 | [`lattice-magit`](https://dhruvasagar.github.io/lattice/api/lattice_magit/) | Magit — git porcelain as a core plugin. | `lattice-cells`, `lattice-completion`, `lattice-config`, `lattice-core`, `lattice-diff`, `lattice-grammar`, `lattice-keymap`, `lattice-listing`, `lattice-mode`, `lattice-multibuffer`, `lattice-picker`, `lattice-protocol`, `lattice-runtime`, `lattice-syntax`, `lattice-theme`, `lattice-vcs` | `lattice-host` |
-| [`lattice-plugin-loader`](https://dhruvasagar.github.io/lattice/api/lattice_plugin_loader/) | `lattice-plugin-loader` — the editor-side plugin loader (Phase 8). | `lattice-compilation`, `lattice-completion`, `lattice-config`, `lattice-core`, `lattice-dashboard`, `lattice-grammar`, `lattice-help`, `lattice-keymap`, `lattice-mode`, `lattice-multibuffer`, `lattice-picker`, `lattice-plugin-host`, `lattice-protocol`, `lattice-runtime`, `lattice-syntax`, `lattice-theme`, `lattice-wit` | `lattice-cli`, `lattice-host`, `lattice-plugin-manager`, `lattice-plugin-trace` |
 
 ## Layer 9
 
 | Crate | What it is | Depends on | Used by |
 |---|---|---|---|
-| [`lattice-ai`](https://dhruvasagar.github.io/lattice/api/lattice_ai/) | `lattice-ai` — lattice's AI coding-agent integration layer. | `lattice-agent`, `lattice-cells`, `lattice-config`, `lattice-core`, `lattice-diff`, `lattice-grammar`, `lattice-keymap`, `lattice-lsp`, `lattice-mode`, `lattice-multibuffer`, `lattice-picker`, `lattice-protocol`, `lattice-runtime` | `lattice-host` |
-| [`lattice-plugin-trace`](https://dhruvasagar.github.io/lattice/api/lattice_plugin_trace/) | The buffer-backed plugin boundary-trace views: `plugin-trace-mode` and the `:plugin-trace` ex-command (PO.4). | `lattice-cells`, `lattice-config`, `lattice-core`, `lattice-grammar`, `lattice-mode`, `lattice-plugin-host`, `lattice-plugin-loader`, `lattice-protocol`, `lattice-runtime`, `lattice-theme` | `lattice-host`, `lattice-plugin-manager` |
+| [`lattice-ai`](https://dhruvasagar.github.io/lattice/api/lattice_ai/) | `lattice-ai` — lattice's AI coding-agent integration layer. | `lattice-agent`, `lattice-cells`, `lattice-config`, `lattice-core`, `lattice-diff`, `lattice-grammar`, `lattice-keymap`, `lattice-lsp`, `lattice-mode`, `lattice-multibuffer`, `lattice-picker`, `lattice-protocol`, `lattice-runtime` | `lattice-host`, `lattice-plugin-loader` |
 
 ## Layer 10
 
 | Crate | What it is | Depends on | Used by |
 |---|---|---|---|
-| [`lattice-plugin-manager`](https://dhruvasagar.github.io/lattice/api/lattice_plugin_manager/) | The buffer-backed `:plugins` manager view: `plugins-mode` and the `:plugins` ex-command (PL8.H.2). | `lattice-cells`, `lattice-compilation`, `lattice-config`, `lattice-core`, `lattice-grammar`, `lattice-mode`, `lattice-plugin-host`, `lattice-plugin-loader`, `lattice-plugin-trace`, `lattice-protocol`, `lattice-runtime` | `lattice-host` |
+| [`lattice-plugin-loader`](https://dhruvasagar.github.io/lattice/api/lattice_plugin_loader/) | `lattice-plugin-loader` — the editor-side plugin loader (Phase 8). | `lattice-ai`, `lattice-compilation`, `lattice-completion`, `lattice-config`, `lattice-core`, `lattice-dashboard`, `lattice-grammar`, `lattice-help`, `lattice-keymap`, `lattice-mode`, `lattice-multibuffer`, `lattice-picker`, `lattice-plugin-host`, `lattice-protocol`, `lattice-runtime`, `lattice-syntax`, `lattice-theme`, `lattice-wit` | `lattice-cli`, `lattice-host`, `lattice-plugin-manager`, `lattice-plugin-trace` |
 
 ## Layer 11
 
 | Crate | What it is | Depends on | Used by |
 |---|---|---|---|
-| [`lattice-host`](https://dhruvasagar.github.io/lattice/api/lattice_host/) | `lattice-host` -- the renderer-agnostic editor substrate. | `lattice-ai`, `lattice-cells`, `lattice-compilation`, `lattice-completion`, `lattice-config`, `lattice-core`, `lattice-dashboard`, `lattice-diff`, `lattice-format`, `lattice-grammar`, `lattice-help`, `lattice-keymap`, `lattice-listing`, `lattice-lsp`, `lattice-magit`, `lattice-media`, `lattice-mode`, `lattice-multibuffer`, `lattice-notify`, `lattice-picker`, `lattice-plugin-api`, `lattice-plugin-loader`, `lattice-plugin-manager`, `lattice-plugin-trace`, `lattice-protocol`, `lattice-runtime`, `lattice-snippet`, `lattice-syntax`, `lattice-terminal`, `lattice-theme`, `lattice-vcs` | `lattice-ui-gpui`, `lattice-ui-tui` |
+| [`lattice-plugin-trace`](https://dhruvasagar.github.io/lattice/api/lattice_plugin_trace/) | The buffer-backed plugin boundary-trace views: `plugin-trace-mode` and the `:plugin-trace` ex-command (PO.4). | `lattice-cells`, `lattice-config`, `lattice-core`, `lattice-grammar`, `lattice-mode`, `lattice-plugin-host`, `lattice-plugin-loader`, `lattice-protocol`, `lattice-runtime`, `lattice-theme` | `lattice-host`, `lattice-plugin-manager` |
 
 ## Layer 12
+
+| Crate | What it is | Depends on | Used by |
+|---|---|---|---|
+| [`lattice-plugin-manager`](https://dhruvasagar.github.io/lattice/api/lattice_plugin_manager/) | The buffer-backed `:plugins` manager view: `plugins-mode` and the `:plugins` ex-command (PL8.H.2). | `lattice-cells`, `lattice-compilation`, `lattice-config`, `lattice-core`, `lattice-grammar`, `lattice-mode`, `lattice-plugin-host`, `lattice-plugin-loader`, `lattice-plugin-trace`, `lattice-protocol`, `lattice-runtime` | `lattice-host` |
+
+## Layer 13
+
+| Crate | What it is | Depends on | Used by |
+|---|---|---|---|
+| [`lattice-host`](https://dhruvasagar.github.io/lattice/api/lattice_host/) | `lattice-host` -- the renderer-agnostic editor substrate. | `lattice-ai`, `lattice-cells`, `lattice-compilation`, `lattice-completion`, `lattice-config`, `lattice-core`, `lattice-dashboard`, `lattice-diff`, `lattice-format`, `lattice-grammar`, `lattice-help`, `lattice-keymap`, `lattice-listing`, `lattice-lsp`, `lattice-magit`, `lattice-media`, `lattice-mode`, `lattice-multibuffer`, `lattice-notify`, `lattice-picker`, `lattice-plugin-api`, `lattice-plugin-loader`, `lattice-plugin-manager`, `lattice-plugin-trace`, `lattice-protocol`, `lattice-runtime`, `lattice-snippet`, `lattice-syntax`, `lattice-terminal`, `lattice-theme`, `lattice-vcs` | `lattice-ui-gpui`, `lattice-ui-tui` |
+
+## Layer 14
 
 | Crate | What it is | Depends on | Used by |
 |---|---|---|---|
 | [`lattice-ui-gpui`](https://dhruvasagar.github.io/lattice/api/lattice_ui_gpui/) | The GPUI renderer: lattice's windowed, GPU-accelerated front end, a peer of the terminal renderer (`lattice-ui-tui`) over the same `lattice-host` editor substrate (Phase 5.7). The real window needs the `window` feature, which `lattice-cli` turns on under its `gui` feature. | `lattice-cells`, `lattice-completion`, `lattice-config`, `lattice-core`, `lattice-grammar`, `lattice-help`, `lattice-host`, `lattice-listing`, `lattice-lsp`, `lattice-media`, `lattice-mode`, `lattice-notify`, `lattice-picker`, `lattice-syntax`, `lattice-terminal` | `lattice-cli` |
 | [`lattice-ui-tui`](https://dhruvasagar.github.io/lattice/api/lattice_ui_tui/) | Terminal renderer for `lattice` (DESIGN.md §5.6.1 `TuiRenderer`). | `lattice-cells`, `lattice-completion`, `lattice-config`, `lattice-core`, `lattice-grammar`, `lattice-help`, `lattice-host`, `lattice-listing`, `lattice-lsp`, `lattice-mode`, `lattice-notify`, `lattice-picker`, `lattice-protocol`, `lattice-runtime`, `lattice-snippet`, `lattice-syntax`, `lattice-terminal` | `lattice-cli` |
 
-## Layer 13
+## Layer 15
 
 | Crate | What it is | Depends on | Used by |
 |---|---|---|---|

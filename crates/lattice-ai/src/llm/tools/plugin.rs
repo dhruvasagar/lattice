@@ -311,11 +311,16 @@ impl PluginTools {
 
     /// Stop offering `name`'s tools: the plugin unloaded. A name this
     /// registry never offered (a refused one, or an MCP server's) is left
-    /// alone in the broker.
-    pub fn unregister(&self, name: &str) {
-        if let Some(PluginToolsStatus::Offered { .. }) = self.status().remove(name) {
+    /// alone in the broker. True when tools were withdrawn.
+    pub fn unregister(&self, name: &str) -> bool {
+        let offered = matches!(
+            self.status().remove(name),
+            Some(PluginToolsStatus::Offered { .. })
+        );
+        if offered {
             self.broker.remove_source(name);
         }
+        offered
     }
 
     /// Every plugin that registered, and where it stands.

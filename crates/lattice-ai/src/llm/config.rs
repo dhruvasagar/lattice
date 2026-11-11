@@ -95,7 +95,8 @@ pub struct ProviderConfig {
 /// file: a backend holds a key source, which a project may not name.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct WebConfig {
-    /// `search = "brave" | "searxng"`. `None` lists no `web.search` tool.
+    /// `search = "brave" | "searxng" | "duckduckgo"`. `None` lists no
+    /// `web.search` tool.
     pub search: Option<SearchBackend>,
 }
 
@@ -106,6 +107,9 @@ pub enum SearchBackend {
     Brave { key: KeySource },
     /// A SearXNG instance, usually self-hosted, with its JSON format enabled.
     Searxng { base_url: String },
+    /// DuckDuckGo's HTML results page, scraped (AT.15). Needs nothing, and can
+    /// break from a markup change or a CAPTCHA, so it is never the default.
+    DuckDuckGo,
 }
 
 impl SearchBackend {
@@ -114,6 +118,7 @@ impl SearchBackend {
         match self {
             Self::Brave { .. } => "brave",
             Self::Searxng { .. } => "searxng",
+            Self::DuckDuckGo => "duckduckgo",
         }
     }
 }
@@ -490,6 +495,7 @@ fn parse_web(t: &toml::Table, warnings: &mut Vec<String>) -> WebConfig {
                 }
             }
         }
+        Some("duckduckgo") => Some(SearchBackend::DuckDuckGo),
         Some("searxng") => match section("searxng").and_then(|s| str_of(s, "base_url")) {
             Some(url) if url.starts_with("http://") || url.starts_with("https://") => {
                 Some(SearchBackend::Searxng {
@@ -513,7 +519,8 @@ fn parse_web(t: &toml::Table, warnings: &mut Vec<String>) -> WebConfig {
         },
         _ => {
             warnings.push(format!(
-                "llm: llm.web.search must be \"brave\" or \"searxng\", not {name}; web.search is off"
+                "llm: llm.web.search must be \"searxng\", \"brave\" or \"duckduckgo\", not \
+                 {name}; web.search is off"
             ));
             None
         }
@@ -848,7 +855,7 @@ mod tests {
             ),
             (
                 "[llm.web]\nsearch = \"google\"\n",
-                "\"brave\" or \"searxng\"",
+                "\"searxng\", \"brave\" or \"duckduckgo\"",
             ),
             ("[llm.web]\nsearhc = \"brave\"\n", "llm.web.searhc"),
         ] {
@@ -860,6 +867,10 @@ mod tests {
                 c.warnings
             );
         }
+        // DuckDuckGo needs no table of its own.
+        let c = cfg("[llm.web]\nsearch = \"duckduckgo\"\n");
+        assert_eq!(c.web.search, Some(SearchBackend::DuckDuckGo));
+        assert!(c.warnings.is_empty(), "{:?}", c.warnings);
         // No `[llm.web]` at all is no search and nothing to warn about.
         let c = cfg("[llm]\nmodel = \"m\"\n");
         assert_eq!(c.web, WebConfig::default());

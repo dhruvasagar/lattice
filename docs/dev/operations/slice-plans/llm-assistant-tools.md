@@ -6,7 +6,7 @@
 
 Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred · ❌ dropped.
 
-**Status: 🚧 AT.1–AT.4 ✅, AT.6 ✅; AT.5 in progress (AT.5a–d ✅; AT.5e, the guest SDK, awaits a decision).**
+**Status: 🚧 AT.1–AT.4 ✅, AT.6 ✅, AT.15 ✅; AT.5 in progress (AT.5a–d ✅; AT.5e, the guest SDK, awaits a decision).**
 
 **Goal:** native web tools, a WIT seam through which a plugin gives the model tools and
 profiles, and an org assistant built on both, measured by an eval that decides whether a
@@ -54,7 +54,7 @@ UI-thread work, async results landing through `inbound`. In addition:
 | AT.12 | Bundled local model (managed `llama-server`) | AT.10's numbers | ⛔ |
 | AT.13 | Constrained decoding for tool arguments | AT.12 | ⛔ |
 | AT.14 | Plugin tool sources served to external agents over `LatticeServer` | AT.5 | ⛔ |
-| AT.15 | Keyless DuckDuckGo search backend, opt-in | AT.2 | 📝 |
+| AT.15 | Keyless DuckDuckGo search backend, opt-in | AT.2 | ✅ |
 | AT.16 | Provider-native search (Anthropic, OpenAI, Gemini server tools) | AT.2 | ⛔ |
 | AT.17 | Readability scoring before HTML conversion | AT.2 | ⛔ |
 
@@ -288,7 +288,7 @@ Plugin tool sources served through `LatticeServer`, so Claude Code and other MCP
 use org's tools. Deferred until someone wants it: the design's reason for not building an org
 MCP server is that this costs one slice whenever it is wanted.
 
-### AT.15 — Keyless DuckDuckGo search
+### AT.15 — Keyless DuckDuckGo search ✅
 
 `search = "duckduckgo"`: the `html.duckduckgo.com` results page, parsed for result links and
 snippets, as gptel-agent does through eww. It needs no account or server, which makes it the
@@ -297,6 +297,19 @@ says plainly that it can break from a markup change or a CAPTCHA. At most two se
 flight, like gptel-agent's, so a model looping on search does not get the user rate-limited.
 Tests: a fixture page decoded without a socket; a CAPTCHA or changed page is an error that
 names the backend and suggests SearXNG, never an empty result that reads as "nothing found".
+
+Landed as `SearchBackend::DuckDuckGo` (no table: `search = "duckduckgo"` is the whole
+config) and `decode_duckduckgo` in `web.rs`: the page is cut at each `result` block, ads
+(`result--ad`) dropped, and each block's `result__a` link and `result__snippet` read, the
+target taken from the `/l/?uddg=` redirect. Only DuckDuckGo's own `no-results` notice is
+an empty answer; any other page with no readable result is an error, worded as a CAPTCHA
+when the page carries DuckDuckGo's anomaly/challenge markers, and every DuckDuckGo
+failure, a bad status included, ends with the SearXNG hint. The limit is a two-permit
+semaphore held from the request to the last byte read; a third search waits rather than
+failing. Tests: the fixture page, the no-results page, a CAPTCHA and a changed page, the
+request over loopback, and the third search held until one answers. The real endpoint is
+never reached from a test. No bench: one regex pass over a page of at most 2 MiB, off the
+UI thread, next to a network round trip.
 
 ### AT.16 — Provider-native search ⛔
 

@@ -24,6 +24,12 @@
 //! Search requests go through a client of their own, without the address
 //! filter: the backend is the user's choice, and a SearXNG instance is often
 //! on localhost.
+//!
+//! **DuckDuckGo is scraped** (AT.15), so it is opt-in and its failures are
+//! loud: a page with no results it can read, which is what a CAPTCHA or a
+//! markup change looks like, is an error naming the backend and pointing at
+//! SearXNG, never "no results". At most [`DDG_IN_FLIGHT`] of its searches run
+//! at once, so a model looping on search does not get the user rate-limited.
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
@@ -53,6 +59,9 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 const BRAVE_URL: &str = "https://api.search.brave.com/res/v1/web/search";
+const DDG_URL: &str = "https://html.duckduckgo.com/html/";
+/// DuckDuckGo searches in flight at once; the next waits for one to finish.
+pub const DDG_IN_FLIGHT: usize = 2;
 
 /// The `[llm.web]` table as it is now, asked per call so a reload applies.
 pub type WebConfigFn = Arc<dyn Fn() -> WebConfig + Send + Sync>;
@@ -66,6 +75,9 @@ pub struct WebTools {
     named: reqwest::Client,
     /// Off only in this module's tests, whose server is on loopback.
     public_only: bool,
+    /// DuckDuckGo's results page; a loopback server in tests.
+    ddg_url: String,
+    ddg_permits: Arc<tokio::sync::Semaphore>,
 }
 
 impl WebTools {
@@ -99,6 +111,8 @@ impl WebTools {
             fetch,
             named,
             public_only,
+            ddg_url: DDG_URL.to_string(),
+            ddg_permits: Arc::new(tokio::sync::Semaphore::new(DDG_IN_FLIGHT)),
         })
     }
 
@@ -191,6 +205,16 @@ impl WebTools {
                 let request = self.search.get(url).header(ACCEPT, "application/json");
                 (request, None)
             }
+            SearchBackend::DuckDuckGo => {
+                let url = with_query(&self.ddg_url, &[("q", &args.query)])?;
+                let request = self.search.get(url).header(ACCEPT, "text/html");
+                (request, None)
+            }
+        };
+        // Held until the answer is read. The semaphore is never closed.
+        let _permit = match backend {
+            SearchBackend::DuckDuckGo => self.ddg_permits.acquire().await.ok(),
+            _ => None,
         };
         let scrub = |text: String| match &key {
             Some(k) => crate::llm::transport::scrub(&text, k),
@@ -207,8 +231,12 @@ impl WebTools {
             .map_err(|e| ToolError::Failed(scrub(e)))?;
         if !status.is_success() {
             let text = String::from_utf8_lossy(&body.bytes);
+            let hint = match backend {
+                SearchBackend::DuckDuckGo => DDG_HINT,
+                _ => "",
+            };
             return Err(ToolError::Failed(scrub(format!(
-                "web search ({}) answered {status}: {}",
+                "web search ({}) answered {status}: {}{hint}",
                 backend.name(),
                 first_line(&text)
             ))));
@@ -216,6 +244,7 @@ impl WebTools {
         let hits = match backend {
             SearchBackend::Brave { .. } => decode_brave(&body.bytes),
             SearchBackend::Searxng { .. } => decode_searxng(&body.bytes),
+            SearchBackend::DuckDuckGo => decode_duckduckgo(&String::from_utf8_lossy(&body.bytes)),
         }
         .map_err(|e| ToolError::Failed(scrub(e)))?;
         Ok(ToolOutput {
@@ -724,6 +753,101 @@ pub fn decode_searxng(body: &[u8]) -> Result<Vec<Hit>, String> {
         .collect())
 }
 
+/// Said after every DuckDuckGo failure: it is scraped, and SearXNG is the
+/// keyless backend that does not break this way.
+const DDG_HINT: &str = ". DuckDuckGo is read from its web page, which can change or ask for a \
+                        CAPTCHA; a SearXNG instance ([llm.web] search = \"searxng\") needs no \
+                        key either and answers in JSON";
+
+/// DuckDuckGo's HTML results page: each `result` block's `result__a` link
+/// (title, and the target in its `uddg` redirect parameter) and its
+/// `result__snippet`. Ads (`result--ad`) are left out. A page with none and
+/// no "no results" notice is an error, not an empty answer.
+pub fn decode_duckduckgo(html: &str) -> Result<Vec<Hit>, String> {
+    use std::sync::LazyLock;
+    static BLOCK: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(r#"<div[^>]*\bclass="([^"]*\bresult\b[^"]*)""#)
+            .expect("a valid literal pattern")
+    });
+    static LINK: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(r#"(?s)<a\s([^>]*\bclass="[^"]*\bresult__a\b[^"]*"[^>]*)>(.*?)</a>"#)
+            .expect("a valid literal pattern")
+    });
+    static SNIPPET: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(
+            r#"(?s)<(?:a|div|td|span)\s[^>]*\bclass="[^"]*\bresult__snippet\b[^"]*"[^>]*>(.*?)</(?:a|div|td|span)>"#,
+        )
+        .expect("a valid literal pattern")
+    });
+    static HREF: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(r#"\bhref="([^"]*)""#).expect("a valid literal pattern")
+    });
+
+    let starts: Vec<(usize, bool)> = BLOCK
+        .captures_iter(html)
+        .filter_map(|c| {
+            let whole = c.get(0)?;
+            let class = c.get(1)?.as_str();
+            Some((whole.start(), class.contains("result--ad")))
+        })
+        .collect();
+    let mut hits = Vec::new();
+    for (n, &(start, ad)) in starts.iter().enumerate() {
+        if ad {
+            continue;
+        }
+        let end = starts.get(n + 1).map_or(html.len(), |&(next, _)| next);
+        let block = &html[start..end];
+        let Some(link) = LINK.captures(block) else {
+            continue;
+        };
+        let Some(url) = HREF
+            .captures(&link[1])
+            .and_then(|h| ddg_target(&decode_entities(&h[1])))
+        else {
+            continue;
+        };
+        let snippet = SNIPPET
+            .captures(block)
+            .map(|s| strip_tags(&s[1]))
+            .unwrap_or_default();
+        hits.push(Hit {
+            title: strip_tags(&link[2]),
+            url,
+            snippet,
+        });
+    }
+    if hits.is_empty() && !html.contains("class=\"no-results\"") {
+        let what = if html.contains("anomaly") || html.contains("challenge") {
+            "asked for a CAPTCHA"
+        } else {
+            "answered with a page holding no results lattice can read"
+        };
+        return Err(format!("web search (duckduckgo) {what}{DDG_HINT}"));
+    }
+    Ok(hits)
+}
+
+/// The page a DuckDuckGo result link leads to: its `uddg` parameter when it
+/// is the `/l/` redirect, else the link itself. An ad's `y.js` link, or
+/// anything not http(s), is none.
+fn ddg_target(href: &str) -> Option<String> {
+    let absolute = if href.starts_with("//") {
+        format!("https:{href}")
+    } else {
+        href.to_string()
+    };
+    let url = Url::parse(&absolute).ok()?;
+    let target = match url.query_pairs().find(|(k, _)| k == "uddg") {
+        Some((_, v)) => Url::parse(&v).ok()?,
+        None => url,
+    };
+    let ddg = target
+        .host_str()
+        .is_some_and(|h| h == "duckduckgo.com" || h.ends_with(".duckduckgo.com"));
+    (matches!(target.scheme(), "http" | "https") && !ddg).then(|| target.to_string())
+}
+
 fn format_hits(query: &str, hits: &[Hit], count: usize) -> String {
     if hits.is_empty() {
         return format!("No results for {query:?}.");
@@ -878,6 +1002,158 @@ mod tests {
             request.starts_with("GET /search?q=rust+fold&format=json"),
             "{request}"
         );
+    }
+
+    /// The page as DuckDuckGo's HTML endpoint serves it, trimmed to what the
+    /// decoder reads: an ad, two results, entities and `<b>` in both.
+    const DDG_PAGE: &str = r#"<html><body><div class="serp__results"><div id="links" class="results">
+<div class="result results_links results_links_deep result--ad ">
+  <h2 class="result__title"><a rel="nofollow" class="result__a" href="https://duckduckgo.com/y.js?ad_domain=ads.example&amp;u3=x">Buy Rust</a></h2>
+  <a class="result__snippet" href="https://duckduckgo.com/y.js?u3=x">An ad.</a>
+</div>
+<div class="result results_links results_links_deep web-result ">
+  <div class="links_main links_deep result__body">
+    <h2 class="result__title"><a rel="nofollow" class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fwww.rust%2Dlang.org%2Flearn&amp;rut=abc">Learn <b>Rust</b></a></h2>
+    <a class="result__snippet" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fwww.rust%2Dlang.org%2Flearn">A language empowering everyone &amp; <b>fast</b>.</a>
+  </div>
+</div>
+<div class="result results_links results_links_deep web-result ">
+  <h2 class="result__title"><a class="result__a" rel="nofollow" href="https://doc.rust-lang.org/book/">The Rust Book</a></h2>
+</div>
+</div></div></body></html>"#;
+
+    #[test]
+    fn a_duckduckgo_page_decodes_without_its_ads() {
+        assert_eq!(
+            decode_duckduckgo(DDG_PAGE).unwrap(),
+            vec![
+                Hit {
+                    title: "Learn Rust".into(),
+                    url: "https://www.rust-lang.org/learn".into(),
+                    snippet: "A language empowering everyone & fast.".into(),
+                },
+                Hit {
+                    title: "The Rust Book".into(),
+                    url: "https://doc.rust-lang.org/book/".into(),
+                    snippet: String::new(),
+                },
+            ]
+        );
+        let none = r#"<div class="results"><div class="no-results">No results.</div></div>"#;
+        assert_eq!(decode_duckduckgo(none).unwrap(), vec![]);
+    }
+
+    /// A CAPTCHA, or a page whose markup changed, is an error naming the
+    /// backend and SearXNG: never an empty list the model reads as "nothing".
+    #[test]
+    fn a_captcha_or_a_changed_page_is_an_error_not_no_results() {
+        let captcha = r#"<html><body><div class="anomaly-modal__title">Unfortunately, bots use DuckDuckGo too.</div><form id="challenge-form"></form></body></html>"#;
+        let changed = r#"<html><body><ol class="serp"><li class="hit"><a href="https://x.example/">X</a></li></ol></body></html>"#;
+        for (page, says) in [
+            (captcha, "CAPTCHA"),
+            (changed, "no results lattice can read"),
+        ] {
+            let e = decode_duckduckgo(page).unwrap_err();
+            assert!(e.starts_with("web search (duckduckgo)"), "{e}");
+            assert!(e.contains(says) && e.contains("searxng"), "{e}");
+        }
+    }
+
+    #[tokio::test]
+    async fn duckduckgo_is_asked_for_its_html_page() {
+        let (base, seen) = serve(vec![http(
+            "200 OK",
+            &[("Content-Type", "text/html")],
+            DDG_PAGE,
+        )])
+        .await;
+        let mut tools = tools_over_loopback(WebConfig {
+            search: Some(SearchBackend::DuckDuckGo),
+        });
+        tools.ddg_url = format!("{base}/html/");
+        let out = tools
+            .call(
+                "search",
+                json!({"query": "rust book"}),
+                CallContext::default(),
+            )
+            .await
+            .unwrap()
+            .text;
+        assert!(
+            out.starts_with("1. Learn Rust\n   https://www.rust-lang.org/learn\n"),
+            "{out}"
+        );
+        assert!(
+            seen.lock().unwrap()[0].starts_with("GET /html/?q=rust+book "),
+            "{:?}",
+            seen.lock().unwrap()
+        );
+    }
+
+    /// At most two DuckDuckGo searches are on the wire at once: a third waits
+    /// for one to finish rather than adding to the rate.
+    #[tokio::test]
+    async fn at_most_two_duckduckgo_searches_are_in_flight() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let held = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let accepted = held.clone();
+        tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                let mut buf = vec![0u8; 8192];
+                let _ = socket.read(&mut buf).await;
+                accepted.lock().await.push(socket);
+            }
+        });
+        let mut tools = tools_over_loopback(WebConfig {
+            search: Some(SearchBackend::DuckDuckGo),
+        });
+        tools.ddg_url = format!("{base}/html/");
+        let tools = Arc::new(tools);
+        let calls: Vec<_> = (0..3)
+            .map(|n| {
+                let tools = tools.clone();
+                tokio::spawn(async move {
+                    tools
+                        .call(
+                            "search",
+                            json!({"query": format!("q{n}")}),
+                            CallContext::default(),
+                        )
+                        .await
+                })
+            })
+            .collect();
+
+        let answer = http("200 OK", &[("Content-Type", "text/html")], DDG_PAGE);
+        let mut answered = 0;
+        for _ in 0..200 {
+            let mut sockets = held.lock().await;
+            assert!(
+                sockets.len() <= DDG_IN_FLIGHT,
+                "a third search went out before one finished"
+            );
+            if sockets.len() == DDG_IN_FLIGHT && answered == 0 {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                assert_eq!(sockets.len(), DDG_IN_FLIGHT, "the third waits");
+                let mut first = sockets.remove(0);
+                first.write_all(answer.as_bytes()).await.unwrap();
+                first.shutdown().await.unwrap();
+                answered = 1;
+            } else if answered == 1 && sockets.len() == DDG_IN_FLIGHT {
+                for mut s in sockets.drain(..) {
+                    s.write_all(answer.as_bytes()).await.unwrap();
+                    s.shutdown().await.unwrap();
+                }
+                break;
+            }
+            drop(sockets);
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        for call in calls {
+            assert!(call.await.unwrap().is_ok());
+        }
     }
 
     #[tokio::test]

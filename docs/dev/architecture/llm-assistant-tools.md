@@ -98,8 +98,8 @@ A project file can deny a host and cannot allow one, as for every other list.
 - Only `text/*`, HTML, JSON and XML are converted. Anything else is reported by type and size.
 - The request runs on the layer's runtime and is dropped on cancel, like every other call.
 
-Search backends are a small enum, not a plugin seam: two are enough to prove the shape, one
-keyless and self-hostable (SearXNG) and one hosted and keyed (Brave). **SearXNG leads**: the
+Search backends are a small enum, not a plugin seam: two prove the shape, one keyless and
+self-hostable (SearXNG) and one hosted and keyed (Brave). **SearXNG leads**: the
 assistant this serves is local and private by default, and a hosted search API would send
 every query to a third party behind an account and a card (Brave's free plan ended in 2026;
 it is now a monthly credit, then paid). Anything else reaches the model through MCP today
@@ -113,9 +113,15 @@ model, possibly from text it just read. One tool would carry one permission, and
 choice is wrong for half of it. Each is also useful alone: fetching a URL the user pasted,
 answering from a snippet.
 
-**Considered for later, in the slice plan:** a keyless DuckDuckGo backend (gptel-agent's
-choice: it scrapes `html.duckduckgo.com`, so it works with no setup and breaks when the
-markup changes or a CAPTCHA appears; opt-in, never the default); provider-native search
+**A third, for zero setup: DuckDuckGo (AT.15).** gptel-agent's choice: it scrapes
+`html.duckduckgo.com`, so it needs no account, key or server, and it breaks when the markup
+changes or a CAPTCHA appears. So it is opt-in and never the default, and it fails loudly: a
+page with no result it can read is an error naming the backend and pointing at SearXNG,
+because an empty list would read to the model as "nothing on the web", which is the worst
+wrong answer a search can give. At most two of its searches run at once, so a model looping
+on search does not get the user's address rate-limited.
+
+**Considered for later, in the slice plan:** provider-native search
 (Anthropic's, OpenAI's and Gemini's server tools, no extra key but hosted models only, and
 each adapter must round-trip its own result blocks); readability scoring before conversion,
 to drop a page's boilerplate before it reaches a small model's context.

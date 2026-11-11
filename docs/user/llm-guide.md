@@ -512,7 +512,12 @@ Select them as `web.*`, or one at a time. `fetch` needs no setup. `search` is of
 only once you name a backend. **SearXNG is the one to start with**: a metasearch engine you
 run yourself (one container), so it needs no account or key and your queries stay on your
 machine. Turn on `json` in its `search.formats`. **Brave** is the hosted option: it needs an
-account with a card, and is paid beyond a small monthly credit.
+account with a card, and is paid beyond a small monthly credit. **DuckDuckGo** needs
+nothing at all, not even a table of its own, but it is not an API: lattice reads its web
+results page. That can break without warning, from a change to the page or a CAPTCHA when
+it decides you search too often, so it is never the default. A search that cannot read the
+page fails and says so, rather than reporting no results, and at most two DuckDuckGo
+searches run at once.
 
 ```toml
 [llm.web]
@@ -525,6 +530,9 @@ base_url = "http://localhost:8888"
 # search = "brave"
 # [llm.web.brave]
 # api_key_env = "BRAVE_API_KEY"    # or api_key_command
+
+# or DuckDuckGo's results page: no setup, and can break
+# search = "duckduckgo"
 ```
 
 **A search runs without asking**: it goes to the backend you chose, and the query is in

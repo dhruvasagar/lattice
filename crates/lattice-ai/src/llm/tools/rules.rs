@@ -8,6 +8,8 @@
 //! read_file(secrets/**)        a file tool, the pattern a gitignore pattern
 //! github.search_issues         an MCP tool, any arguments
 //! github.*                     every tool of a server
+//! web.fetch(docs.rs)           a fetch from that host (AT.3)
+//! web.fetch(*.rust-lang.org)   a fetch from any subdomain of it
 //! ```
 //!
 //! Deny beats ask beats allow. `deny` applies to every tool; `allow` only to a
@@ -22,6 +24,15 @@
 //! allowed by a rule: it asks. Deny is checked on its best-effort parts all
 //! the same, but it is a refusal list, not a sandbox: what it misses still
 //! asks unless an allow rule vouches for every part.
+//!
+//! A `web.fetch` rule names a host, matched against the URL's host and port
+//! (`docs.rs:8443` names that port; a host without one names the scheme's
+//! default). `*.` matches subdomains only, so `*.rust-lang.org` matches
+//! `doc.rust-lang.org` and neither `rust-lang.org` nor
+//! `rust-lang.org.evil.example`. An allow rule must name a host: one covering
+//! every fetch would let a page the model just read send it anywhere unasked.
+//! A host an allow rule names exactly may be private (`localhost:8080`), the
+//! one way past `web.fetch`'s public-only rule.
 
 use std::path::{Component, Path, PathBuf};
 
@@ -32,6 +43,9 @@ use crate::llm::path_rules::PathRules;
 /// lattice's own server name: a rule naming a bare tool means one of its tools.
 const LATTICE: &str = "lattice";
 const RUN_COMMAND: &str = "run_command";
+use super::broker::WEB;
+const FETCH: &str = "fetch";
+const WEB_TOOLS: [&str; 2] = [FETCH, "search"];
 /// lattice's tools whose `path` argument a pattern matches.
 const PATH_TOOLS: [&str; 5] = [
     "read_file",
@@ -77,6 +91,45 @@ enum Arg {
     Any,
     Command(String),
     Path(Box<PathRules>),
+    Host(HostPattern),
+}
+
+/// A `web.fetch(...)` pattern: a host (with a port, if not the default), or
+/// `*.` and a domain for its subdomains.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct HostPattern {
+    subdomains: bool,
+    host: String,
+}
+
+impl HostPattern {
+    fn parse(text: &str) -> Result<Self, &'static str> {
+        let text = text.trim().to_ascii_lowercase();
+        if text.contains("://") || text.contains('/') {
+            return Err("names a URL; a web.fetch rule names a host (`docs.rs`)");
+        }
+        if text.contains(char::is_whitespace) {
+            return Err("names a host with a blank in it");
+        }
+        let (subdomains, host) = match text.strip_prefix("*.") {
+            Some(rest) => (true, rest.to_string()),
+            None => (false, text),
+        };
+        if host.is_empty() || host.contains('*') || host.starts_with('.') {
+            return Err("names no host; `*` may only open it, as `*.example.org`");
+        }
+        Ok(Self { subdomains, host })
+    }
+
+    /// `key` is the URL's host and, when not the default, `:port`.
+    fn matches(&self, key: &str) -> bool {
+        if self.subdomains {
+            key.strip_suffix(self.host.as_str())
+                .is_some_and(|head| head.len() > 1 && head.ends_with('.'))
+        } else {
+            key == self.host
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -123,6 +176,16 @@ impl Rule {
             }
         };
         let lattice = server == LATTICE;
+        let web = server == WEB;
+        if web && name != "*" && !WEB_TOOLS.contains(&name) {
+            return bad("names no web tool (`web.fetch`, `web.search`)");
+        }
+        if list == List::Allow && web && name == "search" {
+            return bad("names a tool that never asks: a search runs");
+        }
+        if list == List::Allow && web && pattern.is_none() {
+            return bad("would allow every site; name one, as `web.fetch(docs.rs)`");
+        }
         if lattice && name != "*" && name != RUN_COMMAND && !PATH_TOOLS.contains(&name) {
             return bad("names no lattice tool");
         }
@@ -139,6 +202,11 @@ impl Rule {
                 PathRules::new(root, &[p.to_string()])
                     .map_err(|e| format!("{}: {e}", list.name()))?,
             )),
+            Some(p) if web && name == FETCH => match HostPattern::parse(p) {
+                Ok(h) => Arg::Host(h),
+                Err(why) => return bad(why),
+            },
+            Some(_) if web => return bad("gives web.search arguments; a rule names it whole"),
             Some(_) => return bad("gives an MCP tool arguments; a rule names it whole"),
         };
         Ok(Self {
@@ -236,6 +304,10 @@ impl ToolRules {
             let path = input.get("path").and_then(Value::as_str).unwrap_or(".");
             return self.decide_path(name, path);
         }
+        if server == WEB && name == FETCH {
+            let url = input.get("url").and_then(Value::as_str).unwrap_or("");
+            return self.decide_host(super::web::host_of(url).as_deref());
+        }
         if let Some(r) = self.deny.iter().find(|r| r.selector.covers(server, name)) {
             return Verdict::Deny(r.shown.clone());
         }
@@ -250,7 +322,7 @@ impl ToolRules {
         let matches = |r: &Rule, part: &str| match &r.arg {
             Arg::Any => true,
             Arg::Command(p) => wildcard(p, part),
-            Arg::Path(_) => false,
+            Arg::Path(_) | Arg::Host(_) => false,
         };
         fn rules(list: &[Rule]) -> Vec<&Rule> {
             list.iter()
@@ -277,6 +349,39 @@ impl ToolRules {
         }
     }
 
+    /// A fetch from `host` (`None`: a URL with none, which the fetch refuses
+    /// on its own): denied by a rule naming it or every fetch, allowed by one
+    /// naming it, otherwise asked.
+    fn decide_host(&self, host: Option<&str>) -> Verdict {
+        let hit = |r: &Rule| match (&r.arg, host) {
+            (Arg::Any, _) => true,
+            (Arg::Host(p), Some(h)) => p.matches(h),
+            _ => false,
+        };
+        let covering = |list: &[Rule]| {
+            list.iter()
+                .filter(|r| r.selector.covers(WEB, FETCH))
+                .find(|r| hit(r))
+                .map(|r| r.shown.clone())
+        };
+        if let Some(rule) = covering(&self.deny) {
+            return Verdict::Deny(rule);
+        }
+        if covering(&self.allow).is_some() {
+            return Verdict::Allow;
+        }
+        Verdict::Ask
+    }
+
+    /// An allow rule names `host` exactly, not through `*.`: what lets a
+    /// fetch reach a private address (`localhost:8080`, a LAN wiki).
+    pub fn names_host(&self, host: &str) -> bool {
+        self.allow.iter().any(|r| {
+            r.selector.covers(WEB, FETCH)
+                && matches!(&r.arg, Arg::Host(p) if !p.subdomains && p.host == host)
+        })
+    }
+
     fn decide_path(&self, name: &str, path: &str) -> Verdict {
         let given = Path::new(path);
         let joined = if given.is_absolute() {
@@ -298,7 +403,7 @@ impl ToolRules {
                     rules.matching(&lexical).is_some()
                         || real.as_deref().is_some_and(|p| rules.matching(p).is_some())
                 }
-                Arg::Command(_) => false,
+                Arg::Command(_) | Arg::Host(_) => false,
             };
             if hit {
                 return Verdict::Deny(r.shown.clone());
@@ -542,6 +647,104 @@ mod tests {
         let (r, problems) = ToolRules::new(Path::new("/p"), &s(allow), &s(deny), &[]);
         assert!(problems.is_empty(), "{problems:?}");
         r
+    }
+
+    fn fetch(r: &ToolRules, url: &str) -> Verdict {
+        r.decide(WEB, FETCH, &json!({ "url": url }))
+    }
+
+    /// AT.3: a fetch rule names a host. A glob matches subdomains and not
+    /// the apex or a lookalike; deny beats allow; a URL with no host is
+    /// left to ask (the fetch itself refuses it).
+    #[test]
+    fn a_fetch_rule_names_a_host() {
+        let r = rules(
+            &[
+                "web.fetch(docs.rs)",
+                "web.fetch(*.rust-lang.org)",
+                "web.fetch(localhost:8080)",
+            ],
+            &["web.fetch(evil.docs.rs)", "web.fetch(*.tracker.example)"],
+        );
+        assert_eq!(fetch(&r, "https://docs.rs/serde"), Verdict::Allow);
+        assert_eq!(fetch(&r, "https://DOCS.rs/x"), Verdict::Allow);
+        assert_eq!(
+            fetch(&r, "https://docs.rs:8443/x"),
+            Verdict::Ask,
+            "a port is a different host"
+        );
+        assert_eq!(fetch(&r, "https://doc.rust-lang.org/std/"), Verdict::Allow);
+        assert_eq!(
+            fetch(&r, "https://rust-lang.org/"),
+            Verdict::Ask,
+            "*. is subdomains only"
+        );
+        assert_eq!(
+            fetch(&r, "https://rust-lang.org.evil.example/"),
+            Verdict::Ask
+        );
+        assert_eq!(fetch(&r, "https://notrust-lang.org/"), Verdict::Ask);
+        assert_eq!(fetch(&r, "http://localhost:8080/wiki"), Verdict::Allow);
+        assert!(matches!(
+            fetch(&r, "https://a.tracker.example/p"),
+            Verdict::Deny(_)
+        ));
+        assert!(matches!(
+            fetch(&r, "https://evil.docs.rs/"),
+            Verdict::Deny(_)
+        ));
+        assert_eq!(fetch(&r, "not a url"), Verdict::Ask);
+        // Only an exact allow opens a private host.
+        assert!(r.names_host("localhost:8080"));
+        assert!(!r.names_host("localhost"));
+        assert!(!r.names_host("doc.rust-lang.org"), "a glob never opens one");
+
+        let r = rules(&["web.fetch(*.docs.rs)"], &["web.fetch"]);
+        assert!(
+            matches!(fetch(&r, "https://a.docs.rs/"), Verdict::Deny(_)),
+            "deny beats allow"
+        );
+        let r = rules(&[], &["web.*"]);
+        assert!(matches!(fetch(&r, "https://docs.rs/"), Verdict::Deny(_)));
+    }
+
+    /// An allow that would cover every fetch, or a search that never asks,
+    /// is refused by name, as `lattice.*` is.
+    #[test]
+    fn an_allow_that_would_open_every_site_is_refused() {
+        for (rule, says) in [
+            ("web.fetch", "every site"),
+            ("web.*", "every site"),
+            ("web.search", "never asks"),
+            ("web.fetch(https://docs.rs/x)", "names a URL"),
+            ("web.fetch(*)", "names no host"),
+            ("web.fetch(a.*.org)", "names no host"),
+            ("web.read_file", "names no web tool"),
+            ("web.search(x)", "never asks"),
+        ] {
+            let err = ToolRules::validate(&[rule.to_string()], List::Allow).unwrap_err();
+            assert!(err.contains(says), "{rule}: {err}");
+        }
+        // Deny may be as wide as it likes.
+        for rule in ["web.fetch", "web.*", "web.search", "web.fetch(*.example)"] {
+            ToolRules::validate(&[rule.to_string()], List::Deny).unwrap();
+        }
+    }
+
+    /// A project's deny reaches fetches; its allow is refused upstream.
+    #[test]
+    fn a_projects_fetch_deny_beats_the_users_allow() {
+        let (r, problems) = ToolRules::new(
+            Path::new("/p"),
+            &["web.fetch(docs.rs)".to_string()],
+            &[],
+            &["web.fetch(docs.rs)".to_string()],
+        );
+        assert!(problems.is_empty());
+        assert_eq!(
+            fetch(&r, "https://docs.rs/"),
+            Verdict::Deny("web.fetch(docs.rs) (project)".into())
+        );
     }
 
     fn command(r: &ToolRules, c: &str) -> Verdict {

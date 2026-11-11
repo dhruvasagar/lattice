@@ -521,7 +521,11 @@ host (and port) for the rest of the chat; any other site asks.
 
 A fetch reads public sites only. `localhost`, private networks (`10.x`, `192.168.x`,
 `fd00::`) and link-local addresses (including cloud metadata at `169.254.169.254`) are
-refused, whether written in the URL or what a name resolves to. A redirect within the
+refused, whether written in the URL or what a name resolves to. The one way past it is an
+`allow` rule naming that host exactly, such as `web.fetch(localhost:8080)` for docs you
+serve yourself or `web.fetch(wiki.lan)` for a team wiki (see "Allow and deny rules"); a
+`*.` pattern never opens a private host. Behind an HTTP proxy, names are resolved by the
+proxy, so only an address written in the URL is checked there. A redirect within the
 site is followed; one to another site is not, and the model is told where it leads, so
 following it asks again. A body over 2 MiB is read only to there, and a file that is not
 text (a PDF, an image) is named but not read.
@@ -546,6 +550,11 @@ deny  = ["run_command(git push *)", "run_command(rm -rf *)", "edit_file(secrets/
   (`read_file`, `list_directory`, `search`, `edit_file`, `write_file`) take a gitignore
   pattern for their path. An MCP tool is named whole (`server.tool`), or every tool of a
   server at once (`server.*`).
+- `web.fetch(…)` takes a host: `web.fetch(docs.rs)`, or `web.fetch(*.rust-lang.org)` for
+  its subdomains (not `rust-lang.org` itself; write both for both). A port other than the
+  default is part of the host (`web.fetch(localhost:8080)`). An `allow` rule must name a
+  host: `web.fetch` alone or `web.*` would let any page the model reads send it anywhere
+  without asking, so they are refused in `allow`. In `deny` they turn fetching off.
 - **Deny beats allow**, and both are decided before anything asks. A denied call is
   refused, and the model is told which rule refused it.
 - `allow` applies to what would ask: commands and MCP tools. Reads never ask, and edits are

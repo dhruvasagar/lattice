@@ -6,7 +6,7 @@
 
 Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred · ❌ dropped.
 
-**Status: 🚧 AT.1–AT.2 ✅; AT.3 next.**
+**Status: 🚧 AT.1–AT.3 ✅; AT.4 next.**
 
 **Goal:** native web tools, a WIT seam through which a plugin gives the model tools and
 profiles, and an org assistant built on both, measured by an eval that decides whether a
@@ -37,7 +37,7 @@ UI-thread work, async results landing through `inbound`. In addition:
 |---|---|---|---|
 | AT.1 | Tool descriptions without stray indentation | — | ✅ |
 | AT.2 | `web.search`, `web.fetch`, the `web` source, per-host grants | — | ✅ |
-| AT.3 | `web.fetch(<host>)` rules; a private host allowed by name | AT.2 | 📝 |
+| AT.3 | `web.fetch(<host>)` rules; a private host allowed by name | AT.2 | ✅ |
 | AT.4 | Built-in profiles; `:llm <profile> <prompt…>` | AT.2 | 📝 |
 | AT.5 | `llm-tools` WIT interface and `PluginToolSource` | — | 📝 |
 | AT.6 | Plugin profiles, trusted like project config | AT.4, AT.5 | 📝 |
@@ -87,7 +87,15 @@ Tests: each backend's response decoded from a fixture without a socket; a local 
 fetch covering redirect to another host, a private address, an oversized body, a binary type
 and a cancel mid-body; the key never in a tool result or `*messages*`.
 
-### AT.3 — `web.fetch(<host>)` rules
+### AT.3 — `web.fetch(<host>)` rules ✅
+
+Built as below, plus one refusal the plan had not named: before AT.3, `allow = ["web.fetch"]`
+and `["web.*"]` parsed as MCP-style whole-tool rules and would have let every fetch run
+unasked. In `allow` they are now refused ("would allow every site"), as `lattice.*` is; in
+`deny` they turn fetching off. The private-host exception needs no resolver plumbing: the
+rules already travel with each call (`CallContext::rules`), so the fetch asks them whether
+its host is named exactly and, if so, uses a client without the address filter.
+
 
 The per-host grant landed with AT.2. What is left: `rules.rs` accepts `web.fetch(<host-glob>)`
 in `allow` and `deny`, and a host the user's own `allow` names by exact name may be private

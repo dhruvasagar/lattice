@@ -3,7 +3,7 @@
 ## Unreleased
 
 ### Added
-- **Web tools for LLM chats.** `web.fetch` reads a page as markdown, links kept; it asks before each new site, and "allow this site for this chat" covers that host only. It reaches public sites only: `localhost`, private networks and cloud metadata addresses are refused, and a redirect to another site is reported rather than followed. `web.search` searches through your own SearXNG (no key, queries stay local) or the paid Brave Search API, set in `[llm.web]`, and runs without asking. Select them with `llm.tools = ["web.*"]`.
+- **Web tools for LLM chats.** `web.fetch` reads a page as markdown, links kept; it asks before each new site, and "allow this site for this chat" covers that host only. It reaches public sites only: `localhost`, private networks and cloud metadata addresses are refused, and a redirect to another site is reported rather than followed. `web.search` searches through your own SearXNG (no key, queries stay local) or the paid Brave Search API, set in `[llm.web]`, and runs without asking. Select them with `llm.tools = ["web.*"]`. Rules name hosts: `llm.allow = ["web.fetch(docs.rs)", "web.fetch(*.rust-lang.org)"]` fetches from them without asking, and an allow naming a private host exactly (`web.fetch(localhost:8080)`) is the one way to fetch from it. `web.fetch` alone, or `web.*`, is refused in `allow`.
 
 ## 0.10.0 — 2026-11-10
 

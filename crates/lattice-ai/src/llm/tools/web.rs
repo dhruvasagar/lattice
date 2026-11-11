@@ -62,6 +62,8 @@ pub struct WebTools {
     config: WebConfigFn,
     search: reqwest::Client,
     fetch: reqwest::Client,
+    /// For a host an allow rule names exactly (AT.3): no address filter.
+    named: reqwest::Client,
     /// Off only in this module's tests, whose server is on loopback.
     public_only: bool,
 }
@@ -81,6 +83,9 @@ impl WebTools {
         let search = base()
             .build()
             .map_err(|e| format!("could not create the HTTP client: {e}"))?;
+        let named = base()
+            .build()
+            .map_err(|e| format!("could not create the HTTP client: {e}"))?;
         let mut fetch = base();
         if public_only {
             fetch = fetch.dns_resolver(Arc::new(PublicOnly));
@@ -92,6 +97,7 @@ impl WebTools {
             config,
             search,
             fetch,
+            named,
             public_only,
         })
     }
@@ -217,7 +223,7 @@ impl WebTools {
         })
     }
 
-    async fn fetch(&self, input: Value) -> Result<ToolOutput, ToolError> {
+    async fn fetch(&self, input: Value, ctx: &CallContext) -> Result<ToolOutput, ToolError> {
         #[derive(Deserialize)]
         struct Args {
             url: String,
@@ -226,14 +232,22 @@ impl WebTools {
         }
         let args: Args = parse(input)?;
         let mut url = fetchable(&args.url)?;
-        if self.public_only {
-            check_literal_host(&url)?;
-        }
         let first_host = host_key(&url);
+        // A host the user's own allow names exactly may be private: that is
+        // a decision about that one host, made by the user, not the page.
+        let named = ctx
+            .rules
+            .as_ref()
+            .is_some_and(|r| r.names_host(&first_host));
+        let client = if self.public_only && !named {
+            check_literal_host(&url)?;
+            &self.fetch
+        } else {
+            &self.named
+        };
         let mut hops = 0;
         let response = loop {
-            let response = self
-                .fetch
+            let response = client
                 .get(url.clone())
                 .header(
                     ACCEPT,
@@ -322,13 +336,13 @@ impl ToolSource for WebTools {
         &self,
         name: &str,
         input: Value,
-        _ctx: CallContext,
+        ctx: CallContext,
     ) -> BoxFuture<'_, Result<ToolOutput, ToolError>> {
         let name = name.to_string();
         Box::pin(async move {
             match name.as_str() {
                 "search" => self.search(input).await,
-                "fetch" => self.fetch(input).await,
+                "fetch" => self.fetch(input, &ctx).await,
                 other => Err(ToolError::UnknownTool(other.to_string())),
             }
         })
@@ -386,6 +400,15 @@ fn fetchable(text: &str) -> Result<Url, ToolError> {
         ));
     }
     Ok(url)
+}
+
+/// The host key of `url` as text, `None` when it has no host: what a
+/// `web.fetch(...)` rule is matched against.
+pub fn host_of(url: &str) -> Option<String> {
+    Url::parse(url.trim())
+        .ok()
+        .filter(|u| u.host_str().is_some())
+        .map(|u| host_key(&u))
 }
 
 /// What a grant and a redirect check compare: the host and, when it is not
@@ -1031,6 +1054,45 @@ mod tests {
             let err = fetch(&tools, json!({ "url": url })).await.unwrap_err();
             assert!(err.contains("public sites only"), "{url}: {err}");
         }
+    }
+
+    /// AT.3: an allow rule naming a private host exactly opens that host,
+    /// and only it: the real client still refuses its neighbours.
+    #[tokio::test]
+    async fn a_private_host_named_by_an_allow_rule_is_fetched() {
+        let (base, _) = serve(vec![http(
+            "200 OK",
+            &[("Content-Type", "text/plain")],
+            "the wiki",
+        )])
+        .await;
+        let host = base.trim_start_matches("http://").to_string();
+        let (rules, problems) = super::super::rules::ToolRules::new(
+            std::path::Path::new("/p"),
+            &[format!("web.fetch({host})")],
+            &[],
+            &[],
+        );
+        assert!(problems.is_empty(), "{problems:?}");
+        let rules = Arc::new(rules);
+        let ctx = || CallContext {
+            rules: Some(rules.clone()),
+            ..CallContext::default()
+        };
+        let tools = WebTools::new(config(WebConfig::default())).unwrap();
+        let out = tools
+            .call("fetch", json!({"url": format!("{base}/page")}), ctx())
+            .await
+            .unwrap()
+            .text;
+        assert!(out.ends_with("the wiki"), "{out}");
+        // Another port on the same machine is not named.
+        let err = tools
+            .call("fetch", json!({"url": "http://127.0.0.1:9/"}), ctx())
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("public sites only"), "{err}");
     }
 
     #[tokio::test]

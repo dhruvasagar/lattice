@@ -364,6 +364,10 @@ user saw listed).
 
 ## 6. Tools and MCP
 
+> Web tools, built-in profiles and tools contributed by plugins are designed in
+> [`llm-assistant-tools.md`](llm-assistant-tools.md); they extend this section's broker and
+> trust table without changing either's rules.
+
 **The loop has one way to reach any tool: the `ToolBroker`.** Behind it sit tool sources:
 lattice's own tools (`LatticeTools`, called directly) and one MCP client connection per
 external server. Tool descriptors use MCP's shape (name, description, JSON Schema input,

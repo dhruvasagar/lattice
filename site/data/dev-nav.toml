@@ -272,6 +272,7 @@ docs = [
   "architecture/acp-ux-enhancements",
   "architecture/pi",
   "architecture/llm-layer",
+  "architecture/llm-assistant-tools",
   "notes/ai-assisted-development",
 ]
 

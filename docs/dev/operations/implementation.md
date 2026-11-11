@@ -118,9 +118,18 @@ and `host-platform` / `data-dir` — and plugin API 0.2.0, on crates.io since
 2026-10-11 (LH.3). Deferred: `zip` archives and package-manager installs.
 See [`slice-plans/lighthouse.md`](slice-plans/lighthouse.md).
 
-**LLM layer (designed 2026-11-01, 📝 nothing built):** direct model access from any
-buffer, native in `lattice-ai`. Design: [`../architecture/llm-layer.md`](../architecture/llm-layer.md).
+**LLM layer (designed 2026-11-01, ✅ built LL.1–LL.29, shipped in 0.10.0):** direct
+model access from any buffer, native in `lattice-ai`. Design: [`../architecture/llm-layer.md`](../architecture/llm-layer.md).
 See [`slice-plans/llm-layer.md`](slice-plans/llm-layer.md).
+
+**Assistant tools (AT, designed 2026-11-11, 📝 nothing built):** native `web.search` /
+`web.fetch`, built-in `general` and `coding` profiles, and an `llm-tools` WIT interface
+through which a plugin gives the model tools (results are data; edits are proposals the
+host reviews) and profiles. Org is the first consumer: agenda, query, clock, notes and
+structured changes, with planning and review workflows as profiles. An eval decides
+whether an embedding index or a bundled local model (both ⛔) is worth building.
+Design: [`../architecture/llm-assistant-tools.md`](../architecture/llm-assistant-tools.md).
+See [`slice-plans/llm-assistant-tools.md`](slice-plans/llm-assistant-tools.md).
 
 **Gutter signs (2026-09-08, SG.1–SG.4b landed).** A generic sign mechanism —
 vim's `:sign define` / `:sign place`, with the host owning what a sign IS and

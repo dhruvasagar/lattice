@@ -240,12 +240,24 @@ today's date in the user's time zone, because the model must never infer it.
 
 | Tool | Kind | Returns |
 |---|---|---|
-| `org.agenda` | read | Scheduled items, deadlines and TODOs for `day`, `week` or a date range, with overdue and upcoming split out. Dates computed by the plugin, repeaters expanded |
-| `org.query` | read | Entries matching the plugin's own agenda match syntax (`+work-meeting/TODO`, `DEADLINE<"<+1w>"`), as rows |
+| `org.agenda` | read | Scheduled items, deadlines and TODOs for `day`, `week` or a date range, with overdue and upcoming split out, optionally narrowed by a `match` (`+work`). Dates computed by the plugin, repeaters expanded |
+| `org.query` | read | Entries matching the plugin's own agenda match syntax (`+work-meeting/TODO`, `STYLE="habit"`): tags, properties and TODO state, as rows |
 | `org.entry` | read | One entry: heading, state, tags, planning, properties, body, children's headings |
 | `org.clock` | read | Clocked time per entry over a range, grouped by tag or file |
 | `org.notes` | read | Roam notes matching a title, alias or tag, with their backlinks |
 | `org.change` | propose | One structured change: `set_state`, `schedule`, `deadline`, `tag`, `refile`, `capture`, `add_note` |
+
+**The tools read what the agenda reads.** Repeaters are expanded in the agenda's own scan,
+so `:org-agenda` shows a `+1d` item on every day of its span as Org does, and the assistant
+cannot answer "what's on Thursday" differently from the agenda the user is looking at. Two
+answers to one question is the failure this rules out, so expansion is not done in the tool.
+
+**Dates are `org.agenda`'s; `org.query` has none.** Org's own match syntax compares dates
+(`DEADLINE<"<+1w>"`), but the plugin's matcher does not, and a row carries one date, not
+every stamp of an entry. Rather than a second date vocabulary, `org.agenda` takes an optional
+`match` in the existing syntax: "work deadlines this week" is `org.agenda` over `week` with
+`+work`. One date path and one match grammar give a small model fewer forms to get wrong.
+Comparisons in the matcher wait until a question needs them that this cannot answer.
 
 **Rows carry a ref**, `path::line::heading`. `org.entry` and `org.change` take it. A ref whose
 heading is no longer at that line is refused with "query again", the same rule

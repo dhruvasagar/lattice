@@ -46,7 +46,12 @@ UI-thread work, async results landing through `inbound`. In addition:
 | AT.5d | `*llm-tools*` listing; CHANGELOG | AT.5c | ✅ |
 | AT.5e | guest SDK ergonomics for `llm-tools` | AT.5b | ✅ |
 | AT.6 | Plugin profiles, trusted like project config | AT.4, AT.5 | ✅ |
-| AT.7 | Org read tools (plugin repo) | AT.5 + API release | 📝 |
+| AT.7 | Org read tools (plugin repo) | AT.5 | 🚧 |
+| AT.7a | Repeaters expanded in the shared agenda scan | — | 📝 |
+| AT.7b | The `llm-tools` export; `org.agenda` with `match` | AT.7a | 📝 |
+| AT.7c | `org.query`, `org.entry`; refs | AT.7b | 📝 |
+| AT.7d | `org.clock` | AT.7b | 📝 |
+| AT.7e | `org.notes` | AT.7b | 📝 |
 | AT.8 | `org.change` proposals (plugin repo) | AT.7 | 📝 |
 | AT.9 | Org profiles and commands (plugin repo) | AT.6, AT.8 | 📝 |
 | AT.10 | The eval: fixture corpus, tasks, per-model report | AT.9 | 📝 |
@@ -245,6 +250,26 @@ agenda, match, clock and roam code. Every result opens with today's date. Rows c
 Tests in the plugin's integration suite, against a fixture tree: repeaters expanded, overdue
 split out, a match with properties and a deadline window, clock totals over a range that
 cuts an entry, roam backlinks.
+
+Decided 2026-11-12, after mapping the plugin: its agenda did not expand repeaters (a row is
+one stamp date; `repeat.rs` served habits only) and its matcher refuses date comparisons.
+Repeaters are expanded in the shared agenda scan, so `:org-agenda` and `org.agenda` agree;
+dates stay `org.agenda`'s, which takes a `match`, and `org.query` has no date terms (design
+§6). Built on a plugin branch against the sibling checkout through an uncommitted
+`[patch.crates-io]`; the crates.io pins and `min_lattice` move when the API is published.
+
+- **AT.7a** — `agenda.rs`: a row whose stamp has a repeater yields one dated row per
+  occurrence inside the span (`repeat::next_date` from the stamp), the past stamp staying
+  the overdue one, as Org shows it. User-visible in `:org-agenda`. Tests: `+1d`, `+1w`,
+  `.+`/`++` cookies, a repeater starting after the span, a done item not repeated.
+- **AT.7b** — `export llm-tools` in the `org-plugin` world, `"llm-tools"` in `provides`,
+  `fs:read` reach via the existing grants. `org.agenda { range, match? }` over `scan_file`
+  (text, no tree: the tool runs with no buffer). Every answer opens with today. The tool
+  inputs are `lattice_plugin_sdk::llm` structs.
+- **AT.7c** — `org.query { match }` and `org.entry { ref }`; the ref is
+  `path::line::heading` or the entry's `ID`, a stale one refused with "query again".
+- **AT.7d** — `org.clock { from, to, by }`, totals from `clock_scan::scan` cut to the range.
+- **AT.7e** — `org.notes { query }` over the roam index (title, alias, tag) with backlinks.
 
 ### AT.8 — `org.change` (plugin repo)
 

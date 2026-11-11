@@ -194,13 +194,26 @@ to lattice's edits, and `llm.review` still fences paths.
 | The plugin holds | `read` tools | `propose` tools |
 |---|---|---|
 | No `net:*`, no `proc:spawn` | Run | Review |
-| Either | Ask, unless allowed by name | Review |
+| Either | Ask, unless allowed by name | Ask, then Review |
 
 A plugin with no network and no process capability can only answer from what it reads. Its
 `read` tool is then no more dangerous than `lattice.read`. A plugin that can reach the
-network could send a tool's arguments anywhere, so its tools ask like an MCP server's. The
-row is decided from the capability grant at registration, so a plugin cannot move between
-rows by describing its tools differently.
+network could send a tool's arguments anywhere, so its tools ask like an MCP server's, and
+that includes its `propose` tools: a review gates the edit a call returns, not the call,
+which has seen the arguments by then. The row is decided from the capability grant at
+registration, so a plugin cannot move between rows by describing its tools differently.
+
+**Where the pieces live.** The plugin host owns the `llm-tools` world, the actor and a plain
+client with no llm types. lattice-ai owns `PluginToolSource`: the permission row, the
+proposal path and the name rules, over a small `ToolPlugin` trait. The plugin loader, which
+already depends on every subsystem it registers seams into, adapts the client to that trait
+and registers it into lattice-ai's `PluginTools` service. So the plugin host does not compile
+the llm layer, and lattice-ai does not compile wasmtime.
+
+**A proposal applies through `lattice.edit_file` itself**, called by `PluginToolSource` with
+the request's context: one code path for the project fence, the staleness check, review and
+`<C-t>`. Because that call does not pass through the broker, `PluginToolSource` checks
+`llm.deny`'s `edit_file(...)` rules for each proposal first.
 
 **Calls run where every guest call runs:** on the plugin's own actor, fuel-limited, async to
 the request. A trap is that call's error; the plugin host's restart policy applies to the

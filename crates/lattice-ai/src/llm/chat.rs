@@ -491,6 +491,18 @@ impl LlmChats {
             .key_variables()
     }
 
+    /// The `[llm.mcp.*]` servers' names: taken, so no plugin may offer
+    /// tools under one (AT.5).
+    pub fn mcp_names(&self) -> Vec<String> {
+        self.config
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .mcp
+            .iter()
+            .map(|m| m.name.clone())
+            .collect()
+    }
+
     /// `[llm.web]` as it is now (AT.2).
     pub fn web_config(&self) -> super::config::WebConfig {
         self.config

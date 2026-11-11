@@ -161,9 +161,26 @@ pub fn install(
                 }),
             });
         }
+        let tools: Arc<dyn super::tools::ToolSource> = Arc::new(tools);
         chats
             .tools()
-            .add_source(super::tools::broker::LATTICE, Arc::new(tools));
+            .add_source(super::tools::broker::LATTICE, tools.clone());
+        // AT.5: plugins exporting `llm-tools`, registered by the plugin
+        // loader as they load. A proposal applies through lattice's own
+        // `edit_file`, so it is reviewed and fenced as the model's edits are.
+        let configured = Arc::downgrade(&chats);
+        let plugin_tools: super::tools::plugin::PluginToolsHandle =
+            Arc::new(super::tools::plugin::PluginTools::new(
+                chats.tools().clone(),
+                tools,
+                Arc::new(move || {
+                    configured
+                        .upgrade()
+                        .map(|c| c.mcp_names())
+                        .unwrap_or_default()
+                }),
+            ));
+        boot.register_service::<super::tools::plugin::PluginToolsHandle>(plugin_tools);
     }
     // AT.2: `web.search` and `web.fetch`, beside lattice's own. The table is
     // read per call, so a reloaded `[llm.web]` applies to the next search.

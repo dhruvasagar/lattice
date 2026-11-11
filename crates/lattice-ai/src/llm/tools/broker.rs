@@ -344,6 +344,14 @@ impl ToolBroker {
         g.push((server.to_string(), source));
     }
 
+    /// Stop offering `server`'s tools (a plugin unloaded).
+    pub fn remove_source(&self, server: &str) {
+        self.sources
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .retain(|(s, _)| s != server);
+    }
+
     /// The tools `selection` picks, as one request's offer. A source that
     /// cannot list its tools is left out and logged, never failing the
     /// request: a broken server must not stop a chat.
@@ -395,7 +403,8 @@ impl ToolBroker {
                 if selected(&wanted, tool, &listed, &server) {
                     any = true;
                     let allowed = source.allowed(&tool.descriptor.name);
-                    offer.tools.push(offered(&server, tool, allowed));
+                    let decided = source.permission(&tool.descriptor.name);
+                    offer.tools.push(offered(&server, tool, allowed, decided));
                 }
             }
             if any {
@@ -431,16 +440,27 @@ fn group_of(kind: ToolKind) -> Option<&'static str> {
 /// `allowed`: the user's config names this tool as one that runs without
 /// asking (only an external server's tool can be; lattice's own follow the
 /// table).
-fn offered(server: &str, tool: &SourceTool, allowed: bool) -> OfferedTool {
+fn offered(
+    server: &str,
+    tool: &SourceTool,
+    allowed: bool,
+    decided: Option<Permission>,
+) -> OfferedTool {
     let ours = NATIVE.contains(&server);
-    // Kinds are believed for lattice's own sources only; another server's
+    // Kinds are believed for lattice's own sources, and for a source whose
+    // row lattice decided (a plugin's, from its grant); another server's
     // tool is shown as `Other` and asks unless the user allowed it by name.
     // A native tool of kind `Other` (`web.fetch`) asks too.
-    let kind = if ours { tool.kind } else { ToolKind::Other };
-    let permission = match (ours, kind) {
-        (true, ToolKind::Read | ToolKind::Search) => Permission::Run,
-        (true, ToolKind::Edit) => Permission::Review,
-        (false, _) if allowed => Permission::Run,
+    let kind = if ours || decided.is_some() {
+        tool.kind
+    } else {
+        ToolKind::Other
+    };
+    let permission = match (decided, ours, kind) {
+        (Some(p), _, _) => p,
+        (None, true, ToolKind::Read | ToolKind::Search) => Permission::Run,
+        (None, true, ToolKind::Edit) => Permission::Review,
+        (None, false, _) if allowed => Permission::Run,
         _ => Permission::Ask,
     };
     OfferedTool {

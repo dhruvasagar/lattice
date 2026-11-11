@@ -1,7 +1,8 @@
 //! Tools a model may call (LL.16, design `llm-layer.md` §6).
 //!
 //! A [`ToolSource`] is anything that lists tools and runs them: lattice's own
-//! (`lattice.rs`), and each external MCP server (`mcp.rs`, LL.24). The [`ToolBroker`] holds the
+//! (`lattice.rs`), the web's (`web.rs`), each external MCP server (`mcp.rs`,
+//! LL.24) and each plugin exporting `llm-tools` (`plugin.rs`, AT.5). The [`ToolBroker`] holds the
 //! sources, namespaces their tools and decides what each may do; the loop sees
 //! only the [`Offer`] the broker makes for one request.
 //!
@@ -13,6 +14,7 @@
 pub mod broker;
 pub mod lattice;
 pub mod mcp;
+pub mod plugin;
 pub mod rules;
 pub mod web;
 
@@ -205,6 +207,14 @@ pub trait ToolSource: Send + Sync {
     /// narrower than the whole tool: the host, for `web.fetch`. `None` is
     /// the tool. A command's exact call is decided by its kind, not here.
     fn chat_scope(&self, _name: &str, _input: &Value) -> Option<ChatAllow> {
+        None
+    }
+
+    /// The row `name` sits in, when lattice built this source from something
+    /// it trusts to decide it: a plugin's capability grant (AT.5). `None`
+    /// leaves it to the broker, which believes kinds for its native sources
+    /// only. Never from what the tool says about itself.
+    fn permission(&self, _name: &str) -> Option<Permission> {
         None
     }
 }

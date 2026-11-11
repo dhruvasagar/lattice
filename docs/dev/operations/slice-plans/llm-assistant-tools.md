@@ -6,7 +6,7 @@
 
 Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred · ❌ dropped.
 
-**Status: 🚧 AT.1–AT.4 ✅; AT.5 next.**
+**Status: 🚧 AT.1–AT.4 ✅; AT.5 in progress (AT.5a next to land).**
 
 **Goal:** native web tools, a WIT seam through which a plugin gives the model tools and
 profiles, and an org assistant built on both, measured by an eval that decides whether a
@@ -39,7 +39,11 @@ UI-thread work, async results landing through `inbound`. In addition:
 | AT.2 | `web.search`, `web.fetch`, the `web` source, per-host grants | — | ✅ |
 | AT.3 | `web.fetch(<host>)` rules; a private host allowed by name | AT.2 | ✅ |
 | AT.4 | Built-in profiles; `:llm <profile> <prompt…>` | AT.2 | ✅ |
-| AT.5 | `llm-tools` WIT interface and `PluginToolSource` | — | 📝 |
+| AT.5 | `llm-tools` WIT interface and `PluginToolSource` | — | 🚧 |
+| AT.5a | lattice-ai: `ToolPlugin`, `PluginToolSource`, `PluginTools` service | — | 🚧 |
+| AT.5b | plugin host: `llm-tools` world, actor, client, fixture guest | — | 📝 |
+| AT.5c | loader: drain, adapter, teardown; round-trip bench | AT.5a, AT.5b | 📝 |
+| AT.5d | guest SDK trait; `*llm-tools*` listing | AT.5c | 📝 |
 | AT.6 | Plugin profiles, trusted like project config | AT.4, AT.5 | 📝 |
 | AT.7 | Org read tools (plugin repo) | AT.5 + API release | 📝 |
 | AT.8 | `org.change` proposals (plugin repo) | AT.7 | 📝 |
@@ -126,6 +130,35 @@ Tests: a plain `:llm` still offers no tools; `:llm coding` offers the five; a us
 without a keypress.
 
 ### AT.5 — `llm-tools` and `PluginToolSource`
+
+**Carved into four, 2026-11-11**, once the verify-first step was done. The guest-call path
+fits: every seam is its own world and actor, and a caller on any thread sends over an
+unbounded channel and awaits a oneshot, so neither side blocks; a trap quarantines the
+plugin and the caller gets an error. What it did not settle was the dependency direction
+(neither lattice-ai nor the plugin host depends on the other). Decided with Dhruva: the
+adapter lives in the **plugin loader**, the composition crate; lattice-ai owns the domain
+logic over a `ToolPlugin` trait (design §5 "Where the pieces live"). Rejected: the plugin
+host depending on lattice-ai as it does on `lattice-completion` (it would compile the whole
+llm layer for no runtime gain), and a neutral trait in `lattice-mode` (llm vocabulary in a
+crate that does not own the domain).
+
+One correction to design §5 made while building AT.5a: a network-capable plugin's `propose`
+tools ask before they run, as its `read` tools do, since the call sees the arguments before
+any review.
+
+- **AT.5a** — lattice-ai only. `ToolPlugin` over plain records, `PluginToolSource` (row from
+  `Reach`, proposals through `lattice.edit_file` after `llm.deny`), `PluginTools` (name rules,
+  status for the listing), `ToolSource::permission`, `ToolBroker::remove_source`. Tests with
+  a scripted plugin: rows per reach, proposals applied and refused, a trap as the call's
+  error, every reserved name refused without hiding the owner.
+- **AT.5b** — `llm-tools.wit` and its world, the bindgen, `LlmToolsClient` and actor,
+  `PluginSeam::LlmTools`, a fixture guest; host tests for list, call and trap.
+- **AT.5c** — the loader's drain: grant → `Reach`, client → `ToolPlugin`, register, unregister
+  on unload. The round-trip bench.
+- **AT.5d** — the guest SDK's trait and registration in `lattice-plugin-api`; `*llm-mcp*`
+  becomes `*llm-tools*` with a section per source, `:llm-mcp` kept as an alias.
+
+The original plan for the whole slice:
 
 WIT interface and records as design §5, in `crates/lattice-wit/wit/llm-tools.wit`, with a
 world for plugins exporting it. The host side wraps a plugin's exports as a `ToolSource`:

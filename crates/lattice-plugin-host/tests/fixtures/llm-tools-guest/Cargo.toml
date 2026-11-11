@@ -17,6 +17,9 @@ crate-type = ["cdylib"]
 
 [dependencies]
 wit-bindgen = "0.58"
+# AT.5e: the SDK's `llm` module writes `outline`'s schema and parses its input
+# from one struct, so the host test proves that text is accepted end to end.
+lattice-plugin-sdk = { path = "../../../../lattice-plugin-sdk" }
 
 [profile.release]
 opt-level = "s"

@@ -2963,7 +2963,7 @@
               "caption": "Answer a read tool with text, and a propose tool with an edit the host reviews and applies",
               "source": "crates/lattice-plugin-host/tests/fixtures/llm-tools-guest/src/lib.rs",
               "language": "rust",
-              "code": "\"outline\" => Ok(text(format!(\"outline for {args}\"))),\n\"change\" => Ok(LlmToolResult {\n    text: \"marking it done\".to_string(),\n    proposals: vec![ProposedEdit {\n        path: \"notes.org\".to_string(),\n        old_string: \"* TODO ship\".to_string(),\n        new_string: \"* DONE ship\".to_string(),\n    }],\n}),"
+              "code": "\"outline\" => {\n    // A wrong input goes back to the model naming the field.\n    let _query: Outline = parse_args(&args).map_err(|e| e.to_string())?;\n    Ok(text(format!(\"outline for {args}\")))\n}\n\"change\" => Ok(LlmToolResult {\n    text: \"marking it done\".to_string(),\n    proposals: vec![ProposedEdit {\n        path: \"notes.org\".to_string(),\n        old_string: \"* TODO ship\".to_string(),\n        new_string: \"* DONE ship\".to_string(),\n    }],\n}),"
             }
           ]
         },
@@ -3003,7 +3003,7 @@
               "caption": "Offer one read tool and one propose tool, each with an object input schema",
               "source": "crates/lattice-plugin-host/tests/fixtures/llm-tools-guest/src/lib.rs",
               "language": "rust",
-              "code": "fn tools() -> Vec<LlmTool> {\n    vec![\n        LlmTool {\n            name: \"outline\".to_string(),\n            description: \"The outline of the notes.\".to_string(),\n            input_schema: SCHEMA.to_string(),\n            kind: LlmToolKind::Read,\n        },\n        LlmTool {\n            name: \"change\".to_string(),\n            description: \"Mark the first TODO done.\".to_string(),\n            input_schema: SCHEMA.to_string(),\n            kind: LlmToolKind::Propose,\n        },\n    ]\n}"
+              "code": "fn tools() -> Vec<LlmTool> {\n    // The schema comes from the struct the call parses into, so the two\n    // cannot drift. It is an error only for a struct without named fields.\n    let schema = input_schema::<Outline>().unwrap_or_default();\n    vec![\n        LlmTool {\n            name: \"outline\".to_string(),\n            description: \"The outline of the notes.\".to_string(),\n            input_schema: schema.clone(),\n            kind: LlmToolKind::Read,\n        },\n        LlmTool {\n            name: \"change\".to_string(),\n            description: \"Mark the first TODO done.\".to_string(),\n            input_schema: schema,\n            kind: LlmToolKind::Propose,\n        },\n    ]\n}"
             }
           ]
         }

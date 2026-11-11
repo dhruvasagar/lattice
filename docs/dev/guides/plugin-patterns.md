@@ -1095,6 +1095,87 @@ fn save(list: &[String]) -> Result<(), String> {
 }
 ```
 
+## Tools for the assistant
+
+Target the `llm-tools-plugin` world to give LLM chats tools of your own,
+offered as `<plugin>.<tool>` beside lattice's. Each tool is `read` (it runs
+without asking, if your plugin can reach neither the network nor another
+program) or `propose` (it returns edits, which go through the same review as
+the model's own). A call cannot write a file itself: the host makes this
+store's filesystem read-only whatever your grant says, so `propose` is the
+only way to change anything.
+
+Declare each tool's input as a struct and let the SDK write its JSON Schema
+(`lattice_plugin_sdk::llm::input_schema`), so the schema the model sees and
+the parse that reads its answer cannot drift. The struct is an ordinary
+`#[derive(ConfigShape)]` (the SDK's `llm` module docs show one whole); its
+field doc comments become the schema's descriptions, and a small model leans
+on them:
+
+<!-- example: llm-tools-guest:llm-tools.tools -->
+```rust
+fn tools() -> Vec<LlmTool> {
+    // The schema comes from the struct the call parses into, so the two
+    // cannot drift. It is an error only for a struct without named fields.
+    let schema = input_schema::<Outline>().unwrap_or_default();
+    vec![
+        LlmTool {
+            name: "outline".to_string(),
+            description: "The outline of the notes.".to_string(),
+            input_schema: schema.clone(),
+            kind: LlmToolKind::Read,
+        },
+        LlmTool {
+            name: "change".to_string(),
+            description: "Mark the first TODO done.".to_string(),
+            input_schema: schema,
+            kind: LlmToolKind::Propose,
+        },
+    ]
+}
+```
+
+Parse the model's input with `lattice_plugin_sdk::llm::parse_args` and
+return its error as the call's `err`: it names the field (`q: expected
+string, got integer`), and the model corrects itself from it. A `propose`
+tool returns its edits as `old-string` / `new-string` pairs:
+
+<!-- example: llm-tools-guest:llm-tools.call -->
+```rust
+"outline" => {
+    // A wrong input goes back to the model naming the field.
+    let _query: Outline = parse_args(&args).map_err(|e| e.to_string())?;
+    Ok(text(format!("outline for {args}")))
+}
+"change" => Ok(LlmToolResult {
+    text: "marking it done".to_string(),
+    proposals: vec![ProposedEdit {
+        path: "notes.org".to_string(),
+        old_string: "* TODO ship".to_string(),
+        new_string: "* DONE ship".to_string(),
+    }],
+}),
+```
+
+A workflow is a profile: a system prompt and a tool selection, contributed
+through `llm-tools.profiles`. The host keeps its system prompt, parameters and
+destination, and from its tools only yours, `lattice.read` and `web.*`; it
+drops a model, which you cannot know the user has:
+
+<!-- example: llm-tools-guest:llm-tools.profiles -->
+```rust
+fn profiles() -> Vec<LlmProfile> {
+    vec![LlmProfile {
+        name: "fixture-plan".to_string(),
+        description: "Plan from the fixture's notes.".to_string(),
+        settings: vec![
+            ("system".to_string(), "Plan the day.".to_string()),
+            ("tools".to_string(), "fixture.outline".to_string()),
+        ],
+    }]
+}
+```
+
 ## Shipping help, and logging
 
 Register your `:help` pages in `register-help-topics`; embed the markdown at

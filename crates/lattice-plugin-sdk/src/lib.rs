@@ -24,11 +24,14 @@
 //!     struct as a structured config schema and value, and the arena
 //!     flattening ([`shape::flatten_schema`], [`shape::flatten_value`],
 //!     [`shape::unflatten_value`]) the WIT seam needs.
+//!   - [`llm`] — a tool's input for the `llm-tools` world: JSON Schema text
+//!     from a [`shape::ConfigShape`] struct, and the model's JSON read back
+//!     into it, so the two cannot drift.
 //!
 //! ## What it must not depend on
 //!
 //! No `lattice-*` runtime crate and no `wit-bindgen` bindings — only `serde`,
-//! `rmp-serde` and its own derive. Two structural reasons: it is published and
+//! `rmp-serde`, `serde_json` (for [`llm`]) and its own derive. Two structural reasons: it is published and
 //! versioned for out-of-tree plugin authors, so it cannot drag the editor in;
 //! and it must compose with EVERY plugin world, which it can only do by naming
 //! none of their generated types. It is a separate crate because it is the one
@@ -103,6 +106,7 @@ extern crate self as lattice_plugin_sdk;
 
 pub use lattice_plugin_sdk_derive::{ConfigShape, PluginEvent, PluginOption};
 
+pub mod llm;
 pub mod shape;
 
 /// A plugin-defined event: a typed view over the opaque `emit-event` /

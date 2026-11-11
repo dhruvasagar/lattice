@@ -86,6 +86,7 @@ dependencies = [
  "lattice-plugin-sdk-derive",
  "rmp-serde",
  "serde",
+ "serde_json",
 ]
 
 [[package]]

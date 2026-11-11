@@ -6,7 +6,7 @@
 
 Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred · ❌ dropped.
 
-**Status: 🚧 AT.1–AT.4 ✅, AT.6 ✅, AT.15 ✅; AT.5 in progress (AT.5a–d ✅; AT.5e, the guest SDK, awaits a decision).**
+**Status: 🚧 AT.1–AT.6 ✅, AT.15 ✅; next is the plugin repo (AT.7–AT.10), after the plugin API release.**
 
 **Goal:** native web tools, a WIT seam through which a plugin gives the model tools and
 profiles, and an org assistant built on both, measured by an eval that decides whether a
@@ -39,12 +39,12 @@ UI-thread work, async results landing through `inbound`. In addition:
 | AT.2 | `web.search`, `web.fetch`, the `web` source, per-host grants | — | ✅ |
 | AT.3 | `web.fetch(<host>)` rules; a private host allowed by name | AT.2 | ✅ |
 | AT.4 | Built-in profiles; `:llm <profile> <prompt…>` | AT.2 | ✅ |
-| AT.5 | `llm-tools` WIT interface and `PluginToolSource` | — | 🚧 |
+| AT.5 | `llm-tools` WIT interface and `PluginToolSource` | — | ✅ |
 | AT.5a | lattice-ai: `ToolPlugin`, `PluginToolSource`, `PluginTools` service | — | ✅ |
 | AT.5b | plugin host: `llm-tools` world, actor, client, fixture guest | — | ✅ |
 | AT.5c | loader: drain, adapter, teardown; round-trip bench | AT.5a, AT.5b | ✅ |
 | AT.5d | `*llm-tools*` listing; CHANGELOG | AT.5c | ✅ |
-| AT.5e | guest SDK ergonomics for `llm-tools` | AT.5b | 📝 |
+| AT.5e | guest SDK ergonomics for `llm-tools` | AT.5b | ✅ |
 | AT.6 | Plugin profiles, trusted like project config | AT.4, AT.5 | ✅ |
 | AT.7 | Org read tools (plugin repo) | AT.5 + API release | 📝 |
 | AT.8 | `org.change` proposals (plugin repo) | AT.7 | 📝 |
@@ -178,9 +178,17 @@ any review.
   `lattice-plugin-api`" does not fit either crate as built. `lattice-plugin-api` is the API
   catalog and reference, not guest code; `lattice-plugin-sdk` is guest code but names no
   WIT-generated type by rule, so it composes with every world. A trait over the world's
-  types would break that rule. Open: whether the SDK gains a world-agnostic piece instead (a
-  serde struct as a tool's JSON Schema plus its parse), or nothing, since the WIT world is
-  already three functions. The fixture guest is the worked example either way.
+  types would break that rule. Decided 2026-11-11: reuse `ConfigShape` rather than a new
+  trait. `lattice_plugin_sdk::llm` has `input_schema::<T>()` (JSON Schema text from
+  `T::schema()`, field docs as `description`, `Option<T>` fields not required) and
+  `parse_args::<T>(args)` (JSON into the shape `Value`, then `T::from_value`; `null` is
+  absent, empty input is `{}`, a float where an integer is wanted is an error). Both deal in
+  strings, so the SDK still names no WIT type; `serde_json` joins its dependencies. The
+  fixture guest now writes `outline`'s schema and parses its input through it, so
+  `llm_tools_source.rs` proves the SDK's text is accepted by the host and a wrong input comes
+  back as the typed `err` naming the field. Keys are the derive's kebab-case wire names.
+  `plugin-patterns.md` gains "Tools for the assistant", quoting the fixture. No bench: it
+  runs in the guest, once per call, beside the `call` round trip AT.5c measures.
 
 The original plan for the whole slice:
 

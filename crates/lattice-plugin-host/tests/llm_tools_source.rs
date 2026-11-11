@@ -82,7 +82,14 @@ async fn tools_and_profiles_cross_with_every_field() {
             ("change", LlmToolKind::Propose, "Mark the first TODO done."),
         ]
     );
-    assert!(tools[0].input_schema.starts_with(r#"{"type":"object""#));
+    // Written by the SDK from the guest's `Outline` struct, doc included.
+    let schema: serde_json::Value = serde_json::from_str(&tools[0].input_schema).unwrap();
+    assert_eq!(schema["type"], "object");
+    assert_eq!(
+        schema["properties"]["q"],
+        serde_json::json!({"type": "string", "description": "Only headlines matching this."})
+    );
+    assert_eq!(schema["required"], serde_json::json!([]));
 
     let profiles = client.profiles().await.unwrap();
     assert_eq!(profiles.len(), 1);
@@ -108,6 +115,11 @@ async fn a_call_carries_the_input_in_and_its_proposals_out() {
     let read = call(&client, "outline", r#"{"q":"work"}"#).await.unwrap();
     assert_eq!(read.text, r#"outline for {"q":"work"}"#);
     assert!(read.proposals.is_empty());
+    // The SDK's parse in the guest: a wrong kind is the typed `err`, naming
+    // the field for the model, and the guest is not quarantined for it.
+    let wrong = call(&client, "outline", r#"{"q":3}"#).await.unwrap_err();
+    assert_eq!(wrong, "q: expected string, got integer");
+    assert!(call(&client, "outline", "").await.is_ok());
 
     let change = call(&client, "change", "{}").await.unwrap();
     assert_eq!(change.text, "marking it done");

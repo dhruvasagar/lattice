@@ -55,7 +55,11 @@ continues, and the model is told the tool failed and why.
 **Example — Answer a read tool with text, and a propose tool with an edit the host reviews and applies** · [`crates/lattice-plugin-host/tests/fixtures/llm-tools-guest/src/lib.rs`](../../../../crates/lattice-plugin-host/tests/fixtures/llm-tools-guest/src/lib.rs)
 
 ```rust
-"outline" => Ok(text(format!("outline for {args}"))),
+"outline" => {
+    // A wrong input goes back to the model naming the field.
+    let _query: Outline = parse_args(&args).map_err(|e| e.to_string())?;
+    Ok(text(format!("outline for {args}")))
+}
 "change" => Ok(LlmToolResult {
     text: "marking it done".to_string(),
     proposals: vec![ProposedEdit {
@@ -107,17 +111,20 @@ is not a JSON object, is not offered, and the listing says why.
 
 ```rust
 fn tools() -> Vec<LlmTool> {
+    // The schema comes from the struct the call parses into, so the two
+    // cannot drift. It is an error only for a struct without named fields.
+    let schema = input_schema::<Outline>().unwrap_or_default();
     vec![
         LlmTool {
             name: "outline".to_string(),
             description: "The outline of the notes.".to_string(),
-            input_schema: SCHEMA.to_string(),
+            input_schema: schema.clone(),
             kind: LlmToolKind::Read,
         },
         LlmTool {
             name: "change".to_string(),
             description: "Mark the first TODO done.".to_string(),
-            input_schema: SCHEMA.to_string(),
+            input_schema: schema,
             kind: LlmToolKind::Propose,
         },
     ]

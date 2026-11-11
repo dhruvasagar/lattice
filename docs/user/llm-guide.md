@@ -147,6 +147,17 @@ and so on, so unrelated questions never share a history and several chats can ru
 at once. `:llm writer` opens a chat from the profile called `writer`
 (see [Profiles](#profiles-options-and-project-config)).
 
+Give a profile and a prompt and the prompt is sent as the chat's first turn, so a question
+is one command:
+
+```
+:llm general what changed in rust 1.90
+:llm coding why does the parser test fail
+```
+
+The first word is always the profile; the rest is the prompt. lattice ships `general` and
+`coding` (see [Built-in profiles](#built-in-profiles)), so these work with no config.
+
 Type in the prompt and press `<CR>` to send. The reply streams into the transcript
 above. The headerline shows the model, its state and the token count, and the
 cost if you configured prices.
@@ -415,7 +426,9 @@ attached adds up). Past it, the oldest requests' text is dropped first; their ro
 
 By default a model only sees what you send. Tools let it look at the project, change
 files and run commands while it answers. **Nothing is on until you choose it**, with
-`llm.tools` in your config, a profile, or `:setlocal` in a chat:
+`llm.tools` in your config, a profile, or `:setlocal` in a chat. The quickest way is a
+built-in profile: `:llm coding` opens a chat with the tools for working on the project, and
+`:llm general` one that reads and looks things up on the web. Or set them yourself:
 
 ```toml
 [llm]
@@ -688,6 +701,22 @@ tools  = []
 model = "anthropic/claude-sonnet-4-5"
 tools = ["lattice.read", "lattice.edit", "github.*"]
 ```
+
+#### Built-in profiles
+
+Two come with lattice, so the basics need no config:
+
+| Profile | Tools |
+|---|---|
+| `general` | `lattice.read`, `web.search`, `web.fetch` |
+| `coding` | `lattice.read`, `lattice.edit`, `lattice.exec`, `web.search`, `web.fetch` |
+
+They set only the tools; the model is yours. A profile of your own with the same name
+overlays the built-in one key by key, so the `[llm.profiles.coding]` above changes the model
+and replaces the tools, and one that sets only `model` keeps the built-in tools.
+`:llm-menu` shows `builtin profile: coding` beside a value that came from it. A plain `:llm`
+still has no tools, and `@coding` in text you type cannot turn tools on, as for any profile.
+`web.search` is only offered once you have [set a backend](#web-search-and-web-fetch).
 
 `:llm writer` opens a chat from a profile. `:llm-profile writer` switches the current
 session, clearing its overrides and saying which. An unknown name lists the known ones.

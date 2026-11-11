@@ -545,13 +545,11 @@ impl LlmChats {
     }
 
     /// The names of the configured profiles.
+    /// Every profile a session may name: lattice's built-in ones and the
+    /// user's, sorted.
     pub fn profile_names(&self) -> Vec<String> {
-        self.config
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .profile_names()
-            .map(str::to_string)
-            .collect()
+        let cfg = self.config.read().unwrap_or_else(|e| e.into_inner());
+        super::settings::profile_names(cfg.profile_names())
     }
 
     fn global_layer(&self) -> RawSet {

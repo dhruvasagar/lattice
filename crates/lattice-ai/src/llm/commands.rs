@@ -1,5 +1,6 @@
-//! `:llm [profile]` -- open a new chat buffer -- and `:llm-profile`, the one way
-//! to switch a session's profile.
+//! `:llm [profile [prompt…]]` -- open a new chat buffer, and with a prompt
+//! send it as the first turn -- and `:llm-profile`, the one way to switch a
+//! session's profile.
 //!
 //! Binding and body live here, in the owning crate. Creating the chat is cheap
 //! and non-blocking (no I/O: the config was read at boot), so the ex-command may
@@ -43,18 +44,29 @@ fn echo(level: EchoLevel, text: String) -> Effect {
     Effect::Echo { level, text }
 }
 
-/// `unknown profile `x` (known: a, b)`.
+/// `unknown profile `x` (known: a, b)`. Never empty: lattice ships profiles.
 fn unknown_profile(chats: &LlmChats, name: &str) -> String {
-    let known = chats.profile_names();
-    if known.is_empty() {
-        format!(
-            "llm: unknown profile `{name}`: no profiles are configured (add [llm.profiles.<name>] to lattice.toml)"
-        )
-    } else {
-        format!(
-            "llm: unknown profile `{name}` (known: {})",
-            known.join(", ")
-        )
+    format!(
+        "llm: unknown profile `{name}` (known: {})",
+        chats.profile_names().join(", ")
+    )
+}
+
+/// `:llm`'s argument: a profile, then the prompt to send with it, if any.
+fn profile_and_prompt(text: &str) -> (Option<String>, Option<String>) {
+    let text = text.trim();
+    if text.is_empty() {
+        return (None, None);
+    }
+    match text.split_once(char::is_whitespace) {
+        Some((profile, prompt)) => {
+            let prompt = prompt.trim();
+            (
+                Some(profile.to_string()),
+                (!prompt.is_empty()).then(|| prompt.to_string()),
+            )
+        }
+        None => (Some(text.to_string()), None),
     }
 }
 
@@ -331,22 +343,29 @@ pub fn register(registry: &mut CommandRegistry, chats: LlmChatsHandle) {
     registry.register_ex_command(
         "llm",
         "Open a new chat with a language model, optionally starting from a profile \
-         (`:llm writer`). Every chat gets its own buffer, *llm:<n>*, so questions never \
-         share a history.",
+         (`:llm coding`), and send a prompt as its first turn (`:llm general what is \
+         new in rust 1.90`). lattice ships `general` and `coding`; a plain `:llm` has no \
+         tools. Every chat gets its own buffer, *llm:<n>*, so questions never share a \
+         history.",
         ExCommandSpec {
             latency_class: LatencyClass::Reflex,
             accepts_bang: false,
             accepts_range: false,
             parse_args: Arc::new(parse_rest_as_text),
             apply: Arc::new(move |ctx| {
-                let profile = arg_text(&ctx.args);
-                let profile = (!profile.is_empty()).then_some(profile);
+                let (profile, prompt) = profile_and_prompt(&arg_text(&ctx.args));
                 if let Some(p) = &profile
                     && !open.profile_names().iter().any(|n| n == p)
                 {
                     return Ok(echo(EchoLevel::Error, unknown_profile(&open, p)));
                 }
                 let session = open.create_with(profile.as_deref(), Some(ctx.buffer_id));
+                // Sent before the buffer opens, as an ask's first turn is: the
+                // reply streams into the transcript, and the buffer shows it
+                // once bound, with no key pressed.
+                if let Some(prompt) = prompt {
+                    open.submit(&session, prompt);
+                }
                 Ok(Effect::OpenSyntheticBuffer {
                     name: session.name.clone(),
                     mode_id: LlmChatMode::mode_id().as_str().to_string(),
@@ -372,13 +391,10 @@ pub fn register(registry: &mut CommandRegistry, chats: LlmChatsHandle) {
             apply: Arc::new(move |ctx| {
                 let name = arg_text(&ctx.args);
                 if name.is_empty() {
-                    let known = profile_chats.profile_names();
-                    let text = if known.is_empty() {
-                        "llm: no profiles are configured (add [llm.profiles.<name>] to lattice.toml)"
-                            .to_string()
-                    } else {
-                        format!("llm: profiles: {}", known.join(", "))
-                    };
+                    let text = format!(
+                        "llm: profiles: {}",
+                        profile_chats.profile_names().join(", ")
+                    );
                     return Ok(echo(EchoLevel::Info, text));
                 }
                 Ok(switch_profile(&profile_chats, ctx.buffer_id, &name))

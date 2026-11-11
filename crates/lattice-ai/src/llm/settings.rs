@@ -389,6 +389,40 @@ pub struct Resolved {
     pub refused: Vec<Refusal>,
 }
 
+/// The profiles lattice ships (design §4), so the basics need no config. A
+/// user profile of the same name overlays one key by key: its `model` changes
+/// the model and the built-in tools stay. A plain `:llm` still has no tools.
+pub const BUILTIN_PROFILES: [(&str, &str); 2] = [
+    ("general", "lattice.read,web.search,web.fetch"),
+    (
+        "coding",
+        "lattice.read,lattice.edit,lattice.exec,web.search,web.fetch",
+    ),
+];
+
+/// The built-in profile `name`, if lattice ships one.
+pub fn builtin_profile(name: &str) -> Option<RawSet> {
+    BUILTIN_PROFILES
+        .iter()
+        .find(|(n, _)| *n == name)
+        .map(|(_, tools)| {
+            [(SettingKey::Tools, tools.to_string())]
+                .into_iter()
+                .collect()
+        })
+}
+
+/// Every profile a session may name: the built-in ones and `user`'s, sorted,
+/// each once.
+pub fn profile_names<'a>(user: impl IntoIterator<Item = &'a str>) -> Vec<String> {
+    let names: BTreeSet<String> = BUILTIN_PROFILES
+        .iter()
+        .map(|(n, _)| n.to_string())
+        .chain(user.into_iter().map(str::to_string))
+        .collect();
+    names.into_iter().collect()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum SettingsError {
     #[error("unknown profile `{name}`{}", known_list(.known))]
@@ -396,11 +430,7 @@ pub enum SettingsError {
 }
 
 fn known_list(known: &[String]) -> String {
-    if known.is_empty() {
-        " (no profiles are configured: add [llm.profiles.<name>] to lattice.toml)".to_string()
-    } else {
-        format!(" (known: {})", known.join(", "))
-    }
+    format!(" (known: {})", known.join(", "))
 }
 
 // ---------------------------------------------------------------------------
@@ -768,14 +798,27 @@ pub fn resolve(
         .filter(|p| !p.trim().is_empty());
     let request_profile = req.profile.clone().filter(|p| !p.trim().is_empty());
     let profile_name = request_profile.clone().or(base_profile.clone());
-    let lookup = |name: &String| {
-        layers
-            .profiles
-            .get(name)
-            .ok_or_else(|| SettingsError::UnknownProfile {
+    // A profile's sets in the order they apply: the built-in one, then the
+    // user's of the same name over it, key by key.
+    let lookup = |name: &String| -> Result<Vec<(RawSet, OptionOrigin)>, SettingsError> {
+        let sets: Vec<(RawSet, OptionOrigin)> = builtin_profile(name)
+            .map(|set| (set, OptionOrigin::BuiltinProfile { name: name.clone() }))
+            .into_iter()
+            .chain(
+                layers
+                    .profiles
+                    .get(name)
+                    .map(|set| (set.clone(), OptionOrigin::Profile { name: name.clone() })),
+            )
+            .collect();
+        if sets.is_empty() {
+            Err(SettingsError::UnknownProfile {
                 name: name.clone(),
-                known: layers.profiles.keys().cloned().collect(),
+                known: profile_names(layers.profiles.keys().map(String::as_str)),
             })
+        } else {
+            Ok(sets)
+        }
     };
     let request_profile_set = match &request_profile {
         None => None,
@@ -789,8 +832,8 @@ pub fn resolve(
     // 1. global config
     acc.apply(&layers.global, OptionOrigin::GlobalConfig);
     // 2. profile
-    if let (Some(name), Some(set)) = (&base_profile, base_profile_set) {
-        acc.apply(set, OptionOrigin::Profile { name: name.clone() });
+    for (set, origin) in base_profile_set.into_iter().flatten() {
+        acc.apply(&set, origin);
     }
     // 3. project, through the trust table
     if let Some(project) = &layers.project {
@@ -805,8 +848,7 @@ pub fn resolve(
     // 4. session
     acc.apply(session, OptionOrigin::BufferLocal);
     // 5. request: the profile it names, then its own values.
-    if let (Some(name), Some(set)) = (&request_profile, request_profile_set) {
-        let origin = OptionOrigin::Profile { name: name.clone() };
+    for (set, origin) in request_profile_set.into_iter().flatten() {
         // A profile named by pasted text is still pasted text: it may narrow
         // tools but not widen them, whatever the profile itself carries.
         if trust == Trust::Pasted || req.pasted_profile {
@@ -816,7 +858,7 @@ pub fn resolve(
             let kept = apply_restricted(entries, "a prompt", &mut acc.tools, &mut refused);
             acc.apply(&kept, origin);
         } else {
-            acc.apply(set, origin);
+            acc.apply(&set, origin);
         }
     }
     let request_set: RawSet = match trust {
@@ -1126,8 +1168,10 @@ mod tests {
         assert!(msg.contains("nope") && msg.contains("writer"), "{msg}");
     }
 
+    /// With no config at all, an unknown profile still names what exists:
+    /// the profiles lattice ships.
     #[test]
-    fn an_unconfigured_unknown_profile_says_how_to_add_one() {
+    fn an_unknown_profile_names_the_builtin_ones() {
         let req = RequestOverrides {
             profile: Some("x".into()),
             ..Default::default()
@@ -1135,7 +1179,102 @@ mod tests {
         let msg = resolve(&Layers::default(), BUF, &req, Trust::User)
             .unwrap_err()
             .to_string();
-        assert!(msg.contains("llm.profiles"), "{msg}");
+        assert!(msg.contains("known: coding, general"), "{msg}");
+        assert_eq!(
+            profile_names(["writer", "coding"]),
+            ["coding", "general", "writer"]
+        );
+    }
+
+    fn tools(r: &Resolved) -> Vec<&str> {
+        r.values.tools.iter().map(String::as_str).collect()
+    }
+
+    /// AT.4: tools stay off for a plain chat; the built-in profiles turn them
+    /// on with no config, and say where the value came from.
+    #[test]
+    fn the_builtin_profiles_need_no_config_and_a_plain_chat_has_no_tools() {
+        let l = Layers::default();
+        assert!(
+            run(&l, &RequestOverrides::default(), Trust::User)
+                .values
+                .tools
+                .is_empty()
+        );
+
+        let mut l = Layers::default();
+        l.sessions
+            .insert(BUF, set(&[(SettingKey::Profile, "coding")]));
+        let r = run(&l, &RequestOverrides::default(), Trust::User);
+        assert_eq!(
+            tools(&r),
+            [
+                "lattice.edit",
+                "lattice.exec",
+                "lattice.read",
+                "web.fetch",
+                "web.search"
+            ]
+        );
+        assert_eq!(
+            origin(&r, SettingKey::Tools),
+            OptionOrigin::BuiltinProfile {
+                name: "coding".into()
+            }
+        );
+
+        l.sessions
+            .insert(BUF, set(&[(SettingKey::Profile, "general")]));
+        let r = run(&l, &RequestOverrides::default(), Trust::User);
+        assert_eq!(tools(&r), ["lattice.read", "web.fetch", "web.search"]);
+    }
+
+    /// A user profile of the same name overlays the built-in one key by key:
+    /// its model changes the model and the built-in tools stay; its tools,
+    /// when it sets them, replace the built-in ones.
+    #[test]
+    fn a_user_profile_overlays_the_builtin_one_key_by_key() {
+        let mut l = Layers::default();
+        l.profiles
+            .insert("coding".into(), set(&[(SettingKey::Model, "local/qwen")]));
+        let req = RequestOverrides {
+            profile: Some("coding".into()),
+            ..Default::default()
+        };
+        let r = run(&l, &req, Trust::User);
+        assert_eq!(r.values.model.as_deref(), Some("local/qwen"));
+        assert_eq!(
+            origin(&r, SettingKey::Model),
+            OptionOrigin::Profile {
+                name: "coding".into()
+            }
+        );
+        assert_eq!(tools(&r).len(), 5);
+        assert_eq!(
+            origin(&r, SettingKey::Tools),
+            OptionOrigin::BuiltinProfile {
+                name: "coding".into()
+            }
+        );
+
+        l.profiles
+            .insert("coding".into(), set(&[(SettingKey::Tools, "lattice.read")]));
+        let r = run(&l, &req, Trust::User);
+        assert_eq!(tools(&r), ["lattice.read"]);
+    }
+
+    /// `@coding` in a pasted prompt is pasted text: the built-in profile may
+    /// not widen a chat with no tools into one that edits and runs commands.
+    #[test]
+    fn a_pasted_builtin_profile_cannot_widen_tools() {
+        let req = RequestOverrides {
+            profile: Some("coding".into()),
+            pasted_profile: true,
+            ..Default::default()
+        };
+        let r = run(&Layers::default(), &req, Trust::Pasted);
+        assert!(r.values.tools.is_empty(), "{:?}", r.values.tools);
+        assert!(!r.refused.is_empty());
     }
 
     fn project(text: &str) -> Layers {

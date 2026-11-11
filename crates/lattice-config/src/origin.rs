@@ -26,6 +26,12 @@ pub enum OptionOrigin {
         /// The profile's name.
         name: String,
     },
+    /// Supplied by a profile the subsystem ships (AT.4), under any user
+    /// profile of the same name, echoed as `(builtin profile: coding)`.
+    BuiltinProfile {
+        /// The profile's name.
+        name: String,
+    },
     /// Supplied by project-level config checked in beside the code (LL.7),
     /// which is untrusted and so subject to a trust table.
     Project,
@@ -39,6 +45,7 @@ impl std::fmt::Display for OptionOrigin {
             Self::BufferLocal => f.write_str("buffer-local"),
             Self::ModeContribution { mode_id } => write!(f, "mode: {mode_id}"),
             Self::Profile { name } => write!(f, "profile: {name}"),
+            Self::BuiltinProfile { name } => write!(f, "builtin profile: {name}"),
             Self::Project => f.write_str("project"),
         }
     }
@@ -51,6 +58,13 @@ mod tests {
     #[test]
     fn display_variants() {
         assert_eq!(OptionOrigin::Default.to_string(), "default");
+        assert_eq!(
+            OptionOrigin::BuiltinProfile {
+                name: "coding".into()
+            }
+            .to_string(),
+            "builtin profile: coding"
+        );
         assert_eq!(OptionOrigin::GlobalConfig.to_string(), "global");
         assert_eq!(OptionOrigin::BufferLocal.to_string(), "buffer-local");
         assert_eq!(

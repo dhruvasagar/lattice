@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Added
+- **Built-in `general` and `coding` LLM profiles, and `:llm <profile> <prompt…>`.** `:llm coding` opens a chat that can read and edit the project, run commands and use the web, and `:llm general` one that reads and looks things up, with no config. A profile of your own with the same name overlays the built-in one key by key, so setting only `model` keeps its tools. A prompt after the profile is sent as the chat's first turn: `:llm general what changed in rust 1.90`. A plain `:llm` still has no tools.
 - **Web tools for LLM chats.** `web.fetch` reads a page as markdown, links kept; it asks before each new site, and "allow this site for this chat" covers that host only. It reaches public sites only: `localhost`, private networks and cloud metadata addresses are refused, and a redirect to another site is reported rather than followed. `web.search` searches through your own SearXNG (no key, queries stay local) or the paid Brave Search API, set in `[llm.web]`, and runs without asking. Select them with `llm.tools = ["web.*"]`. Rules name hosts: `llm.allow = ["web.fetch(docs.rs)", "web.fetch(*.rust-lang.org)"]` fetches from them without asking, and an allow naming a private host exactly (`web.fetch(localhost:8080)`) is the one way to fetch from it. `web.fetch` alone, or `web.*`, is refused in `allow`.
 
 ## 0.10.0 — 2026-11-10

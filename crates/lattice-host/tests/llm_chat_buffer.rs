@@ -70,8 +70,12 @@ fn chord(s: &str) -> KeyChord {
 }
 
 fn open_chat(editor: &mut Editor) -> lattice_core::BufferId {
+    open_chat_with(editor, "llm")
+}
+
+fn open_chat_with(editor: &mut Editor, line: &str) -> lattice_core::BufferId {
     let mut out = DispatchOutcome::default();
-    editor.execute_ex_line("llm", &mut out);
+    editor.execute_ex_line(line, &mut out);
     for effect in out.effects {
         if let lattice_grammar::Effect::OpenSyntheticBuffer {
             name,
@@ -184,6 +188,50 @@ async fn a_reply_reaches_the_buffer_without_another_key() {
         "{text:?}"
     );
     assert!(text.ends_with("\n> "), "{text:?}");
+}
+
+/// AT.4: `:llm <profile> <prompt…>` opens the chat with that profile and
+/// sends the prompt as its first turn; the reply streams in with no key.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn llm_with_a_profile_and_a_prompt_sends_it_as_the_first_turn() {
+    let addr = serve(Duration::ZERO);
+    let mut editor = Editor::boot(CoreDocument::from_text("scratch\n"));
+    chats(&editor).set_config(config_for(addr));
+
+    // A bare `:llm` has no tools. (Its own editor: a chat opened from
+    // another chat copies that chat's session, profile included.)
+    let mut fresh = Editor::boot(CoreDocument::from_text("scratch\n"));
+    chats(&fresh).set_config(config_for(addr));
+    let plain = open_chat(&mut fresh);
+    assert!(settle(&mut fresh, |e| chats(e).for_buffer(plain).is_some()).await);
+    let r = chats(&fresh).resolve_for(plain).unwrap();
+    assert!(r.values.tools.is_empty(), "{:?}", r.values.tools);
+
+    let id = open_chat_with(&mut editor, "llm general  say hi ");
+    assert_eq!(editor.buffers.name_of(id).as_deref(), Some("*llm:1*"));
+    // From here NO key is dispatched.
+    let arrived = settle_woken(&mut editor, |e| {
+        text_of(e, id).contains("Hello from the mock")
+    })
+    .await;
+    let text = text_of(&editor, id);
+    assert!(arrived, "the reply never reached the buffer: {text:?}");
+    assert!(
+        text.starts_with("you:\n\nsay hi\n\nmock-model:\n\nHello from the mock\n"),
+        "{text:?}"
+    );
+    assert!(text.ends_with("\n> "), "{text:?}");
+    // The built-in profile is the chat's, with no config naming it.
+    let r = chats(&editor).resolve_for(id).unwrap();
+    assert_eq!(r.values.profile.as_deref(), Some("general"));
+    assert!(r.values.tools.contains("web.fetch"), "{:?}", r.values.tools);
+
+    // An unknown profile names the built-in ones and opens nothing, so the
+    // prompt is not sent anywhere.
+    let before = editor.active_pane_buffer_id();
+    assert_eq!(open_chat_with(&mut editor, "llm what is new"), before);
+    let m = message(&editor);
+    assert!(m.contains("`what`") && m.contains("coding, general"), "{m}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

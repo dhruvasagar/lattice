@@ -6,7 +6,7 @@
 
 Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred · ❌ dropped.
 
-**Status: 🚧 AT.1–AT.3 ✅; AT.4 next.**
+**Status: 🚧 AT.1–AT.4 ✅; AT.5 next.**
 
 **Goal:** native web tools, a WIT seam through which a plugin gives the model tools and
 profiles, and an org assistant built on both, measured by an eval that decides whether a
@@ -38,7 +38,7 @@ UI-thread work, async results landing through `inbound`. In addition:
 | AT.1 | Tool descriptions without stray indentation | — | ✅ |
 | AT.2 | `web.search`, `web.fetch`, the `web` source, per-host grants | — | ✅ |
 | AT.3 | `web.fetch(<host>)` rules; a private host allowed by name | AT.2 | ✅ |
-| AT.4 | Built-in profiles; `:llm <profile> <prompt…>` | AT.2 | 📝 |
+| AT.4 | Built-in profiles; `:llm <profile> <prompt…>` | AT.2 | ✅ |
 | AT.5 | `llm-tools` WIT interface and `PluginToolSource` | — | 📝 |
 | AT.6 | Plugin profiles, trusted like project config | AT.4, AT.5 | 📝 |
 | AT.7 | Org read tools (plugin repo) | AT.5 + API release | 📝 |
@@ -107,7 +107,15 @@ Tests: an allowed host runs without asking; a glob matches subdomains and not lo
 over the user's allow; a project allow is refused and named; a private host allowed by name
 is fetched and one not named is still refused.
 
-### AT.4 — Built-in profiles; `:llm <profile> <prompt…>`
+### AT.4 — Built-in profiles; `:llm <profile> <prompt…>` ✅
+
+Built as below. The built-in profiles carry `tools` only: the model stays the user's, so a
+fresh install's `:llm coding` uses whatever provider is the default. The origin variant is
+`OptionOrigin::BuiltinProfile { name }`, shown as `builtin profile: coding`. The prompt form
+takes the first word as the profile, always: `:llm what is new` is an unknown profile
+`what`, not a prompt, so a prompt never goes to a profile it was not meant for. The prompt
+is submitted before the buffer opens, as an ask's first turn is.
+
 
 `general` and `coding` as in design §4, overlaid key by key by user profiles of the same
 name. `:llm-menu` shows the origin of each value. `:llm <profile> <prompt…>` sends the prompt

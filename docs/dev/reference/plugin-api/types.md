@@ -3,7 +3,7 @@
 
 # `types`
 
-**Direction:** shared types only (not called directly) · **Capability:** none (pure data / dispatch) · **Worlds:** `auto-pair-plugin` (imports), `comment-plugin` (imports), `completion-source-plugin` (imports), `context-plugin` (imports), `decorations-plugin` (imports), `events-plugin` (imports), `grammar-plugin` (imports), `lighthouse-plugin` (imports), `media-plugin` (imports), `multibuffer-view-plugin` (imports), `picker-source-plugin` (imports), `plugin` (imports), `project-plugin` (imports), `scanned-excerpt-source-plugin` (imports), `transient-source-plugin` (imports), `treesitter-context-plugin` (imports)
+**Direction:** shared types only (not called directly) · **Capability:** none (pure data / dispatch) · **Worlds:** `auto-pair-plugin` (imports), `comment-plugin` (imports), `completion-source-plugin` (imports), `context-plugin` (imports), `decorations-plugin` (imports), `events-plugin` (imports), `grammar-plugin` (imports), `lighthouse-plugin` (imports), `llm-tools-plugin` (imports), `media-plugin` (imports), `multibuffer-view-plugin` (imports), `picker-source-plugin` (imports), `plugin` (imports), `project-plugin` (imports), `scanned-excerpt-source-plugin` (imports), `transient-source-plugin` (imports), `treesitter-context-plugin` (imports)
 
 Shared boundary records/variants — the owned, WIT-serializable mirrors of
 the native grammar + picker/completion types (plugin-host.md §4). Every
@@ -22,7 +22,7 @@ command mirror (§4.1) and cross as a typed error until then.
 
 _(none — a shared type interface)_
 
-## Types (154)
+## Types (159)
 
 ### variant `arg-value`
 
@@ -3792,4 +3792,89 @@ A user notification a plugin emits — reuses the `echo-level` severity the
 
 - `level`: [`echo-level`](#variant-echo-level)
 - `message`: `string`
+
+### enum `llm-tool-kind`
+
+```wit
+enum llm-tool-kind {
+    read,
+    propose,
+}
+```
+
+What a plugin tool does with its result. There is no exec kind: a
+plugin that runs processes holds `proc:spawn`, and the host asks before
+each of its calls whatever the kind.
+
+**Cases**
+
+- `read` — Answers from what the plugin reads. Changes nothing.
+- `propose` — Returns proposed edits, which the host reviews and applies.
+
+### record `llm-tool`
+
+```wit
+record llm-tool {
+    name: string,
+    description: string,
+    input-schema: string,
+    kind: llm-tool-kind,
+}
+```
+
+One tool, in MCP's shape.
+
+**Fields**
+
+- `name`: `string` — Letters, digits, `_` and `-`. The model sees it as
+  `<plugin>__<name>`.
+- `description`: `string` — What the tool does and when to use it, for the model.
+- `input-schema`: `string` — JSON Schema for the input, as text. Must be an object schema.
+- `kind`: [`llm-tool-kind`](#enum-llm-tool-kind)
+
+### record `proposed-edit`
+
+```wit
+record proposed-edit {
+    path: string,
+    old-string: string,
+    new-string: string,
+}
+```
+
+One exact replacement, with the semantics of `lattice.edit_file`:
+`old-string` must match the file once, as the user has it now.
+
+### record `llm-tool-result`
+
+```wit
+record llm-tool-result {
+    text: string,
+    proposals: list<proposed-edit>,
+}
+```
+
+What a call returns: text for the model, and the edits it proposes.
+The host applies each proposal through `lattice.edit_file` and tells
+the model what happened to it after `text`.
+
+### record `llm-profile`
+
+```wit
+record llm-profile {
+    name: string,
+    description: string,
+    settings: list<tuple<string, string>>,
+}
+```
+
+A profile a plugin contributes: a workflow's system prompt and tools.
+
+**Fields**
+
+- `name`: `string` — The name `:llm <name>` selects it by.
+- `description`: `string` — One line saying what the workflow is for.
+- `settings`: `list<tuple<string, string>>` — Keys as a profile file spells them (`system`, `tools`), each with
+  its value as text. Filtered like a project's file: a key a plugin
+  may not set is dropped and named.
 

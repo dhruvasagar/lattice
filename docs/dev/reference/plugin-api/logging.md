@@ -3,7 +3,7 @@
 
 # `logging`
 
-**Direction:** guest calls into the host through it · **Capability:** none (pure data / dispatch) · **Worlds:** `completion-source-plugin` (imports), `config-plugin` (imports), `context-plugin` (imports), `dashboard-plugin` (imports), `decorations-plugin` (imports), `error-parser-plugin` (imports), `events-plugin` (imports), `help-plugin` (imports), `keymap-plugin` (imports), `language-plugin` (imports), `media-plugin` (imports), `modes-plugin` (imports), `multibuffer-view-plugin` (imports), `picker-source-plugin` (imports), `plugin` (imports), `plugin-manager-plugin` (imports), `scanned-excerpt-source-plugin` (imports), `sign-plugin` (imports), `theme-plugin` (imports), `transient-source-plugin` (imports)
+**Direction:** guest calls into the host through it · **Capability:** none (pure data / dispatch) · **Worlds:** `completion-source-plugin` (imports), `config-plugin` (imports), `context-plugin` (imports), `dashboard-plugin` (imports), `decorations-plugin` (imports), `error-parser-plugin` (imports), `events-plugin` (imports), `help-plugin` (imports), `keymap-plugin` (imports), `language-plugin` (imports), `llm-tools-plugin` (imports), `media-plugin` (imports), `modes-plugin` (imports), `multibuffer-view-plugin` (imports), `picker-source-plugin` (imports), `plugin` (imports), `plugin-manager-plugin` (imports), `scanned-excerpt-source-plugin` (imports), `sign-plugin` (imports), `theme-plugin` (imports), `transient-source-plugin` (imports)
 
 Guest→host structured logging (plugin observability Layer 2, design
 `docs/dev/architecture/plugin-observability.md` §8). Shaped like

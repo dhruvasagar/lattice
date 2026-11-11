@@ -1453,6 +1453,15 @@ impl PluginLoader {
                             .await?;
                         seam_ids.push(id);
                     }
+                    // AT.5: tools for the LLM assistant. The drain (grant →
+                    // permission row, register into lattice-ai) is AT.5c; until
+                    // it lands a plugin declaring the seam loads without them.
+                    PluginSeam::LlmTools => {
+                        tracing::debug!(
+                            plugin = %manifest.id,
+                            "llm-tools seam declared; not drained yet"
+                        );
+                    }
                     // CR.3: the plugin's `:help` pages. Data, not a live
                     // guest — the bodies cross once here and the store is
                     // dropped, so reading `:help` never touches wasm.

@@ -2328,4 +2328,60 @@ interface types {
         level: echo-level,
         message: string,
     }
+
+    // -----------------------------------------------------------------------
+    // AT.5: tools a plugin offers to the LLM assistant (`llm-tools.wit`).
+    // Plain data both ways: the host owns the permission row, the review and
+    // the write, so nothing here carries authority.
+    // -----------------------------------------------------------------------
+
+    /// What a plugin tool does with its result. There is no exec kind: a
+    /// plugin that runs processes holds `proc:spawn`, and the host asks before
+    /// each of its calls whatever the kind.
+    enum llm-tool-kind {
+        /// Answers from what the plugin reads. Changes nothing.
+        read,
+        /// Returns proposed edits, which the host reviews and applies.
+        propose,
+    }
+
+    /// One tool, in MCP's shape.
+    record llm-tool {
+        /// Letters, digits, `_` and `-`. The model sees it as
+        /// `<plugin>__<name>`.
+        name: string,
+        /// What the tool does and when to use it, for the model.
+        description: string,
+        /// JSON Schema for the input, as text. Must be an object schema.
+        input-schema: string,
+        kind: llm-tool-kind,
+    }
+
+    /// One exact replacement, with the semantics of `lattice.edit_file`:
+    /// `old-string` must match the file once, as the user has it now.
+    record proposed-edit {
+        path: string,
+        old-string: string,
+        new-string: string,
+    }
+
+    /// What a call returns: text for the model, and the edits it proposes.
+    /// The host applies each proposal through `lattice.edit_file` and tells
+    /// the model what happened to it after `text`.
+    record llm-tool-result {
+        text: string,
+        proposals: list<proposed-edit>,
+    }
+
+    /// A profile a plugin contributes: a workflow's system prompt and tools.
+    record llm-profile {
+        /// The name `:llm <name>` selects it by.
+        name: string,
+        /// One line saying what the workflow is for.
+        description: string,
+        /// Keys as a profile file spells them (`system`, `tools`), each with
+        /// its value as text. Filtered like a project's file: a key a plugin
+        /// may not set is dropped and named.
+        settings: list<tuple<string, string>>,
+    }
 }

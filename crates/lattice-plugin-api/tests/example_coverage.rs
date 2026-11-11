@@ -25,7 +25,6 @@ const PENDING: &[(&str, &str)] = &[
     ("buffer.document.line-count", NO_GUEST),
     ("config.option-diagnostic", NO_GUEST),
     ("config.set-option-in-buffer", NO_GUEST),
-    ("host-services.read-file", NO_GUEST),
     ("host-services.refresh-decorations", NO_GUEST),
     ("host-services.source-line", NO_GUEST),
     ("host-services.store-delete", NO_GUEST),

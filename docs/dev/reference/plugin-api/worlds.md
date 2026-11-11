@@ -451,6 +451,19 @@ on-wake: func(id: wake-id)
 ```
 
 
+## world `llm-tools-plugin`
+
+The world an `llm-tools` plugin implements.
+
+It imports what a tool plausibly needs to answer: `host-services` to read
+files through the host (`read-file`, `walk`), `project` to know which
+project it is answering for, and `logging`. A plugin that reads its own
+options gets them on this seam's store too.
+
+**Imports:** [`host-services`](host-services.md), [`logging`](logging.md), [`project`](project.md), [`types`](types.md)  
+**Exports:** [`llm-tools`](llm-tools.md)
+
+
 ## world `media-plugin`
 
 The world an inline-media provider implements.

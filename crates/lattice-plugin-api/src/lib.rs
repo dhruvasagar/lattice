@@ -341,6 +341,12 @@ pub const CAPABILITY_ANNOTATIONS: &[(&str, Capability)] = &[
     // not a file the guest names. Fetching a grammar from git is the plugin
     // MANAGER's job (`Proc`/net, that row), not this seam's.
     ("language", Capability::None),
+    // AT.5. `None`: a tool's descriptors and results are data both ways, and a
+    // proposed edit is applied by the HOST through its own review. The seam's
+    // store has every filesystem prefix made read-only, so a call reaches
+    // nothing the plugin's other grants would not already show the user; a
+    // plugin holding `net:*` or `proc:spawn` has its tools ask before each call.
+    ("llm-tools", Capability::None),
     ("logging", Capability::None),
     ("modes", Capability::None),
     ("picker-source", Capability::None),

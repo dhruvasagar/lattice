@@ -309,6 +309,10 @@ pub enum PluginSeam {
     /// registry entry, `build(ctx)` per menu open, because a builder's rows
     /// depend on where the user opened it from.
     TransientSource,
+    /// AT.5 — tools a plugin offers the LLM assistant (`llm-tools-plugin`
+    /// world). Async and live: `tools()` and `profiles()` are called once at
+    /// load, `call` once per model tool call, on the plugin's own actor.
+    LlmTools,
     /// LG.3c — a plugin-contributed language (`language-plugin` world). Data,
     /// like `help`: the grammar bytes and query sources cross once at load and
     /// the guest is dropped. The host compiles the grammar (~100 ms) and owns
@@ -389,7 +393,10 @@ impl PluginSeam {
             // per OPEN rather than at registration — so this seam has no
             // ordering dependency on `grammar` the way `modes` does. Rank 5
             // with the other producers.
-            | PluginSeam::TransientSource => 6,
+            | PluginSeam::TransientSource
+            // AT.5: a tool is listed by name and its calls run on the
+            // plugin's actor. Nothing it registers is read by another seam.
+            | PluginSeam::LlmTools => 6,
         }
     }
 
@@ -414,6 +421,7 @@ impl PluginSeam {
             PluginSeam::ErrorParser => "error-parser",
             PluginSeam::ScannedExcerptSource => "scanned-excerpt-source",
             PluginSeam::TransientSource => "transient-source",
+            PluginSeam::LlmTools => "llm-tools",
             PluginSeam::Help => "help",
             PluginSeam::Dashboard => "dashboard",
             PluginSeam::Language => "language",
@@ -450,6 +458,7 @@ impl FromStr for PluginSeam {
             "error-parser" => PluginSeam::ErrorParser,
             "scanned-excerpt-source" => PluginSeam::ScannedExcerptSource,
             "transient-source" => PluginSeam::TransientSource,
+            "llm-tools" => PluginSeam::LlmTools,
             "help" => PluginSeam::Help,
             "dashboard" => PluginSeam::Dashboard,
             "language" => PluginSeam::Language,
@@ -1285,6 +1294,10 @@ mod tests {
             PluginSeam::ScannedExcerptSource,
             PluginSeam::Language,
             PluginSeam::TransientSource,
+            // `multibuffer-view-source` had fallen off again; restored with
+            // `llm-tools`.
+            PluginSeam::MultibufferViewSource,
+            PluginSeam::LlmTools,
         ] {
             assert_eq!(PluginSeam::from_str(seam.as_str()), Ok(seam));
         }

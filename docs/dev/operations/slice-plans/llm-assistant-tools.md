@@ -6,7 +6,7 @@
 
 Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred · ❌ dropped.
 
-**Status: 🚧 AT.1–AT.4 ✅; AT.5 in progress (AT.5a next to land).**
+**Status: 🚧 AT.1–AT.4 ✅; AT.5 in progress (AT.5a–b ✅, AT.5c next).**
 
 **Goal:** native web tools, a WIT seam through which a plugin gives the model tools and
 profiles, and an org assistant built on both, measured by an eval that decides whether a
@@ -40,8 +40,8 @@ UI-thread work, async results landing through `inbound`. In addition:
 | AT.3 | `web.fetch(<host>)` rules; a private host allowed by name | AT.2 | ✅ |
 | AT.4 | Built-in profiles; `:llm <profile> <prompt…>` | AT.2 | ✅ |
 | AT.5 | `llm-tools` WIT interface and `PluginToolSource` | — | 🚧 |
-| AT.5a | lattice-ai: `ToolPlugin`, `PluginToolSource`, `PluginTools` service | — | 🚧 |
-| AT.5b | plugin host: `llm-tools` world, actor, client, fixture guest | — | 📝 |
+| AT.5a | lattice-ai: `ToolPlugin`, `PluginToolSource`, `PluginTools` service | — | ✅ |
+| AT.5b | plugin host: `llm-tools` world, actor, client, fixture guest | — | ✅ |
 | AT.5c | loader: drain, adapter, teardown; round-trip bench | AT.5a, AT.5b | 📝 |
 | AT.5d | guest SDK trait; `*llm-tools*` listing | AT.5c | 📝 |
 | AT.6 | Plugin profiles, trusted like project config | AT.4, AT.5 | 📝 |
@@ -152,7 +152,13 @@ any review.
   a scripted plugin: rows per reach, proposals applied and refused, a trap as the call's
   error, every reserved name refused without hiding the owner.
 - **AT.5b** — `llm-tools.wit` and its world, the bindgen, `LlmToolsClient` and actor,
-  `PluginSeam::LlmTools`, a fixture guest; host tests for list, call and trap.
+  `PluginSeam::LlmTools`, a fixture guest; host tests for list, call and trap. `profiles()`
+  is in the interface now, so AT.6 adds no WIT. Found while building it: the world imports
+  `host-services`, whose `delete-file` and the WASI preopens follow the plugin's grant, so a
+  plugin holding `fs:write` for another seam could have written from a tool call. The seam's
+  store is built with every prefix read-only, which makes design §5's "a call cannot write"
+  true; a host test deletes under an `fs:write` grant and is refused. The loader arm is a
+  `debug!` placeholder until AT.5c drains the seam.
 - **AT.5c** — the loader's drain: grant → `Reach`, client → `ToolPlugin`, register, unregister
   on unload. The round-trip bench.
 - **AT.5d** — the guest SDK's trait and registration in `lattice-plugin-api`; `*llm-mcp*`

@@ -92,6 +92,14 @@ fn main() -> Result<(), String> {
         "transient-guest",
         "TRANSIENT_GUEST_WASM",
     )?;
+    // AT.5: the llm-tools fixture. Echoes a call's arguments, proposes an
+    // edit, and reads / deletes through `host-services` so the tests can prove
+    // a tool call cannot write.
+    build_guest(
+        &fixtures.join("llm-tools-guest"),
+        "llm-tools-guest",
+        "LLM_TOOLS_GUEST_WASM",
+    )?;
     // CR.3: the help topic-registration fixture. Its markdown is
     // `include_str!`'d into the component, which is the seam's premise.
     build_guest(

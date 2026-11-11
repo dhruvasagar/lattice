@@ -3,7 +3,7 @@
 
 # Lattice Plugin API
 
-The plugin API is the WIT package `lattice:plugin-host@0.4.0` — 31 interfaces ("seams") and 26 worlds. It is the whole contract: a plugin written in any language with Component-Model tooling (Rust, Go, Zig, JavaScript, …) sees exactly what is on these pages and nothing else. This reference is generated from the `.wit` files in `crates/lattice-wit/wit/`, so it cannot disagree with them.
+The plugin API is the WIT package `lattice:plugin-host@0.4.0` — 32 interfaces ("seams") and 27 worlds. It is the whole contract: a plugin written in any language with Component-Model tooling (Rust, Go, Zig, JavaScript, …) sees exactly what is on these pages and nothing else. This reference is generated from the `.wit` files in `crates/lattice-wit/wit/`, so it cannot disagree with them.
 
 New to writing plugins? Start with the [plugin authoring guide](../../dev/guides/plugin-authoring.md), then come back here for the detail. The same reference in machine-readable form — every seam, signature, type and member — is `docs/dev/reference/plugin-api.json` in the repository and `/plugin-api.json` on the documentation site.
 
@@ -16,7 +16,7 @@ New to writing plugins? Start with the [plugin authoring guide](../../dev/guides
 - **Errors** are `result<T, string>`: an `err` carries a message the host surfaces to the user, so it should say what went wrong.
 - **WIT to Rust** (wit-bindgen): kebab-case becomes `snake_case` for functions and fields and `UpperCamelCase` for types; `list<T>` is `Vec<T>`, `option<T>` is `Option<T>`, `result<T, E>` is `Result<T, E>`, `borrow<r>` is `&R`.
 
-## Worlds (26)
+## Worlds (27)
 
 Each world's entry points — the `register-*` functions the host calls on load — are on the [worlds page](plugin-api/worlds.md).
 
@@ -36,6 +36,7 @@ Each world's entry points — the `register-*` functions the host calls on load 
 | [`keymap-plugin`](plugin-api/worlds.md#world-keymap-plugin) | `register-keymap` | [`keymap`](plugin-api/keymap.md), [`logging`](plugin-api/logging.md), [`project`](plugin-api/project.md) |
 | [`language-plugin`](plugin-api/worlds.md#world-language-plugin) | `register-languages` | [`language`](plugin-api/language.md), [`logging`](plugin-api/logging.md), [`project`](plugin-api/project.md) |
 | [`lighthouse-plugin`](plugin-api/worlds.md#world-lighthouse-plugin) | [`grammar-callbacks`](plugin-api/grammar-callbacks.md); `register-grammar`, `register-modes`, `register-help-topics`, `register-events`, `on-event`, `on-wake` | [`buffer`](plugin-api/buffer.md), [`events`](plugin-api/events.md), [`grammar`](plugin-api/grammar.md), [`help`](plugin-api/help.md), [`host-services`](plugin-api/host-services.md), [`modes`](plugin-api/modes.md), [`tree-sitter`](plugin-api/tree-sitter.md), [`types`](plugin-api/types.md) |
+| [`llm-tools-plugin`](plugin-api/worlds.md#world-llm-tools-plugin) | [`llm-tools`](plugin-api/llm-tools.md) | [`host-services`](plugin-api/host-services.md), [`logging`](plugin-api/logging.md), [`project`](plugin-api/project.md), [`types`](plugin-api/types.md) |
 | [`media-plugin`](plugin-api/worlds.md#world-media-plugin) | [`media`](plugin-api/media.md) | [`host-services`](plugin-api/host-services.md), [`logging`](plugin-api/logging.md), [`project`](plugin-api/project.md), [`types`](plugin-api/types.md) |
 | [`modes-plugin`](plugin-api/worlds.md#world-modes-plugin) | `register-modes` | [`logging`](plugin-api/logging.md), [`modes`](plugin-api/modes.md), [`project`](plugin-api/project.md) |
 | [`multibuffer-view-plugin`](plugin-api/worlds.md#world-multibuffer-view-plugin) | [`multibuffer-view-source`](plugin-api/multibuffer-view-source.md); `register-multibuffer-views` | [`host-services`](plugin-api/host-services.md), [`logging`](plugin-api/logging.md), [`multibuffer-view-registry`](plugin-api/multibuffer-view-registry.md), [`project`](plugin-api/project.md), [`types`](plugin-api/types.md) |
@@ -49,7 +50,7 @@ Each world's entry points — the `register-*` functions the host calls on load 
 | [`transient-source-plugin`](plugin-api/worlds.md#world-transient-source-plugin) | [`transient-source`](plugin-api/transient-source.md) | [`logging`](plugin-api/logging.md), [`project`](plugin-api/project.md), [`types`](plugin-api/types.md) |
 | [`treesitter-context-plugin`](plugin-api/worlds.md#world-treesitter-context-plugin) | [`context`](plugin-api/context.md), [`grammar-callbacks`](plugin-api/grammar-callbacks.md); `register-options`, `register-grammar`, `register-modes`, `register-help-topics` | [`buffer`](plugin-api/buffer.md), [`config`](plugin-api/config.md), [`grammar`](plugin-api/grammar.md), [`help`](plugin-api/help.md), [`modes`](plugin-api/modes.md), [`tree-sitter`](plugin-api/tree-sitter.md), [`types`](plugin-api/types.md) |
 
-## Seams (31)
+## Seams (32)
 
 | Seam | Direction | Capability | Functions | Types | Summary |
 |---|---|---|---|---|---|
@@ -68,6 +69,7 @@ Each world's entry points — the `register-*` functions the host calls on load 
 | [`host-services`](plugin-api/host-services.md) | imports | fs | 32 | 5 | Guest→host services (plugin-host.md §5). |
 | [`keymap`](plugin-api/keymap.md) | imports | - | 1 | 1 | The `keymap` guest→host binding-registration seam (PL8.D.1). |
 | [`language`](plugin-api/language.md) | imports | - | 1 | 2 | LG.3c: plugin-contributed languages. |
+| [`llm-tools`](plugin-api/llm-tools.md) | exports | - | 3 | 0 | AT.5: tools a plugin offers to the LLM assistant. |
 | [`logging`](plugin-api/logging.md) | imports | - | 1 | 1 | Guest→host structured logging (plugin observability Layer 2, design `docs/dev/architecture/plugin-observability.md` §8). |
 | [`media`](plugin-api/media.md) | exports | - | 1 | 0 | The inline-media **producer** API (IM.6, `inline-media.md` §7). |
 | [`modes`](plugin-api/modes.md) | imports | - | 3 | 8 | Mirrors the `Mode` trait declaration surface + `ModeRegistry` (lattice-mode). |
@@ -82,5 +84,5 @@ Each world's entry points — the `register-*` functions the host calls on load 
 | [`theme`](plugin-api/theme.md) | imports | - | 2 | 3 | Mirrors the theme-element registry (`lattice-theme`). |
 | [`transient-source`](plugin-api/transient-source.md) | exports | - | 2 | 0 | TR.2b: plugin-contributed transient menus. |
 | [`tree-sitter`](plugin-api/tree-sitter.md) | imports | - | 25 | 6 | Structural queries for plugins (plugin-treesitter-seam.md). |
-| [`types`](plugin-api/types.md) | types | - | 0 | 154 | Shared boundary records/variants — the owned, WIT-serializable mirrors of the native grammar + picker/completion types (plugin-host.md §4). |
+| [`types`](plugin-api/types.md) | types | - | 0 | 159 | Shared boundary records/variants — the owned, WIT-serializable mirrors of the native grammar + picker/completion types (plugin-host.md §4). |
 | [`ui`](plugin-api/ui.md) | imports | - | 4 | 0 | The UI-contribution surface (design.md §9.4 `ui`): guest→host emits **data only**, never draw calls (§7, paramount #1). |

@@ -183,8 +183,11 @@ transport.
 	}
 
 **A call cannot write. That is structural, not trusted.** `call` returns data and nothing
-else. It has no effect list, and the WIT gives a guest no file write outside `Effect`s. A
-plugin that wants to change a file returns a proposal, and the broker sends it through the
+else. It has no effect list, and the store a call runs in has every filesystem prefix of the
+plugin's grant made read-only: a plugin may hold `fs:write` for its other seams (org's capture
+writes files), and a tool call still cannot use it, through WASI or `host-services.delete-file`.
+Only the plugin's private `/data` stays writable, which is its own state and not the user's
+files. A plugin that wants to change a file returns a proposal, and the broker sends it through the
 same review `lattice.edit_file` uses, against the file as the user has it, refused if stale,
 and applied as one minimal edit. Trust in the chat (`<C-t>`) applies to proposals as it does
 to lattice's edits, and `llm.review` still fences paths.

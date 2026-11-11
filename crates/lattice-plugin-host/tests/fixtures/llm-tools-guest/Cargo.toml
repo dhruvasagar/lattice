@@ -1,0 +1,25 @@
+# AT.5 llm-tools fixture guest — a minimal `wasm32-wasip2` component
+# implementing the `llm-tools-plugin` world. It offers one read tool and one
+# propose tool, echoes a call's arguments so the host test can prove they
+# crossed, and has calls that read and delete a file through `host-services`
+# so the test can prove a tool call cannot write. Built by the host crate's
+# build.rs and loaded by `tests/llm_tools_source.rs`. Standalone workspace
+# (`[workspace]` below): it targets wasm32-wasip2 and must not inherit the
+# host toolchain's lints or target.
+[package]
+name = "llm-tools-guest"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = "0.58"
+
+[profile.release]
+opt-level = "s"
+strip = true
+
+[workspace]

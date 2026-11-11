@@ -2180,7 +2180,15 @@
           "result": "result<string, string>",
           "signature": "read-file: func(path: string) -> result<string, string>",
           "doc": "Read a UTF-8 file, capability-gated the same way `walk` is.\n\n**This exists because the guest's own WASI filesystem view cannot serve\nevery seam.** The grammar seam is wired to a SEPARATE, synchronous linker\nso the trampoline can call a guest action synchronously on the dispatch\nthread — and `wasmtime-wasi`'s sync filesystem shim blocks on a runtime\ninternally, which panics on a thread already inside one. So a grammar\naction calling `std::fs::read_to_string` does not read a file; it takes\nthe plugin down. Async seams (pickers, completion) are unaffected and may\nkeep using WASI directly.\n\nLike `walk`, this runs host-side with ambient authority, so the grant is\nre-checked here rather than relied on from the sandbox: `path` must lie\nwithin one of the plugin's granted `fs:read` (or `fs:write`) prefixes.\n\n`err` for a denied path, a missing file, or bytes that are not UTF-8 —\neach with a message naming which, because \"the read failed\" tells a\nplugin author nothing about whether to fix their manifest or their path.\nA caller that treats absence as an ordinary case (a first capture into a\nfile that does not exist yet) checks for it rather than distinguishing.",
-          "examples": []
+          "examples": [
+            {
+              "id": "llm-tools-guest:host-services.read-file",
+              "caption": "Read a file through the host under the plugin's fs grant, reporting a refusal as text",
+              "source": "crates/lattice-plugin-host/tests/fixtures/llm-tools-guest/src/lib.rs",
+              "language": "rust",
+              "code": "\"read\" => Ok(text(match host_services::read_file(&args) {\n    Ok(body) => body,\n    Err(e) => format!(\"error: {e}\"),\n})),"
+            }
+          ]
         },
         {
           "name": "refresh-decorations",
@@ -2922,6 +2930,102 @@
         }
       ],
       "uses": []
+    },
+    {
+      "name": "llm-tools",
+      "doc": "AT.5: tools a plugin offers to the LLM assistant.\n\nThe assistant's tools come from sources: lattice's own, `web`, each MCP\nserver, and with this seam each plugin that exports `llm-tools`. A tool's\ndescriptor is MCP's shape (a name, a description, a JSON Schema for the\ninput), so a plugin gets MCP's data model without its transport.\n\n## A call cannot write\n\n`call` returns data and nothing else: text for the model, and edits the\nhost applies through `lattice.edit_file`, with its project fence, staleness\ncheck and review. There is no effect list, so a plugin that wants to change\na file can only propose it. That is structural, not trusted.\n\n## The host decides whether a tool asks\n\nFrom the plugin's capability grant, never from what the plugin says about\nits tools: a plugin with no network and no process capability runs its\n`read` tools unasked and sends its proposals to review; one that holds\neither asks before every call. `llm-tool-kind` says what a tool does with\nits result, not how much it is trusted.\n\n## Where it runs\n\nOn the plugin's own actor, off the editor actor, once per model tool call.\nA call is never on the keystroke path: the assistant awaits it like any\nother tool, and a slow plugin delays its own reply and nothing else.",
+      "direction": "exports",
+      "capability": "none",
+      "examples": [],
+      "functions": [
+        {
+          "name": "call",
+          "display_name": "call",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [
+            {
+              "name": "name",
+              "type": "string"
+            },
+            {
+              "name": "args",
+              "type": "string"
+            }
+          ],
+          "result": "result<llm-tool-result, string>",
+          "signature": "call: func(name: string, args: string) -> result<llm-tool-result, string>",
+          "doc": "Run the tool `name`. `args` is the model's JSON input, as text.\n\nAn `err` is the call's result as the model sees it: the conversation\ncontinues, and the model is told the tool failed and why.",
+          "examples": [
+            {
+              "id": "llm-tools-guest:llm-tools.call",
+              "caption": "Answer a read tool with text, and a propose tool with an edit the host reviews and applies",
+              "source": "crates/lattice-plugin-host/tests/fixtures/llm-tools-guest/src/lib.rs",
+              "language": "rust",
+              "code": "\"outline\" => Ok(text(format!(\"outline for {args}\"))),\n\"change\" => Ok(LlmToolResult {\n    text: \"marking it done\".to_string(),\n    proposals: vec![ProposedEdit {\n        path: \"notes.org\".to_string(),\n        old_string: \"* TODO ship\".to_string(),\n        new_string: \"* DONE ship\".to_string(),\n    }],\n}),"
+            }
+          ]
+        },
+        {
+          "name": "profiles",
+          "display_name": "profiles",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [],
+          "result": "list<llm-profile>",
+          "signature": "profiles: func() -> list<llm-profile>",
+          "doc": "Profiles this plugin contributes: a workflow is a system prompt and a\ntool selection. Called once, at registration. The host trusts a plugin\nprofile as it trusts a project's file, so a key it may not set is\ndropped and named.",
+          "examples": [
+            {
+              "id": "llm-tools-guest:llm-tools.profiles",
+              "caption": "Contribute a workflow: a system prompt and a tool selection, as profile-file keys",
+              "source": "crates/lattice-plugin-host/tests/fixtures/llm-tools-guest/src/lib.rs",
+              "language": "rust",
+              "code": "fn profiles() -> Vec<LlmProfile> {\n    vec![LlmProfile {\n        name: \"fixture-plan\".to_string(),\n        description: \"Plan from the fixture's notes.\".to_string(),\n        settings: vec![\n            (\"system\".to_string(), \"Plan the day.\".to_string()),\n            (\"tools\".to_string(), \"fixture.outline\".to_string()),\n        ],\n    }]\n}"
+            }
+          ]
+        },
+        {
+          "name": "tools",
+          "display_name": "tools",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [],
+          "result": "list<llm-tool>",
+          "signature": "tools: func() -> list<llm-tool>",
+          "doc": "The tools this plugin offers. Called once, at registration.\n\nA tool whose name is not letters, digits, `_` and `-`, or whose schema\nis not a JSON object, is not offered, and the listing says why.",
+          "examples": [
+            {
+              "id": "llm-tools-guest:llm-tools.tools",
+              "caption": "Offer one read tool and one propose tool, each with an object input schema",
+              "source": "crates/lattice-plugin-host/tests/fixtures/llm-tools-guest/src/lib.rs",
+              "language": "rust",
+              "code": "fn tools() -> Vec<LlmTool> {\n    vec![\n        LlmTool {\n            name: \"outline\".to_string(),\n            description: \"The outline of the notes.\".to_string(),\n            input_schema: SCHEMA.to_string(),\n            kind: LlmToolKind::Read,\n        },\n        LlmTool {\n            name: \"change\".to_string(),\n            description: \"Mark the first TODO done.\".to_string(),\n            input_schema: SCHEMA.to_string(),\n            kind: LlmToolKind::Propose,\n        },\n    ]\n}"
+            }
+          ]
+        }
+      ],
+      "types": [],
+      "uses": [
+        {
+          "name": "llm-tool",
+          "from": "types",
+          "original": "llm-tool"
+        },
+        {
+          "name": "llm-tool-result",
+          "from": "types",
+          "original": "llm-tool-result"
+        },
+        {
+          "name": "llm-profile",
+          "from": "types",
+          "original": "llm-profile"
+        }
+      ]
     },
     {
       "name": "logging",
@@ -10708,6 +10812,121 @@
             }
           ],
           "examples": []
+        },
+        {
+          "name": "llm-tool-kind",
+          "kind": "enum",
+          "doc": "What a plugin tool does with its result. There is no exec kind: a\nplugin that runs processes holds `proc:spawn`, and the host asks before\neach of its calls whatever the kind.",
+          "definition": "enum llm-tool-kind {\n    read,\n    propose,\n}",
+          "members": [
+            {
+              "name": "read",
+              "type": null,
+              "doc": "Answers from what the plugin reads. Changes nothing."
+            },
+            {
+              "name": "propose",
+              "type": null,
+              "doc": "Returns proposed edits, which the host reviews and applies."
+            }
+          ],
+          "examples": []
+        },
+        {
+          "name": "llm-tool",
+          "kind": "record",
+          "doc": "One tool, in MCP's shape.",
+          "definition": "record llm-tool {\n    name: string,\n    description: string,\n    input-schema: string,\n    kind: llm-tool-kind,\n}",
+          "members": [
+            {
+              "name": "name",
+              "type": "string",
+              "doc": "Letters, digits, `_` and `-`. The model sees it as\n`<plugin>__<name>`."
+            },
+            {
+              "name": "description",
+              "type": "string",
+              "doc": "What the tool does and when to use it, for the model."
+            },
+            {
+              "name": "input-schema",
+              "type": "string",
+              "doc": "JSON Schema for the input, as text. Must be an object schema."
+            },
+            {
+              "name": "kind",
+              "type": "llm-tool-kind",
+              "doc": null
+            }
+          ],
+          "examples": []
+        },
+        {
+          "name": "proposed-edit",
+          "kind": "record",
+          "doc": "One exact replacement, with the semantics of `lattice.edit_file`:\n`old-string` must match the file once, as the user has it now.",
+          "definition": "record proposed-edit {\n    path: string,\n    old-string: string,\n    new-string: string,\n}",
+          "members": [
+            {
+              "name": "path",
+              "type": "string",
+              "doc": null
+            },
+            {
+              "name": "old-string",
+              "type": "string",
+              "doc": null
+            },
+            {
+              "name": "new-string",
+              "type": "string",
+              "doc": null
+            }
+          ],
+          "examples": []
+        },
+        {
+          "name": "llm-tool-result",
+          "kind": "record",
+          "doc": "What a call returns: text for the model, and the edits it proposes.\nThe host applies each proposal through `lattice.edit_file` and tells\nthe model what happened to it after `text`.",
+          "definition": "record llm-tool-result {\n    text: string,\n    proposals: list<proposed-edit>,\n}",
+          "members": [
+            {
+              "name": "text",
+              "type": "string",
+              "doc": null
+            },
+            {
+              "name": "proposals",
+              "type": "list<proposed-edit>",
+              "doc": null
+            }
+          ],
+          "examples": []
+        },
+        {
+          "name": "llm-profile",
+          "kind": "record",
+          "doc": "A profile a plugin contributes: a workflow's system prompt and tools.",
+          "definition": "record llm-profile {\n    name: string,\n    description: string,\n    settings: list<tuple<string, string>>,\n}",
+          "members": [
+            {
+              "name": "name",
+              "type": "string",
+              "doc": "The name `:llm <name>` selects it by."
+            },
+            {
+              "name": "description",
+              "type": "string",
+              "doc": "One line saying what the workflow is for."
+            },
+            {
+              "name": "settings",
+              "type": "list<tuple<string, string>>",
+              "doc": "Keys as a profile file spells them (`system`, `tools`), each with\nits value as text. Filtered like a project's file: a key a plugin\nmay not set is dropped and named."
+            }
+          ],
+          "examples": []
         }
       ],
       "uses": []
@@ -11405,6 +11624,21 @@
           "examples": []
         }
       ],
+      "import_functions": []
+    },
+    {
+      "name": "llm-tools-plugin",
+      "doc": "The world an `llm-tools` plugin implements.\n\nIt imports what a tool plausibly needs to answer: `host-services` to read\nfiles through the host (`read-file`, `walk`), `project` to know which\nproject it is answering for, and `logging`. A plugin that reads its own\noptions gets them on this seam's store too.",
+      "imports": [
+        "host-services",
+        "logging",
+        "project",
+        "types"
+      ],
+      "exports": [
+        "llm-tools"
+      ],
+      "export_functions": [],
       "import_functions": []
     },
     {

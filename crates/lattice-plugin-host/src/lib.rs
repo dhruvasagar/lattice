@@ -100,6 +100,11 @@ pub mod media_task;
 pub mod host_services;
 pub mod keymap_host;
 pub mod language_host;
+// AT.5 — the `llm-tools` seam: tools a plugin offers the LLM assistant. The
+// bindgen world and the actor bridge; the adapter to lattice-ai's `ToolPlugin`
+// lives in the plugin loader, so this crate never compiles the llm layer.
+pub mod llm_tools_host;
+pub mod llm_tools_task;
 pub mod manifest;
 pub mod mode_host;
 pub mod multibuffer_view_host;
@@ -148,6 +153,7 @@ pub use decoration_source::WasmDecorationSource;
 pub use decoration_task::{DecorationActor, DecorationClient};
 /// PRL.1: the hardened download core, for the host's own plugin installer.
 pub use download_host::{Hosts, Limits as DownloadLimits, download_to_file, fetch_bytes};
+pub use llm_tools_task::{LlmToolsActor, LlmToolsClient};
 pub use manifest::{
     Capability, CapabilityParseError, ManifestError, OptionPath, PluginManifest, PluginSeam,
 };

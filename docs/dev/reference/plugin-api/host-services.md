@@ -3,7 +3,7 @@
 
 # `host-services`
 
-**Direction:** guest calls into the host through it · **Capability:** filesystem · **Worlds:** `completion-source-plugin` (imports), `context-plugin` (imports), `decorations-plugin` (imports), `events-plugin` (imports), `lighthouse-plugin` (imports), `media-plugin` (imports), `multibuffer-view-plugin` (imports), `picker-source-plugin` (imports), `plugin` (imports), `project-plugin` (imports)
+**Direction:** guest calls into the host through it · **Capability:** filesystem · **Worlds:** `completion-source-plugin` (imports), `context-plugin` (imports), `decorations-plugin` (imports), `events-plugin` (imports), `lighthouse-plugin` (imports), `llm-tools-plugin` (imports), `media-plugin` (imports), `multibuffer-view-plugin` (imports), `picker-source-plugin` (imports), `plugin` (imports), `project-plugin` (imports)
 
 Guest→host services (plugin-host.md §5). Capability-gated calls a plugin
 makes INTO the host, checked against its `CapabilityGrant` (PH7.2). Unlike
@@ -589,6 +589,15 @@ each with a message naming which, because "the read failed" tells a
 plugin author nothing about whether to fix their manifest or their path.
 A caller that treats absence as an ordinary case (a first capture into a
 file that does not exist yet) checks for it rather than distinguishing.
+
+**Example — Read a file through the host under the plugin's fs grant, reporting a refusal as text** · [`crates/lattice-plugin-host/tests/fixtures/llm-tools-guest/src/lib.rs`](../../../../crates/lattice-plugin-host/tests/fixtures/llm-tools-guest/src/lib.rs)
+
+```rust
+"read" => Ok(text(match host_services::read_file(&args) {
+    Ok(body) => body,
+    Err(e) => format!("error: {e}"),
+})),
+```
 
 ### `refresh-decorations`
 

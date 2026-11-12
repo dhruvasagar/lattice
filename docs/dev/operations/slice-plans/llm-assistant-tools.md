@@ -6,7 +6,8 @@
 
 Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred · ❌ dropped.
 
-**Status: 🚧 AT.1–AT.9 ✅, AT.15 ✅ (AT.7–AT.9 on plugin branch `llm-tools`); next AT.10.**
+**Status: 🚧 AT.1–AT.10 ✅, AT.15 ✅ (AT.7–AT.10 on plugin branch `llm-tools`), AT.11 ❌; next a
+laptop-size model through the eval, which decides AT.12.**
 
 **Goal:** native web tools, a WIT seam through which a plugin gives the model tools and
 profiles, and an org assistant built on both, measured by an eval that decides whether a
@@ -54,8 +55,8 @@ UI-thread work, async results landing through `inbound`. In addition:
 | AT.7e | `org.notes` | AT.7b | ✅ |
 | AT.8 | `org.change` proposals (plugin repo) | AT.7 | ✅ |
 | AT.9 | Org profiles and commands (plugin repo) | AT.6, AT.8 | ✅ |
-| AT.10 | The eval: fixture corpus, tasks, per-model report | AT.9 | 📝 |
-| AT.11 | Embedding index, `lattice.recall` | AT.10's numbers | ⛔ |
+| AT.10 | The eval: fixture corpus, tasks, per-model report | AT.9 | ✅ |
+| AT.11 | Embedding index, `lattice.recall` | AT.10's numbers | ❌ |
 | AT.12 | Bundled local model (managed `llama-server`) | AT.10's numbers | ⛔ |
 | AT.13 | Constrained decoding for tool arguments | AT.12 | ⛔ |
 | AT.14 | Plugin tool sources served to external agents over `LatticeServer` | AT.5 | ⛔ |
@@ -327,7 +328,7 @@ Landed as `8fd7197`. The prompts are `src/profiles/<name>.txt` plus a shared `co
 date comes from the tools, refs go back verbatim, `org.change` says what rather than writing
 text). The help page is `:help org.assistant`.
 
-### AT.10 — The eval
+### AT.10 — The eval ✅
 
 A fixture corpus and task set as design §9, in the plugin repo under `integration/eval/`,
 with a runner driven by `LATTICE_EVAL_MODELS` (a list of `provider/model`) that writes a
@@ -337,15 +338,43 @@ The first report goes into this plan, with the models run, and closes the questi
 AT.11 and AT.12: each is either un-deferred with the numbers that justify it, or dropped
 with them.
 
-### AT.11 — Embedding index ⛔
+Landed as `75cf323`, with `0454ff3` fixing the config the real run writes (every run had
+failed loading it, before any request). Four tasks, each graded without a model: what is on
+today (five entries named, three decoys not), mark the review task done (the file is what
+`org.change` writes, nothing else changed), time clocked per project over seven days, and a
+summary of the migration notes (both notes read). A scripted model that does the work passes
+all four in CI, and one that answers without looking fails all four.
 
-Deferred until AT.10 shows structured and lexical retrieval missing prose questions. If
-built: a native `lattice.recall` over any text, an off-thread incremental index, embeddings
+First report, 2026-11-12, three runs a task; each cell is passes · mean rounds / mean calls ·
+mean time:
+
+| model | today | mark-done | clock-week | notes | pass |
+|---|---|---|---|---|---|
+| `anthropic/claude-haiku-5-5` | 3/3 · 1.0/1.0 · 4.3 s | 3/3 · 2.0/2.0 · 5.0 s | 3/3 · 2.0/3.0 · 8.1 s | 3/3 · 5.0/8.7 · 9.2 s | 12/12 |
+| `anthropic/claude-sonnet-5-5` | 3/3 · 1.0/1.0 · 6.1 s | 3/3 · 2.0/3.0 · 7.2 s | 3/3 · 1.0/3.0 · 7.0 s | 3/3 · 2.0/4.0 · 6.4 s | 12/12 |
+| `anthropic/claude-opus-5-5` | 3/3 · 1.0/1.0 · 6.8 s | 3/3 · 2.0/3.0 · 7.5 s | 3/3 · 2.0/3.0 · 9.0 s | 3/3 · 2.0/3.7 · 8.2 s | 12/12 |
+
+What it settles: the tools, refs and profile prompts are enough for a capable model to do
+each workflow in one or two rounds, a listing in one and a change in two.
+The one cost of a smaller model is breadth, not correctness: Haiku took five rounds and
+about nine calls on the notes task where the others took two and four. What it does not
+settle is a laptop-size model; hosted models bound the ceiling only.
+
+### AT.11 — Embedding index ❌
+
+Dropped 2026-11-12 on AT.10's numbers: the condition for building it was structured and
+lexical retrieval missing prose questions, and `org.notes` plus `lattice.read` found both
+migration notes in 9/9 runs across three models. The notes task asks in the notes' own
+words, so it does not show lexical retrieval surviving a paraphrase; an eval task that asks
+in other words and fails is what would bring this back, as a new slice. As it was specced:
+a native `lattice.recall` over any text, an off-thread incremental index, embeddings
 from any OpenAI-compatible `/v1/embeddings` endpoint.
 
 ### AT.12 — Bundled local model ⛔
 
-Deferred until AT.10 shows a laptop-sized model passing with this harness. If built:
+Deferred until AT.10 shows a laptop-sized model passing with this harness. The first report
+ran hosted models only, so this is still open: the next run is a 7–8B model through Ollama
+(`LATTICE_EVAL_MODELS=ollama/<model>`), and its pass rate decides this slice. If built:
 `llama-server` and a GGUF installed SHA-pinned and supervised through Lighthouse's
 machinery, registered as a provider, opt-in only. Includes a latency bench with inference
 running, against the one-frame ceiling.

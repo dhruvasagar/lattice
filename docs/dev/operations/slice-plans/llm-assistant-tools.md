@@ -6,12 +6,12 @@
 
 Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred · ❌ dropped.
 
-**Status: 🚧 AT.1–AT.10 ✅, AT.15 ✅ (AT.7–AT.10 on plugin branch `llm-tools`), AT.11 ❌; next a
-laptop-size model through the eval, which decides AT.12.**
+**Status: 🚧 AT.1–AT.10 ✅, AT.15 ✅ (AT.7–AT.10 on plugin branch `llm-tools`), AT.11–AT.13 ❌;
+open: AT.14, AT.16, AT.17 (⛔).**
 
 **Goal:** native web tools, a WIT seam through which a plugin gives the model tools and
-profiles, and an org assistant built on both, measured by an eval that decides whether a
-local model is worth bundling.
+profiles, and an org assistant built on both, measured by an eval, on whatever model the
+user brings.
 
 **Prefix:** `AT` (assistant tools). Checked unused across `docs/` on 2026-11-11.
 
@@ -57,8 +57,8 @@ UI-thread work, async results landing through `inbound`. In addition:
 | AT.9 | Org profiles and commands (plugin repo) | AT.6, AT.8 | ✅ |
 | AT.10 | The eval: fixture corpus, tasks, per-model report | AT.9 | ✅ |
 | AT.11 | Embedding index, `lattice.recall` | AT.10's numbers | ❌ |
-| AT.12 | Bundled local model (managed `llama-server`) | AT.10's numbers | ⛔ |
-| AT.13 | Constrained decoding for tool arguments | AT.12 | ⛔ |
+| AT.12 | Bundled local model (managed `llama-server`) | AT.10's numbers | ❌ |
+| AT.13 | Constrained decoding for tool arguments | AT.12 | ❌ |
 | AT.14 | Plugin tool sources served to external agents over `LatticeServer` | AT.5 | ⛔ |
 | AT.15 | Keyless DuckDuckGo search backend, opt-in | AT.2 | ✅ |
 | AT.16 | Provider-native search (Anthropic, OpenAI, Gemini server tools) | AT.2 | ⛔ |
@@ -366,23 +366,25 @@ Dropped 2026-11-12 on AT.10's numbers: the condition for building it was structu
 lexical retrieval missing prose questions, and `org.notes` plus `lattice.read` found both
 migration notes in 9/9 runs across three models. The notes task asks in the notes' own
 words, so it does not show lexical retrieval surviving a paraphrase; an eval task that asks
-in other words and fails is what would bring this back, as a new slice. As it was specced:
+in other words and fails is what would bring this back, as a new slice. Confirmed by the
+user the same day: regex search (`lattice.search`, as `rg`) is good enough, and notes kept
+the PKOS way are discoverable without one (design §11). As it was specced:
 a native `lattice.recall` over any text, an off-thread incremental index, embeddings
 from any OpenAI-compatible `/v1/embeddings` endpoint.
 
-### AT.12 — Bundled local model ⛔
+### AT.12 — Bundled local model ❌
 
-Deferred until AT.10 shows a laptop-sized model passing with this harness. The first report
-ran hosted models only, so this is still open: the next run is a 7–8B model through Ollama
-(`LATTICE_EVAL_MODELS=ollama/<model>`), and its pass rate decides this slice. If built:
-`llama-server` and a GGUF installed SHA-pinned and supervised through Lighthouse's
-machinery, registered as a provider, opt-in only. Includes a latency bench with inference
-running, against the one-frame ceiling.
+Dropped 2026-11-12, the user's decision: the plugin stays lean and the user brings the model,
+hosted or local, through `[llm.providers]` (Ollama already makes the assistant offline).
+Shipping a runtime and gigabytes of weights buys nothing that does not (design §11). The
+hosted report bounds the ceiling; a user's local model is checked with the same eval. As it
+was specced: `llama-server` and a GGUF installed SHA-pinned and supervised through
+Lighthouse's machinery, registered as a provider, opt-in only.
 
-### AT.13 — Constrained decoding ⛔
+### AT.13 — Constrained decoding ❌
 
-With AT.12: a JSON Schema for tool arguments through the runtime's grammar support, in the
-OpenAI-compatible adapter.
+Dropped with AT.12, which it needed: a JSON Schema for tool arguments through a runtime
+lattice controls.
 
 ### AT.14 — External agents ⛔
 

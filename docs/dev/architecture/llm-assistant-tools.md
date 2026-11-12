@@ -43,7 +43,7 @@ What is missing is three mechanisms, and nothing else:
 	                │              └─ <mcp>.*    servers the user names          │
 	                │        │                                                   │
 	                │        ▼                                                   │
-	                │   any provider: hosted, Ollama, later a bundled one (§9)   │
+	                │   any provider: hosted, or local through Ollama (§9)       │
 	                └────────────────────────────────────────────────────────────┘
 
 **Native tools do the general work; a plugin adds only what nothing else can.** The org
@@ -328,10 +328,11 @@ first: `org.agenda`, `org.query` and `org.notes` find what the question names, a
 `lattice.search` covers free text. Personal org files are mostly found by date, state, tag
 and title, which a structured query answers exactly and an embedding answers approximately.
 
-**An embedding index is deferred, not rejected.** It costs chunking, an index kept current
-off-thread, an embeddings endpoint and invalidation. Whether it earns that is measured by the
-eval (§9): if lexical and structured retrieval miss the questions people ask in prose, it is
-built then, as a native source over any text (`lattice.recall`), not an org one.
+**No embedding index** (§11). Notes kept the way org-roam keeps them (titles, aliases, tags,
+links) are found structurally, and what is not is found by `lattice.search`, a regex search
+like `rg`. The eval (§9) found the notes it asked for in every run. The user's own side of
+the same search is `:search`, narrowed with `:multibuffer-keep` and `:multibuffer-reject`;
+neither side needs an index.
 
 ## 9. Models, and the eval that chooses them
 
@@ -350,14 +351,9 @@ model to grade:
 Each task runs against a list of provider/model pairs, and the report is a table of pass
 rate, tool rounds and time per model. It runs by hand, not in CI, because it needs a model.
 
-Two pieces wait on its numbers, with the gate written down:
-
-- **A bundled local model.** A managed `llama-server` and a downloaded GGUF, installed and
-  supervised the way Lighthouse installs language servers, is worth building only if a model
-  small enough to run on a laptop passes the eval with this harness. If none does, shipping
-  gigabytes buys nothing that pointing at Ollama does not.
-- **Constrained decoding** (a JSON Schema for tool arguments) needs a runtime we control.
-  It comes with the bundled model, if that is built.
+**The model is the user's.** Lattice ships no model and no inference runtime (§11): the
+assistant runs on any provider the llm layer speaks, hosted or a local server such as
+Ollama, and the eval is how a user or a release checks a model against the harness.
 
 ## 10. Alignment
 
@@ -368,7 +364,7 @@ not choose. Org files change only through review.
 **Performance (#1).** Every call is off the editor thread: web I/O on the layer's runtime, a
 plugin call on its actor. Nothing here adds to the keystroke path. A model running locally
 loads the machine, not the editor; the latency bench under background load already covers
-that, and the bundled-model slice adds a run with inference going.
+that.
 
 **Extensibility (#2).** The WIT carries the whole seam, so a plugin in any component-model
 language can give the model tools. Org is the first consumer, not a special case. Magit,
@@ -385,6 +381,14 @@ and the org tools in the org plugin.
 
 ## 11. Rejected
 
+- **A bundled model** (decided 2026-11-12). A managed `llama-server` and a downloaded GGUF
+  would ship gigabytes and a supervised runtime for what `[llm.providers]` pointed at Ollama
+  already does offline. The plugin stays lean; the user brings the model. Constrained
+  decoding went with it, since it needed a runtime lattice controls.
+- **An embedding index** (decided 2026-11-12). It costs chunking, an index kept current
+  off-thread, an embeddings model and invalidation. Org's structured tools plus regex search
+  answered the eval's notes task every time, and discoverability is better served by how notes
+  are kept (titles, aliases, links) than by approximate recall.
 - **An org MCP server.** Org's logic lives in WASM. A server would be a second org parser
   outside the plugin or a host bridge plus a transport. It would also break the single
   extension substrate with a native binary beside the plugin, and every read would ask.

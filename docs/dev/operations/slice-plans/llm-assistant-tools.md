@@ -6,7 +6,7 @@
 
 Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred · ❌ dropped.
 
-**Status: 🚧 AT.1–AT.8 ✅, AT.15 ✅ (AT.7–AT.8 on plugin branch `llm-tools`); next AT.9.**
+**Status: 🚧 AT.1–AT.9 ✅, AT.15 ✅ (AT.7–AT.9 on plugin branch `llm-tools`); next AT.10.**
 
 **Goal:** native web tools, a WIT seam through which a plugin gives the model tools and
 profiles, and an org assistant built on both, measured by an eval that decides whether a
@@ -53,7 +53,7 @@ UI-thread work, async results landing through `inbound`. In addition:
 | AT.7d | `org.clock` | AT.7b | ✅ |
 | AT.7e | `org.notes` | AT.7b | ✅ |
 | AT.8 | `org.change` proposals (plugin repo) | AT.7 | ✅ |
-| AT.9 | Org profiles and commands (plugin repo) | AT.6, AT.8 | 📝 |
+| AT.9 | Org profiles and commands (plugin repo) | AT.6, AT.8 | ✅ |
 | AT.10 | The eval: fixture corpus, tasks, per-model report | AT.9 | 📝 |
 | AT.11 | Embedding index, `lattice.recall` | AT.10's numbers | ⛔ |
 | AT.12 | Bundled local model (managed `llama-server`) | AT.10's numbers | ⛔ |
@@ -315,13 +315,17 @@ that does not exist; a capture template that needs a prompt the model did not gi
 the copy first, and the answer tells the model so. Whether a combined view reads better is left
 to AT.10's runs, which will show how often a model refiles across files at all.
 
-### AT.9 — Org profiles and commands (plugin repo)
+### AT.9 — Org profiles and commands (plugin repo) ✅
 
 The five profiles of design §7 and their system prompts, kept in the plugin as text files.
 Commands `:org-plan-day`, `:org-plan-week`, `:org-review`, `:org-report` as thin
 `invoke-command` wrappers. Plugin `:help` page.
 
 Tests: each command opens a chat with its profile and the expected tool offer.
+
+Landed as `8fd7197`. The prompts are `src/profiles/<name>.txt` plus a shared `common.txt` (the
+date comes from the tools, refs go back verbatim, `org.change` says what rather than writing
+text). The help page is `:help org.assistant`.
 
 ### AT.10 — The eval
 

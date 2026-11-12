@@ -6,7 +6,7 @@
 
 Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred · ❌ dropped.
 
-**Status: 🚧 AT.1–AT.6 ✅, AT.15 ✅, AT.7a–b ✅ (plugin branch `llm-tools`); next AT.7c.**
+**Status: 🚧 AT.1–AT.7 ✅, AT.15 ✅ (AT.7 on plugin branch `llm-tools`); next AT.8.**
 
 **Goal:** native web tools, a WIT seam through which a plugin gives the model tools and
 profiles, and an org assistant built on both, measured by an eval that decides whether a
@@ -46,12 +46,12 @@ UI-thread work, async results landing through `inbound`. In addition:
 | AT.5d | `*llm-tools*` listing; CHANGELOG | AT.5c | ✅ |
 | AT.5e | guest SDK ergonomics for `llm-tools` | AT.5b | ✅ |
 | AT.6 | Plugin profiles, trusted like project config | AT.4, AT.5 | ✅ |
-| AT.7 | Org read tools (plugin repo) | AT.5 | 🚧 |
+| AT.7 | Org read tools (plugin repo) | AT.5 | ✅ |
 | AT.7a | Repeaters expanded in the shared agenda scan | — | ✅ |
 | AT.7b | The `llm-tools` export; `org.agenda` with `match` | AT.7a | ✅ |
-| AT.7c | `org.query`, `org.entry`; refs | AT.7b | 📝 |
-| AT.7d | `org.clock` | AT.7b | 📝 |
-| AT.7e | `org.notes` | AT.7b | 📝 |
+| AT.7c | `org.query`, `org.entry`; refs | AT.7b | ✅ |
+| AT.7d | `org.clock` | AT.7b | ✅ |
+| AT.7e | `org.notes` | AT.7b | ✅ |
 | AT.8 | `org.change` proposals (plugin repo) | AT.7 | 📝 |
 | AT.9 | Org profiles and commands (plugin repo) | AT.6, AT.8 | 📝 |
 | AT.10 | The eval: fixture corpus, tasks, per-model report | AT.9 | 📝 |
@@ -277,10 +277,23 @@ dates stay `org.agenda`'s, which takes a `match`, and `org.query` has no date te
   per-section decision is `agenda::occurrences`, shared by the view and the tool. Pure in
   `llm_tools.rs` (unit-tested), gathered through `host-services` in `lib.rs`; an integration
   test loads the real component and calls the tool through the editor's own broker.
-- **AT.7c** — `org.query { match }` and `org.entry { ref }`; the ref is
-  `path::line::heading` or the entry's `ID`, a stale one refused with "query again".
-- **AT.7d** — `org.clock { from, to, by }`, totals from `clock_scan::scan` cut to the range.
-- **AT.7e** — `org.notes { query }` over the roam index (title, alias, tag) with backlinks.
+- **AT.7c** ✅ — `org.query { match, limit? }` and `org.entry { ref }`; the ref is
+  `path::line::heading` or the entry's `ID`. A ref whose line moved is resolved by its heading
+  when exactly one headline carries it (the answer gives the fresh ref); none or several is
+  refused with "query again". The tools go through one `llm_tools::call` over an `Org` trait
+  the guest implements. Found on the way: a tags search admitted a non-agenda headline only
+  for tags or properties, so an untagged DONE was never a row and `/DONE` could not reach it,
+  in the tool or a view section; a keyword now admits it on both scan paths. `org.agenda`
+  with a `match` scans as a tags search, as the view does. Plugin `f7d0d3c`.
+- **AT.7d** ✅ — `org.clock { from?, to?, by? }`, `by` = `entry` (default) / `file` / `tag`,
+  the last week by default; `clock_scan::scan` spans, so it agrees with the agenda's clock
+  report. By tag, the tags-search rows supply inherited tags; an entry counts under each of
+  its tags and the answer says so. Plugin `40d97fb`.
+- **AT.7e** ✅ — `org.notes { query?, tag?, limit? }` over the roam index (title, alias, tag)
+  with backlinks by title; the ref is the node's `ID`. `org.entry` falls back to the index
+  for an ID the agenda files lack: a file node whole, a headline node as its subtree. The
+  e2e test rides the roam harness, whose real index the event store builds. Plugin
+  `86cad5c`.
 
 ### AT.8 — `org.change` (plugin repo)
 

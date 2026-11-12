@@ -101,9 +101,13 @@ impl LatticeTools {
     }
 
     /// Whether an edit to `at` is reviewed even in a trusted chat: anything
-    /// under `.git` (a fixed rule), or a path `llm.review` names.
+    /// outside the project (a plugin's proposal into its own files, AT.8) or
+    /// under `.git` (fixed rules), or a path `llm.review` names. Trust in a
+    /// chat is trust in what it does to the project.
     fn fenced(&self, at: &Resolved) -> bool {
-        in_git_dir(at) || self.fence.as_ref().is_some_and(|f| f(&at.path).is_some())
+        !at.in_project
+            || in_git_dir(at)
+            || self.fence.as_ref().is_some_and(|f| f(&at.path).is_some())
     }
 
     /// Withhold these variables from every command `run_command` starts.
@@ -249,8 +253,15 @@ impl LatticeTools {
 
     /// `input` resolved inside the project, or why not.
     fn resolve(&self, input: &str) -> Result<Resolved, ToolError> {
+        self.resolve_within(input, &[])
+    }
+
+    /// [`Self::resolve`], also accepting an absolute path under one of
+    /// `also` ([`CallContext::writable`]). The same lexical and symlink
+    /// checks and `llm.exclude` apply there as in the project.
+    fn resolve_within(&self, input: &str, also: &[PathBuf]) -> Result<Resolved, ToolError> {
         let root = (self.root)();
-        if root.as_os_str().is_empty() {
+        if root.as_os_str().is_empty() && (also.is_empty() || !Path::new(input).is_absolute()) {
             return Err(ToolError::Refused(
                 "there is no project root to read from".into(),
             ));
@@ -269,18 +280,45 @@ impl LatticeTools {
                 "`{input}` goes through a link whose target does not exist"
             )));
         };
-        if !path.starts_with(&root) {
-            return Err(ToolError::Refused(format!(
-                "`{input}` is outside the project ({})",
-                root.display()
-            )));
-        }
+        let in_project = !root.as_os_str().is_empty() && path.starts_with(&root);
+        let root = if in_project {
+            root
+        } else {
+            // Absolute only: a relative path names the project, and
+            // `../org` reaching a grant through it would be a second spelling
+            // of a path the plugin already gives in full.
+            let granted = also
+                .iter()
+                .filter(|_| Path::new(input).is_absolute())
+                .map(|r| std::fs::canonicalize(r).unwrap_or_else(|_| normalize(r)))
+                .find(|r| !r.as_os_str().is_empty() && path.starts_with(r));
+            match granted {
+                Some(granted) => granted,
+                None if also.is_empty() => {
+                    return Err(ToolError::Refused(format!(
+                        "`{input}` is outside the project ({})",
+                        root.display()
+                    )));
+                }
+                None => {
+                    return Err(ToolError::Refused(format!(
+                        "`{input}` is outside the project ({}) and outside what the plugin \
+                         may write",
+                        root.display()
+                    )));
+                }
+            }
+        };
         if let Some(glob) = (self.exclude)(&path) {
             return Err(ToolError::Refused(format!(
                 "`{input}` matches llm.exclude ({glob})"
             )));
         }
-        Ok(Resolved { path, root })
+        Ok(Resolved {
+            path,
+            root,
+            in_project,
+        })
     }
 
     /// [`Self::resolve`] for the read tools, which also never look inside a
@@ -411,7 +449,10 @@ impl ToolSource for LatticeTools {
 
 struct Resolved {
     path: PathBuf,
+    /// The project root, or the granted directory the path is under.
     root: PathBuf,
+    /// Under the project root, rather than a plugin's granted directory.
+    in_project: bool,
 }
 
 /// A file as an edit finds it.
@@ -476,7 +517,7 @@ impl LatticeTools {
                 "old_string is empty; use write_file to create or replace a whole file".into(),
             ));
         }
-        let at = self.resolve(&args.path)?;
+        let at = self.resolve_within(&args.path, &ctx.writable)?;
         let target = self.target(&at.path, &args.path).await?;
         if !target.exists {
             return Err(ToolError::Failed(format!(
@@ -1390,11 +1431,58 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
+    /// AT.8: a plugin's proposal may land in what its grant writes, outside
+    /// the project, and is then reviewed even in a trusted chat. Without a
+    /// grant (the model's own edits) the project is the fence, and `..`
+    /// cannot climb out of a grant into somewhere it does not cover.
+    #[tokio::test]
+    async fn a_plugin_grant_widens_an_edit_and_fences_it() {
+        let dir = Scratch::new("grant");
+        let (project, org) = (dir.path().join("project"), dir.path().join("org"));
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::create_dir_all(&org).unwrap();
+        std::fs::write(org.join("plan.org"), "* TODO x\n").unwrap();
+        let (tools, _chats) = tools_over(&project);
+        let why = |r: Result<Resolved, ToolError>| match r {
+            // Not a refusal: the assertions on its text then say so.
+            Ok(at) => format!("resolved to {}", at.path.display()),
+            Err(e) => e.to_string(),
+        };
+        let plan = org.join("plan.org");
+        let plan = plan.to_str().unwrap();
+
+        let refused = why(tools.resolve_within(plan, &[]));
+        assert!(refused.contains("is outside the project"), "{refused}");
+        assert!(!refused.contains("plugin"), "{refused}");
+
+        let granted = std::slice::from_ref(&org);
+        let at = tools.resolve_within(plan, granted).unwrap();
+        assert!(!at.in_project);
+        assert!(tools.fenced(&at), "outside the project is always reviewed");
+
+        let climbed = format!("{}/../elsewhere/x.org", org.display());
+        let refused = why(tools.resolve_within(&climbed, granted));
+        assert!(
+            refused.contains("outside what the plugin may write"),
+            "{refused}"
+        );
+        let relative = why(tools.resolve_within("../org/plan.org", granted));
+        assert!(relative.contains("outside"), "{relative}");
+
+        let at = tools.resolve_within("src/main.rs", granted).unwrap();
+        assert!(at.in_project);
+        assert!(
+            !tools.fenced(&at),
+            "the grant changes nothing inside the project"
+        );
+    }
+
     #[test]
     fn anything_under_a_git_dir_is_in_it() {
         let at = |p: &str| Resolved {
             path: PathBuf::from("/p").join(p),
             root: PathBuf::from("/p"),
+            in_project: true,
         };
         assert!(in_git_dir(&at(".git/hooks/pre-commit")));
         assert!(in_git_dir(&at(".git/config")));

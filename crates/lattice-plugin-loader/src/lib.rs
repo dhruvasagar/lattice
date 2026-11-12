@@ -3819,12 +3819,12 @@ impl PluginLoader {
         let task = runtime.spawn(actor.with_tracer(self.env.tracer.clone()).run());
         record.tasks.push(task);
 
-        let reach = llm_tools::reach(&self.host.grant_for(manifest, tier).grant);
+        let grant = llm_tools::grant(&self.host.grant_for(manifest, tier).grant);
         let plugin = Arc::new(llm_tools::ClientPlugin::new(client, manifest.id.clone()));
+        tracing::debug!(plugin = %manifest.id, ?grant, "plugin offers llm tools");
         // A refusal is already warned and listed by `register`.
-        if tools.register(&manifest.id, plugin, reach).await.is_ok() {
+        if tools.register(&manifest.id, plugin, grant).await.is_ok() {
             record.teardown.llm_tools = Some(manifest.id.clone());
-            tracing::debug!(plugin = %manifest.id, ?reach, "plugin offers llm tools");
         }
         Ok(id)
     }

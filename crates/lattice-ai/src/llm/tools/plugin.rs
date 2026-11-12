@@ -13,14 +13,19 @@
 //!   anywhere, so every one of its tools asks, `propose` ones included: a
 //!   review gates the edit, not the call that computed it.
 //! - **A call cannot write.** It returns text and proposals. Each proposal is
-//!   applied through `lattice.edit_file` itself, so it is fenced to the
-//!   project, refused if stale, reviewed (or trusted with `<C-t>`), and held to
-//!   `llm.deny`'s `edit_file(...)` rules like any edit the model asks for.
+//!   applied through `lattice.edit_file` itself, so it is refused if stale,
+//!   reviewed (or trusted with `<C-t>`), and held to `llm.deny`'s
+//!   `edit_file(...)` rules like any edit the model asks for. It is fenced to
+//!   the project **or to what the plugin may write** (AT.8): org's files live
+//!   in `~/org`, not in the project a chat was opened from, and its grant
+//!   already lets it write there through its other seams. An edit outside the
+//!   project is always reviewed, `<C-t>` or not.
 //! - **A plugin may not take a name already in use**: `lattice`, `web`, a
 //!   configured MCP server, or another plugin. It is not offered, and the
 //!   listing says why.
 
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use serde_json::{Value, json};
@@ -181,11 +186,33 @@ pub enum Reach {
     Outward,
 }
 
+/// What the loader read from a plugin's capability grant.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PluginGrant {
+    /// Which permission row its tools sit in.
+    pub reach: Reach,
+    /// Its `fs:write` prefixes, as host paths: where its proposals may land
+    /// besides the project.
+    pub writes: Vec<PathBuf>,
+}
+
+impl From<Reach> for PluginGrant {
+    /// Writes nothing outside the project.
+    fn from(reach: Reach) -> Self {
+        PluginGrant {
+            reach,
+            writes: Vec::new(),
+        }
+    }
+}
+
 /// A plugin's tools as one of the broker's sources.
 pub struct PluginToolSource {
     plugin: Arc<dyn ToolPlugin>,
     tools: Vec<SourceTool>,
     reach: Reach,
+    /// [`PluginGrant::writes`].
+    writes: Vec<PathBuf>,
     /// lattice's own tools, through whose `edit_file` a proposal applies.
     lattice: Arc<dyn ToolSource>,
 }
@@ -248,7 +275,13 @@ impl PluginToolSource {
         {
             return format!("`{}`: refused by `{rule}`; nothing changed", edit.path);
         }
-        match self.lattice.call("edit_file", input, ctx.clone()).await {
+        // The plugin's grant, for this call only: the model cannot set it,
+        // and a request's own edits never carry it.
+        let ctx = CallContext {
+            writable: self.writes.clone(),
+            ..ctx.clone()
+        };
+        match self.lattice.call("edit_file", input, ctx).await {
             Ok(out) => out.text,
             Err(e) => format!("`{}`: {e}", edit.path),
         }
@@ -397,8 +430,9 @@ impl PluginTools {
         &self,
         name: &str,
         plugin: Arc<dyn ToolPlugin>,
-        reach: Reach,
+        grant: impl Into<PluginGrant>,
     ) -> Result<(), String> {
+        let PluginGrant { reach, writes } = grant.into();
         let refuse = |why: String, record: bool| {
             tracing::warn!(target: "lattice::llm", "llm: tools from plugin `{name}` not offered: {why}");
             if record {
@@ -464,6 +498,7 @@ impl PluginTools {
                 plugin,
                 tools,
                 reach,
+                writes,
                 lattice: self.lattice.clone(),
             }),
         );
@@ -583,6 +618,8 @@ mod tests {
     #[derive(Default)]
     struct Lattice {
         edits: Mutex<Vec<Value>>,
+        /// Each call's [`CallContext::writable`].
+        writable: Mutex<Vec<Vec<PathBuf>>>,
     }
 
     impl ToolSource for Lattice {
@@ -593,11 +630,12 @@ mod tests {
             &self,
             name: &str,
             input: Value,
-            _ctx: CallContext,
+            ctx: CallContext,
         ) -> BoxFuture<'_, Result<ToolOutput, ToolError>> {
             assert_eq!(name, "edit_file");
             let path = input["path"].as_str().unwrap().to_string();
             self.edits.lock().unwrap().push(input);
+            self.writable.lock().unwrap().push(ctx.writable);
             Box::pin(async move {
                 if path == "stale.org" {
                     Err(ToolError::Failed(format!(
@@ -720,6 +758,40 @@ mod tests {
         assert_eq!(paths, [json!("a.org"), json!("stale.org")]);
         assert_eq!(edits[0]["old_string"], "TODO");
         assert_eq!(edits[0]["new_string"], "DONE");
+        assert!(
+            lattice.writable.lock().unwrap().iter().all(Vec::is_empty),
+            "a plugin granted no writes widens nothing"
+        );
+    }
+
+    /// AT.8: a proposal carries the plugin's `fs:write` grant to
+    /// `edit_file`, and only the proposal: a request's own context never has
+    /// it, whatever the caller passed.
+    #[tokio::test]
+    async fn a_proposal_carries_the_plugins_write_grant() {
+        let lattice = Arc::new(Lattice::default());
+        let (tools, broker) = registry(lattice.clone());
+        let grant = PluginGrant {
+            reach: Reach::Contained,
+            writes: vec![PathBuf::from("/home/u/org")],
+        };
+        tools
+            .register("org", Fixture::new(vec![edit("/home/u/org/a.org")]), grant)
+            .await
+            .unwrap();
+        let offer = broker.offer(&select(&["org.change"])).await;
+        let forged = CallContext {
+            writable: vec![PathBuf::from("/")],
+            ..CallContext::default()
+        };
+        offer
+            .call("org__change", json!({"ref": "x"}), forged)
+            .await
+            .unwrap();
+        assert_eq!(
+            *lattice.writable.lock().unwrap(),
+            [vec![PathBuf::from("/home/u/org")]]
+        );
     }
 
     /// A trap is that call's error, and a name it does not list is unknown

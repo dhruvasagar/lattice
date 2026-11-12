@@ -220,9 +220,22 @@ and registers it into lattice-ai's `PluginTools` service. So the plugin host doe
 the llm layer, and lattice-ai does not compile wasmtime.
 
 **A proposal applies through `lattice.edit_file` itself**, called by `PluginToolSource` with
-the request's context: one code path for the project fence, the staleness check, review and
-`<C-t>`. Because that call does not pass through the broker, `PluginToolSource` checks
-`llm.deny`'s `edit_file(...)` rules for each proposal first.
+the request's context: one code path for the fence, the staleness check, review and `<C-t>`.
+Because that call does not pass through the broker, `PluginToolSource` checks `llm.deny`'s
+`edit_file(...)` rules for each proposal first.
+
+**The fence for a proposal is the project or the plugin's `fs:write` grant.** Org's files live
+in `~/org`, not in the project a chat was opened from, so the project fence alone would refuse
+every org change made from a code project. `PluginToolSource` sets the context's `writable`
+to the grant's write prefixes, already filtered by trust tier, for its own proposals only;
+`edit_file` then also takes an absolute path under one of them, through the same lexical,
+symlink and `llm.exclude` checks. This adds no write power: the plugin can already write
+there through its other seams, and the model never chooses the path, since the plugin derives
+it from a ref it resolved. An edit outside the project is **always reviewed**, `<C-t>` or not:
+trust in a chat is trust in what it does to the project. A request's own context never carries
+`writable`, so the model's `edit_file` stays in the project. Rejected: a user option widening
+every edit (`llm.edit-roots`), which would hand the model's raw `edit_file` write reach over
+`~/org`, where text a page fetched into the chat could ask for anything.
 
 **Calls run where every guest call runs:** on the plugin's own actor, fuel-limited, async to
 the request. A trap is that call's error; the plugin host's restart policy applies to the

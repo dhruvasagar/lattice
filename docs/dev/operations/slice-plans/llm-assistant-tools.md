@@ -295,13 +295,21 @@ dates stay `org.agenda`'s, which takes a `match`, and `org.query` has no date te
   e2e test rides the roam harness, whose real index the event store builds. Plugin
   `86cad5c`.
 
-### AT.8 — `org.change` (plugin repo)
+### AT.8 — `org.change` (plugin repo) 🚧
 
 The seven ops of design §6 through the existing verbs, each returning proposals. A stale ref
 is refused with "query again". Refile returns two proposals (design §12).
 
 Tests: each op's proposal against an expected edit; a ref whose line moved; a refile target
 that does not exist; a capture template that needs a prompt the model did not give.
+
+| Slice | Contents | Status |
+|---|---|---|
+| AT.8a | `complete::change_state`, the one decision of what a state change writes, under both `<leader>ot` and the tool; shared ref resolution; the unique-context proposal; `set-state`, `schedule`, `deadline`, `tag` | ✅ |
+| AT.8f | **This repo.** The fence for a proposal is the project or the plugin's `fs:write` grant, always reviewed outside the project (design §5, decided 2026-11-12: org's files are not in the project, so without it every change from a code project is refused). `CallContext::writable`, set only by `PluginToolSource`; the loader passes the grant's write prefixes | 🚧 |
+| AT.8b | `add_note` | 📝 |
+| AT.8c | `refile`: two proposals | 📝 |
+| AT.8d | `capture`: refused when the target file is absent or empty (`edit_file` cannot create one), and when a template prompts for what the model did not give | 📝 |
 
 ### AT.9 — Org profiles and commands (plugin repo)
 

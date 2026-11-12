@@ -146,6 +146,9 @@ impl ChatRounds {
                     self.allowed.clone(),
                 )),
                 rules: self.rules.clone(),
+                // A request's own edits stay in the project; only a plugin's
+                // tool source widens this, for its own proposals (AT.8).
+                writable: Vec::new(),
             };
             let result = match &call.malformed {
                 Some(why) => Err(ToolError::InvalidArguments(why.clone())),

@@ -97,6 +97,11 @@ pub struct CallContext {
     /// `llm.allow` and `llm.deny` as they were when the request was
     /// prepared. `None` (a bare test) is no rules.
     pub rules: Option<std::sync::Arc<rules::ToolRules>>,
+    /// Directories outside the project that `lattice.edit_file` may also
+    /// change, always with a review (AT.8). Set only by a plugin's tool
+    /// source for its own proposals, to the plugin's `fs:write` grant; a
+    /// request never sets it, so the model's own edits stay in the project.
+    pub writable: Vec<std::path::PathBuf>,
 }
 
 /// What the user is asked before a tool runs.

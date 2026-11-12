@@ -11,8 +11,8 @@
 
 use lattice_ai::llm::tools::BoxFuture;
 use lattice_ai::llm::tools::plugin::{
-    PluginProfileSpec, PluginTool, PluginToolKind, PluginToolResult, ProposedEdit, Reach,
-    ToolPlugin,
+    PluginGrant, PluginProfileSpec, PluginTool, PluginToolKind, PluginToolResult, ProposedEdit,
+    Reach, ToolPlugin,
 };
 use lattice_plugin_host::llm_tools_task::{LlmToolKind, LlmToolResult};
 use lattice_plugin_host::{CapabilityGrant, LlmToolsClient};
@@ -27,6 +27,22 @@ pub(crate) fn reach(grant: &CapabilityGrant) -> Reach {
         Reach::Contained
     } else {
         Reach::Outward
+    }
+}
+
+/// What lattice-ai needs of `grant`: its [`reach`], and its `fs:write`
+/// prefixes, where its proposals may land besides the project (AT.8). The
+/// prefixes are the grant's own, already filtered by trust tier, so a
+/// proposal reaches no further than the plugin's other seams already do.
+pub(crate) fn grant(grant: &CapabilityGrant) -> PluginGrant {
+    PluginGrant {
+        reach: reach(grant),
+        writes: grant
+            .fs
+            .iter()
+            .filter(|g| g.write)
+            .map(|g| g.prefix.clone())
+            .collect(),
     }
 }
 
@@ -119,6 +135,29 @@ fn from_wit(result: LlmToolResult) -> PluginToolResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// AT.8: only the `fs:write` prefixes widen where a proposal may land.
+    #[test]
+    fn a_proposal_may_land_where_the_grant_writes() {
+        let mut grant = CapabilityGrant::default();
+        for (prefix, write) in [
+            ("/home/u/org", true),
+            ("/home/u/docs", false),
+            ("/home/u/roam", true),
+        ] {
+            grant.fs.push(lattice_plugin_host::FsGrant {
+                prefix: prefix.into(),
+                write,
+            });
+        }
+        assert_eq!(
+            super::grant(&grant),
+            PluginGrant {
+                reach: Reach::Contained,
+                writes: vec!["/home/u/org".into(), "/home/u/roam".into()],
+            }
+        );
+    }
 
     #[test]
     fn network_or_processes_make_a_plugin_outward_and_files_do_not() {

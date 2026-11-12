@@ -6,7 +6,7 @@
 
 Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred · ❌ dropped.
 
-**Status: 🚧 AT.1–AT.7 ✅, AT.15 ✅ (AT.7 on plugin branch `llm-tools`); next AT.8.**
+**Status: 🚧 AT.1–AT.8 ✅, AT.15 ✅ (AT.7–AT.8 on plugin branch `llm-tools`); next AT.9.**
 
 **Goal:** native web tools, a WIT seam through which a plugin gives the model tools and
 profiles, and an org assistant built on both, measured by an eval that decides whether a
@@ -52,7 +52,7 @@ UI-thread work, async results landing through `inbound`. In addition:
 | AT.7c | `org.query`, `org.entry`; refs | AT.7b | ✅ |
 | AT.7d | `org.clock` | AT.7b | ✅ |
 | AT.7e | `org.notes` | AT.7b | ✅ |
-| AT.8 | `org.change` proposals (plugin repo) | AT.7 | 📝 |
+| AT.8 | `org.change` proposals (plugin repo) | AT.7 | ✅ |
 | AT.9 | Org profiles and commands (plugin repo) | AT.6, AT.8 | 📝 |
 | AT.10 | The eval: fixture corpus, tasks, per-model report | AT.9 | 📝 |
 | AT.11 | Embedding index, `lattice.recall` | AT.10's numbers | ⛔ |
@@ -295,7 +295,7 @@ dates stay `org.agenda`'s, which takes a `match`, and `org.query` has no date te
   e2e test rides the roam harness, whose real index the event store builds. Plugin
   `86cad5c`.
 
-### AT.8 — `org.change` (plugin repo) 🚧
+### AT.8 — `org.change` (plugin repo) ✅
 
 The seven ops of design §6 through the existing verbs, each returning proposals. A stale ref
 is refused with "query again". Refile returns two proposals (design §12).
@@ -306,10 +306,14 @@ that does not exist; a capture template that needs a prompt the model did not gi
 | Slice | Contents | Status |
 |---|---|---|
 | AT.8a | `complete::change_state`, the one decision of what a state change writes, under both `<leader>ot` and the tool; shared ref resolution; the unique-context proposal; `set-state`, `schedule`, `deadline`, `tag` | ✅ |
-| AT.8f | **This repo.** The fence for a proposal is the project or the plugin's `fs:write` grant, always reviewed outside the project (design §5, decided 2026-11-12: org's files are not in the project, so without it every change from a code project is refused). `CallContext::writable`, set only by `PluginToolSource`; the loader passes the grant's write prefixes | 🚧 |
-| AT.8b | `add_note` | 📝 |
-| AT.8c | `refile`: two proposals | 📝 |
-| AT.8d | `capture`: refused when the target file is absent or empty (`edit_file` cannot create one), and when a template prompts for what the model did not give | 📝 |
+| AT.8f | **This repo.** The fence for a proposal is the project or the plugin's `fs:write` grant, always reviewed outside the project (design §5, decided 2026-11-12: org's files are not in the project, so without it every change from a code project is refused). `CallContext::writable`, set only by `PluginToolSource`; the loader passes the grant's write prefixes. Plugin e2e: inside the project a trusted chat applies; outside, under the grant, it opens a review | ✅ |
+| AT.8b | `add_note`, org's `- Note taken on` entry through `insert_log`; fixed on the way: a state-change note sat level with its bullet | ✅ |
+| AT.8c | `refile`: one proposal in one file, two across files with the copy first (declining the removal duplicates, never loses). Preceded by a fix to `<leader>or` itself, which filed a subtree as its target's sibling, not its child | ✅ |
+| AT.8d | `capture` through the keys' own `capture_effects`; refused when the target file is absent or empty (`edit_file` cannot create one), and when the answers do not match the template's questions (listed back). A `:clock-in` template does not start the user's clock | ✅ |
+
+**Settled here (design §12 open question):** a cross-file refile is two diffs reviewed in order,
+the copy first, and the answer tells the model so. Whether a combined view reads better is left
+to AT.10's runs, which will show how often a model refiles across files at all.
 
 ### AT.9 — Org profiles and commands (plugin repo)
 

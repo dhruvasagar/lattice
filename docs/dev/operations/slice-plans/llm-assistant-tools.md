@@ -406,8 +406,9 @@ reaches it, since stdio is the one transport every MCP client and every ACP agen
 `--mcp` is a flag, not the `lattice mcp` subcommand first proposed: the binary's other
 non-editor modes are flags, and a subcommand would shadow opening a file named `mcp`.
 
-The org-side e2e (org's real tools through `lattice --mcp`) waits on the plugin API 0.4.2
-release that the org repo pins.
+The org repo's `integration/tests/org_tools_outside.rs` (branch `llm-tools`) drives org's
+real component through the editor's listener and the bridge's own find-connect-relay: the
+listing, `org__agenda` on today's file, and a bad input as a tool error.
 
 ### AT.15 — Keyless DuckDuckGo search ✅
 

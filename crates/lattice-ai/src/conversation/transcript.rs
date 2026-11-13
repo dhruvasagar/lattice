@@ -418,6 +418,14 @@ pub async fn bind(b: TranscriptBinding<'_>) -> TranscriptGuard {
         prompt,
     } = b;
 
+    // Subscribe BEFORE the seed snapshot: an update published while the buffer
+    // is being seeded then waits in `rx` for the drain, instead of going to no
+    // subscriber and leaving the transcript a turn behind until the next one.
+    // A queued update the seed already covers re-projects to the same text,
+    // which `reproject` skips.
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<ConversationUpdated>();
+    let sub_id = ctx.events().subscribe_typed::<ConversationUpdated>(tx);
+
     // Sync the buffer to the current snapshot with a single full replace
     // (handles a fresh OR reopened buffer uniformly). `last` then tracks the
     // buffer content so subsequent updates diff self-consistently. It covers
@@ -474,8 +482,6 @@ pub async fn bind(b: TranscriptBinding<'_>) -> TranscriptGuard {
         })
         .unwrap_or_default();
 
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<ConversationUpdated>();
-    let sub_id = ctx.events().subscribe_typed::<ConversationUpdated>(tx);
     let bus_handle = ctx.events_handle();
     // A separate handle for the drain to *publish* `ConversationProjected` once
     // its edit lands.

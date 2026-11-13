@@ -18,7 +18,8 @@ acp = ["dep:agent-client-protocol", "dep:tokio-util", "dep:linkme", "tokio/proce
 llm = ["dep:linkme", "dep:tokio-util", "dep:reqwest", "dep:toml", "dep:regex", "dep:ignore", "tokio/net", "tokio/process", "dep:rmcp", "rmcp/client", "rmcp/transport-child-process", "rmcp/transport-streamable-http-client-reqwest", "rmcp/reqwest", "dep:lattice-multibuffer", "dep:htmd"]
 # MCP IDE-peer transport (Claude Code, folded in by AG-4): the loopback
 # WebSocket server + the read / write / diff tools it exposes.
-mcp = ["dep:rmcp", "dep:tokio-tungstenite", "dep:dirs", "dep:getrandom", "dep:lattice-lsp", "tokio/net"]
+# AT.14: `tokio/io-std` for the `lattice --mcp` bridge's stdin and stdout.
+mcp = ["dep:rmcp", "dep:tokio-tungstenite", "dep:dirs", "dep:getrandom", "dep:lattice-lsp", "tokio/net", "tokio/io-std"]
 
 [dependencies]
 chrono = { workspace = true }

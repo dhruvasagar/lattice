@@ -32,6 +32,8 @@ lattice-config = { path = "../lattice-config" }
 # `:version`: the report the CLI assembles at startup is handed to
 # `version-mode` (`set_version_report`) before the editor boots.
 lattice-mode = { path = "../lattice-mode" }
+# AT.14: `lattice --mcp`, the stdio bridge to a running editor's plugin tools.
+lattice-ai = { path = "../lattice-ai" }
 # 5.9 / 5.8.M: optional GPUI peer renderer. Off by default so
 # `cargo build -p lattice-cli` and `cargo test -p lattice-cli` stay
 # headless-friendly (no system-display-lib link required). Enable
@@ -146,3 +148,5 @@ assets = [
 [dev-dependencies]
 # `--init` scaffold test writes into a temp dir (no env-racy config-home).
 tempfile = { workspace = true }
+# AT.14: the `--mcp` bridge test drives a plugin-tools listener in-process.
+serde_json = { workspace = true }

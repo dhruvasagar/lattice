@@ -136,6 +136,37 @@ A plugin can contribute **profiles** as well, one per workflow, opened with
 one; what a plugin's profile may set is in
 [`llm-guide`](help:llm-guide) under "Plugin profiles".
 
+### In other agents
+
+`:set llm.serve_tools` (or `serve_tools = true` under `[llm]` in your
+`lattice.toml`) serves the plugins' tools to agents outside the editor as
+well. Add lattice to the agent's MCP servers as a stdio command:
+
+```sh
+claude mcp add lattice -- lattice --mcp
+```
+
+Any MCP client that starts stdio servers takes the same `lattice --mcp`.
+The agent sees `org__agenda` and the rest, under the names a chat uses.
+
+`lattice --mcp` opens no editor: it finds a running one and relays to it.
+Started inside a project, it reaches the editor of that project; otherwise
+the one started most recently. With none serving, it exits and says so.
+
+What an outside agent cannot do:
+
+- **Skip a review.** Every edit a tool proposes opens a diff here, and the
+  call waits for your answer; trusting a chat (`<C-t>`) does not reach it.
+  An agent that quits mid-review closes the diff.
+- **Use a tool that asks.** It has no way to put the question to you, so the
+  tool is refused.
+- **Reach lattice's own tools.** `lattice.*` and `web.*` are not served:
+  agents have their own.
+
+`llm.allow` and `llm.deny` apply as they do in a chat. The editor listens on
+loopback only, behind a token kept in a file only you can read, under
+`<config-home>/lattice/cache/mcp/`.
+
 ## `:llm-tools`
 
 `:llm-tools` opens `*llm-tools*` (`:llm-mcp` still works, the old name). It

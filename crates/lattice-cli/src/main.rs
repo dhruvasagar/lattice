@@ -156,6 +156,18 @@ struct Cli {
         conflicts_with_all = ["scaffold_init", "scaffold_plugin", "file"]
     )]
     wit_sync: Option<PathBuf>,
+
+    /// Serve a running editor's plugin tools (org's agenda, notes and
+    /// changes) to an agent over MCP on stdin and stdout, and exit when the
+    /// agent does. For an agent's MCP config:
+    /// `claude mcp add lattice -- lattice --mcp`. The editor needs
+    /// `:set llm.serve_tools`; what a tool proposes opens a review there.
+    /// Opens no editor.
+    #[arg(
+        long = "mcp",
+        conflicts_with_all = ["file", "gui", "tui", "tutor", "scaffold_init", "scaffold_plugin", "wit_sync"]
+    )]
+    mcp: bool,
 }
 
 // WT.1: lattice's `wit/` API package now lives in `lattice-wit`, which is the
@@ -208,6 +220,20 @@ async fn main() -> Result<()> {
             println!("lattice {}", build_info::VERSION);
         }
         return Ok(());
+    }
+
+    // AT.14: the bridge. Stdout is its MCP channel, so this runs before
+    // anything else could write there, and it exits rather than returning:
+    // tokio reads stdin on a thread that cannot be cancelled, so a runtime
+    // shut down while the agent's stdin is still open would wait on it.
+    if cli.mcp {
+        match lattice_ai::mcp::tools_bridge::run().await {
+            Ok(()) => std::process::exit(0),
+            Err(e) => {
+                eprintln!("lattice --mcp: {e}");
+                std::process::exit(1);
+            }
+        }
     }
 
     // `--scaffold-*`: write a starter project and exit — never opens the editor.

@@ -5468,6 +5468,7 @@ version = "0.10.0"
 dependencies = [
  "anyhow",
  "clap",
+ "lattice-ai",
  "lattice-config",
  "lattice-core",
  "lattice-mode",
@@ -5476,6 +5477,7 @@ dependencies = [
  "lattice-ui-gpui",
  "lattice-ui-tui",
  "lattice-wit",
+ "serde_json",
  "tempfile",
  "tokio",
  "tracing-subscriber",

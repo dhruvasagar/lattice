@@ -922,6 +922,11 @@ loop and its own tools, which is the reason to pick one: you want that agent. Tr
 conversation (`<C-t>`) toggles auto-accept for the agent's permission requests; trust in an
 LLM chat lifts the diff for edits only and never for commands.
 
+An agent can still use the plugins' tools. With `:set llm.serve_tools`, any MCP client
+that starts `lattice --mcp` (`claude mcp add lattice -- lattice --mcp`) gets org's agenda,
+notes and changes, and every change one proposes opens a diff here, whichever agent asked.
+See "In other agents" in [`llm-tools-mode`](help:llm-tools-mode).
+
 See [`ai-conversation-mode`](help:ai-conversation-mode),
 [`ai-permission-mode`](help:ai-permission-mode) and
 [`claude-code-mode`](help:claude-code-mode).

@@ -417,7 +417,7 @@ pub fn install(boot: &mut impl lattice_mode::SubsystemBoot) {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
     use std::sync::Mutex;
 
@@ -475,10 +475,10 @@ mod tests {
     }
 
     /// A directory of the test's own, removed when dropped.
-    struct Scratch(PathBuf);
+    pub(crate) struct Scratch(PathBuf);
 
     impl Scratch {
-        fn new() -> Self {
+        pub(crate) fn new() -> Self {
             use std::sync::atomic::{AtomicU32, Ordering};
             static N: AtomicU32 = AtomicU32::new(0);
             let dir = std::env::temp_dir().join(format!(
@@ -490,7 +490,7 @@ mod tests {
             Self(dir)
         }
 
-        fn path(&self) -> &Path {
+        pub(crate) fn path(&self) -> &Path {
             &self.0
         }
     }
@@ -501,16 +501,16 @@ mod tests {
         }
     }
 
-    struct Running {
+    pub(crate) struct Running {
         _dir: Scratch,
         listener: ToolsListener,
-        lock: ToolsLock,
+        pub(crate) lock: ToolsLock,
         closed: Arc<Mutex<Vec<u64>>>,
         plugins: PluginToolsHandle,
         changed: broadcast::Sender<()>,
     }
 
-    async fn running() -> Running {
+    pub(crate) async fn running() -> Running {
         let broker: ToolBrokerHandle = Arc::new(ToolBroker::new());
         let plugins: PluginToolsHandle = Arc::new(PluginTools::new(
             broker.clone(),

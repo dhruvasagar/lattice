@@ -44,6 +44,8 @@ pub mod status;
 // AT.14: plugins' tools served to agents outside the editor. Needs the llm
 // layer's broker, so it is built only with it.
 #[cfg(feature = "llm")]
+pub mod tools_listener;
+#[cfg(feature = "llm")]
 pub mod tools_server;
 pub mod transport;
 pub mod writes;

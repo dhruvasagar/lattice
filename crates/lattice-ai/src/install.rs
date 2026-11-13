@@ -50,6 +50,11 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     #[cfg(feature = "mcp")]
     crate::mcp::install::install(boot);
 
+    // AT.14: plugins' tools for outside agents, while `llm.serve_tools` is
+    // on. After the llm layer, whose broker and plugin registry it serves.
+    #[cfg(all(feature = "llm", feature = "mcp"))]
+    crate::mcp::tools_listener::install(boot);
+
     // `AiLogger` is a port-level service (`AiLogMode`'s `on_activate` reads it
     // via `ctx.service::<AiLogger>()`, as does the `:ai-log` picker) -- register
     // it regardless of which transport(s) produce records. This consumes the

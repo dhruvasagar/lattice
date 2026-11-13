@@ -72,7 +72,7 @@ impl Lockfile {
 /// Write `bytes` readable by the owner only: the lockfile carries the
 /// `authToken` that lets a client drive the editor. A stale file left by an
 /// earlier run keeps whatever mode it had, so the mode is set again.
-fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+pub(crate) fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write as _;
     let mut options = fs::OpenOptions::new();
     options.write(true).create(true).truncate(true);

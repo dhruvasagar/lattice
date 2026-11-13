@@ -344,6 +344,14 @@ lattice_config::options! {
     #[name("llm.history_mib")]
     #[validate(v_history_mib)]
     pub LlmHistoryMib: i64 = DEFAULT_HISTORY_MIB;
+
+    /// Serve the loaded plugins' tools (org's agenda, notes, changes) to
+    /// agents outside the editor: Claude Code, Codex, any MCP client, through
+    /// `lattice --mcp`, and the ACP agents lattice starts. Every change a tool
+    /// proposes opens a review here, and a tool that would ask first is
+    /// refused. Applies at once. Global only.
+    #[name("llm.serve_tools")]
+    pub LlmServeTools: bool = false;
 }
 
 /// `llm.history_mib` when nothing sets it.

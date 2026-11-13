@@ -74,8 +74,10 @@ naming files that are never sent; see [`llm-mode`](help:llm-mode)), `llm.review`
 [`llm-chat-mode`](help:llm-chat-mode)), `llm.agents_md` (read the project's nearest
 `AGENTS.md` into the system prompt; on by default), `llm.tool_rounds` (how many
 rounds of tool calls one request may run), `llm.history_mib` (how much of what
-requests sent `:llm-inspect` keeps for the editor run, in MiB; 64 by default) and
-`llm.prefix` (the keys every llm chord starts with).
+requests sent `:llm-inspect` keeps for the editor run, in MiB; 64 by default),
+`llm.prefix` (the keys every llm chord starts with) and `llm.serve_tools` (serve the
+plugins' tools to agents outside the editor, such as Claude Code through
+`lattice --mcp`; off by default; see [`llm-tools-mode`](help:llm-tools-mode)).
 
 A request reads its settings **once, when it starts**: change the model mid-reply and
 that reply finishes as it began.

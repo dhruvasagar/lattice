@@ -770,6 +770,7 @@ asking. `@unknown` is just text.
 | `llm.tool_rounds` | Rounds of tool calls one request may run; global only |
 | `llm.history_mib` | How much of what requests sent `:llm-inspect` keeps for the run, in MiB (64); global only |
 | `llm.prefix` | The keys every llm chord starts with; global only |
+| `llm.serve_tools` | Serve the plugins' tools to agents outside the editor (off); global only |
 
 `:set llm.model?` shows value and layer, `:setlocal llm.model=x` changes it for this buffer,
 `:setlocal llm.model&` goes back. An empty value means "not set at this layer".

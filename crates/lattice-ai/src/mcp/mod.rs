@@ -41,6 +41,10 @@ pub mod server;
 // I7: the `claude-code` modeline status segment (running/port/conns) shown on
 // the agent terminal's modeline. Mode-owned (registered by claude-code-mode).
 pub mod status;
+// AT.14: plugins' tools served to agents outside the editor. Needs the llm
+// layer's broker, so it is built only with it.
+#[cfg(feature = "llm")]
+pub mod tools_server;
 pub mod transport;
 pub mod writes;
 

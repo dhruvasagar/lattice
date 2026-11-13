@@ -6,8 +6,8 @@
 
 Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred · ❌ dropped.
 
-**Status: 🚧 AT.1–AT.10 ✅, AT.15 ✅ (AT.7–AT.10 on plugin branch `llm-tools`), AT.11–AT.13 ❌;
-open: AT.14, AT.16, AT.17 (⛔).**
+**Status: 🚧 AT.1–AT.10 ✅, AT.14 ✅, AT.15 ✅ (AT.7–AT.10 on plugin branch `llm-tools`),
+AT.11–AT.13 ❌; open: AT.16, AT.17 (⛔).**
 
 **Goal:** native web tools, a WIT seam through which a plugin gives the model tools and
 profiles, and an org assistant built on both, measured by an eval, on whatever model the
@@ -59,7 +59,7 @@ UI-thread work, async results landing through `inbound`. In addition:
 | AT.11 | Embedding index, `lattice.recall` | AT.10's numbers | ❌ |
 | AT.12 | Bundled local model (managed `llama-server`) | AT.10's numbers | ❌ |
 | AT.13 | Constrained decoding for tool arguments | AT.12 | ❌ |
-| AT.14 | Plugin tool sources served to external agents over `LatticeServer` | AT.5 | ⛔ |
+| AT.14 | Plugin tool sources served to external agents (`lattice --mcp`) | AT.5 | ✅ |
 | AT.15 | Keyless DuckDuckGo search backend, opt-in | AT.2 | ✅ |
 | AT.16 | Provider-native search (Anthropic, OpenAI, Gemini server tools) | AT.2 | ⛔ |
 | AT.17 | Readability scoring before HTML conversion | AT.2 | ⛔ |
@@ -386,11 +386,28 @@ Lighthouse's machinery, registered as a provider, opt-in only.
 Dropped with AT.12, which it needed: a JSON Schema for tool arguments through a runtime
 lattice controls.
 
-### AT.14 — External agents ⛔
+### AT.14 — External agents ✅
 
-Plugin tool sources served through `LatticeServer`, so Claude Code and other MCP clients can
-use org's tools. Deferred until someone wants it: the design's reason for not building an org
-MCP server is that this costs one slice whenever it is wanted.
+Plugin tool sources served to agents outside the editor, so Claude Code, other MCP clients
+and the ACP agents lattice starts can use org's tools. Design §5 "Outside the editor".
+
+The plan was to add them to `LatticeServer`, the Claude Code IDE server. That cannot work:
+Claude Code keeps only `getDiagnostics` and `executeCode` from an IDE server's tools and
+drops the rest. So the editor serves them on a server of their own, and a stdio bridge
+reaches it, since stdio is the one transport every MCP client and every ACP agent accepts.
+
+| Slice | Contents | Status |
+|---|---|---|
+| AT.14a | `PluginToolsServer`: an rmcp `ServerHandler` over the broker, plugin sources only, no asking, every proposal reviewed, its own review origins (`1 << 61`) | ✅ `72b3823e` |
+| AT.14b | Loopback listener behind `llm.serve_tools` (off): token first line, 0600 lock in `cache/mcp/`, reviews closed on disconnect, `tools/list_changed` forwarded | ✅ `a3c71098` |
+| AT.14c | `lattice --mcp`: find the editor (env lock, then deepest project root, then newest), relay bytes; binary e2e test | ✅ `3ad2febe` |
+| AT.14d | ACP `session/new` carries `lattice --mcp` with `LATTICE_MCP_LOCK` while serving | ✅ `96e5a6f0` |
+
+`--mcp` is a flag, not the `lattice mcp` subcommand first proposed: the binary's other
+non-editor modes are flags, and a subcommand would shadow opening a file named `mcp`.
+
+The org-side e2e (org's real tools through `lattice --mcp`) waits on the plugin API 0.4.2
+release that the org repo pins.
 
 ### AT.15 — Keyless DuckDuckGo search ✅
 

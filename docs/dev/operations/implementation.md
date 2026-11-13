@@ -122,12 +122,14 @@ See [`slice-plans/lighthouse.md`](slice-plans/lighthouse.md).
 model access from any buffer, native in `lattice-ai`. Design: [`../architecture/llm-layer.md`](../architecture/llm-layer.md).
 See [`slice-plans/llm-layer.md`](slice-plans/llm-layer.md).
 
-**Assistant tools (AT, designed 2026-11-11, 📝 nothing built):** native `web.search` /
-`web.fetch`, built-in `general` and `coding` profiles, and an `llm-tools` WIT interface
-through which a plugin gives the model tools (results are data; edits are proposals the
-host reviews) and profiles. Org is the first consumer: agenda, query, clock, notes and
-structured changes, with planning and review workflows as profiles. An eval decides
-whether an embedding index or a bundled local model (both ⛔) is worth building.
+**Assistant tools (AT, designed 2026-11-11, 🚧 AT.1–AT.10, AT.14, AT.15 ✅):** native
+`web.search` / `web.fetch`, built-in `general` and `coding` profiles, and an `llm-tools` WIT
+interface through which a plugin gives the model tools (results are data; edits are
+proposals the host reviews) and profiles. Org is the first consumer: agenda, query, clock,
+notes and structured changes, with planning and review workflows as profiles. The eval
+showed no need for an embedding index or a bundled local model (AT.11–AT.13 ❌). Plugin
+tools are served to outside agents through `lattice --mcp` (`llm.serve_tools`), and ACP
+sessions get the bridge automatically. Open: AT.16, AT.17 (⛔).
 Design: [`../architecture/llm-assistant-tools.md`](../architecture/llm-assistant-tools.md).
 See [`slice-plans/llm-assistant-tools.md`](slice-plans/llm-assistant-tools.md).
 

@@ -246,6 +246,37 @@ a native source (`lattice`, `web`) or a configured MCP server is not offered, an
 says so. The listing is renamed `*llm-tools*` with a section per source, since it now lists
 more than MCP.
 
+### Outside the editor
+
+The same sources are served to agents that are not a lattice chat: Claude Code, any MCP
+client, and the ACP agents lattice starts. Opt-in (`llm.serve_tools`, off), because it opens
+a socket.
+
+**Plugin sources only.** `lattice.*` and `web.*` are not served: an outside agent has its own
+file, shell and web tools, and lattice's would be a second, differently-fenced copy of them.
+Org's tools are what nothing else can offer.
+
+**Same rows, minus asking.** A call goes through the broker with the chat's `llm.allow` and
+`llm.deny`. Nothing outside the editor can put a question to the user, so a tool on the Ask
+row is refused, not silently allowed. A proposal always opens a review, untrusted: `<C-t>` is
+trust in a chat, and this is not one. Each connection has its own review origin, and a
+connection that drops closes its open reviews.
+
+**Its own server, not `LatticeServer`.** Claude Code keeps only two of an IDE server's tools
+and drops the rest, so the IDE server cannot carry them. The editor listens on loopback,
+behind a token sent as the first line, and writes a 0600 lock (port, token, project root)
+under `cache/mcp/`, not in `~/.claude/ide`, where Claude would read it as an IDE.
+
+**Reached over stdio, through `lattice --mcp`.** Stdio is the one transport every MCP client
+accepts and every ACP agent must. The bridge opens no editor and speaks no MCP: it picks a
+lock (the one `LATTICE_MCP_LOCK` names, else the deepest project root holding its directory,
+else the newest), sends the token, and copies bytes. An ACP session is opened with the bridge
+and `LATTICE_MCP_LOCK` naming the editor that started it, so its agent needs no setup.
+
+Rejected: streamable HTTP served directly (not every client takes a URL, and the token would
+sit in each client's config); a bridge that spoke MCP itself (a second protocol endpoint to
+keep in step with the first, for nothing the relay lacks).
+
 ## 6. Org's tools
 
 Only what needs org's parser. Each returns compact text, never raw org, and starts with
@@ -393,8 +424,7 @@ and the org tools in the org plugin.
   outside the plugin or a host bridge plus a transport. It would also break the single
   extension substrate with a native binary beside the plugin, and every read would ask.
   What MCP really offers is that external agents could use the tools too, and that comes
-  through the host: lattice already serves a catalogue to Claude Code over `LatticeServer`,
-  and exposing plugin sources there later costs a slice, not a server (see the slice plan).
+  through the host, which serves every plugin's sources at once (§5 "Outside the editor").
 - **Org tools native in `lattice-ai`.** The native layer has no org knowledge by design
   (`llm-layer.md` §1). It would also put a plugin's parser in the host.
 - **A plugin tool that writes.** Even with review afterwards, a write the user can only undo

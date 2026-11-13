@@ -89,7 +89,7 @@ Why a crate exists at all is a design rule, not an accident of history: a new cr
 
 | Crate | What it is | Depends on | Used by |
 |---|---|---|---|
-| [`lattice-ai`](https://dhruvasagar.github.io/lattice/api/lattice_ai/) | `lattice-ai` — lattice's AI coding-agent integration layer. | `lattice-agent`, `lattice-cells`, `lattice-config`, `lattice-core`, `lattice-diff`, `lattice-grammar`, `lattice-keymap`, `lattice-lsp`, `lattice-mode`, `lattice-multibuffer`, `lattice-picker`, `lattice-protocol`, `lattice-runtime` | `lattice-host`, `lattice-plugin-loader` |
+| [`lattice-ai`](https://dhruvasagar.github.io/lattice/api/lattice_ai/) | `lattice-ai` — lattice's AI coding-agent integration layer. | `lattice-agent`, `lattice-cells`, `lattice-config`, `lattice-core`, `lattice-diff`, `lattice-grammar`, `lattice-keymap`, `lattice-lsp`, `lattice-mode`, `lattice-multibuffer`, `lattice-picker`, `lattice-protocol`, `lattice-runtime` | `lattice-cli`, `lattice-host`, `lattice-plugin-loader` |
 
 ## Layer 10
 
@@ -126,4 +126,4 @@ Why a crate exists at all is a design rule, not an accident of history: a new cr
 
 | Crate | What it is | Depends on | Used by |
 |---|---|---|---|
-| [`lattice-cli`](https://dhruvasagar.github.io/lattice/api/lattice/) | `lattice` -- the editor binary. | `lattice-config`, `lattice-core`, `lattice-mode`, `lattice-plugin-loader`, `lattice-runtime`, `lattice-ui-gpui`, `lattice-ui-tui`, `lattice-wit` | — |
+| [`lattice-cli`](https://dhruvasagar.github.io/lattice/api/lattice/) | `lattice` -- the editor binary. | `lattice-ai`, `lattice-config`, `lattice-core`, `lattice-mode`, `lattice-plugin-loader`, `lattice-runtime`, `lattice-ui-gpui`, `lattice-ui-tui`, `lattice-wit` | — |

@@ -478,6 +478,17 @@ async fn the_chat_buffer_does_not_block_quit_all() {
     assert!(settle(&mut editor, |e| text_of(e, id) == "> ").await);
     let session = handle.for_buffer(id).unwrap();
     handle.submit(&session, "slow".into());
+    // The question is drawn into history by the transcript's drain, on another
+    // thread; typing before it lands races it for the prompt line.
+    assert!(
+        settle_woken(&mut editor, |e| {
+            let text = text_of(e, id);
+            text.contains("you:\n\nslow\n") && text.ends_with("\n> ")
+        })
+        .await,
+        "the question never reached the transcript: {:?}",
+        text_of(&editor, id)
+    );
     editor
         .apply_edit_blocking(Edit::insert(
             Position::new(text_of(&editor, id).lines().count() as u32 - 1, 2),

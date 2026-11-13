@@ -149,6 +149,11 @@ claude mcp add lattice -- lattice --mcp
 Any MCP client that starts stdio servers takes the same `lattice --mcp`.
 The agent sees `org__agenda` and the rest, under the names a chat uses.
 
+An ACP agent lattice starts (`:opencode-acp` and the like) needs no setup:
+its session is handed `lattice --mcp`, pointed at this editor, when it
+opens. Turn `llm.serve_tools` on before starting the agent; a session
+already open keeps the servers it opened with.
+
 `lattice --mcp` opens no editor: it finds a running one and relays to it.
 Started inside a project, it reaches the editor of that project; otherwise
 the one started most recently. With none serving, it exits and says so.

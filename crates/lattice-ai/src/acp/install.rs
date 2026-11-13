@@ -54,12 +54,17 @@ pub fn install(
 
     // Spawn the supervisor with a logger clone (trace) + the conversation store
     // + the diff bus (edit review).
+    // AT.14: empty until the plugin-tools listener fills it, after the llm
+    // layer installs; read when each session opens.
+    let mcp_servers = crate::acp::mcp_servers::SessionMcpServers::default();
     let handle = AiClientHandle::spawn(
         boot.runtime_handle(),
         logger.clone(),
         conv_store.clone(),
         diff_bus,
+        mcp_servers.clone(),
     );
+    boot.register_service::<crate::acp::mcp_servers::SessionMcpServers>(mcp_servers);
 
     // Crate-owned ex-commands: `:opencode` / `:ai-prompt` / `:ai-stop`.
     register_ai_ex_commands(boot.commands_mut(), handle.clone());

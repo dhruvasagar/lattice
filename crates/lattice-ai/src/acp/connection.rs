@@ -43,6 +43,8 @@ use agent_client_protocol::schema::v1::{
     RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse, TextContent,
 };
 use agent_client_protocol::{ByteStreams, Client, Responder};
+
+use crate::acp::mcp_servers::StdioMcpServer;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
@@ -82,6 +84,7 @@ enum DriverCommand {
     },
     NewSession {
         cwd: String,
+        servers: Vec<StdioMcpServer>,
         reply: oneshot::Sender<Result<SessionId>>,
     },
     Prompt {
@@ -202,9 +205,14 @@ impl Connection {
                                     .map_err(map_acp_error);
                                 let _ = reply.send(outcome);
                             }
-                            DriverCommand::NewSession { cwd, reply } => {
+                            DriverCommand::NewSession {
+                                cwd,
+                                servers,
+                                reply,
+                            } => {
+                                let servers = servers.iter().map(StdioMcpServer::to_acp).collect();
                                 let outcome = cx
-                                    .send_request(NewSessionRequest::new(cwd))
+                                    .send_request(NewSessionRequest::new(cwd).mcp_servers(servers))
                                     .block_task()
                                     .await
                                     .map(|response| SessionId(response.session_id.0.to_string()))
@@ -275,11 +283,16 @@ impl Connection {
         self.call(|reply| DriverCommand::Initialize { reply }).await
     }
 
-    /// Create a new session rooted at `cwd`.
-    pub async fn new_session(&self, cwd: &str) -> Result<SessionId> {
+    /// Create a new session rooted at `cwd`, handing the agent `servers`
+    /// (AT.14: lattice's own bridge while it serves tools).
+    pub async fn new_session(&self, cwd: &str, servers: Vec<StdioMcpServer>) -> Result<SessionId> {
         let cwd = cwd.to_string();
-        self.call(|reply| DriverCommand::NewSession { cwd, reply })
-            .await
+        self.call(|reply| DriverCommand::NewSession {
+            cwd,
+            servers,
+            reply,
+        })
+        .await
     }
 
     /// Send a text prompt to `session`.
@@ -435,7 +448,7 @@ mod tests {
             .expect("initialize should succeed");
 
         let session = connection
-            .new_session("/tmp")
+            .new_session("/tmp", Vec::new())
             .await
             .expect("new_session should succeed");
         assert_eq!(session.0, "sess-1");
@@ -449,7 +462,7 @@ mod tests {
             .await
             .expect("initialize should succeed");
         connection
-            .new_session("/tmp")
+            .new_session("/tmp", Vec::new())
             .await
             .expect("new_session should succeed");
 
@@ -469,7 +482,7 @@ mod tests {
             .await
             .expect("initialize should succeed");
         let session = connection
-            .new_session("/tmp")
+            .new_session("/tmp", Vec::new())
             .await
             .expect("new_session should succeed");
 
@@ -491,7 +504,7 @@ mod tests {
             .await
             .expect("initialize should succeed");
         let session = connection
-            .new_session("/tmp")
+            .new_session("/tmp", Vec::new())
             .await
             .expect("new_session should succeed");
 

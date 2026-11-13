@@ -17,6 +17,8 @@ pub mod conversation_mode;
 pub mod error;
 pub mod handle;
 pub mod install;
+// AT.14: the MCP servers a session is opened with (lattice's own bridge).
+pub mod mcp_servers;
 
 pub mod providers;
 pub mod session;

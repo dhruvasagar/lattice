@@ -32,6 +32,7 @@ use crate::acp::connection::{Connection, PermissionRequest, SessionId, SessionNo
 use crate::acp::conversation::{ApplySessionUpdateToStore, permission_option_from_acp};
 use crate::acp::error::AiError;
 use crate::acp::handle::{AiClientHandle, AiCmd, AiState};
+use crate::acp::mcp_servers::SessionMcpServers;
 use crate::acp::providers::ProviderConfig;
 use crate::conversation::{ConversationStore, SessionStatus};
 
@@ -48,6 +49,7 @@ impl AiClientHandle {
         logger: AiLogger,
         conv_store: ConversationStore,
         diff_bus: Option<ProgrammaticDiffBus>,
+        mcp: SessionMcpServers,
     ) -> AiClientHandle {
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<AiCmd>();
         let state = Arc::new(ArcSwap::from_pointee(AiState::default()));
@@ -60,6 +62,7 @@ impl AiClientHandle {
             logger,
             conv_store,
             diff_bus,
+            mcp,
         ));
         AiClientHandle {
             cmd_tx,
@@ -128,6 +131,7 @@ async fn supervisor_loop(
     logger: AiLogger,
     conv_store: ConversationStore,
     diff_bus: Option<ProgrammaticDiffBus>,
+    mcp: SessionMcpServers,
 ) {
     let mut conn: Option<Arc<Connection>> = None;
     let mut sess: Option<SessionId> = None;
@@ -223,6 +227,7 @@ async fn supervisor_loop(
                     diff_bus.clone(),
                     auto_accept.clone(),
                     logger.clone(),
+                    &mcp,
                 )
                 .await
                 {
@@ -720,6 +725,7 @@ async fn start_provider(
     diff_bus: Option<ProgrammaticDiffBus>,
     auto_accept: Arc<AtomicBool>,
     logger: AiLogger,
+    mcp: &SessionMcpServers,
 ) -> Result<(Arc<Connection>, SessionId, tokio::process::Child)> {
     let mut child = tokio::process::Command::new(&provider.command)
         .args(&provider.args)
@@ -799,7 +805,9 @@ async fn start_provider(
     let cwd = lattice_core::project::root_from_cwd()
         .map(|p| p.display().to_string())
         .unwrap_or_default();
-    let session_id = crate::acp::session::handshake(&conn, &cwd).await?;
+    // AT.14: lattice's own bridge, while it serves the plugins' tools, so
+    // the agent reaches them with no setup.
+    let session_id = crate::acp::session::handshake(&conn, &cwd, mcp.now()).await?;
 
     Ok((conn, session_id, child))
 }
@@ -1022,6 +1030,7 @@ mod tests {
             logger.clone(),
             test_conv_store(),
             None,
+            SessionMcpServers::default(),
         );
         let cfg = ProviderConfig {
             command: "/nonexistent/definitely-not-a-real-binary".into(),
@@ -1071,6 +1080,7 @@ mod tests {
             logger.clone(),
             test_conv_store(),
             None,
+            SessionMcpServers::default(),
         );
         let cfg = ProviderConfig {
             command: "/nonexistent/definitely-not-a-real-binary".into(),
@@ -1319,6 +1329,7 @@ done
             logger.clone(),
             test_conv_store(),
             None,
+            SessionMcpServers::default(),
         );
         let key = SessionKey::new("mockprov", 1);
 
@@ -1347,6 +1358,7 @@ done
             logger.clone(),
             test_conv_store(),
             None,
+            SessionMcpServers::default(),
         );
         let first = SessionKey::new("mockprov", 1);
         let second = SessionKey::new("mockprov", 2);
@@ -1376,6 +1388,7 @@ done
             logger.clone(),
             store.clone(),
             None,
+            SessionMcpServers::default(),
         );
 
         handle.start(ProviderConfig::opencode());

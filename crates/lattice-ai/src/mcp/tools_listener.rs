@@ -413,7 +413,40 @@ pub fn install(boot: &mut impl lattice_mode::SubsystemBoot) {
             }
         });
     }
+    // An ACP agent lattice starts is handed the bridge, pointed at this
+    // editor, while the tools are served: it reaches them with no setup.
+    #[cfg(feature = "acp")]
+    if let Some(slot) = boot.service::<crate::acp::mcp_servers::SessionMcpServers>() {
+        let service = Arc::downgrade(&service);
+        slot.set(Arc::new(move || {
+            let lock = service.upgrade().and_then(|s| s.lock_path());
+            let exe = std::env::current_exe();
+            match (lock, exe) {
+                (Some(lock), Ok(exe)) => vec![bridge_server(exe, &lock)],
+                (Some(_), Err(e)) => {
+                    tracing::warn!(target: "lattice::llm", "llm: the agent is not given the plugins' tools: lattice cannot find its own executable: {e}");
+                    Vec::new()
+                }
+                (None, _) => Vec::new(),
+            }
+        }));
+    }
     boot.register_service::<ToolsServiceHandle>(service);
+}
+
+/// `lattice --mcp`, as an agent is told to start it: the editor's own
+/// executable, pointed at this editor by its lock.
+#[cfg(feature = "acp")]
+fn bridge_server(exe: PathBuf, lock: &Path) -> crate::acp::mcp_servers::StdioMcpServer {
+    crate::acp::mcp_servers::StdioMcpServer {
+        name: "lattice".into(),
+        command: exe,
+        args: vec!["--mcp".into()],
+        env: vec![(
+            crate::mcp::tools_bridge::LOCK_ENV.into(),
+            lock.display().to_string(),
+        )],
+    }
 }
 
 #[cfg(test)]
@@ -751,5 +784,23 @@ pub(crate) mod tests {
         c.initialize().await;
         drop(r.listener);
         while c.recv().await.is_some() {}
+    }
+
+    /// An ACP agent is told to start this editor's own executable as the
+    /// bridge, with the lock that names this editor.
+    #[cfg(feature = "acp")]
+    #[test]
+    fn an_acp_agent_is_handed_the_bridge_pointed_at_this_editor() {
+        let s = bridge_server(PathBuf::from("/opt/lattice"), Path::new("/c/mcp/1-2.json"));
+        assert_eq!(s.name, "lattice");
+        assert_eq!(s.command, PathBuf::from("/opt/lattice"));
+        assert_eq!(s.args, ["--mcp"]);
+        assert_eq!(
+            s.env,
+            [(
+                "LATTICE_MCP_LOCK".to_string(),
+                "/c/mcp/1-2.json".to_string()
+            )]
+        );
     }
 }

@@ -26623,59 +26623,31 @@ impl Editor {
     /// OC.9: persist a cross-file write's TARGET — a buffer that is, by
     /// construction, not the focused one.
     ///
-    /// Separate from [`Self::save_blocking`] because that one saves
-    /// `self.document`, the ACTIVE document, and the whole point of
-    /// `apply_write_to_file` is that the target is somewhere the user is not.
-    /// Calling it here would save the buffer the user is looking at and leave
-    /// the one just written still dirty — the exact inversion of the intent,
-    /// and silent.
-    ///
-    /// The LSP fan-out (`willSave` / `willSaveWaitUntil` / `didSave`) is
-    /// deliberately NOT reproduced. Those helpers notify about the active
-    /// document, and `willSaveWaitUntil` in particular *blocks on the server
-    /// for edits to apply* — running it for a background target would put a
-    /// synchronous round-trip on a capture's finalize, against paramount #1,
-    /// to serve a formatter the user cannot see acting on a file they did not
-    /// open. `Event::DocumentSaved` still publishes, so in-editor subscribers
-    /// (autoread's fingerprint, `:ls` state, any mode watching the bus) see
-    /// the save.
+    /// Through [`Self::save_buffer_blocking`], not [`Self::save_blocking`]:
+    /// the latter saves `self.document`, the ACTIVE document, and the whole
+    /// point of `apply_write_to_file` is that the target is somewhere the user
+    /// is not. Calling it here would save the buffer the user is looking at
+    /// and leave the one just written still dirty — the exact inversion of
+    /// the intent, and silent. `save_buffer_blocking` also skips
+    /// `willSaveWaitUntil` for a background buffer, which matters here: a
+    /// synchronous server round-trip on a capture's finalize, to serve a
+    /// formatter acting on a file the user did not open, is the paramount-#1
+    /// cost that function's doc names.
     fn save_target_to_disk(&mut self, target: BufferId, path: &std::path::Path) {
-        let Some(handle) = self.buffers.document_handle(target) else {
-            return;
-        };
-        let snap = handle.snapshot();
-        self.event_bus.publish(Event::BeforeSave {
-            id: snap.id,
-            path: path.to_path_buf(),
-        });
-        match lattice_runtime::block_on(handle.save()) {
-            Ok(written) => {
-                // AR.0: re-stamp so the autoread watcher recognises the
-                // resulting filesystem event as ours rather than as somebody
-                // editing the file underneath us. Skipping this is how a
-                // capture ends with a spurious "file changed on disk" prompt.
-                let text = handle.snapshot().buffer.as_string();
-                self.stamp_on_disk_fingerprint(target, &written, &text);
-                self.event_bus.publish(Event::DocumentSaved {
-                    id: snap.id,
-                    path: written,
-                });
-            }
-            Err(err) => {
-                // Warn rather than swallow: the buffer still holds the text,
-                // so nothing is lost — but the user asked for a durable write
-                // and did not get one, and anything reading the FILE (the
-                // agenda scan) will not see it.
-                tracing::warn!(
-                    path = %path.display(),
-                    ?err,
-                    "write-to-file: the write landed in the buffer but could not be saved to disk"
-                );
-                self.set_message(
-                    EchoLevel::Warn,
-                    format!("write-to-file: {} written, but not saved", path.display()),
-                );
-            }
+        if let Err(err) = self.save_buffer_blocking(target) {
+            // Warn rather than swallow: the buffer still holds the text, so
+            // nothing is lost — but the user asked for a durable write and
+            // did not get one, and anything reading the FILE (the agenda
+            // scan) will not see it.
+            tracing::warn!(
+                path = %path.display(),
+                ?err,
+                "write-to-file: the write landed in the buffer but could not be saved to disk"
+            );
+            self.set_message(
+                EchoLevel::Warn,
+                format!("write-to-file: {} written, but not saved", path.display()),
+            );
         }
     }
 
@@ -32228,12 +32200,63 @@ impl Editor {
             // (the buffer's backing file is unchanged). See the slice plan.
             let text = self.document.text();
             self.stamp_on_disk_fingerprint(self.document_buffer_id, path, &text);
-            self.fire_did_save_notifications();
+            self.fire_did_save_notifications(self.document_buffer_id, &text);
             if !pre_save_existed {
-                self.fire_did_create_files_notifications(path);
+                self.fire_did_create_files_notifications(self.document_buffer_id, path);
             }
         }
         result
+    }
+
+    /// WE.1: save `id`, whether or not it is the active buffer.
+    ///
+    /// The active buffer goes through [`Self::save_blocking`] and its full
+    /// LSP chain. Any other buffer gets the same announcements —
+    /// `BeforeSave`, `DocumentSaved`, the autoread stamp, `didSave` and
+    /// `didCreateFiles` to servers attached to it — but NOT `willSave` /
+    /// `willSaveWaitUntil`. The second blocks on the server for edits to
+    /// apply, and running it for a buffer the user is not looking at would
+    /// put a synchronous round-trip per file on a background save
+    /// (paramount #1) to serve a formatter acting where nobody can see it.
+    ///
+    /// No format-on-save either: that is `:w`'s (`do_write`), not a save's.
+    /// A rename saving twenty files must not reformat them.
+    pub fn save_buffer_blocking(
+        &mut self,
+        id: BufferId,
+    ) -> Result<std::path::PathBuf, lattice_runtime::RuntimeError> {
+        if id == self.document_buffer_id {
+            return self.save_blocking();
+        }
+        let Some(handle) = self.buffers.document_handle(id) else {
+            return Err(lattice_runtime::RuntimeError::Core(
+                lattice_core::CoreError::Cancelled,
+            ));
+        };
+        let snap = handle.snapshot();
+        let path = snap.path().map(|p| p.to_path_buf());
+        if let Some(path) = path.as_ref() {
+            self.event_bus.publish(Event::BeforeSave {
+                id: snap.id,
+                path: path.clone(),
+            });
+        }
+        let pre_save_existed = path.as_ref().is_some_and(|p| p.exists());
+        let written = lattice_runtime::block_on(handle.save())?;
+        // AR.0: re-stamp so the autoread watcher recognises the resulting
+        // filesystem event as ours rather than somebody editing the file
+        // underneath us.
+        let text = handle.snapshot().buffer.as_string();
+        self.stamp_on_disk_fingerprint(id, &written, &text);
+        self.event_bus.publish(Event::DocumentSaved {
+            id: snap.id,
+            path: written.clone(),
+        });
+        self.fire_did_save_notifications(id, &text);
+        if !pre_save_existed {
+            self.fire_did_create_files_notifications(id, &written);
+        }
+        Ok(written)
     }
 
     /// AR.0: record `id`'s on-disk fingerprint `(mtime, size, content-hash)`
@@ -32378,21 +32401,19 @@ impl Editor {
     /// Fan `textDocument/didSave` to every interested server.
     /// `includeText` is honoured per the server's capability
     /// declaration. Phase 5.8.AD.3.
-    fn fire_did_save_notifications(&self) {
-        let Some(uri) = self.buffer_uris.get(&self.document_buffer_id) else {
+    fn fire_did_save_notifications(&self, id: BufferId, full_text: &str) {
+        let Some(uri) = self.buffer_uris.get(&id) else {
             return;
         };
         let uri = uri.clone();
         let handles = self.lsp.servers_for(&uri);
-        let snap = self.document.snapshot();
-        let full_text = snap.buffer.as_string();
         for h in handles {
             let caps = h.capabilities();
             if !caps.wants_did_save() {
                 continue;
             }
             let text = if caps.did_save_include_text() {
-                Some(full_text.clone())
+                Some(full_text.to_string())
             } else {
                 None
             };
@@ -32406,8 +32427,8 @@ impl Editor {
 
     /// Fan `workspace/didCreateFiles` to every interested server
     /// when the save just created the file on disk. Phase 5.8.AD.3.
-    fn fire_did_create_files_notifications(&self, path: &std::path::Path) {
-        let Some(uri) = self.buffer_uris.get(&self.document_buffer_id) else {
+    fn fire_did_create_files_notifications(&self, id: BufferId, path: &std::path::Path) {
+        let Some(uri) = self.buffer_uris.get(&id) else {
             return;
         };
         let handles = self.lsp.servers_for(uri);

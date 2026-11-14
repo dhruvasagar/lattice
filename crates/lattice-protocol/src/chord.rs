@@ -612,13 +612,18 @@ impl FromStr for KeyChord {
 
 /// Parse the body of an `<...>` token (without the angles).
 /// Handles modifier prefixes (`C-`, `S-`, `M-`, `D-`), the
-/// `lt` literal, special-key names, and bare letters.
+/// `lt` / `gt` literals, special-key names, and bare letters.
 fn parse_angle_body(body: &str, at: usize) -> Result<KeyChord, ChordParseError> {
     if body.is_empty() {
         return Err(ChordParseError::EmptyAngle { at });
     }
     if body == "lt" {
         return Ok(KeyChord::char('<'));
+    }
+    // vim's `<gt>`: a bare `>` is a stray close, so without this a
+    // sequence had no way to name the key at all.
+    if body == "gt" {
+        return Ok(KeyChord::char('>'));
     }
     let mut mods = KeyMods::NONE;
     let mut rest = body;
@@ -1013,6 +1018,22 @@ mod tests {
             parse_chord_sequence("<C-x"),
             Err(ChordParseError::UnterminatedAngle { .. })
         ));
+    }
+
+    #[test]
+    fn gt_names_the_greater_than_key() {
+        assert_eq!(
+            parse_chord_sequence("<gt><gt>").unwrap(),
+            vec![KeyChord::char('>'), KeyChord::char('>')]
+        );
+        assert_eq!(
+            parse_chord_sequence("<lt>i<gt>").unwrap(),
+            vec![
+                KeyChord::char('<'),
+                KeyChord::char('i'),
+                KeyChord::char('>')
+            ]
+        );
     }
 
     #[test]

@@ -1423,6 +1423,7 @@ work uniformly across vim and emacs idioms:
 | `"<C-c><C-c>"` | `[ctrl('c'), ctrl('c')]` | mode-confirm |
 | `"<S-Tab>"` | `[shift(Tab)]` | snippet-prev |
 | `"<lt>"` | `[char('<')]` | literal `<` |
+| `"<gt>"` | `[char('>')]` | literal `>` (a bare `>` is a stray close) |
 
 The trie indexes the chord sequence directly. Pressing
 `<C-x>` after a `bind_chord(Normal, "<C-x>pp", …)` gives

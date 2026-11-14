@@ -177,6 +177,7 @@ Same notation across both forms.
 | Emacs prefix | `"<C-x><C-s>"` | `[ctrl('x'), ctrl('s')]` |
 | Vim window prefix | `"<C-w>gd"` | `[ctrl('w'), char('g'), char('d')]` |
 | Literal `<` | `"<lt>"` | `[char('<')]` |
+| Literal `>` | `"<gt>"` | `[char('>')]` |
 | Shift on special | `"<S-Tab>"` | `[shift(Tab)]` |
 
 Shift on a bare letter folds into case: `"A"` is shift+a;

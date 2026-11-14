@@ -1443,6 +1443,51 @@ view (refresh). Discoverability rests on the ex-command and its
 
 Sequencing: [`../operations/slice-plans/archive/lsp-references-view.md`](../operations/slice-plans/archive/lsp-references-view.md).
 
+## 18. Applying a WorkspaceEdit
+
+A rename, a code action and a server's `workspace/applyEdit` all hand the
+editor the same thing: text edits for files the user may not have open, and
+usually is not looking at. One applier serves all three
+(`Editor::apply_workspace_edit`), and it holds two rules.
+
+**Focus never moves.** Each file is either a buffer that is already open --
+found by the path it really points at, so `src/../lib.rs` finds `lib.rs` --
+and edited where it is, or a file loaded into a hidden, unlisted buffer that
+no pane shows, edited, and closed again. The earlier shape opened each file in
+the active pane with `:e`, so a rename across five files left the user in the
+fifth.
+
+**Every touched file is saved** (`lsp.save-workspace-edits`, default on).
+Leaving twenty dirty buffers behind makes the buffer list the review step,
+and it is a poor one: the user visits and `:w`s each. Version control is the
+review step (magit shows exactly what the rename changed). Off, nothing is
+saved and the files that were not open stay open -- listed, dirty, with their
+language -- so they can be read before writing. A file whose save fails is
+kept that way too: a hidden dirty buffer is unsaved work nobody can find.
+
+The save is `Editor::save_buffer_blocking`, the per-buffer save. For a buffer
+other than the active one it announces what the active save announces
+(`BeforeSave`, `DocumentSaved`, the autoread stamp, `didSave`), but runs
+neither `willSaveWaitUntil` -- a synchronous server round-trip per file, to
+serve a formatter nobody sees acting -- nor format-on-save, which is `:w`'s
+and would reformat code the rename never touched.
+
+**The server sees every edit.** An edit to a buffer other than the active one
+publishes `LspDocumentChanged` as well as `DocumentChanged` when `lsp-mode` is
+on for it. Before this, a peer edit published only the generic event, so a
+server holding that file open kept the old text -- and, because the client
+owns an open document's contents, ignored the new text on disk too. A file
+loaded hidden was never opened to a server; the server reads it from disk once
+it is saved.
+
+Undo stays per buffer: `u` in an open file undoes that file's part of the
+edit, as one unit. There is no cross-file undo and no rollback -- a file that
+fails leaves the files before it applied, and the echo names each failure.
+Resource operations (`CreateFile` / `RenameFile` / `DeleteFile`) are still
+dropped by `flatten_workspace_edit`.
+
+Sequencing: [`../operations/slice-plans/workspace-edits.md`](../operations/slice-plans/workspace-edits.md).
+
 ---
 
 ## See also

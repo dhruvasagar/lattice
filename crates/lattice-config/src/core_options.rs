@@ -811,6 +811,18 @@ crate::options! {
     #[name("lsp.references-to-error-list")]
     pub LspReferencesToErrorList: bool = false;
 
+    /// WE.3: save every file a WorkspaceEdit touches — a rename, a code
+    /// action, a server's `workspace/applyEdit` — once it is applied.
+    ///
+    /// **Default on.** A rename that leaves twenty dirty buffers behind is
+    /// twenty buffers to visit and `:w`; the review step is version control
+    /// (magit), not the buffer list. Files that were not open are edited in
+    /// the background and closed again once saved. Off, nothing is saved and
+    /// those files stay open, listed and dirty, for review before writing.
+    /// See `lsp-architecture.md` §18.
+    #[name("lsp.save-workspace-edits")]
+    pub LspSaveWorkspaceEdits: bool = true;
+
     /// Where `:lsp-status` opens.
     #[name("lsp.status.display")]
     pub LspStatusDisplay: lattice_core::ui::display::BufferDisplayPreference =

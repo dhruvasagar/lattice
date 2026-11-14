@@ -198,7 +198,7 @@ references-picker rows, diagnostics jumps, etc.).
 | `:lsp-format`          | `textDocument/formatting` -- whole buffer; one undo unit.|
 | `:lsp-format-range`    | `textDocument/rangeFormatting` over the active Visual selection (or whole buffer when not in Visual). |
 | `:lsp-signature-help`  | `textDocument/signatureHelp` -- popup with the active signature + parameter highlight. Auto-fires in Insert mode on server-advertised trigger characters (typically `(` and `,`). |
-| `:lsp-rename <name>`   | `textDocument/rename` after `textDocument/prepareRename`. Replaces the symbol under cursor across the workspace. Empty `<name>` uses the server's prepareRename placeholder. Active buffer's edits apply as one undo unit; cross-file edits open via `:e` and apply per-file. |
+| `:lsp-rename <name>`   | `textDocument/rename` after `textDocument/prepareRename`. Replaces the symbol under cursor across the workspace. Empty `<name>` uses the server's prepareRename placeholder. Every file's edits apply as one undo unit in that file, without moving the cursor: open files are edited where they are, others in the background. Every file touched is then saved (`:set lsp.save-workspace-edits=false` leaves them unsaved and open for review). |
 | `:lsp-code-action`     | `textDocument/codeAction` -- vertico picker over quick-fixes, refactors, and source actions at the cursor / Visual selection. Accept resolves lazy actions via `codeAction/resolve`, applies inline `WorkspaceEdit`s via the rename apply path, and routes `Command` payloads through `workspace/executeCommand`. |
 
 Each picker entry encodes `path:line:col` in its candidate

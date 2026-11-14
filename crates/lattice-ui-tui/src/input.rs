@@ -3421,7 +3421,7 @@ mod tests {
     }
 
     #[test]
-    fn v_in_visual_toggles_off() {
+    fn v_in_visual_is_the_charwise_kind_key() {
         let (_, b) = fixture();
         let a = shared_actions();
         let action = translate(
@@ -3429,8 +3429,8 @@ mod tests {
             key(KeyCode::Char('v')),
         );
         match action {
-            Action::Invoke(inv) => assert_eq!(inv.command, a.exit_visual),
-            other => panic!("expected Invoke(exit_visual), got {other:?}"),
+            Action::Invoke(inv) => assert_eq!(inv.command, a.enter_visual_charwise),
+            other => panic!("expected Invoke(enter_visual_charwise), got {other:?}"),
         }
     }
 

@@ -100,8 +100,7 @@ pub fn register_visual_bindings(
     let layer = KeymapLayer::Builtin;
     let mode = BindingMode::Visual;
 
-    // Exits: <Esc>, v, V. Promoted to typed `ExitVisual` action
-    // in slice 8.i.1.h.
+    // Exit: <Esc>. Promoted to typed `ExitVisual` action in slice 8.i.1.h.
     handle.bind(
         layer,
         mode,
@@ -109,20 +108,26 @@ pub fn register_visual_bindings(
         CommandInvocation::of(actions.exit_visual),
         source(),
     );
-    handle.bind(
-        layer,
-        mode,
-        &[ChordPattern::Literal(KeyChord::char('v'))],
-        CommandInvocation::of(actions.exit_visual),
-        source(),
-    );
-    handle.bind(
-        layer,
-        mode,
-        &[ChordPattern::Literal(KeyChord::char('V'))],
-        CommandInvocation::of(actions.exit_visual),
-        source(),
-    );
+    // `v` / `V` / `<C-v>` (and `<C-q>`, its terminal-safe twin) are vim's
+    // kind keys: the CURRENT kind's key leaves Visual, another kind's key
+    // switches the selection to that kind in place (`vV` is linewise over
+    // the same anchor and head). Bound to the entry actions, whose handler
+    // (`Editor::do_enter_visual`) already does exactly that. They were bound
+    // to `exit_visual`, so `vV` left Visual, and `<C-v>` was unbound here.
+    for (chord, action) in [
+        (KeyChord::char('v'), actions.enter_visual_charwise),
+        (KeyChord::char('V'), actions.enter_visual_linewise),
+        (KeyChord::ctrl('v'), actions.enter_visual_blockwise),
+        (KeyChord::ctrl('q'), actions.enter_visual_blockwise),
+    ] {
+        handle.bind(
+            layer,
+            mode,
+            &[ChordPattern::Literal(chord)],
+            CommandInvocation::of(action),
+            source(),
+        );
+    }
 
     // `:` -- enter the command line from Visual (vim's `:'<,'>`). The
     // `EnterCommandLine` handler is Visual-aware: it captures the

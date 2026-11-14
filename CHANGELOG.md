@@ -14,6 +14,7 @@
 
 ### Fixed
 - **`v` shows `-- VISUAL --`.** Entering Visual mode showed nothing in the echo area: a new selection is the one character under the cursor, which the block cursor hides, so the `VIS` modeline tag was the only sign it had started. `v`, `V`, `<C-v>`, `gv`, a mouse drag, Select mode (`gh`) and `<C-g>` now show their mode the way `i` shows `-- INSERT --`, and publish the mode change that hooks and plugins subscribe to. Leaving Visual clears the indicator but keeps a message that arrived while selecting.
+- **`vV` switches to linewise, as in vim.** In Visual, `v`, `V` and `<C-v>` left Visual whichever kind you were in, and `<C-v>` did nothing. Now the current kind's key leaves Visual and another kind's key switches the selection to that kind, keeping both ends.
 - **A chat or ACP conversation no longer misses an update that lands while its buffer opens.** One that arrived while the buffer was being set up went unseen, and the transcript stayed behind until the next update; it is now drawn as soon as the buffer is ready.
 
 ## 0.10.0 — 2026-11-10

@@ -460,8 +460,10 @@ fn build_default_keymap() -> Vec<KeymapEntry> {
         keymap_entry! { mode: AfterZ, chord: "ze", doc: "Scroll cursor column to right edge" },
         // ---- Visual mode (motions extend, operators dispatch on Range::Selection) ----
         keymap_entry! { mode: Visual, chord: "<Esc>", doc: "Exit to Normal" },
-        keymap_entry! { mode: Visual, chord: "v", doc: "Toggle: exit Visual" },
-        keymap_entry! { mode: Visual, chord: "V", doc: "Toggle: exit Visual" },
+        keymap_entry! { mode: Visual, chord: "v", doc: "Charwise: exit if charwise, else switch to charwise" },
+        keymap_entry! { mode: Visual, chord: "V", doc: "Linewise: exit if linewise, else switch to linewise" },
+        keymap_entry! { mode: Visual, chord: "<C-v>", doc: "Blockwise: exit if blockwise, else switch to blockwise" },
+        keymap_entry! { mode: Visual, chord: "<C-q>", doc: "Blockwise (alternate when terminal hijacks Ctrl-V)" },
         keymap_entry! { mode: Visual, chord: "h", doc: "Extend selection left", cmd: "motion:char-left" },
         keymap_entry! { mode: Visual, chord: "j", doc: "Extend selection down", cmd: "motion:line-down" },
         keymap_entry! { mode: Visual, chord: "k", doc: "Extend selection up", cmd: "motion:line-up" },

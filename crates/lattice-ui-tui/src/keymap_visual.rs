@@ -101,7 +101,7 @@ mod tests {
     }
 
     #[test]
-    fn lowercase_v_toggles_out_of_visual() {
+    fn lowercase_v_is_the_charwise_kind_key() {
         let (reg, b, a, so, sm) = fixture();
         let h = populated_handle(&reg, &b, &a, &so, &sm);
         let r = dv(
@@ -110,13 +110,13 @@ mod tests {
             VisualKind::Charwise,
         );
         match r {
-            Action::Invoke(inv) => assert_eq!(inv.command, a.exit_visual),
-            other => panic!("expected Invoke(exit_visual), got {other:?}"),
+            Action::Invoke(inv) => assert_eq!(inv.command, a.enter_visual_charwise),
+            other => panic!("expected Invoke(enter_visual_charwise), got {other:?}"),
         }
     }
 
     #[test]
-    fn uppercase_v_toggles_out_of_visual() {
+    fn uppercase_v_is_the_linewise_kind_key() {
         let (reg, b, a, so, sm) = fixture();
         let h = populated_handle(&reg, &b, &a, &so, &sm);
         let r = dv(
@@ -125,8 +125,8 @@ mod tests {
             VisualKind::Linewise,
         );
         match r {
-            Action::Invoke(inv) => assert_eq!(inv.command, a.exit_visual),
-            other => panic!("expected Invoke(exit_visual), got {other:?}"),
+            Action::Invoke(inv) => assert_eq!(inv.command, a.enter_visual_linewise),
+            other => panic!("expected Invoke(enter_visual_linewise), got {other:?}"),
         }
     }
 

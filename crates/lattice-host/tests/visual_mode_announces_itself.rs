@@ -83,6 +83,37 @@ fn linewise_and_blockwise_show_their_own_names() {
     assert_eq!(echo(&editor), Some("-- VISUAL BLOCK --"));
 }
 
+/// Another kind's key switches in place (vim's `vV`): the selection keeps
+/// its anchor and head, and the echo follows the kind.
+#[test]
+fn switching_kind_in_place_updates_the_indicator() {
+    let (mut editor, mut rx) = editor_with_mode_events("alpha\nbeta\n");
+
+    press(&mut editor, "v");
+    let _ = mode_changes(&mut rx);
+    press(&mut editor, "V");
+    assert_eq!(editor.modal, ModalState::Visual(VisualKind::Linewise));
+    assert_eq!(echo(&editor), Some("-- VISUAL LINE --"));
+    assert_eq!(mode_changes(&mut rx), ["Visual(Linewise)"]);
+
+    // The same kind's key again leaves Visual.
+    press(&mut editor, "V");
+    assert_eq!(editor.modal, ModalState::Normal);
+    assert_eq!(echo(&editor), None);
+}
+
+/// `<C-v>` in Visual switches to blockwise, and again leaves.
+#[test]
+fn ctrl_v_switches_to_blockwise_and_back_out() {
+    let (mut editor, _rx) = editor_with_mode_events("alpha\nbeta\n");
+
+    press(&mut editor, "v<C-v>");
+    assert_eq!(editor.modal, ModalState::Visual(VisualKind::Blockwise));
+    assert_eq!(echo(&editor), Some("-- VISUAL BLOCK --"));
+    press(&mut editor, "<C-v>");
+    assert_eq!(editor.modal, ModalState::Normal);
+}
+
 #[test]
 fn gv_reselects_with_the_indicator() {
     let (mut editor, mut rx) = editor_with_mode_events("alpha beta\n");

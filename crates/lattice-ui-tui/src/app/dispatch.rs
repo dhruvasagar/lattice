@@ -1375,7 +1375,6 @@ impl App {
             Effect::LspSignatureHelp => self.mutate_editor_with(move |e| e.lsp_signature_help_request()),
             Effect::LspComplete => self.mutate_editor_with(move |e| e.lsp_completion_request()),
             Effect::LspRename { new_name } => self.do_lsp_rename_request(&new_name),
-            Effect::LspCodeAction => self.do_lsp_code_action_request(),
             // SN.3c.1: mode-owned `<C-x><C-s>` emits the trigger range;
             // the host resolves + expands (`expand_snippet_from_range`).
             Effect::ExpandSnippet { replace_range } => {
@@ -1626,7 +1625,6 @@ fn effect_mutates_or_yanks(effect: &Effect) -> bool {
         | Effect::LspSignatureHelp
         | Effect::LspComplete
         | Effect::LspRename { .. }
-        | Effect::LspCodeAction
         | Effect::ExpandSnippet { .. }
         | Effect::ExpandSnippetOver { .. }
         | Effect::ReloadSnippets
@@ -1795,7 +1793,6 @@ fn effect_mutates(effect: &Effect) -> bool {
         | Effect::LspSignatureHelp
         | Effect::LspComplete
         | Effect::LspRename { .. }
-        | Effect::LspCodeAction
         | Effect::ExpandSnippet { .. }
         | Effect::ExpandSnippetOver { .. }
         | Effect::ReloadSnippets

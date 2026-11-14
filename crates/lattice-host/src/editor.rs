@@ -2247,6 +2247,10 @@ pub struct Editor {
     pub pending_code_action_token: Option<CancellationToken>,
     pub pending_code_action_items: Option<Vec<CodeActionRow>>,
     pub pending_code_action_handle: Option<lattice_lsp::ServerHandle>,
+    /// RF.1: the kind family the in-flight code-action request asked for,
+    /// so an empty result can say "no refactorings here" rather than "no
+    /// code actions".
+    pub pending_code_action_only: Option<lattice_grammar::CodeActionKindFilter>,
     pub pending_selection_range_rx:
         Option<tokio::sync::mpsc::UnboundedReceiver<SelectionRangeOutcome>>,
     pub pending_selection_range_token: Option<CancellationToken>,

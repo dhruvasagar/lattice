@@ -7520,6 +7520,24 @@ which collides with org-roam's prefix; they were renamed to `LS` in LS.5.
 Design: [`../architecture/directory-listing-mode.md`](../architecture/directory-listing-mode.md) §11.
 Slice plan: [`slice-plans/archive/oil-sources.md`](slice-plans/archive/oil-sources.md).
 
+## Workspace edits (WE, 2026-11-14 — ✅ WE.1–WE.3, WE.4 📝)
+
+A WorkspaceEdit (rename, code action, a server's `workspace/applyEdit`)
+lands in every file it names without moving focus: open buffers are edited
+in place, other files in hidden buffers closed once saved. Every touched
+file is saved (`lsp.save-workspace-edits`, default on). `:wa` is WE.4.
+Design: [`../architecture/lsp-architecture.md`](../architecture/lsp-architecture.md) §18.
+Slice plan: [`slice-plans/workspace-edits.md`](slice-plans/workspace-edits.md).
+
+## Refactoring (RF, 2026-11-14 — ✅ RF.1, RF.2 📝)
+
+The server's refactorings by name (`:lsp-refactor` / `:lsp-extract` /
+`:lsp-inline`) on the code-action request, which joins §16's
+`LspRequest` split; then a structural-operators plugin on
+`tree-sitter.wit` that needs no server.
+Design: [`../architecture/lsp-architecture.md`](../architecture/lsp-architecture.md) §16.
+Slice plan: [`slice-plans/lsp-refactoring.md`](slice-plans/lsp-refactoring.md).
+
 ---
 
 ## Conventions for updating this doc

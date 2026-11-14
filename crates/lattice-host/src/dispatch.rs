@@ -14311,6 +14311,10 @@ impl Editor {
                 Vec::new()
             }
             LspRequest::FollowLink => self.do_lsp_follow_link_at_cursor(),
+            LspRequest::CodeActions { only, on_selection } => {
+                self.do_lsp_code_action_request(only, on_selection);
+                Vec::new()
+            }
         }
     }
 
@@ -20930,7 +20934,10 @@ impl Editor {
             }
             CodeActionOutcome::Items(items) => {
                 if items.is_empty() {
-                    self.set_message(EchoLevel::Info, "no code actions".to_string());
+                    let noun = self
+                        .pending_code_action_only
+                        .map_or("code actions", |f| f.noun());
+                    self.set_message(EchoLevel::Info, format!("no {noun} here"));
                     return Vec::new();
                 }
                 let total = items.len();
@@ -32522,26 +32529,26 @@ impl Editor {
         }
     }
 
-    /// LSP-shape range for the current code-action request.
-    /// Visual selection when active; point range at cursor
-    /// otherwise. Phase 5.8.AD.2.
-    fn code_action_range(&self, buffer: &lattice_core::Buffer) -> lattice_lsp::lsp_types::Range {
-        if let lattice_grammar::ModalState::Visual(_) = self.modal {
-            let anchor = self.visual_anchor.unwrap_or(self.cursor);
-            let head = self.cursor;
-            let (start_pos, end_pos) = if (anchor.line, anchor.byte) <= (head.line, head.byte) {
-                (anchor, head)
-            } else {
-                (head, anchor)
-            };
-            let start = crate::lsp_helpers::app_to_lsp_position(buffer, start_pos).unwrap_or(
-                lattice_lsp::lsp_types::Position {
-                    line: 0,
-                    character: 0,
-                },
-            );
-            let end = crate::lsp_helpers::app_to_lsp_position(buffer, end_pos).unwrap_or(start);
-            lattice_lsp::lsp_types::Range { start, end }
+    /// LSP-shape range for the current code-action request: the live
+    /// Visual selection when one is up, the last one when `on_selection`
+    /// (`:'<,'>…`, which left Visual on the way to the `:` line), else a
+    /// point range at the cursor. Phase 5.8.AD.2; RF.1 added the `:'<,'>`
+    /// case, and made the selection head-inclusive and linewise-aware,
+    /// as Visual is — see [`crate::lsp_helpers::selection_lsp_range`].
+    fn code_action_range(
+        &self,
+        buffer: &lattice_core::Buffer,
+        on_selection: bool,
+    ) -> lattice_lsp::lsp_types::Range {
+        let selection = match self.modal {
+            lattice_grammar::ModalState::Visual(kind) => {
+                Some((self.visual_anchor.unwrap_or(self.cursor), self.cursor, kind))
+            }
+            _ if on_selection => self.last_visual.map(|v| (v.anchor, v.head, v.kind)),
+            _ => None,
+        };
+        if let Some((anchor, head, kind)) = selection {
+            crate::lsp_helpers::selection_lsp_range(buffer, anchor, head, kind)
         } else {
             let p = crate::lsp_helpers::app_to_lsp_position(buffer, self.cursor).unwrap_or(
                 lattice_lsp::lsp_types::Position {
@@ -32577,10 +32584,22 @@ impl Editor {
             .collect()
     }
 
-    /// `:code-actions` (Phase 4.3). Run `textDocument/codeAction`
-    /// at the cursor (or active Visual selection); the drain opens
-    /// the merged item list as a vertico picker. Phase 5.8.AD.2.
-    pub fn do_lsp_code_action_request(&mut self) {
+    /// `:lsp-code-action` and its kind-filtered peers. Run
+    /// `textDocument/codeAction` at the cursor or selection; the drain
+    /// opens the result as a picker. Phase 5.8.AD.2.
+    ///
+    /// RF.1: `only` narrows the request to one kind family. It goes to the
+    /// server as `context.only` AND filters what comes back, because the
+    /// spec leaves the filtering to the client ("actions not of this kind
+    /// are filtered out by the client before being shown") and servers do
+    /// return others. A bare `Command` has no kind, so a filtered request
+    /// drops it. `on_selection` asks about the last Visual selection
+    /// (`:'<,'>…`) rather than the cursor.
+    pub fn do_lsp_code_action_request(
+        &mut self,
+        only: Option<lattice_grammar::CodeActionKindFilter>,
+        on_selection: bool,
+    ) {
         if let Some(token) = self.pending_code_action_token.take() {
             token.cancel();
         }
@@ -32599,10 +32618,11 @@ impl Editor {
             return;
         };
         let snapshot = self.document.snapshot();
-        let range = self.code_action_range(&snapshot.buffer);
+        let range = self.code_action_range(&snapshot.buffer, on_selection);
+        self.pending_code_action_only = only;
         let context = lattice_lsp::lsp_types::CodeActionContext {
             diagnostics: self.diagnostics_for_range(&uri, &range),
-            only: None,
+            only: only.map(|f| vec![lattice_lsp::lsp_types::CodeActionKind::from(f.lsp_kind())]),
             trigger_kind: Some(lattice_lsp::lsp_types::CodeActionTriggerKind::INVOKED),
         };
         let (tx, rx) =
@@ -32634,6 +32654,7 @@ impl Editor {
             if let Ok(Some(resp)) = handle.code_action(params, token.clone()).await {
                 let rows: Vec<lattice_lsp::cache::CodeActionRow> = resp
                     .into_iter()
+                    .filter(|act| crate::lsp_helpers::code_action_admitted(act, only))
                     .map(|act| {
                         let (title, kind_glyph) = match &act {
                             lattice_lsp::lsp_types::CodeActionOrCommand::Command(c) => (
@@ -45826,7 +45847,6 @@ pub fn effect_mutates_or_yanks(effect: &lattice_grammar::Effect) -> bool {
         | Effect::LspSignatureHelp
         | Effect::LspComplete
         | Effect::LspRename { .. }
-        | Effect::LspCodeAction
         | Effect::ExpandSnippet { .. }
         | Effect::ExpandSnippetOver { .. }
         | Effect::ReloadSnippets
@@ -45995,7 +46015,6 @@ pub fn effect_mutates(effect: &lattice_grammar::Effect) -> bool {
         | Effect::LspSignatureHelp
         | Effect::LspComplete
         | Effect::LspRename { .. }
-        | Effect::LspCodeAction
         | Effect::ExpandSnippet { .. }
         | Effect::ExpandSnippetOver { .. }
         | Effect::ReloadSnippets

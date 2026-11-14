@@ -309,6 +309,88 @@ pub fn definition_response_to_locations(
     }
 }
 
+/// The LSP range a request about a Visual selection covers.
+///
+/// Visual is head-inclusive: `vl` over `ab` selects both characters, so the
+/// LSP range (end-exclusive) ends one character PAST the later end. Linewise
+/// covers whole lines, start of the first to end of the last, which is what
+/// an extract-function server wants from a `V` selection. Blockwise has no
+/// LSP shape and asks about its bounding characters, as charwise does.
+///
+/// RF.1. The earlier inline version ended at the head, so an extract over
+/// `a + b` asked about `a + ` -- and for a server, a different expression.
+pub fn selection_lsp_range(
+    buffer: &Buffer,
+    anchor: Position,
+    head: Position,
+    kind: lattice_grammar::VisualKind,
+) -> lattice_lsp::lsp_types::Range {
+    let (first, last) = if (anchor.line, anchor.byte) <= (head.line, head.byte) {
+        (anchor, head)
+    } else {
+        (head, anchor)
+    };
+    let origin = lattice_lsp::lsp_types::Position {
+        line: 0,
+        character: 0,
+    };
+    let (start, end) = if kind == lattice_grammar::VisualKind::Linewise {
+        let end_byte = buffer
+            .line(last.line)
+            .map_or(0, |l| u32::try_from(l.len()).unwrap_or(u32::MAX));
+        (
+            Position {
+                line: first.line,
+                byte: 0,
+            },
+            Position {
+                line: last.line,
+                byte: end_byte,
+            },
+        )
+    } else {
+        // One character past the inclusive end; an empty line, or a head
+        // already past the end, stays where it is.
+        let past = buffer
+            .line(last.line)
+            .and_then(|l| {
+                l.get(last.byte as usize..)
+                    .and_then(|rest: &str| rest.chars().next())
+                    .map(|c: char| last.byte + c.len_utf8() as u32)
+            })
+            .unwrap_or(last.byte);
+        (
+            first,
+            Position {
+                line: last.line,
+                byte: past,
+            },
+        )
+    };
+    let start = app_to_lsp_position(buffer, start).unwrap_or(origin);
+    let end = app_to_lsp_position(buffer, end).unwrap_or(start);
+    lattice_lsp::lsp_types::Range { start, end }
+}
+
+/// Does `action` belong in a code-action picker narrowed to `only`?
+/// Everything does when unfiltered; filtered, an action belongs when its
+/// kind is in the family, and a bare `Command` (which has no kind) never
+/// does. RF.1.
+pub fn code_action_admitted(
+    action: &lattice_lsp::lsp_types::CodeActionOrCommand,
+    only: Option<lattice_grammar::CodeActionKindFilter>,
+) -> bool {
+    let Some(filter) = only else {
+        return true;
+    };
+    match action {
+        lattice_lsp::lsp_types::CodeActionOrCommand::Command(_) => false,
+        lattice_lsp::lsp_types::CodeActionOrCommand::CodeAction(ca) => {
+            ca.kind.as_ref().is_some_and(|k| filter.admits(k.as_str()))
+        }
+    }
+}
+
 /// Convert an editor-side `Position` (line + utf-8 byte column)
 /// into the LSP-side `lattice_lsp::lsp_types::Position` (line + utf-16 code-
 /// unit column). Returns `None` when the line index is past the
@@ -485,5 +567,103 @@ pub fn hover_contents_to_markdown(contents: &lattice_lsp::lsp_types::HoverConten
             .collect::<Vec<_>>()
             .join("\n\n"),
         lattice_lsp::lsp_types::HoverContents::Markup(m) => m.value.clone(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+    use lattice_grammar::{CodeActionKindFilter, VisualKind};
+    use lattice_lsp::lsp_types::{
+        CodeAction, CodeActionKind, CodeActionOrCommand, Command, Position as LspPos, Range,
+    };
+
+    fn at(line: u32, byte: u32) -> Position {
+        Position { line, byte }
+    }
+
+    fn lsp(sl: u32, sc: u32, el: u32, ec: u32) -> Range {
+        Range {
+            start: LspPos {
+                line: sl,
+                character: sc,
+            },
+            end: LspPos {
+                line: el,
+                character: ec,
+            },
+        }
+    }
+
+    /// `v` over `a + b` (head on the `b`) asks about all of `a + b`.
+    #[test]
+    fn a_charwise_selection_includes_the_character_under_the_head() {
+        let buf = Buffer::from_text("let x = a + b;\n");
+        let r = selection_lsp_range(&buf, at(0, 8), at(0, 12), VisualKind::Charwise);
+        assert_eq!(r, lsp(0, 8, 0, 13));
+        // Backwards (head before anchor) is the same range.
+        let r = selection_lsp_range(&buf, at(0, 12), at(0, 8), VisualKind::Charwise);
+        assert_eq!(r, lsp(0, 8, 0, 13));
+    }
+
+    /// The head's character is counted in UTF-16, as LSP columns are.
+    #[test]
+    fn the_inclusive_end_steps_over_a_whole_character() {
+        // `é` is two UTF-8 bytes and one UTF-16 unit.
+        let buf = Buffer::from_text("aé b\n");
+        let r = selection_lsp_range(&buf, at(0, 0), at(0, 1), VisualKind::Charwise);
+        assert_eq!(r, lsp(0, 0, 0, 2));
+    }
+
+    /// `V` asks about whole lines, wherever the cursor sat in them.
+    #[test]
+    fn a_linewise_selection_covers_whole_lines() {
+        let buf = Buffer::from_text("fn f() {\n    one();\n    two();\n}\n");
+        let r = selection_lsp_range(&buf, at(1, 6), at(2, 4), VisualKind::Linewise);
+        assert_eq!(r, lsp(1, 0, 2, 10));
+    }
+
+    #[test]
+    fn a_selection_on_an_empty_line_stays_in_bounds() {
+        let buf = Buffer::from_text("a\n\nb\n");
+        let r = selection_lsp_range(&buf, at(1, 0), at(1, 0), VisualKind::Charwise);
+        assert_eq!(r, lsp(1, 0, 1, 0));
+    }
+
+    fn action(kind: Option<&str>) -> CodeActionOrCommand {
+        CodeActionOrCommand::CodeAction(CodeAction {
+            title: "t".into(),
+            kind: kind.map(|k| CodeActionKind::from(k.to_string())),
+            ..Default::default()
+        })
+    }
+
+    /// Servers return kinds outside `context.only`; the client drops them.
+    #[test]
+    fn a_filter_admits_its_family_and_nothing_else() {
+        let extract = Some(CodeActionKindFilter::Extract);
+        assert!(code_action_admitted(
+            &action(Some("refactor.extract.function")),
+            extract
+        ));
+        assert!(!code_action_admitted(&action(Some("quickfix")), extract));
+        assert!(!code_action_admitted(
+            &action(Some("refactor.inline")),
+            extract
+        ));
+        assert!(!code_action_admitted(&action(None), extract));
+        let command = CodeActionOrCommand::Command(Command {
+            title: "t".into(),
+            command: "c".into(),
+            arguments: None,
+        });
+        assert!(
+            !code_action_admitted(&command, extract),
+            "a Command has no kind"
+        );
+        // Unfiltered, everything stays.
+        assert!(code_action_admitted(&command, None));
+        assert!(code_action_admitted(&action(Some("quickfix")), None));
     }
 }

@@ -232,6 +232,82 @@ pub enum LspRequest {
     /// diagnostics there is no standing "current references" state to
     /// pull from, so the command must run the query.
     ReferencesToErrorList,
+    /// `:lsp-code-action` and its kind-filtered peers (`:lsp-refactor`,
+    /// `:lsp-extract`, `:lsp-inline`) -- `textDocument/codeAction`, the
+    /// result opening as a picker.
+    ///
+    /// `only` narrows the request to one kind family; `None` is every
+    /// action. `on_selection` says which range to ask about: `true` when
+    /// the command ran as `:'<,'>…`, so the range is the Visual selection
+    /// the `:` line left (vim leaves Visual on `:`, so by the time the
+    /// command runs the live selection is gone); `false` is the live
+    /// Visual selection if one is up, else the cursor.
+    CodeActions {
+        /// The kind family to ask for, or every action.
+        only: Option<CodeActionKindFilter>,
+        /// Ask about the last Visual selection (`:'<,'>…`).
+        on_selection: bool,
+    },
+}
+
+/// The kind families a code-action request can be narrowed to
+/// ([`LspRequest::CodeActions`]). Each maps to an LSP `CodeActionKind`
+/// prefix: a server's `refactor.extract.function` is an
+/// [`Self::Extract`], and a [`Self::Refactor`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CodeActionKindFilter {
+    /// `refactor` -- every refactoring.
+    Refactor,
+    /// `refactor.extract` -- extract function / variable / constant.
+    Extract,
+    /// `refactor.inline` -- inline function / variable.
+    Inline,
+}
+
+impl CodeActionKindFilter {
+    /// The LSP `CodeActionKind` value this filter asks for.
+    ///
+    /// ```
+    /// use lattice_grammar::effect::CodeActionKindFilter;
+    ///
+    /// assert_eq!(CodeActionKindFilter::Extract.lsp_kind(), "refactor.extract");
+    /// ```
+    pub fn lsp_kind(self) -> &'static str {
+        match self {
+            Self::Refactor => "refactor",
+            Self::Extract => "refactor.extract",
+            Self::Inline => "refactor.inline",
+        }
+    }
+
+    /// Does an action of LSP kind `kind` belong to this family? A kind
+    /// belongs when it is the family or a dotted child of it, so
+    /// `refactor.extract.function` is an `Extract` and `refactorx` is
+    /// nothing.
+    ///
+    /// ```
+    /// use lattice_grammar::effect::CodeActionKindFilter;
+    ///
+    /// assert!(CodeActionKindFilter::Refactor.admits("refactor.inline"));
+    /// assert!(!CodeActionKindFilter::Extract.admits("refactor.inline"));
+    /// assert!(!CodeActionKindFilter::Refactor.admits("refactorx"));
+    /// ```
+    pub fn admits(self, kind: &str) -> bool {
+        let family = self.lsp_kind();
+        kind == family
+            || (kind.len() > family.len()
+                && kind.starts_with(family)
+                && kind.as_bytes()[family.len()] == b'.')
+    }
+
+    /// What the echo calls an empty result: "no refactorings here".
+    pub fn noun(self) -> &'static str {
+        match self {
+            Self::Refactor => "refactorings",
+            Self::Extract => "extractions",
+            Self::Inline => "inlinings",
+        }
+    }
 }
 
 /// Where in a target file an [`Effect::WriteToFile`] lands.
@@ -1548,12 +1624,6 @@ pub enum Effect {
         /// The new identifier.
         new_name: String,
     },
-    /// `:lsp-code-action` -- run textDocument/codeAction at the
-    /// cursor / selection; open the merged item list as a
-    /// vertico picker. Accept routes through resolve (when
-    /// needed) and applies the action's WorkspaceEdit /
-    /// command. Phase 4.3.
-    LspCodeAction,
     /// SN.3c.1: direct snippet expansion over a known trigger
     /// range. The mode-owned `<C-x><C-s>` handler
     /// (`snippet-mode`'s `action_handlers()`) does the word-prefix

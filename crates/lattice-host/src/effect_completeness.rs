@@ -147,7 +147,6 @@ pub fn effect_is_host_complete(effect: &Effect) -> bool {
         | Effect::LspSignatureHelp
         | Effect::LspComplete
         | Effect::LspRename { .. }
-        | Effect::LspCodeAction
         | Effect::ExpandSnippet { .. }
         | Effect::ExpandSnippetOver { .. }
         | Effect::ReloadSnippets

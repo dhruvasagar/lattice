@@ -1356,6 +1356,31 @@ chord -- which is exactly what this slice removes.
 
 See the slice plan (L7) for sequencing.
 
+### Code actions joined the split (RF.1)
+
+`:lsp-code-action` predated §16 and kept its own `Effect::LspCodeAction`,
+which each renderer applied. It is now `LspRequest::CodeActions { only,
+on_selection }`, host-applied like the nav requests, and the
+kind-filtered refactor commands (`:lsp-refactor` / `:lsp-extract` /
+`:lsp-inline`) are three more values of the same arm, not three
+Effects. That is the grain this section argues for, paying off: a new
+code-action surface is a data value.
+
+`only` is sent as `context.only` **and** applied to what comes back,
+because the spec makes the filter the client's job and servers return
+other kinds anyway. `on_selection` exists because vim leaves Visual on
+`:` -- by the time `:'<,'>lsp-extract` runs, the live selection is gone
+and only `'<` / `'>` remain, so the command, which sees its range, says
+so in the data.
+
+The plugin wire is unchanged: WIT's `lsp-code-action` is the unfiltered
+form, and the filtered forms refuse to cross until the WIT grows a
+mirror. `:lsp-format`, `:lsp-rename`, `:lsp-complete` and
+`:lsp-signature-help` still carry their own Effects; they are the same
+migration, not yet done.
+
+Sequencing: [`../operations/slice-plans/lsp-refactoring.md`](../operations/slice-plans/lsp-refactoring.md).
+
 ---
 
 ## 17. References as an editable view (the second terminus)

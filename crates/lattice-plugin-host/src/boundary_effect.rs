@@ -442,7 +442,8 @@ impl WitBoundary for NativeLspRequest {
             // the picker when it asked for the editable view.
             NativeLspRequest::ReferencesView
             | NativeLspRequest::ReferencesViewRefresh
-            | NativeLspRequest::ReferencesToErrorList => {
+            | NativeLspRequest::ReferencesToErrorList
+            | NativeLspRequest::CodeActions { .. } => {
                 return Err(
                     "LspRequest::ReferencesView (`:lsp-references`) has no WIT mirror yet; \
                      adding one is a versioned plugin-API change (lsp-architecture.md §17)"
@@ -663,6 +664,14 @@ fn effect_to_wit(e: &NativeEffect) -> Result<WitEffect, String> {
         NativeEffect::ShowDiagnosticsPopup { lines } => {
             WitEffect::ShowDiagnosticsPopup(lines.clone())
         }
+        // RF.1: the WIT `lsp-code-action` is the unfiltered request at
+        // the cursor or live selection. The kind-filtered and `:'<,'>`
+        // forms have no WIT mirror yet; refusing them beats handing a
+        // plugin the whole picker when it asked for refactorings.
+        NativeEffect::Lsp(NativeLspRequest::CodeActions {
+            only: None,
+            on_selection: false,
+        }) => WitEffect::LspCodeAction,
         NativeEffect::Lsp(req) => WitEffect::Lsp(req.to_wit()?),
         NativeEffect::EchoRegisters => WitEffect::EchoRegisters,
         NativeEffect::EchoMarks => WitEffect::EchoMarks,
@@ -842,7 +851,6 @@ fn effect_to_wit(e: &NativeEffect) -> Result<WitEffect, String> {
         NativeEffect::LspSignatureHelp => WitEffect::LspSignatureHelp,
         NativeEffect::LspComplete => WitEffect::LspComplete,
         NativeEffect::LspRename { new_name } => WitEffect::LspRename(new_name.clone()),
-        NativeEffect::LspCodeAction => WitEffect::LspCodeAction,
         NativeEffect::ExpandSnippet { replace_range } => {
             WitEffect::ExpandSnippet(replace_range.to_wit()?)
         }
@@ -1281,7 +1289,10 @@ fn effect_from_wit(w: WitEffect) -> Result<NativeEffect, String> {
         WitEffect::LspSignatureHelp => NativeEffect::LspSignatureHelp,
         WitEffect::LspComplete => NativeEffect::LspComplete,
         WitEffect::LspRename(new_name) => NativeEffect::LspRename { new_name },
-        WitEffect::LspCodeAction => NativeEffect::LspCodeAction,
+        WitEffect::LspCodeAction => NativeEffect::Lsp(NativeLspRequest::CodeActions {
+            only: None,
+            on_selection: false,
+        }),
         WitEffect::ExpandSnippet(range) => NativeEffect::ExpandSnippet {
             replace_range: NativeRange::from_wit(range)?,
         },
@@ -2073,7 +2084,10 @@ mod tests {
             NativeEffect::LspFormatRange,
             NativeEffect::LspSignatureHelp,
             NativeEffect::LspComplete,
-            NativeEffect::LspCodeAction,
+            NativeEffect::Lsp(NativeLspRequest::CodeActions {
+                only: None,
+                on_selection: false,
+            }),
             NativeEffect::ReloadSnippets,
             NativeEffect::DescribeEvents,
             NativeEffect::DescribeDiff,

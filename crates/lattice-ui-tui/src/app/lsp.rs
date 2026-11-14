@@ -895,16 +895,6 @@ impl App {
         }
     }
 
-    /// `:code-actions` (Phase 4.3). Run textDocument/codeAction
-    /// at the cursor (or active Visual selection); open the
-    /// merged item list as a vertico picker. v1 picks the first
-    /// server with `codeActionProvider`.
-    pub(super) fn do_lsp_code_action_request(&mut self) {
-        // Phase 5.8.AD.2: body migrated, including the
-        // `code_action_range` + `diagnostics_for_range` helpers.
-        self.mutate_editor(|e| e.do_lsp_code_action_request());
-    }
-
     /// Drain queued code-action responses. 5.8.AA.r: full
     /// apply chain (Items/Resolved/NoProvider + workspace-edit +
     /// executeCommand) hoisted to host; this wrapper exists for

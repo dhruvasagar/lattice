@@ -794,6 +794,10 @@ static ALIAS_TABLE: &[(&str, &str)] = &[
     ("lsp-complete", "ex:lsp-complete"),
     ("lsp-rename", "ex:lsp-rename"),
     ("lsp-code-action", "ex:lsp-code-action"),
+    // RF.1: the picker narrowed to one kind family.
+    ("lsp-refactor", "ex:lsp-refactor"),
+    ("lsp-extract", "ex:lsp-extract"),
+    ("lsp-inline", "ex:lsp-inline"),
     ("cd", "ex:cd"),
     ("chdir", "ex:cd"),
     ("pwd", "ex:pwd"),

@@ -72,7 +72,7 @@
 use crate::AppEffect;
 use crate::args::{ArgDefault, ArgKind, ArgSpec, ArgValue, Args};
 use crate::command::LatencyClass;
-use crate::effect::{Effect, LspRequest, QuitScope, SubstituteScope};
+use crate::effect::{CodeActionKindFilter, Effect, LspRequest, QuitScope, SubstituteScope};
 use crate::error::{CommandError, GrammarResult};
 use crate::range::Range;
 use crate::registry::{CommandRegistry, ExCommandContext, ExCommandId, ExCommandSpec, SurfaceForm};
@@ -2274,16 +2274,30 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
 
     let lsp_code_action = registry.register_ex_command(
         "ex:lsp-code-action",
-        "Open a vertico picker over LSP code actions at the cursor / selection (`:code-actions`, Phase 4.3).",
-        ExCommandSpec {
-            latency_class: LatencyClass::Display,
-            accepts_bang: false,
-            accepts_range: true,
-            parse_args: Arc::new(parse_no_args),
-            apply: Arc::new(|_| Ok(Effect::LspCodeAction)),
-            args_schema: vec![],
-            surface_form: SurfaceForm::Keyword,
-        },
+        "Open a picker over the LSP code actions at the cursor, or over the selection \
+         (`:'<,'>lsp-code-action`).",
+        code_actions_spec(None),
+    );
+    // RF.1: the code-action picker narrowed to one kind family. Dashed
+    // and `lsp-` namespaced, no shorts and no default chords: they are
+    // the LSP's refactorings, and the generic names stay free for a
+    // refactoring that does not need a server.
+    let _lsp_refactor = registry.register_ex_command(
+        "ex:lsp-refactor",
+        "Open a picker over the LSP refactorings at the cursor or selection: extract, inline, \
+         rewrite, whatever the server offers.",
+        code_actions_spec(Some(CodeActionKindFilter::Refactor)),
+    );
+    let _lsp_extract = registry.register_ex_command(
+        "ex:lsp-extract",
+        "Extract the selection (`:'<,'>lsp-extract`) into a function, variable or constant, \
+         from the LSP's extract refactorings.",
+        code_actions_spec(Some(CodeActionKindFilter::Extract)),
+    );
+    let _lsp_inline = registry.register_ex_command(
+        "ex:lsp-inline",
+        "Inline the function or variable under the cursor, from the LSP's inline refactorings.",
+        code_actions_spec(Some(CodeActionKindFilter::Inline)),
     );
 
     let lsp_rename = registry.register_ex_command(
@@ -3005,6 +3019,41 @@ fn parse_global_args_unreachable(_rest: &str, _bang: bool) -> GrammarResult<Args
 
 // ---- apply closures ----
 
+/// The spec every code-action command shares: `only` is the kind family
+/// it asks for. A `:'<,'>` range (or the live selection) asks about the
+/// selection; any other range is accepted and asks about the cursor, as
+/// `:lsp-code-action` always has.
+fn code_actions_spec(only: Option<CodeActionKindFilter>) -> ExCommandSpec {
+    ExCommandSpec {
+        latency_class: LatencyClass::Display,
+        accepts_bang: false,
+        accepts_range: true,
+        parse_args: Arc::new(parse_no_args),
+        apply: Arc::new(move |ctx| {
+            Ok(Effect::Lsp(LspRequest::CodeActions {
+                only,
+                on_selection: is_selection_range(&ctx.range),
+            }))
+        }),
+        args_schema: vec![],
+        surface_form: SurfaceForm::Keyword,
+    }
+}
+
+/// Is `range` the Visual selection: `'<,'>` (what Visual `:` prefills)
+/// or the live selection?
+fn is_selection_range(range: &Option<Range>) -> bool {
+    use crate::range::RangeBound;
+    matches!(
+        range,
+        Some(Range::Selection)
+            | Some(Range::Span {
+                start: RangeBound::Mark('<'),
+                end: RangeBound::Mark('>'),
+            })
+    )
+}
+
 fn apply_write(ctx: &ExCommandContext) -> GrammarResult<Effect> {
     let path = match &ctx.args {
         Args::None => None,
@@ -3234,6 +3283,70 @@ mod tests {
         let _ = crate::builtins::populate(&mut registry);
         let ex = populate(&mut registry);
         (registry, ex, Document::empty())
+    }
+
+    /// RF.1: each code-action command asks for its own kind family, and a
+    /// `'<,'>` range asks about the selection the `:` line left.
+    #[test]
+    fn code_action_commands_carry_their_kind_and_range() {
+        let (registry, _ex, mut doc) = fixture();
+        let run = |doc: &mut Document, name: &str, range: Option<Range>| {
+            let id = registry.id_by_name(name).unwrap();
+            let mut inv = CommandInvocation::of(id).with_args(Args::None);
+            inv.range = range;
+            match execute(
+                &registry,
+                doc,
+                lattice_core::BufferId(0),
+                Position::ZERO,
+                inv,
+                &CancellationToken::never(),
+            )
+            .unwrap()
+            {
+                Effect::Lsp(req) => req,
+                other => panic!("{name}: expected Effect::Lsp, got {other:?}"),
+            }
+        };
+        let visual = Some(Range::Span {
+            start: crate::range::RangeBound::Mark('<'),
+            end: crate::range::RangeBound::Mark('>'),
+        });
+        for (name, only) in [
+            ("ex:lsp-code-action", None),
+            ("ex:lsp-refactor", Some(CodeActionKindFilter::Refactor)),
+            ("ex:lsp-extract", Some(CodeActionKindFilter::Extract)),
+            ("ex:lsp-inline", Some(CodeActionKindFilter::Inline)),
+        ] {
+            assert_eq!(
+                run(&mut doc, name, None),
+                LspRequest::CodeActions {
+                    only,
+                    on_selection: false
+                },
+                "{name} at the cursor"
+            );
+            assert_eq!(
+                run(&mut doc, name, visual.clone()),
+                LspRequest::CodeActions {
+                    only,
+                    on_selection: true
+                },
+                "{name} over '<,'>"
+            );
+        }
+        // Any other range is accepted and still asks about the cursor.
+        let lines = Some(Range::Span {
+            start: crate::range::RangeBound::Line(1),
+            end: crate::range::RangeBound::Line(3),
+        });
+        assert_eq!(
+            run(&mut doc, "ex:lsp-extract", lines),
+            LspRequest::CodeActions {
+                only: Some(CodeActionKindFilter::Extract),
+                on_selection: false
+            }
+        );
     }
 
     #[test]

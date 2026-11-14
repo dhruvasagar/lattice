@@ -4646,6 +4646,7 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
                 None => editor.do_write(path),
             }
         }
+        Effect::SaveAllBuffers => editor.save_all_buffers(),
         Effect::BufferDelete { force } => {
             // 5.5.F.4.4: `:bd[elete]` -- close the active buffer. The
             // host-side path handles successor selection, LSP detach,
@@ -32341,6 +32342,61 @@ impl Editor {
         Ok(written)
     }
 
+    /// `:wa` (WE.4): write every modified file buffer through
+    /// [`Self::save_buffer_blocking`], whether or not a pane shows it --
+    /// a rename with `lsp.save-workspace-edits` off leaves its files in
+    /// exactly that state. Read-only buffers and buffers with no file are
+    /// skipped, so no synthetic buffer is ever written. One echo names the
+    /// count, and each failure.
+    pub fn save_all_buffers(&mut self) {
+        let targets: Vec<BufferId> = self
+            .buffers
+            .document_ids_sorted()
+            .into_iter()
+            .filter(|&id| {
+                self.buffers.document_dirty(id)
+                    && self.buffers.document_path(id).is_some()
+                    && !*self.resolved_option::<lattice_config::ReadOnly>(id)
+            })
+            .collect();
+        if targets.is_empty() {
+            self.set_message(EchoLevel::Info, "no changes to write".to_string());
+            return;
+        }
+        let mut written = 0usize;
+        let mut failed: Vec<String> = Vec::new();
+        for id in targets {
+            match self.save_buffer_blocking(id) {
+                Ok(_) => written += 1,
+                Err(e) => {
+                    let name = self
+                        .buffers
+                        .document_path(id)
+                        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+                        .unwrap_or_else(|| format!("#{}", id.0));
+                    tracing::warn!(buffer = id.0, error = %e, ":wa: write failed");
+                    failed.push(format!("{name} ({e})"));
+                }
+            }
+        }
+        let plural = |n: usize| if n == 1 { "file" } else { "files" };
+        if failed.is_empty() {
+            self.set_message(
+                EchoLevel::Info,
+                format!("{written} {} written", plural(written)),
+            );
+        } else {
+            self.set_message(
+                EchoLevel::Warn,
+                format!(
+                    "{written} {} written; failed: {}",
+                    plural(written),
+                    failed.join(", ")
+                ),
+            );
+        }
+    }
+
     /// AR.0: record `id`'s on-disk fingerprint `(mtime, size, content-hash)`
     /// from `path` + the buffer's current `text`. The single seam both the
     /// load path (`open_fresh_into_active_slot`) and the save path
@@ -45758,6 +45814,7 @@ pub fn effect_mutates_or_yanks(effect: &lattice_grammar::Effect) -> bool {
         | Effect::SelectionChange(_)
         | Effect::EnterMode(_)
         | Effect::SaveBuffer { .. }
+        | Effect::SaveAllBuffers
         | Effect::QuitEditor { .. }
         | Effect::OpenBuffer { .. }
         | Effect::SetOption { .. }
@@ -45929,6 +45986,7 @@ pub fn effect_mutates(effect: &lattice_grammar::Effect) -> bool {
         | Effect::OpenPrompt { .. }
         | Effect::EnterMode(_)
         | Effect::SaveBuffer { .. }
+        | Effect::SaveAllBuffers
         | Effect::QuitEditor { .. }
         | Effect::OpenBuffer { .. }
         | Effect::SetOption { .. }

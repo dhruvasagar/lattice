@@ -1564,6 +1564,7 @@ impl GpuiApp {
             | Effect::TerminalInput(_)
             // I3/BC.8c follow-up: SaveBuffer host-applied (reuses do_write).
             | Effect::SaveBuffer { .. }
+            | Effect::SaveAllBuffers
             | Effect::RecordJump
             // Host-applied cd/pwd effects (GPUI parity with TUI peer).
             | Effect::ChangeDir(_)

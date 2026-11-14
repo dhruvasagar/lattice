@@ -641,6 +641,13 @@ pub enum Effect {
     EnterMode(ModalState),
 
     // --- Ex-command effects (DESIGN.md §5.2.1) ---
+    /// `:wa` / `:wall` -- write every modified file buffer, open or
+    /// hidden, the active one included. Read-only buffers and those with
+    /// no file are skipped. WE.4.
+    ///
+    /// Native-only: it has no WIT mirror yet, and its `to_wit` refuses it
+    /// (the `LspRequest::ReferencesView` shape).
+    SaveAllBuffers,
     /// `:w [path]` -- write the current buffer (to the given path, or the
     /// document's known path).
     ///

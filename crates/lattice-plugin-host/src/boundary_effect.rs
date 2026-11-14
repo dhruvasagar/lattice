@@ -609,6 +609,11 @@ fn effect_to_wit(e: &NativeEffect) -> Result<WitEffect, String> {
         }),
         NativeEffect::EnterMode(state) => WitEffect::EnterMode(state.to_wit()?),
         NativeEffect::SaveBuffer { path } => WitEffect::SaveBuffer(opt_path_to_wit(path)?),
+        // WE.4: no WIT mirror yet; adding one is a versioned plugin-API
+        // change and gets its own slice.
+        NativeEffect::SaveAllBuffers => {
+            return Err("Effect::SaveAllBuffers (`:wa`) has no WIT mirror yet".to_string());
+        }
         NativeEffect::QuitEditor { force, scope } => WitEffect::QuitEditor(WitQuitPayload {
             force: *force,
             scope: scope.to_wit()?,

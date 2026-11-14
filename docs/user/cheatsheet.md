@@ -90,6 +90,7 @@ Prefix motions and operators with a number: `3j` (down 3), `d5w` (delete 5 words
 | `:w` | Write (save) |
 | `:q` | Quit current buffer |
 | `:wq` | Write and quit |
+| `:wa` | Write every modified buffer |
 | `:q!` | Force quit (discard changes) |
 | `:e {file}` | Open file |
 | `:bn` `:bp` | Next / previous buffer |

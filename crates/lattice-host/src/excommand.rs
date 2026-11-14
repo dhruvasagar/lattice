@@ -526,6 +526,9 @@ static ALIAS_TABLE: &[(&str, &str)] = &[
     ("q", "ex:quit"),
     ("quit", "ex:quit"),
     ("wq", "ex:write-quit"),
+    // WE.4: vim's `:wa` / `:wall`.
+    ("wa", "ex:write-all"),
+    ("wall", "ex:write-all"),
     ("x", "ex:write-quit"),
     // `:qa` quits the whole editor (every pane + tab), distinct from
     // `:q` which closes a single pane unless it's the last one.

@@ -52,6 +52,7 @@ pub fn effect_is_host_complete(effect: &Effect) -> bool {
         Effect::ApplyEdit { .. }
         | Effect::WriteToFile { .. }
         | Effect::SaveBuffer { .. }
+        | Effect::SaveAllBuffers
         | Effect::QuitEditor { .. }
         | Effect::OpenBuffer { .. }
         | Effect::OpenBufferAt { .. }

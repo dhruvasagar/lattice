@@ -1068,6 +1068,7 @@ impl App {
             // I3/BC.8c follow-up: SaveBuffer host-applied (reuses do_write,
             // joins BufferDelete); peer no-ops it.
             | Effect::SaveBuffer { .. }
+            | Effect::SaveAllBuffers
             | Effect::Echo { .. }
             | Effect::ShowDiagnosticsPopup { .. }
             // L7: LSP nav requests are host-applied (`editor.lsp_request`).
@@ -1533,6 +1534,7 @@ fn effect_mutates_or_yanks(effect: &Effect) -> bool {
         | Effect::SelectionChange(_)
         | Effect::EnterMode(_)
         | Effect::SaveBuffer { .. }
+        | Effect::SaveAllBuffers
         | Effect::QuitEditor { .. }
         | Effect::OpenBuffer { .. }
         | Effect::OpenBufferAt { .. }
@@ -1701,6 +1703,7 @@ fn effect_mutates(effect: &Effect) -> bool {
         | Effect::Yank { .. }
         | Effect::EnterMode(_)
         | Effect::SaveBuffer { .. }
+        | Effect::SaveAllBuffers
         | Effect::QuitEditor { .. }
         | Effect::OpenBuffer { .. }
         | Effect::OpenBufferAt { .. }

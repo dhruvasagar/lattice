@@ -224,3 +224,47 @@ fn each_file_is_one_undo_unit() {
         "fn foo() { foo(); }\n"
     );
 }
+
+/// `:wa` (WE.4) writes what a review left unsaved: every modified file
+/// buffer, including ones no pane shows.
+#[test]
+fn wa_writes_every_modified_buffer_and_nothing_else() {
+    let dir = Dir::new("wa");
+    let main = dir.file("main.rs", "fn foo() {}\n");
+    let other = dir.file("other.rs", "fn foo() {}\n");
+    let untouched = dir.file("untouched.rs", "fn baz() {}\n");
+    let mut editor = editor_on(&main);
+    let _ = editor.resolve_path_to_buffer(&untouched).unwrap();
+    editor
+        .config
+        .set_typed::<lattice_config::core_options::LspSaveWorkspaceEdits>(false)
+        .unwrap();
+    let _ = editor.apply_rename_workspace_edit(
+        vec![
+            (uri(&main), vec![rename_at(0, 3)]),
+            (uri(&other), vec![rename_at(0, 3)]),
+        ],
+        "bar".into(),
+    );
+    assert_eq!(disk(&other), "fn foo() {}\n", "precondition: unsaved");
+
+    let mut out = lattice_host::dispatch::DispatchOutcome::default();
+    editor.execute_ex_line("wa", &mut out);
+
+    assert_eq!(disk(&main), "fn bar() {}\n");
+    assert_eq!(disk(&other), "fn bar() {}\n");
+    assert_eq!(disk(&untouched), "fn baz() {}\n");
+    assert!(!editor.document.snapshot().dirty);
+    let kept = buffer_on(&editor, &other).unwrap();
+    assert!(!editor.buffers.document_dirty(kept));
+    assert_eq!(
+        editor.last_message.as_ref().unwrap().text,
+        "2 files written"
+    );
+
+    editor.execute_ex_line("wall", &mut out);
+    assert_eq!(
+        editor.last_message.as_ref().unwrap().text,
+        "no changes to write"
+    );
+}

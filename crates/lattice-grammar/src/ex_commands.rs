@@ -313,6 +313,21 @@ pub fn populate(registry: &mut CommandRegistry) -> ExBuiltins {
             surface_form: SurfaceForm::Keyword,
         },
     );
+    // WE.4: `:wa` -- reached by name (aliases in the host table), no
+    // `ExBuiltins` field, mirroring `:qa`.
+    let _write_all = registry.register_ex_command(
+        "ex:write-all",
+        "Write every modified file buffer to disk, including ones no pane shows (`:wa`).",
+        ExCommandSpec {
+            latency_class: LatencyClass::Display,
+            accepts_bang: false,
+            accepts_range: false,
+            parse_args: Arc::new(parse_no_args),
+            apply: Arc::new(|_| Ok(Effect::SaveAllBuffers)),
+            args_schema: vec![],
+            surface_form: SurfaceForm::Keyword,
+        },
+    );
     let write_quit = registry.register_ex_command(
         "ex:write-quit",
         "Write the current buffer and quit (`:wq[!]` / `:x[!]`).",

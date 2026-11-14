@@ -16703,7 +16703,7 @@ impl Editor {
         };
         use lattice_grammar::{ModalState, VisualKind};
         use lattice_protocol::selection::{Selection, SelectionSet, VisualMode};
-        self.modal = ModalState::Visual(VisualKind::Charwise);
+        self.transition_modal(ModalState::Visual(VisualKind::Charwise));
         self.visual_anchor = Some(anchor);
         self.cursor = head;
         let sel = Selection {
@@ -24398,7 +24398,7 @@ impl Editor {
             // press-then-drag work without the press having to predict
             // that a drag is coming.
             let anchor = self.visual_anchor.unwrap_or(self.cursor);
-            self.modal = ModalState::Visual(VisualKind::Charwise);
+            self.transition_modal(ModalState::Visual(VisualKind::Charwise));
             self.visual_anchor = Some(anchor);
             self.cursor = head;
             self.set_selections_blocking(SelectionSet::single(Selection {
@@ -24408,7 +24408,7 @@ impl Editor {
             }));
         } else {
             if matches!(self.modal, ModalState::Visual(_) | ModalState::Select(_)) {
-                self.modal = ModalState::Normal;
+                self.transition_modal(ModalState::Normal);
             }
             self.visual_anchor = None;
             self.cursor = head;
@@ -27418,51 +27418,73 @@ impl Editor {
                 self.cursor.byte -= 1;
             }
         }
-        if prior != state {
-            self.event_bus.publish(Event::ModalModeChanged {
-                from: format!("{prior:?}"),
-                to: format!("{state:?}"),
-            });
-            // ML.5d: the modeline shows only the lean tag (NOR/INS/…),
-            // so surface the full mode name in the echo area on a real
-            // transition — vim's showmode (`-- INSERT --`). Insert /
-            // Replace / Visual / Select get the indicator; entering
-            // Normal clears a lingering one; Command / Search /
-            // Operator-pending own their own line (cmdline / showcmd)
-            // and so leave the echo untouched.
-            use lattice_grammar::VisualKind;
-            let showmode = match state {
-                ModalState::Insert => Some("-- INSERT --"),
-                ModalState::Replace => Some("-- REPLACE --"),
-                ModalState::Visual(VisualKind::Charwise) => Some("-- VISUAL --"),
-                ModalState::Visual(VisualKind::Linewise) => Some("-- VISUAL LINE --"),
-                ModalState::Visual(VisualKind::Blockwise) => Some("-- VISUAL BLOCK --"),
-                ModalState::Select(VisualKind::Charwise) => Some("-- SELECT --"),
-                ModalState::Select(VisualKind::Linewise) => Some("-- SELECT LINE --"),
-                ModalState::Select(VisualKind::Blockwise) => Some("-- SELECT BLOCK --"),
-                ModalState::Normal
-                | ModalState::OperatorPending
-                | ModalState::Command
-                | ModalState::Search(_)
-                | ModalState::Prompt => None,
-            };
-            match showmode {
-                Some(text) => self.set_ephemeral_echo(EchoLevel::Info, text),
-                None => {
-                    // Leaving a showmode mode (e.g. <Esc> from Insert)
-                    // clears the lingering `-- NAME --`. Gated on the
-                    // *prior* being a showmode mode so a message set
-                    // during a Command / operator (which leave from a
-                    // non-showmode prior) is never clobbered.
-                    if matches!(
-                        prior,
-                        ModalState::Insert
-                            | ModalState::Replace
-                            | ModalState::Visual(_)
-                            | ModalState::Select(_)
-                    ) {
-                        self.last_message = None;
-                    }
+        self.announce_modal_change(prior, state);
+    }
+
+    /// Change the modal state with the transition's announcements — the
+    /// `ModalModeChanged` event and vim's showmode echo — but none of
+    /// [`Self::enter_mode`]'s Insert bookkeeping (undo grouping, the
+    /// dot-repeat recording, the Insert→Normal cursor pull-back).
+    ///
+    /// Every Visual / Select entry and exit goes through here. They used to
+    /// assign `self.modal` directly, so `v` showed no `-- VISUAL --` and
+    /// fired no event: the one-cell selection sits under the block cursor,
+    /// leaving the modeline tag as the only sign Visual had started.
+    pub fn transition_modal(&mut self, state: ModalState) {
+        let prior = self.modal;
+        self.modal = state;
+        self.announce_modal_change(prior, state);
+    }
+
+    /// The vim showmode text for `state`, or `None` for the modes that own
+    /// their own line (cmdline / showcmd) or show nothing (Normal).
+    fn showmode_text(state: ModalState) -> Option<&'static str> {
+        use lattice_grammar::VisualKind;
+        match state {
+            ModalState::Insert => Some("-- INSERT --"),
+            ModalState::Replace => Some("-- REPLACE --"),
+            ModalState::Visual(VisualKind::Charwise) => Some("-- VISUAL --"),
+            ModalState::Visual(VisualKind::Linewise) => Some("-- VISUAL LINE --"),
+            ModalState::Visual(VisualKind::Blockwise) => Some("-- VISUAL BLOCK --"),
+            ModalState::Select(VisualKind::Charwise) => Some("-- SELECT --"),
+            ModalState::Select(VisualKind::Linewise) => Some("-- SELECT LINE --"),
+            ModalState::Select(VisualKind::Blockwise) => Some("-- SELECT BLOCK --"),
+            ModalState::Normal
+            | ModalState::OperatorPending
+            | ModalState::Command
+            | ModalState::Search(_)
+            | ModalState::Prompt => None,
+        }
+    }
+
+    /// Publish `ModalModeChanged` and update the showmode echo for a real
+    /// transition `prior → state`. A no-op when the state did not change.
+    fn announce_modal_change(&mut self, prior: ModalState, state: ModalState) {
+        if prior == state {
+            return;
+        }
+        self.event_bus.publish(Event::ModalModeChanged {
+            from: format!("{prior:?}"),
+            to: format!("{state:?}"),
+        });
+        // ML.5d: the modeline shows only the lean tag (NOR/INS/…), so
+        // surface the full mode name in the echo area on a real transition
+        // — vim's showmode (`-- INSERT --`). Command / Search /
+        // Operator-pending own their own line (cmdline / showcmd) and so
+        // leave the echo untouched.
+        match Self::showmode_text(state) {
+            Some(text) => self.set_ephemeral_echo(EchoLevel::Info, text),
+            None => {
+                // Leaving a showmode mode (e.g. <Esc> from Insert) clears
+                // the lingering `-- NAME --` — but only while the echo
+                // still IS the indicator. A message set since then is newer
+                // feedback the user has not had a chance to read, and stays.
+                let still_showmode = self
+                    .last_message
+                    .as_ref()
+                    .is_some_and(|m| Self::showmode_text(prior).is_some_and(|text| m.text == text));
+                if still_showmode {
+                    self.last_message = None;
                 }
             }
         }
@@ -30570,7 +30592,7 @@ impl Editor {
             }));
             self.visual_anchor = Some(anchor);
             self.cursor = head;
-            self.modal = ModalState::Select(VisualKind::Charwise);
+            self.transition_modal(ModalState::Select(VisualKind::Charwise));
         } else {
             if let Ok(start) = buffer.byte_to_position(first.start) {
                 self.cursor = start;
@@ -39075,7 +39097,7 @@ impl Editor {
                 return;
             }
             // Different kind → switch in place, keep anchor + head.
-            self.modal = ModalState::Visual(kind);
+            self.transition_modal(ModalState::Visual(kind));
             let sels = self.document.selections();
             let sel = sels.primary();
             let switched = lattice_protocol::selection::Selection {
@@ -39088,7 +39110,7 @@ impl Editor {
             ));
             return;
         }
-        self.modal = ModalState::Visual(kind);
+        self.transition_modal(ModalState::Visual(kind));
         self.visual_anchor = Some(self.cursor);
         let sel = lattice_protocol::selection::Selection {
             anchor: self.cursor,
@@ -39192,7 +39214,7 @@ impl Editor {
                 kind,
             });
         }
-        self.modal = ModalState::Normal;
+        self.transition_modal(ModalState::Normal);
         self.visual_anchor = None;
         self.set_selections_blocking(lattice_protocol::selection::SelectionSet::single(
             lattice_protocol::selection::Selection::cursor(self.cursor),
@@ -39225,7 +39247,7 @@ impl Editor {
     /// (snippets) sets the selection explicitly and uses
     /// `EnterMode(Select(k))` instead (select-mode.md §3).
     pub fn do_enter_select(&mut self, kind: lattice_grammar::VisualKind) {
-        self.modal = ModalState::Select(kind);
+        self.transition_modal(ModalState::Select(kind));
         self.visual_anchor = Some(self.cursor);
         let sel = lattice_protocol::selection::Selection {
             anchor: self.cursor,
@@ -39325,7 +39347,7 @@ impl Editor {
                 kind,
             });
         }
-        self.modal = ModalState::Normal;
+        self.transition_modal(ModalState::Normal);
         self.visual_anchor = None;
         self.set_selections_blocking(lattice_protocol::selection::SelectionSet::single(
             lattice_protocol::selection::Selection::cursor(self.cursor),
@@ -39340,8 +39362,8 @@ impl Editor {
     /// Visual `<C-g>` entry chord wired in d.2).
     pub fn do_toggle_visual_select(&mut self) {
         match self.modal {
-            ModalState::Visual(kind) => self.modal = ModalState::Select(kind),
-            ModalState::Select(kind) => self.modal = ModalState::Visual(kind),
+            ModalState::Visual(kind) => self.transition_modal(ModalState::Select(kind)),
+            ModalState::Select(kind) => self.transition_modal(ModalState::Visual(kind)),
             _ => {}
         }
     }
@@ -39379,7 +39401,7 @@ impl Editor {
             self.set_message(EchoLevel::Error, "no previous visual selection".to_string());
             return;
         };
-        self.modal = ModalState::Visual(last.kind);
+        self.transition_modal(ModalState::Visual(last.kind));
         self.visual_anchor = Some(last.anchor);
         self.cursor = last.head;
         let sel = lattice_protocol::selection::Selection {
@@ -50016,8 +50038,8 @@ mod tests {
     }
 
     /// ML.5d: a real echo message set during a Command (`:w` →
-    /// "written") survives the return to Normal — the clear is gated on
-    /// the *prior* being a showmode mode, and Command is not one.
+    /// "written") survives the return to Normal — the clear takes only a
+    /// showmode indicator, and "written" is not one.
     #[test]
     fn returning_to_normal_from_command_preserves_real_message() {
         use lattice_grammar::ModalState;

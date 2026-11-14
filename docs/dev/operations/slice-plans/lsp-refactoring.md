@@ -2,7 +2,7 @@
 
 Design: [`lsp-architecture.md` §16](../../architecture/lsp-architecture.md)
 ("Code actions joined the split"). Applying the edits a refactoring returns
-is [`workspace-edits.md`](workspace-edits.md) (WE).
+is [`workspace-edits.md`](archive/workspace-edits.md) (WE).
 
 ## Why
 

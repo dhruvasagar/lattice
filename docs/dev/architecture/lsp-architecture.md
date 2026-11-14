@@ -1511,7 +1511,7 @@ fails leaves the files before it applied, and the echo names each failure.
 Resource operations (`CreateFile` / `RenameFile` / `DeleteFile`) are still
 dropped by `flatten_workspace_edit`.
 
-Sequencing: [`../operations/slice-plans/workspace-edits.md`](../operations/slice-plans/workspace-edits.md).
+Sequencing: [`../operations/slice-plans/archive/workspace-edits.md`](../operations/slice-plans/archive/workspace-edits.md).
 
 ---
 

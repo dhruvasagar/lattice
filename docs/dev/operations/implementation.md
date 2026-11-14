@@ -7528,7 +7528,7 @@ in place, other files in hidden buffers closed once saved. Every touched
 file is saved (`lsp.save-workspace-edits`, default on); `:wa` (WE.4)
 writes what a review left unsaved.
 Design: [`../architecture/lsp-architecture.md`](../architecture/lsp-architecture.md) §18.
-Slice plan: [`slice-plans/workspace-edits.md`](slice-plans/workspace-edits.md).
+Slice plan: [`slice-plans/archive/workspace-edits.md`](slice-plans/archive/workspace-edits.md).
 
 ## Refactoring (RF, 2026-11-14 — ✅ RF.1, RF.2 📝)
 

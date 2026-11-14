@@ -1,6 +1,6 @@
 # Workspace edits: applied in the background, saved (WE-series)
 
-Design: [`lsp-architecture.md` §18](../../architecture/lsp-architecture.md#18-applying-a-workspaceedit).
+Design: [`lsp-architecture.md` §18](../../../architecture/lsp-architecture.md#18-applying-a-workspaceedit).
 
 ## Why
 

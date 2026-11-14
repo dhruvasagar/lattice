@@ -361,7 +361,11 @@ pub enum Action {
     /// (and future) modes drive instead of host `do_<x>` methods.
     ApplyEdit {
         target: lattice_core::BufferId,
-        edit: lattice_protocol::edit::Edit,
+        /// RF.2a: every edit one command made to `target`, in order — one
+        /// undo step. Consecutive `Effect::ApplyEdit`s for the same target
+        /// coalesce here, so a plugin returning one edit per line (`gc`)
+        /// or two for a swap is undone by one `u`.
+        edits: Vec<lattice_protocol::edit::Edit>,
         cursor: Option<lattice_protocol::position::Position>,
     },
     // M.10.7 (2026-06-03): four dead Action variants deleted —

@@ -145,6 +145,21 @@ mod tests {
         assert_eq!(body(&app), "    // a\n    //     b\nc\n");
     }
 
+    /// One `gc` is one undo step, however many lines it touched. The plugin
+    /// returns one edit per line; `u` must put them all back, not the last
+    /// line alone (RF.2a: a plugin call's edits undo together).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn gc_over_several_lines_undoes_in_one_step() {
+        let original = "a\nb\nc\n";
+        let Some(mut app) = app_with_comment("main.rs", original).await else {
+            return;
+        };
+        press_chars(&mut app, "gc2j");
+        assert_eq!(body(&app), "// a\n// b\n// c\n");
+        press_chars(&mut app, "u");
+        assert_eq!(body(&app), original, "one `u` undoes the whole `gc`");
+    }
+
     /// A file the plugin has no leader for is left alone, and the user is
     /// told why — a silent no-op on `gcc` reads as a dead chord.
     #[tokio::test(flavor = "multi_thread")]

@@ -3271,9 +3271,9 @@ pub(crate) fn handle_action(editor: &mut Editor, action: Action, _out: &mut Disp
         // put.
         Action::ApplyEdit {
             target,
-            edit,
+            edits,
             cursor,
-        } => editor.apply_edit_effect_inline(target, edit, cursor),
+        } => editor.apply_edits_effect_inline(target, edits, cursor),
         // M.10.7 (2026-06-03): four Action arms removed —
         // `MultibufferExpand`, `SearchTrigger`,
         // `SearchJumpToSource`, `SearchRefresh`. All four
@@ -4764,11 +4764,29 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
             // records exactly once through `publish_document_changed`
             // (risk #1). Translating here (not applying) keeps
             // `handle_effect` side-effect-light.
-            out.next_actions.push(Action::ApplyEdit {
-                target,
-                edit,
-                cursor,
-            });
+            //
+            // RF.2a: one command is one undo step. A run of `ApplyEdit`s for
+            // the same target — a plugin's `gc` emits one per line, a swap
+            // two — joins the previous one rather than queueing a separate
+            // apply, and so a separate undo entry. The later cursor wins.
+            if let Some(Action::ApplyEdit {
+                target: prev,
+                edits,
+                cursor: prev_cursor,
+            }) = out.next_actions.last_mut()
+                && *prev == target
+            {
+                edits.push(edit);
+                if cursor.is_some() {
+                    *prev_cursor = cursor;
+                }
+            } else {
+                out.next_actions.push(Action::ApplyEdit {
+                    target,
+                    edits: vec![edit],
+                    cursor,
+                });
+            }
         }
         // XF.3: applied inline rather than deferred — see
         // `apply_write_to_file` for why the `ApplyEdit` deferral cannot
@@ -15396,38 +15414,9 @@ impl Editor {
             return Err("the buffer is gone".to_string());
         };
         let lattice_edits = Self::lsp_text_edits_to_edits(&handle.snapshot().buffer, edits);
-        let applied =
-            block_on(handle.apply_edit_batch(lattice_edits)).map_err(|e| format!("{e:?}"))?;
-        let snap = handle.snapshot();
-        // OWC: the host issued this edit, as `apply_targeted_edit` records.
-        self.last_seen_text_version
-            .insert(target, snap.pre_append_version);
-        let path = snap.path().map(|p| p.to_path_buf());
-        let edits: Vec<lattice_protocol::event::AppliedEdit> = applied
-            .iter()
-            .map(|a| lattice_protocol::event::AppliedEdit {
-                original_range: a.original_range,
-                inserted_range: a.inserted_range,
-                replaced_text: a.replaced_text.clone(),
-                inserted_text: a.inserted_text.clone(),
-            })
-            .collect();
-        self.event_bus.publish(Event::DocumentChanged {
-            id: snap.id,
-            path: path.clone(),
-            version: snap.version,
-            edits: edits.clone(),
-        });
-        if self.lsp_mode_enabled_for(target) {
-            self.event_bus
-                .publish_typed(lattice_lsp::LspDocumentChanged {
-                    id: snap.id,
-                    path,
-                    version: snap.version,
-                    edits,
-                });
-        }
-        Ok(())
+        self.apply_targeted_edit_batch(target, lattice_edits)
+            .map(|_| ())
+            .map_err(|e| format!("{e:?}"))
     }
 
     /// Fire `workspace/executeCommand` for a code-action's command
@@ -23444,6 +23433,91 @@ impl Editor {
                 );
             }
         }
+    }
+
+    /// [`Self::apply_edit_effect_inline`] for a command's whole run of edits
+    /// to one buffer, applied in order as ONE undo step (RF.2a). A single
+    /// edit takes the single-edit path unchanged.
+    pub fn apply_edits_effect_inline(
+        &mut self,
+        target: lattice_core::BufferId,
+        mut edits: Vec<lattice_protocol::edit::Edit>,
+        cursor: Option<lattice_protocol::position::Position>,
+    ) {
+        if edits.len() == 1 {
+            let edit = edits.remove(0);
+            return self.apply_edit_effect_inline(target, edit, cursor);
+        }
+        match self.apply_targeted_edit_batch(target, edits) {
+            Ok(_) => {
+                if let Some(pos) = cursor {
+                    self.cursor = pos;
+                }
+            }
+            Err(err) => {
+                tracing::debug!(
+                    target: "lattice_host::edit",
+                    ?target,
+                    ?err,
+                    "Action::ApplyEdit batch failed; cursor unchanged"
+                );
+            }
+        }
+    }
+
+    /// [`Self::apply_targeted_edit`] for several edits, applied in order as
+    /// one undo step (RF.2a). The active document takes
+    /// [`Self::apply_edit_batch_blocking`]; a peer applies through its
+    /// handle and announces `DocumentChanged` — and `LspDocumentChanged`
+    /// when lsp-mode is on for it, so its server sees the edit (WE.2). A
+    /// multibuffer *source* has no batch door, so its edits apply one at a
+    /// time there, each its own undo step: the agenda writes one line, and
+    /// nothing batches into a source today.
+    pub fn apply_targeted_edit_batch(
+        &mut self,
+        target: lattice_core::BufferId,
+        edits: Vec<lattice_protocol::edit::Edit>,
+    ) -> Result<Vec<lattice_core::buffer::AppliedEdit>, lattice_runtime::RuntimeError> {
+        if target == self.document_buffer_id {
+            return self.apply_edit_batch_blocking(edits);
+        }
+        let Some(handle) = self.buffers.document_handle(target) else {
+            return edits
+                .into_iter()
+                .map(|e| self.apply_edit_to_multibuffer_source(target, e))
+                .collect();
+        };
+        let applied = block_on(handle.apply_edit_batch(edits))?;
+        let snap = handle.snapshot();
+        // OWC: the host issued this edit, as `apply_targeted_edit` records.
+        self.last_seen_text_version
+            .insert(target, snap.pre_append_version);
+        let path = snap.path().map(|p| p.to_path_buf());
+        let events: Vec<lattice_protocol::event::AppliedEdit> = applied
+            .iter()
+            .map(|a| lattice_protocol::event::AppliedEdit {
+                original_range: a.original_range,
+                inserted_range: a.inserted_range,
+                replaced_text: a.replaced_text.clone(),
+                inserted_text: a.inserted_text.clone(),
+            })
+            .collect();
+        self.event_bus.publish(Event::DocumentChanged {
+            id: snap.id,
+            path: path.clone(),
+            version: snap.version,
+            edits: events.clone(),
+        });
+        if self.lsp_mode_enabled_for(target) {
+            self.event_bus
+                .publish_typed(lattice_lsp::LspDocumentChanged {
+                    id: snap.id,
+                    path,
+                    version: snap.version,
+                    edits: events,
+                });
+        }
+        Ok(applied)
     }
 
     /// CR.1: apply the `Option<Effect>` a `DiffSubsystem::diff_*_effect`

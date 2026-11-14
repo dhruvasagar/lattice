@@ -110,16 +110,20 @@ attaches or restarts.
 
 ## 6. What the seam has to grow (found by designing this)
 
-1. **One undo unit for a multi-edit result.** Each `apply-edit` effect becomes
-   its own `Action::ApplyEdit`; whether two from one call undo together is
-   unverified — `comment`'s `gc` over several lines has the same question.
-   RF.2a checks first. If they are separate undo steps, the fix is host-side
-   (one undo step per callback's edits) and fixes `gc` too; it is not a
-   structural-only change.
-2. **Shrink needs the expand history.** Plugin instance state across calls
-   holds it, per buffer, dropped once the selection no longer matches the last
-   expand. No seam change, provided instance state survives between calls —
-   also verified in RF.2a.
+1. **One undo unit for a multi-edit result — was missing; fixed in RF.2a.**
+   Each `apply-edit` effect became its own `Action::ApplyEdit` and so its own
+   undo entry: `gc2j` then `u` took back the last line only, a live bug in the
+   shipped comment plugin. The host now coalesces a run of `ApplyEdit`s for
+   the same buffer into one `Action::ApplyEdit { edits }`, applied through
+   `apply_edit_batch` — one undo step, edits in order, the last cursor wins.
+   In order means the plugin still emits a swap's later range first (§5).
+2. **Shrink needs the expand history — no seam change.** The loader
+   instantiates a grammar plugin once, at load, and every action call reuses
+   that `Store`, so guest memory persists between calls. The history lives
+   there, per buffer, dropped once the selection no longer matches the last
+   expand. Only the grammar instance sees it — the event and config seams run
+   separate instances (plugin-host.md, durable storage) — which is fine: all
+   six commands are grammar actions.
 3. **Dot-repeat** of a plugin action needs the host to record plugin actions as
    repeatable changes: a seam-wide change of its own, after v1.
 

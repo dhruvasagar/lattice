@@ -18,7 +18,7 @@ so a server holding one of those files open kept the old text.
 | WE.1 | `save_buffer_blocking(id)`: save any buffer, not only the active one — `BeforeSave` / `DocumentSaved` / autoread stamp / `didSave`, no `willSaveWaitUntil` for a background buffer. org capture's `save_target_to_disk` uses it. | ✅ |
 | WE.2 | One applier, `apply_workspace_edit`: per file, the open buffer (found by real path) or a hidden one opened for the edit; one undo unit per file; `DocumentChanged` + `LspDocumentChanged` for peers; focus never moves. Rename, code actions and inbound `applyEdit` all use it. | ✅ |
 | WE.3 | `lsp.save-workspace-edits` (default on): save every file the edit touched and close the hidden buffers once saved. Off, or a save failing, the touched files stay open, listed and dirty for review. | ✅ |
-| WE.4 | `:wa` / `:wall`: write every modified file-backed buffer through WE.1. | ⛔ deferred: it needs a new `Effect` variant, and every `Effect` crosses the plugin boundary, so it is a WIT change (`@0.4.0`). Comes with the next WIT bump. |
+| WE.4 | `:wa` / `:wall`: write every modified file-backed buffer through WE.1. | 📝 — a native-only `Effect` arm (its `to_wit` refuses it with "no WIT mirror yet", the `ReferencesView` / `BuryBuffer` shape), so no plugin-API change. |
 
 Not in scope, named so they are not lost:
 

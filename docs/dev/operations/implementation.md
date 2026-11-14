@@ -7530,13 +7530,15 @@ writes what a review left unsaved.
 Design: [`../architecture/lsp-architecture.md`](../architecture/lsp-architecture.md) §18.
 Slice plan: [`slice-plans/archive/workspace-edits.md`](slice-plans/archive/workspace-edits.md).
 
-## Refactoring (RF, 2026-11-14 — ✅ RF.1, RF.2 📝)
+## Refactoring (RF, 2026-11-14 — ✅ RF.1, 🚧 RF.2)
 
 The server's refactorings by name (`:lsp-refactor` / `:lsp-extract` /
 `:lsp-inline`) on the code-action request, which joins §16's
-`LspRequest` split; then a structural-operators plugin on
-`tree-sitter.wit` that needs no server.
-Design: [`../architecture/lsp-architecture.md`](../architecture/lsp-architecture.md) §16.
+`LspRequest` split; then structural editing — expand / shrink, swap,
+raise, split / join — as a bundled plugin on `tree-sitter.wit`, needing no
+server.
+Design: [`../architecture/lsp-architecture.md`](../architecture/lsp-architecture.md) §16;
+[`../architecture/structural-editing.md`](../architecture/structural-editing.md).
 Slice plan: [`slice-plans/lsp-refactoring.md`](slice-plans/lsp-refactoring.md).
 
 ---

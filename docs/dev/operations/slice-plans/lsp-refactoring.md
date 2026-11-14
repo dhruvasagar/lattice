@@ -27,7 +27,13 @@ agreed:
 | Slice | What | Status |
 |---|---|---|
 | RF.1 | Code actions move onto §16's split: `LspRequest::CodeActions { only, on_selection }` replaces `Effect::LspCodeAction`, host-applied, so both renderers drop their arm. `:lsp-refactor` / `:lsp-extract` / `:lsp-inline` are three filter values. `only` is sent as `context.only` and applied to the response. `:'<,'>` asks about the last selection; the selection is head-inclusive and `V` covers whole lines. WIT unchanged: `lsp-code-action` maps to the unfiltered form, the filtered forms refuse to cross. | ✅ |
-| RF.2 | Structural-operators plugin on `tree-sitter.wit`: its own design fragment first (operator set, grammar surface, what "structural" means per language). | 📝 |
+| RF.2 | Structural-editing plugin on `tree-sitter.wit`. Design: [`structural-editing.md`](../../architecture/structural-editing.md), agreed 2026-11-14. Split into RF.2a–f below. | 🚧 |
+| RF.2a | Verify the seam assumptions before building on them (design §6): two `apply-edit` effects from one action call undo as one step, and plugin instance state survives between calls. Fix host-side if the first does not hold (it would fix `gc` too). | 📝 |
+| RF.2b | `plugins/structural` crate, registered as a core plugin (`CORE_PLUGINS`, `build_guest`), `structural-mode` minor mode active where a parse tree exists; `:structural-expand` / `-shrink` with per-buffer history; `<M-o>` / `<M-i>` in Normal and Visual. | 📝 |
+| RF.2c | `:structural-swap-next` / `-prev`, counted; error-node and no-sibling refusals. | 📝 |
+| RF.2d | `:structural-raise`, cursor and Visual forms. | 📝 |
+| RF.2e | `:structural-split` / `-join` on comma-separated nodes; trailing comma preserved; refusal for anything else. | 📝 |
+| RF.2f | Bench (swap / raise / expand on a large file) into `benchmarks.md`; user docs and `:help structural-mode`; correct the `lsp-selection-range-mode` page's "syntactic fallback" line. | 📝 |
 
 Named so they are not lost:
 

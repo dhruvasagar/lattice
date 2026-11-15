@@ -317,6 +317,75 @@ mod tests {
         );
     }
 
+    /// Raise replaces the expression around the node. Out of `baz + 1` that
+    /// is the sum; out of an argument it is the whole call, not just the
+    /// `(…)` — replacing the brackets alone would glue `foo` to the result.
+    /// Each raise is one undo step.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn raise_replaces_the_sum_then_the_call() {
+        let Some(mut app) =
+            app_with_refactor("main.rs", RUST, Some(lattice_syntax::Lang::Rust)).await
+        else {
+            return;
+        };
+        press_chars(&mut app, "jfz");
+        submit_ex(&mut app, "refactor-raise");
+        assert_eq!(body(&app), "fn main() {\n    let x = foo(bar, baz);\n}\n");
+        assert_eq!((app.editor.cursor.line, app.editor.cursor.byte), (1, 21));
+
+        submit_ex(&mut app, "refactor-raise");
+        assert_eq!(body(&app), "fn main() {\n    let x = baz;\n}\n");
+        assert_eq!((app.editor.cursor.line, app.editor.cursor.byte), (1, 12));
+
+        press_chars(&mut app, "u");
+        assert_eq!(body(&app), "fn main() {\n    let x = foo(bar, baz);\n}\n");
+    }
+
+    /// A bracket that is an expression by itself — an array — is what gets
+    /// replaced, so the binding keeps its `=`.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn raise_out_of_an_array_replaces_the_array() {
+        let src = "fn main() {\n    let v = [a, b];\n}\n";
+        let Some(mut app) =
+            app_with_refactor("main.rs", src, Some(lattice_syntax::Lang::Rust)).await
+        else {
+            return;
+        };
+        press_chars(&mut app, "jfb");
+        submit_ex(&mut app, "refactor-raise");
+        assert_eq!(body(&app), "fn main() {\n    let v = b;\n}\n");
+    }
+
+    /// A top-level item has only the file around it: refused, not a file
+    /// replaced by one function.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn raise_at_top_level_says_so_and_changes_nothing() {
+        let Some(mut app) =
+            app_with_refactor("main.rs", RUST, Some(lattice_syntax::Lang::Rust)).await
+        else {
+            return;
+        };
+        submit_ex(&mut app, "refactor-raise");
+        assert_eq!(body(&app), RUST);
+        assert!(echoed(&app).contains("top level"), "got {:?}", echoed(&app));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn raise_works_in_python() {
+        let Some(mut app) = app_with_refactor(
+            "main.py",
+            "x = f(a, b)\n",
+            Some(lattice_syntax::Lang::Python),
+        )
+        .await
+        else {
+            return;
+        };
+        press_chars(&mut app, "fb");
+        submit_ex(&mut app, "refactor-raise");
+        assert_eq!(body(&app), "x = b\n");
+    }
+
     /// The same rule in Python.
     #[tokio::test(flavor = "multi_thread")]
     async fn swap_works_in_python() {

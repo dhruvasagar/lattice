@@ -18,7 +18,7 @@
 
 use crate::lattice::plugin_host::buffer::Document;
 use crate::lattice::plugin_host::tree_sitter::{Node, TreeSnapshot};
-use crate::span::{advance, Pos, Span};
+use crate::span::{advance, span_of, text, Outcome, Pos, Span};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Dir {
@@ -26,26 +26,10 @@ pub enum Dir {
     Prev,
 }
 
-/// What a swap comes to: one replacement and where the moved item now starts,
-/// or the reason there is nothing to do.
-#[derive(Debug, PartialEq, Eq)]
-pub enum Outcome {
-    Edit {
-        range: Span,
-        text: String,
-        cursor: Pos,
-    },
-    Refuse(&'static str),
-}
-
 /// Whether `gap`, the text between two sibling nodes, separates list items.
 pub fn is_list_separator(gap: &str) -> bool {
     let t = gap.trim();
     t == "," || t == ";" || (t.is_empty() && gap.contains('\n'))
-}
-
-fn text(doc: &Document, span: Span) -> String {
-    doc.get_text_range(span.into()).unwrap_or_default()
 }
 
 /// The text between `a` and a later `b`.
@@ -57,10 +41,6 @@ fn gap(doc: &Document, a: Span, b: Span) -> String {
             end: b.start,
         },
     )
-}
-
-fn span_of(n: &Node) -> Span {
-    Span::from(n.byte_range())
 }
 
 fn sibling(n: &Node, dir: Dir) -> Option<Node> {

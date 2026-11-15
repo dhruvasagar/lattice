@@ -40,6 +40,15 @@ undoes a swap.
 They have no default keys; bind them in your `init.rs`. With a count (from a
 key you bind), the item moves that many places.
 
+## Raising a node
+
+`:refactor-raise` replaces the expression around the node at the cursor with
+the node. On `z` in `foo(bar, baz + 1)` it turns `baz + 1` into `baz`; run
+again, `foo(bar, baz)` becomes `baz` — the whole call, not just its
+brackets. Out of an array, `let v = [a, b];` with the cursor on `b` becomes
+`let v = b;`. One `u` undoes each raise. On a top-level item there is
+nothing around it but the file, and it says so.
+
 ## Where it works
 
 Any buffer with a syntax tree. In one without (plain text, a language lattice

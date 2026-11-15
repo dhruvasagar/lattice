@@ -67,7 +67,7 @@ never a node kind, so they work in every grammar with no per-language table.
 | `refactor-expand` (`<M-o>`) | Grow the selection to the smallest named node strictly larger than it (from Normal: the node at the cursor). Enters Visual charwise. A count grows that many levels. |
 | `refactor-shrink` (`<M-i>`) | Step back to the previous, smaller selection from this run of expands; past the first, back to the cursor in Normal. |
 | `:refactor-swap-next` / `-prev` | Swap the list item at the cursor with its next / previous one, and follow it. "The item" is the smallest named node at the cursor whose gap to a neighbouring named sibling is a list separator — a comma, a semicolon, or whitespace holding a line break — so on `a` in `f(a + 1, b)` it is `a + 1`: the gap between `a` and `1` is ` + `, which separates operands, not items. (RF.2c corrected the first draft's "smallest named node that has a named sibling", which picks `a` and swaps it with `1`.) The text between them stays put. A count moves the item that many places, fewer if the list ends first. |
-| `:refactor-raise` | Replace the node's parent with the node: on `bar(x)` in `foo(bar(x))`, the result is `bar(x)`. With a Visual selection, the node the selection covers is raised. |
+| `:refactor-raise` | Replace the expression around the node at the cursor with the node. "Around" is the node's parent, unless that parent is a bracket glued to the sibling before it — the `(…)` of a call, the `<…>` of a generic, the `[…]` of an index — which is half an expression, so its parent is replaced instead: raising `b` out of `f(a, b)` gives `b`, while out of `let v = [a, b];` it gives `let v = b;`. Brackets and adjacency are read from the text, not node kinds. Refused at top level, where the only thing around is the file. With a Visual selection, the node the selection covers is raised — once an ex-command can see the selection (RF.3b's seam; see §8). |
 | `:refactor-split` | Put each element of the comma-separated node at the cursor on its own line, one indent deeper, the closing delimiter on a line of its own at the node's indent. |
 | `:refactor-join` | The inverse: the node's elements on one line, `, ` between them. |
 
@@ -105,7 +105,9 @@ form. Typing `:` leaves Visual, and an ex-command is handed no selection
 `:refactor-shrink` could never know what to shrink and a
 `:refactor-expand` would always start from the cursor. Swap, raise, split and
 join act on the node at the cursor, so they are ex-commands too, under their
-own names: actions and ex-commands share one name index in the command
+own names (raise's Visual form waits on the same missing selection, and
+arrives with §8's ex-command seam, which `:'<,'>lsp-extract` needs for the
+same reason): actions and ex-commands share one name index in the command
 registry, so a plugin cannot give both the same name.
 
 **Keys.** `<M-o>` / `<M-i>` (Alt-o / Alt-i) expand / shrink — `<M-o>` and `<M-i>` both in Normal and Visual. `<M-i>` has nothing to shrink in Normal and says so, but is bound there anyway: Normal's keymap lookup strips an unbound Alt, so a bare `<M-i>` would run `i` and enter Insert. Helix's

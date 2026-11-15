@@ -61,6 +61,7 @@ use lattice::plugin_host::types::{
 };
 use lattice::plugin_host::{grammar, help, modes};
 
+mod raise;
 mod span;
 mod swap;
 
@@ -73,6 +74,7 @@ const CB_EXPAND: u32 = 1;
 const CB_SHRINK: u32 = 2;
 const CB_SWAP_NEXT: u32 = 3;
 const CB_SWAP_PREV: u32 = 4;
+const CB_RAISE: u32 = 5;
 /// The one parse callback every argument-less ex-command shares.
 const CB_PARSE_NO_ARGS: u32 = 100;
 
@@ -262,17 +264,11 @@ fn shrink(ctx: &ActionContext, doc: &Document) -> Vec<Effect> {
     }
 }
 
-fn swap_command(
-    ctx: &ExCommandContext,
-    doc: &Document,
-    tree: Option<&TreeSnapshot>,
-    dir: swap::Dir,
-) -> Vec<Effect> {
-    let Some(tree) = tree else {
-        return echo("refactor: no syntax tree for this buffer");
-    };
-    match swap::swap(tree, doc, ctx.cursor.into(), dir, ctx.count) {
-        swap::Outcome::Edit {
+/// The effects of one structural edit at the cursor: the replacement with
+/// the cursor where the command put it, or an echo saying why not.
+fn edit_effects(ctx: &ExCommandContext, outcome: span::Outcome) -> Vec<Effect> {
+    match outcome {
+        span::Outcome::Edit {
             range,
             text,
             cursor,
@@ -284,7 +280,19 @@ fn swap_command(
             },
             cursor: Some(cursor.into()),
         })],
-        swap::Outcome::Refuse(why) => echo(&format!("refactor: {why}")),
+        span::Outcome::Refuse(why) => echo(&format!("refactor: {why}")),
+    }
+}
+
+/// Run `edit` against the tree, or say there is none.
+fn with_tree(
+    ctx: &ExCommandContext,
+    tree: Option<&TreeSnapshot>,
+    edit: impl FnOnce(&TreeSnapshot) -> span::Outcome,
+) -> Vec<Effect> {
+    match tree {
+        Some(tree) => edit_effects(ctx, edit(tree)),
+        None => echo("refactor: no syntax tree for this buffer"),
     }
 }
 
@@ -329,6 +337,13 @@ impl Guest for Component {
             &no_args(),
             CB_PARSE_NO_ARGS,
             CB_SWAP_PREV,
+        );
+        grammar::register_ex_command(
+            "refactor-raise",
+            "Replace the expression around the node at the cursor with the node: on `bar` in `foo(bar)`, the call becomes `bar`.",
+            &no_args(),
+            CB_PARSE_NO_ARGS,
+            CB_RAISE,
         );
     }
 
@@ -429,8 +444,13 @@ impl GrammarCallbacks for Component {
         tree: Option<&TreeSnapshot>,
     ) -> Result<Vec<Effect>, String> {
         Ok(match callback {
-            CB_SWAP_NEXT => swap_command(&ctx, doc, tree, swap::Dir::Next),
-            CB_SWAP_PREV => swap_command(&ctx, doc, tree, swap::Dir::Prev),
+            CB_SWAP_NEXT => with_tree(&ctx, tree, |t| {
+                swap::swap(t, doc, ctx.cursor.into(), swap::Dir::Next, ctx.count)
+            }),
+            CB_SWAP_PREV => with_tree(&ctx, tree, |t| {
+                swap::swap(t, doc, ctx.cursor.into(), swap::Dir::Prev, ctx.count)
+            }),
+            CB_RAISE => with_tree(&ctx, tree, |t| raise::raise(t, doc, ctx.cursor.into())),
             other => return Err(format!("refactor: unknown ex-command callback {other}")),
         })
     }

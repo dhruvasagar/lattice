@@ -106,6 +106,29 @@ pub fn advance(start: Pos, text: &str) -> Pos {
     }
 }
 
+/// What an editing command comes to: one replacement and where the cursor
+/// lands, or the reason there is nothing to do. Every structural edit is one
+/// replacement, so one undo step by construction.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Outcome {
+    Edit {
+        range: Span,
+        text: String,
+        cursor: Pos,
+    },
+    Refuse(&'static str),
+}
+
+/// The text of `span`.
+pub fn text(doc: &Document, span: Span) -> String {
+    doc.get_text_range(span.into()).unwrap_or_default()
+}
+
+/// The span `n` covers.
+pub fn span_of(n: &crate::lattice::plugin_host::tree_sitter::Node) -> Span {
+    Span::from(n.byte_range())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

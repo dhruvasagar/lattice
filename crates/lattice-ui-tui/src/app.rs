@@ -172,6 +172,8 @@ pub(crate) mod picker;
 mod popup;
 #[cfg(test)]
 mod put_family;
+#[cfg(test)]
+mod refactor_plugin;
 mod search;
 mod state;
 #[cfg(test)]

@@ -52,6 +52,12 @@ weight = 14
 description = "Installs language servers for you — `:lsp-install rust-analyzer` downloads, verifies and wires one up, with no `PATH` entry."
 
 [[plugin]]
+id = "refactor"
+kind = "bundled"
+weight = 15
+description = "Select by syntax node — `<M-o>` grows the selection to the node around it, `<M-i>` steps back — in every language lattice highlights, no language server needed."
+
+[[plugin]]
 id = "org"
 kind = "external"
 weight = 20

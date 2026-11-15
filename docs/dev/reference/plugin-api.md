@@ -3,7 +3,7 @@
 
 # Lattice Plugin API
 
-The plugin API is the WIT package `lattice:plugin-host@0.4.0` — 32 interfaces ("seams") and 27 worlds. It is the whole contract: a plugin written in any language with Component-Model tooling (Rust, Go, Zig, JavaScript, …) sees exactly what is on these pages and nothing else. This reference is generated from the `.wit` files in `crates/lattice-wit/wit/`, so it cannot disagree with them.
+The plugin API is the WIT package `lattice:plugin-host@0.4.0` — 32 interfaces ("seams") and 28 worlds. It is the whole contract: a plugin written in any language with Component-Model tooling (Rust, Go, Zig, JavaScript, …) sees exactly what is on these pages and nothing else. This reference is generated from the `.wit` files in `crates/lattice-wit/wit/`, so it cannot disagree with them.
 
 New to writing plugins? Start with the [plugin authoring guide](../../dev/guides/plugin-authoring.md), then come back here for the detail. The same reference in machine-readable form — every seam, signature, type and member — is `docs/dev/reference/plugin-api.json` in the repository and `/plugin-api.json` on the documentation site.
 
@@ -16,7 +16,7 @@ New to writing plugins? Start with the [plugin authoring guide](../../dev/guides
 - **Errors** are `result<T, string>`: an `err` carries a message the host surfaces to the user, so it should say what went wrong.
 - **WIT to Rust** (wit-bindgen): kebab-case becomes `snake_case` for functions and fields and `UpperCamelCase` for types; `list<T>` is `Vec<T>`, `option<T>` is `Option<T>`, `result<T, E>` is `Result<T, E>`, `borrow<r>` is `&R`.
 
-## Worlds (27)
+## Worlds (28)
 
 Each world's entry points — the `register-*` functions the host calls on load — are on the [worlds page](plugin-api/worlds.md).
 
@@ -44,6 +44,7 @@ Each world's entry points — the `register-*` functions the host calls on load 
 | [`plugin`](plugin-api/worlds.md#world-plugin) | `activate`, `deactivate` | [`buffer`](plugin-api/buffer.md), [`host-services`](plugin-api/host-services.md), [`logging`](plugin-api/logging.md), [`project`](plugin-api/project.md), [`types`](plugin-api/types.md), [`ui`](plugin-api/ui.md) |
 | [`plugin-manager-plugin`](plugin-api/worlds.md#world-plugin-manager-plugin) | `register-plugins` | [`logging`](plugin-api/logging.md), [`plugin-manager`](plugin-api/plugin-manager.md), [`project`](plugin-api/project.md) |
 | [`project-plugin`](plugin-api/worlds.md#world-project-plugin) | [`grammar-callbacks`](plugin-api/grammar-callbacks.md), [`picker-source`](plugin-api/picker-source.md), [`transient-source`](plugin-api/transient-source.md); `register-grammar`, `register-picker-sources`, `register-modes`, `register-options`, `register-help-topics`, `register-events`, `on-event`, `on-wake` | [`buffer`](plugin-api/buffer.md), [`config`](plugin-api/config.md), [`events`](plugin-api/events.md), [`grammar`](plugin-api/grammar.md), [`help`](plugin-api/help.md), [`host-services`](plugin-api/host-services.md), [`modes`](plugin-api/modes.md), [`picker-registry`](plugin-api/picker-registry.md), [`project`](plugin-api/project.md), [`tree-sitter`](plugin-api/tree-sitter.md), [`types`](plugin-api/types.md) |
+| [`refactor-plugin`](plugin-api/worlds.md#world-refactor-plugin) | [`grammar-callbacks`](plugin-api/grammar-callbacks.md); `register-grammar`, `register-modes`, `register-help-topics` | [`buffer`](plugin-api/buffer.md), [`grammar`](plugin-api/grammar.md), [`help`](plugin-api/help.md), [`modes`](plugin-api/modes.md), [`tree-sitter`](plugin-api/tree-sitter.md), [`types`](plugin-api/types.md) |
 | [`scanned-excerpt-source-plugin`](plugin-api/worlds.md#world-scanned-excerpt-source-plugin) | `extensions`, `view-mode`, `roots`, `begin`, `describe`, `scan` | [`config`](plugin-api/config.md), [`logging`](plugin-api/logging.md), [`project`](plugin-api/project.md), [`scanned-excerpt-source`](plugin-api/scanned-excerpt-source.md), [`tree-sitter`](plugin-api/tree-sitter.md), [`types`](plugin-api/types.md) |
 | [`sign-plugin`](plugin-api/worlds.md#world-sign-plugin) | `register-signs` | [`logging`](plugin-api/logging.md), [`project`](plugin-api/project.md), [`signs`](plugin-api/signs.md) |
 | [`theme-plugin`](plugin-api/worlds.md#world-theme-plugin) | `register-theme-elements` | [`logging`](plugin-api/logging.md), [`project`](plugin-api/project.md), [`theme`](plugin-api/theme.md) |

@@ -700,6 +700,51 @@ on-wake: func(id: wake-id)
 ```
 
 
+## world `refactor-plugin`
+
+The `refactor` bundled plugin's world (RF.2): editing by syntax node,
+from the tree-sitter parse, in every language with a grammar and with no
+language server. Design: `docs/dev/architecture/refactor.md`.
+
+  - **grammar** — the actions: grow / shrink the selection a node at a
+    time, and (RF.2c–e) swap, raise, split and join. Actions rather than
+    operators because each acts on *a node*, which the cursor or the
+    selection already names, and because `apply-action` is handed the
+    tree (`apply-operator` deliberately is not).
+  - **modes** — `refactor-mode`, the minor mode that owns the
+    `<M-o>` / `<M-i>` chords, so `:set refactor.enabled=false` takes
+    the keys with it.
+  - **help** — `:help refactor`, `include_str!`'d from this plugin's
+    `doc/`.
+
+`logging` is intentionally NOT imported, for auto-pair's reason: it would
+put `log` on the sync grammar linker, and these actions are on the
+keystroke path.
+
+**Imports:** [`buffer`](buffer.md), [`grammar`](grammar.md), [`help`](help.md), [`modes`](modes.md), [`tree-sitter`](tree-sitter.md), [`types`](types.md)  
+**Exports:** [`grammar-callbacks`](grammar-callbacks.md)
+
+**Entry points it exports**
+
+### `register-grammar`
+
+```wit
+register-grammar: func()
+```
+
+### `register-modes`
+
+```wit
+register-modes: func()
+```
+
+### `register-help-topics`
+
+```wit
+register-help-topics: func()
+```
+
+
 ## world `scanned-excerpt-source-plugin`
 
 The world an scanned-excerpt-source plugin implements.

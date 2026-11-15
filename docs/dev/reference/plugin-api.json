@@ -11940,6 +11940,60 @@
       "import_functions": []
     },
     {
+      "name": "refactor-plugin",
+      "doc": "The `refactor` bundled plugin's world (RF.2): editing by syntax node,\nfrom the tree-sitter parse, in every language with a grammar and with no\nlanguage server. Design: `docs/dev/architecture/refactor.md`.\n\n  - **grammar** — the actions: grow / shrink the selection a node at a\n    time, and (RF.2c–e) swap, raise, split and join. Actions rather than\n    operators because each acts on *a node*, which the cursor or the\n    selection already names, and because `apply-action` is handed the\n    tree (`apply-operator` deliberately is not).\n  - **modes** — `refactor-mode`, the minor mode that owns the\n    `<M-o>` / `<M-i>` chords, so `:set refactor.enabled=false` takes\n    the keys with it.\n  - **help** — `:help refactor`, `include_str!`'d from this plugin's\n    `doc/`.\n\n`logging` is intentionally NOT imported, for auto-pair's reason: it would\nput `log` on the sync grammar linker, and these actions are on the\nkeystroke path.",
+      "imports": [
+        "buffer",
+        "grammar",
+        "help",
+        "modes",
+        "tree-sitter",
+        "types"
+      ],
+      "exports": [
+        "grammar-callbacks"
+      ],
+      "export_functions": [
+        {
+          "name": "register-grammar",
+          "display_name": "register-grammar",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [],
+          "result": null,
+          "signature": "register-grammar: func()",
+          "doc": null,
+          "examples": []
+        },
+        {
+          "name": "register-modes",
+          "display_name": "register-modes",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [],
+          "result": null,
+          "signature": "register-modes: func()",
+          "doc": null,
+          "examples": []
+        },
+        {
+          "name": "register-help-topics",
+          "display_name": "register-help-topics",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [],
+          "result": null,
+          "signature": "register-help-topics: func()",
+          "doc": null,
+          "examples": []
+        }
+      ],
+      "import_functions": []
+    },
+    {
       "name": "scanned-excerpt-source-plugin",
       "doc": "The world an scanned-excerpt-source plugin implements.\n\n`extensions` is called ONCE at load and cached; `begin` then `scan` are\ncalled per scan, `scan` once per matching file in walk order.",
       "imports": [

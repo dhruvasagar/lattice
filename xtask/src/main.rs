@@ -21,6 +21,7 @@ const CORE_PLUGINS: &[&str] = &[
     "project",
     "comment",
     "lighthouse",
+    "refactor",
 ];
 
 fn main() -> ExitCode {

@@ -81,7 +81,7 @@ docs = [
   "architecture/fold-architecture",
   "architecture/treesitter-motions",
   "architecture/tree-sitter-text-objects",
-  "architecture/structural-editing",
+  "architecture/refactor",
   "architecture/yank-ring",
   "architecture/clipboard",
   "architecture/which-key",

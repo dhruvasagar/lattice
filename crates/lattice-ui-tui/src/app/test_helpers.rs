@@ -120,7 +120,11 @@ pub(super) fn invoke_motion(id: MotionId) -> Action {
 pub(super) fn attach_test_syntax(a: &mut App, lang: lattice_syntax::Lang) {
     let snap = a.editor.document.snapshot();
     let text = snap.buffer.as_string();
-    let tv = snap.version;
+    // The TEXT version, as boot parses (`editor_boot.rs`): a plugin is handed
+    // the tree only when `tree_reflects(text_version)` (OT.7), so parsing at
+    // the snapshot's `version` — a different counter — made every tree look
+    // stale to a plugin and reach it as `none`.
+    let tv = a.editor.document.text_version();
     let mut s = lattice_syntax::Syntax::for_language(lang)
         .unwrap()
         .expect("syntax registered for lang");

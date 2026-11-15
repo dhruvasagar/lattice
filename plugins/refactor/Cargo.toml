@@ -1,0 +1,28 @@
+# RF.2 — the `structural` bundled plugin: editing by syntax node (grow /
+# shrink the selection, swap, raise, split / join) from the tree-sitter parse,
+# so it works in every language with a grammar and needs no language server.
+# Design: docs/dev/architecture/refactor.md.
+#
+# Standalone workspace (`[workspace]` below), like every bundled plugin:
+# targets wasm32-wasip2, must not inherit the host toolchain's lints/target,
+# and must not be built by a plain `cargo build --workspace`. Built to a
+# component by `crates/lattice-plugin-host/build.rs` (`build_guest`) and by
+# `cargo xtask build-core-plugins`.
+[package]
+name = "refactor"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = "0.58"
+lattice-plugin-sdk = { path = "../../crates/lattice-plugin-sdk" }
+
+[profile.release]
+opt-level = "s"
+strip = true
+
+[workspace]

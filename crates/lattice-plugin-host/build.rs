@@ -271,6 +271,18 @@ fn main() -> Result<(), String> {
         "comment",
         "COMMENT_PLUGIN_WASM",
     )?;
+    // RF.2: `refactor`, the plugin that owns `refactor-mode`. Built here so CI compiles it
+    // and so `lattice-ui-tui`'s `refactor_plugin` tests can load it without
+    // a prior `cargo xtask build-core-plugins`.
+    build_guest(
+        &manifest_dir
+            .join("..")
+            .join("..")
+            .join("plugins")
+            .join("refactor"),
+        "refactor",
+        "REFACTOR_PLUGIN_WASM",
+    )?;
     Ok(())
 }
 

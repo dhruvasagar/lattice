@@ -23,6 +23,7 @@ world refactor-plugin {
     import buffer;
     import tree-sitter;
     import modes;
+    import config;
     import help;
 
     export register-grammar: func();

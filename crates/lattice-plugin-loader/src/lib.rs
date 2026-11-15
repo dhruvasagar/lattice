@@ -1059,6 +1059,13 @@ impl PluginLoader {
         if let Some(registry) = &services.config_registry {
             host.set_config_registry(Arc::clone(registry));
         }
+        // RF.2e: the same reasoning for buffer-local reads — every store, and
+        // the test harnesses that build through this constructor too.
+        if let Some(bus) = &services.bus {
+            host.set_buffer_options(
+                lattice_plugin_host::config_host::BufferOptionsView::subscribe(bus),
+            );
+        }
         Self {
             host,
             env: services,

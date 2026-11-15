@@ -3,7 +3,7 @@
 
 # `config`
 
-**Direction:** guest calls into the host through it · **Capability:** none (pure data / dispatch) · **Worlds:** `auto-pair-plugin` (imports), `comment-plugin` (imports), `config-plugin` (imports), `project-plugin` (imports), `scanned-excerpt-source-plugin` (imports), `treesitter-context-plugin` (imports)
+**Direction:** guest calls into the host through it · **Capability:** none (pure data / dispatch) · **Worlds:** `auto-pair-plugin` (imports), `comment-plugin` (imports), `config-plugin` (imports), `project-plugin` (imports), `refactor-plugin` (imports), `scanned-excerpt-source-plugin` (imports), `treesitter-context-plugin` (imports)
 
 Mirrors `ConfigRegistry` (lattice-config). The guest declares an option
 (name + type + default + doc); the host registers it into the *same* registry
@@ -17,7 +17,7 @@ component-model language (Go, JS, Zig, Python, ...) calls these directly. The
 Rust `lattice-plugin-sdk` `#[derive(PluginOption)]` (PH7.10b) is optional
 ergonomics that expands to these same calls; it adds no capability not here.
 
-## Functions (8)
+## Functions (9)
 
 ### `get-option`
 
@@ -41,6 +41,40 @@ still read a core option (`tabstop`) that isn't in its namespace.
 /// behavior live — no keymap re-registration.
 fn is_manual() -> bool {
     config::get_option("style").as_deref() == Some("manual")
+}
+```
+
+### `get-option-in-buffer`
+
+```wit
+get-option-in-buffer: func(buffer: u64, name: string) -> option<string>
+```
+
+RF.2e: an option's value **as one buffer sees it** — the read peer of
+`set-option-in-buffer`. `get-option` answers the global value, which
+is wrong wherever a `:setlocal` or a mode's option override applies:
+`go-mode` turns `expandtab` off for Go buffers, so a guest laying out
+code there must read this, not `get-option`.
+
+The same resolution `:setlocal name?` prints — buffer-local, then the
+active modes, then the global value — and the same string format as
+`get-option`. Namespace resolution matches `get-option`: the plugin's
+OWN option on a short name, else the raw name.
+
+`none` if no option by that name is registered. A buffer the editor
+has never resolved options for (or that does not exist) answers the
+global value: nothing buffer-local applies to it. Reflects every
+`:setlocal` and mode change made before the call, with no tick in
+between — the snapshot is stored as the editor publishes it.
+
+**Example — Read an option as one buffer sees it — a mode's `noexpandtab` included** · [`plugins/refactor/src/lib.rs`](../../../../plugins/refactor/src/lib.rs)
+
+```rust
+/// One indent level as `buffer` is configured — buffer-local, so a mode's
+/// `noexpandtab` (Go) is honoured.
+fn buffer_indent_unit(buffer: u32) -> String {
+    let read = |name: &str| config::get_option_in_buffer(u64::from(buffer), name);
+    split::indent_unit(read("shiftwidth").as_deref(), read("expandtab").as_deref())
 }
 ```
 

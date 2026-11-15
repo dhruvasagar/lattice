@@ -386,6 +386,101 @@ mod tests {
         assert_eq!(body(&app), "x = b\n");
     }
 
+    /// Split puts each argument on its own line one indent deeper, the `)`
+    /// back at the statement's indent; join is the inverse, from anywhere on
+    /// the list. Each is one undo step.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn split_and_join_round_trip_the_argument_list() {
+        let split = "fn main() {\n    let x = foo(\n        bar,\n        baz + 1\n    );\n}\n";
+        let Some(mut app) =
+            app_with_refactor("main.rs", RUST, Some(lattice_syntax::Lang::Rust)).await
+        else {
+            return;
+        };
+        press_chars(&mut app, "jfb");
+        submit_ex(&mut app, "refactor-split");
+        assert_eq!(body(&app), split);
+
+        submit_ex(&mut app, "refactor-join");
+        assert_eq!(body(&app), RUST);
+
+        press_chars(&mut app, "u");
+        assert_eq!(body(&app), split, "one `u` undoes the join");
+    }
+
+    /// A trailing comma is the language's style, not the plugin's: kept when
+    /// it was there, in both directions.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn split_and_join_keep_a_trailing_comma() {
+        let src = "fn main() {\n    let v = [1, 2,];\n}\n";
+        let Some(mut app) =
+            app_with_refactor("main.rs", src, Some(lattice_syntax::Lang::Rust)).await
+        else {
+            return;
+        };
+        press_chars(&mut app, "jf1");
+        submit_ex(&mut app, "refactor-split");
+        assert_eq!(
+            body(&app),
+            "fn main() {\n    let v = [\n        1,\n        2,\n    ];\n}\n"
+        );
+        submit_ex(&mut app, "refactor-join");
+        assert_eq!(body(&app), src);
+    }
+
+    /// The indent is the BUFFER's: a `:setlocal noexpandtab` (what `go-mode`
+    /// does for Go) splits with tabs although the global `expandtab` is on.
+    /// Proves `get-option-in-buffer` sees buffer-local values.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn split_indents_with_the_buffer_local_options() {
+        let src = "fn main() {\n\tlet x = foo(a, b);\n}\n";
+        let Some(mut app) =
+            app_with_refactor("main.rs", src, Some(lattice_syntax::Lang::Rust)).await
+        else {
+            return;
+        };
+        submit_ex(&mut app, "setlocal noexpandtab");
+        press_chars(&mut app, "jfa");
+        submit_ex(&mut app, "refactor-split");
+        assert_eq!(
+            body(&app),
+            "fn main() {\n\tlet x = foo(\n\t\ta,\n\t\tb\n\t);\n}\n"
+        );
+    }
+
+    /// Only comma lists: a function's parts are not one, and are refused.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn split_outside_a_comma_list_says_so_and_changes_nothing() {
+        let Some(mut app) =
+            app_with_refactor("main.rs", RUST, Some(lattice_syntax::Lang::Rust)).await
+        else {
+            return;
+        };
+        submit_ex(&mut app, "refactor-split");
+        assert_eq!(body(&app), RUST);
+        assert!(
+            echoed(&app).contains("not in a comma-separated list"),
+            "got {:?}",
+            echoed(&app)
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn split_works_in_python() {
+        let Some(mut app) = app_with_refactor(
+            "main.py",
+            "x = f(a, b)\n",
+            Some(lattice_syntax::Lang::Python),
+        )
+        .await
+        else {
+            return;
+        };
+        press_chars(&mut app, "fa");
+        submit_ex(&mut app, "refactor-split");
+        assert_eq!(body(&app), "x = f(\n    a,\n    b\n)\n");
+    }
+
     /// The same rule in Python.
     #[tokio::test(flavor = "multi_thread")]
     async fn swap_works_in_python() {

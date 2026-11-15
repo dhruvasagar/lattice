@@ -721,7 +721,7 @@ language server. Design: `docs/dev/architecture/refactor.md`.
 put `log` on the sync grammar linker, and these actions are on the
 keystroke path.
 
-**Imports:** [`buffer`](buffer.md), [`grammar`](grammar.md), [`help`](help.md), [`modes`](modes.md), [`tree-sitter`](tree-sitter.md), [`types`](types.md)  
+**Imports:** [`buffer`](buffer.md), [`config`](config.md), [`grammar`](grammar.md), [`help`](help.md), [`modes`](modes.md), [`tree-sitter`](tree-sitter.md), [`types`](types.md)  
 **Exports:** [`grammar-callbacks`](grammar-callbacks.md)
 
 **Entry points it exports**

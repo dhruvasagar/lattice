@@ -31,6 +31,64 @@ use crate::{
     classify_trap,
 };
 
+/// RF.2e: each buffer's latest resolved options, for
+/// `config.get-option-in-buffer`.
+///
+/// Buffer-local values (`:setlocal`, a mode's option overrides) live in the
+/// editor's per-buffer resolution cache, which a guest on its own task cannot
+/// read, and the global [`ConfigRegistry`] does not hold them. The editor
+/// publishes [`lattice_config::BufferOptionsResolved`] after every per-buffer
+/// resolution; this keeps the latest snapshot per buffer.
+///
+/// Subscribed with `subscribe_typed_fn`, so the snapshot is stored on the
+/// publisher's thread before `recompute_options_for_buffer` returns: a command
+/// run after `:setlocal` reads the new value, with no drain task to race. The
+/// subscriber does one map insert under a lock a reader holds for one lookup,
+/// which is the "nothing proportional to more than the event" the bus asks.
+///
+/// One entry per buffer that has ever been resolved, never evicted: an entry is
+/// an `Arc` to a snapshot the editor already built, and a closed buffer's id is
+/// never reused, so a stale entry is unreachable rather than wrong.
+#[derive(Default)]
+pub struct BufferOptionsView {
+    latest: std::sync::RwLock<
+        std::collections::HashMap<lattice_core::BufferId, Arc<lattice_config::ResolvedOptions>>,
+    >,
+}
+
+impl BufferOptionsView {
+    /// A view kept current from `bus`. The subscription holds the view weakly,
+    /// so it lapses when the last holder drops it.
+    pub fn subscribe(bus: &lattice_runtime::EventBus) -> Arc<Self> {
+        let view = Arc::new(Self::default());
+        let weak = Arc::downgrade(&view);
+        bus.subscribe_typed_fn::<lattice_config::BufferOptionsResolved, _>(move |ev| {
+            let Some(view) = weak.upgrade() else {
+                return false;
+            };
+            view.latest
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(ev.buffer, Arc::clone(&ev.options));
+            true
+        });
+        view
+    }
+
+    /// `buffer`'s latest resolved snapshot, or `None` if the editor has never
+    /// resolved options for it.
+    pub fn get(
+        &self,
+        buffer: lattice_core::BufferId,
+    ) -> Option<Arc<lattice_config::ResolvedOptions>> {
+        self.latest
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&buffer)
+            .cloned()
+    }
+}
+
 pub(crate) mod bindings {
     wasmtime::component::bindgen!({
         world: "config-plugin",
@@ -214,6 +272,37 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
 
     use super::*;
+
+    /// RF.2e: a published snapshot is readable the moment `publish_typed`
+    /// returns — no drain, no tick — and the latest one per buffer wins. A
+    /// buffer never resolved has none, which `get-option-in-buffer` answers
+    /// with the global value.
+    #[test]
+    fn buffer_options_view_holds_the_latest_snapshot_per_buffer() {
+        let bus = lattice_runtime::EventBus::new();
+        let view = BufferOptionsView::subscribe(&bus);
+        let (a, b) = (lattice_core::BufferId(1), lattice_core::BufferId(2));
+        assert!(view.get(a).is_none());
+
+        let publish = |buffer, expandtab: bool| {
+            let mut options = lattice_config::ResolvedOptions::new();
+            options.insert::<lattice_config::ExpandTab>(expandtab);
+            bus.publish_typed(lattice_config::BufferOptionsResolved {
+                buffer,
+                options: Arc::new(options),
+            });
+        };
+        publish(a, true);
+        publish(a, false);
+        publish(b, true);
+        let read = |buffer| {
+            view.get(buffer)
+                .and_then(|o| o.get::<lattice_config::ExpandTab>())
+                .map(|v| *v)
+        };
+        assert_eq!(read(a), Some(false), "the latest snapshot wins");
+        assert_eq!(read(b), Some(true), "buffers are kept apart");
+    }
 
     /// A fresh, empty registry (no linkme core options) — the plugin options are
     /// the only entries, so assertions are hermetic.

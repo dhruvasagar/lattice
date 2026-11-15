@@ -59,10 +59,11 @@ use lattice::plugin_host::types::{
     OperatorContext, Position, Range, Selection, SelectionSet, SurfaceForm, TextObjectContext,
     VisualKind, VisualMode,
 };
-use lattice::plugin_host::{grammar, help, modes};
+use lattice::plugin_host::{config, grammar, help, modes};
 
 mod raise;
 mod span;
+mod split;
 mod swap;
 
 use span::{Pos, Span};
@@ -75,6 +76,8 @@ const CB_SHRINK: u32 = 2;
 const CB_SWAP_NEXT: u32 = 3;
 const CB_SWAP_PREV: u32 = 4;
 const CB_RAISE: u32 = 5;
+const CB_SPLIT: u32 = 6;
+const CB_JOIN: u32 = 7;
 /// The one parse callback every argument-less ex-command shares.
 const CB_PARSE_NO_ARGS: u32 = 100;
 
@@ -284,6 +287,15 @@ fn edit_effects(ctx: &ExCommandContext, outcome: span::Outcome) -> Vec<Effect> {
     }
 }
 
+// @example config.get-option-in-buffer: Read an option as one buffer sees it — a mode's `noexpandtab` included
+/// One indent level as `buffer` is configured — buffer-local, so a mode's
+/// `noexpandtab` (Go) is honoured.
+fn buffer_indent_unit(buffer: u32) -> String {
+    let read = |name: &str| config::get_option_in_buffer(u64::from(buffer), name);
+    split::indent_unit(read("shiftwidth").as_deref(), read("expandtab").as_deref())
+}
+// @end-example
+
 /// Run `edit` against the tree, or say there is none.
 fn with_tree(
     ctx: &ExCommandContext,
@@ -344,6 +356,20 @@ impl Guest for Component {
             &no_args(),
             CB_PARSE_NO_ARGS,
             CB_RAISE,
+        );
+        grammar::register_ex_command(
+            "refactor-split",
+            "Put each item of the comma-separated list at the cursor (arguments, parameters, an array, a struct literal) on its own line, one indent deeper; a trailing comma is kept or left out as it was.",
+            &no_args(),
+            CB_PARSE_NO_ARGS,
+            CB_SPLIT,
+        );
+        grammar::register_ex_command(
+            "refactor-join",
+            "Put the items of the comma-separated list at the cursor on one line, `, ` between them; the inverse of `:refactor-split`.",
+            &no_args(),
+            CB_PARSE_NO_ARGS,
+            CB_JOIN,
         );
     }
 
@@ -451,6 +477,15 @@ impl GrammarCallbacks for Component {
                 swap::swap(t, doc, ctx.cursor.into(), swap::Dir::Prev, ctx.count)
             }),
             CB_RAISE => with_tree(&ctx, tree, |t| raise::raise(t, doc, ctx.cursor.into())),
+            CB_SPLIT => {
+                let unit = buffer_indent_unit(ctx.buffer_id);
+                with_tree(&ctx, tree, |t| {
+                    split::reshape(t, doc, ctx.cursor.into(), split::Layout::Split, &unit)
+                })
+            }
+            CB_JOIN => with_tree(&ctx, tree, |t| {
+                split::reshape(t, doc, ctx.cursor.into(), split::Layout::Join, "")
+            }),
             other => return Err(format!("refactor: unknown ex-command callback {other}")),
         })
     }

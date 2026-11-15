@@ -1148,6 +1148,28 @@ impl ConfigRegistry {
         }
     }
 
+    /// RF.2e: `name`'s value as `resolved` holds it, formatted the way
+    /// `:set name?` prints it — the per-buffer view of [`Self::lookup`] +
+    /// `get_formatted`, for a reader holding a buffer's resolved snapshot
+    /// (`config.get-option-in-buffer`).
+    ///
+    /// Falls back to the global value when `resolved` is `None` or holds no
+    /// entry for the option (an option registered after the snapshot was
+    /// taken): nothing buffer-local is known to apply. `None` only for an
+    /// option no one registered.
+    pub fn format_resolved(
+        &self,
+        name: &str,
+        resolved: std::option::Option<&crate::ResolvedOptions>,
+    ) -> std::option::Option<String> {
+        let opt = self.lookup(name)?;
+        let local = resolved.and_then(|r| {
+            let type_id = self.typeid_for_name(opt.name()).ok()?;
+            opt.format_erased_value(r.get_erased(type_id)?)
+        });
+        Some(local.unwrap_or_else(|| opt.get_formatted()))
+    }
+
     /// Internal helper: look up the `TypeId` registered for an option's
     /// canonical name. Returns `ConfigError::UnknownOption` if the
     /// option was registered without a typeid (e.g. via bare
@@ -1224,6 +1246,30 @@ pub fn plugin_option_groups(
 mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
     use super::*;
+
+    /// RF.2e: the buffer's value where the snapshot has one, the global
+    /// value where it does not, and nothing for an unknown name.
+    #[test]
+    fn format_resolved_reads_the_snapshot_then_falls_back_to_global() {
+        let r = ConfigRegistry::new();
+        r.init_from_linkme();
+        let mut resolved = crate::ResolvedOptions::new();
+        resolved.insert::<crate::ExpandTab>(false);
+        assert_eq!(
+            r.format_resolved("expandtab", Some(&resolved)).as_deref(),
+            Some("false")
+        );
+        assert_eq!(
+            r.format_resolved("expandtab", None).as_deref(),
+            Some("true")
+        );
+        assert_eq!(
+            r.format_resolved("shiftwidth", Some(&resolved)).as_deref(),
+            Some("4"),
+            "absent from the snapshot: the global value"
+        );
+        assert_eq!(r.format_resolved("no-such-option", Some(&resolved)), None);
+    }
 
     #[test]
     fn register_returns_typed_handle_and_get_round_trips() {

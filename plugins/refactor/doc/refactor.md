@@ -49,6 +49,29 @@ brackets. Out of an array, `let v = [a, b];` with the cursor on `b` becomes
 `let v = b;`. One `u` undoes each raise. On a top-level item there is
 nothing around it but the file, and it says so.
 
+## Splitting and joining lists
+
+| | |
+|---|---|
+| `:refactor-split` | one item of the list at the cursor per line |
+| `:refactor-join` | all of them back on one line |
+
+A list here is anything comma-separated: arguments, parameters, an array, a
+tuple, a struct literal. `foo(bar, baz + 1)` splits into
+
+```
+foo(
+    bar,
+    baz + 1
+)
+```
+
+indented with the buffer's own `shiftwidth` and `expandtab`, so a Go buffer
+gets tabs. A trailing comma stays if it was there and is not added if it
+was not. Join puts `, ` between items and nothing inside the brackets, so
+`{ a, b }` comes back as `{a, b}`. Statement blocks are not lists and are
+left alone.
+
 ## Where it works
 
 Any buffer with a syntax tree. In one without (plain text, a language lattice

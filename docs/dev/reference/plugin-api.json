@@ -298,6 +298,35 @@
           ]
         },
         {
+          "name": "get-option-in-buffer",
+          "display_name": "get-option-in-buffer",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [
+            {
+              "name": "buffer",
+              "type": "u64"
+            },
+            {
+              "name": "name",
+              "type": "string"
+            }
+          ],
+          "result": "option<string>",
+          "signature": "get-option-in-buffer: func(buffer: u64, name: string) -> option<string>",
+          "doc": "RF.2e: an option's value **as one buffer sees it** — the read peer of\n`set-option-in-buffer`. `get-option` answers the global value, which\nis wrong wherever a `:setlocal` or a mode's option override applies:\n`go-mode` turns `expandtab` off for Go buffers, so a guest laying out\ncode there must read this, not `get-option`.\n\nThe same resolution `:setlocal name?` prints — buffer-local, then the\nactive modes, then the global value — and the same string format as\n`get-option`. Namespace resolution matches `get-option`: the plugin's\nOWN option on a short name, else the raw name.\n\n`none` if no option by that name is registered. A buffer the editor\nhas never resolved options for (or that does not exist) answers the\nglobal value: nothing buffer-local applies to it. Reflects every\n`:setlocal` and mode change made before the call, with no tick in\nbetween — the snapshot is stored as the editor publishes it.",
+          "examples": [
+            {
+              "id": "refactor:config.get-option-in-buffer",
+              "caption": "Read an option as one buffer sees it — a mode's `noexpandtab` included",
+              "source": "plugins/refactor/src/lib.rs",
+              "language": "rust",
+              "code": "/// One indent level as `buffer` is configured — buffer-local, so a mode's\n/// `noexpandtab` (Go) is honoured.\nfn buffer_indent_unit(buffer: u32) -> String {\n    let read = |name: &str| config::get_option_in_buffer(u64::from(buffer), name);\n    split::indent_unit(read(\"shiftwidth\").as_deref(), read(\"expandtab\").as_deref())\n}"
+            }
+          ]
+        },
+        {
           "name": "get-option-value",
           "display_name": "get-option-value",
           "kind": "freestanding",
@@ -11944,6 +11973,7 @@
       "doc": "The `refactor` bundled plugin's world (RF.2): editing by syntax node,\nfrom the tree-sitter parse, in every language with a grammar and with no\nlanguage server. Design: `docs/dev/architecture/refactor.md`.\n\n  - **grammar** — the actions: grow / shrink the selection a node at a\n    time, and (RF.2c–e) swap, raise, split and join. Actions rather than\n    operators because each acts on *a node*, which the cursor or the\n    selection already names, and because `apply-action` is handed the\n    tree (`apply-operator` deliberately is not).\n  - **modes** — `refactor-mode`, the minor mode that owns the\n    `<M-o>` / `<M-i>` chords, so `:set refactor.enabled=false` takes\n    the keys with it.\n  - **help** — `:help refactor`, `include_str!`'d from this plugin's\n    `doc/`.\n\n`logging` is intentionally NOT imported, for auto-pair's reason: it would\nput `log` on the sync grammar linker, and these actions are on the\nkeystroke path.",
       "imports": [
         "buffer",
+        "config",
         "grammar",
         "help",
         "modes",

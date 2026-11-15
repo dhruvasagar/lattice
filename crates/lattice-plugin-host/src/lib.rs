@@ -1108,6 +1108,9 @@ struct PluginState {
     /// `register-option` returns `false` and `get-option` returns `none` (the
     /// honest "no registry wired" degradation — the host isn't boot-wired yet).
     config_registry: Option<Arc<lattice_config::ConfigRegistry>>,
+    /// RF.2e: every buffer's resolved options, for `get-option-in-buffer`.
+    /// `None` when boot wired no bus; the read then answers the global value.
+    buffer_options: Option<Arc<config_host::BufferOptionsView>>,
     /// PMF.5: refuses `set-option` on an option a plugin's grant follows.
     grant_guard: GrantGuardHandle,
     /// TC.4: the theme registry a `theme` plugin's `register-element` inserts
@@ -3120,6 +3123,21 @@ impl crate::config_host::bindings::lattice::plugin_host::config::Host for Plugin
         registry.lookup(&name).map(|opt| opt.get_formatted())
     }
 
+    fn get_option_in_buffer(&mut self, buffer: u64, name: String) -> Option<String> {
+        let registry = self.config_registry.as_ref()?;
+        let resolved = u32::try_from(buffer)
+            .ok()
+            .zip(self.buffer_options.as_ref())
+            .and_then(|(id, view)| view.get(lattice_core::BufferId(id)));
+        // `get-option`'s resolution: the plugin's OWN namespace first.
+        let own = self
+            .plugin_name
+            .as_ref()
+            .map(|id| format!("{id}.{name}"))
+            .filter(|full| registry.lookup(full).is_some());
+        registry.format_resolved(own.as_deref().unwrap_or(&name), resolved.as_deref())
+    }
+
     /// OC.11c: `option-diagnostic` — did the last assignment to this option
     /// fail, and what did it say?
     ///
@@ -3826,6 +3844,9 @@ pub struct PluginHost {
     // it. Reading configuration needs no plugin id and has nothing to wait for,
     // so like `project` there is no path that can forget it.
     config: std::sync::OnceLock<Arc<lattice_config::ConfigRegistry>>,
+    /// RF.2e: see [`config_host::BufferOptionsView`]. Host-level like
+    /// `config`, so every store can answer `get-option-in-buffer`.
+    buffer_options: std::sync::OnceLock<Arc<config_host::BufferOptionsView>>,
     /// PMF.5: see [`GrantGuard`].
     grant_guard: GrantGuardHandle,
     // OA.23: answers "which file did this composed line come from". Abstract
@@ -4142,11 +4163,14 @@ impl PluginHost {
         .map_err(|e| PluginHostError::Linker(e.into()))?;
         // Multi-seam support (AP.1 spike): a combined plugin instantiated here for
         // its GRAMMAR drain still imports its `modes` / `config` seams, so the sync
-        // grammar linker must satisfy them too. Both `register-mode` /
-        // `register-option` / `get-option` are sync host funcs that only record
-        // into `PluginState` (never called on the apply-action hot path — only
-        // during the registration exports, which run on the async drains), so they
-        // are safe here and inert for grammar-only guests. `logging` is
+        // grammar linker must satisfy them too. `register-mode` /
+        // `register-option` are sync host funcs that only record into
+        // `PluginState` and run during the registration exports, on the async
+        // drains. The reads (`get-option`, RF.2e's `get-option-in-buffer`) DO
+        // run inside grammar callbacks — `:refactor-split` reads the buffer's
+        // indent — and each is a registry lookup plus at most one snapshot
+        // `Arc` clone: no I/O, nothing proportional to the buffer. All are
+        // inert for grammar-only guests. `logging` is
         // deliberately NOT added — the combined `auto-pair` world omits it, so the
         // "no logging reachable from the grammar hot path" invariant holds.
         crate::config_host::bindings::lattice::plugin_host::config::add_to_linker::<_, HasSelf<_>>(
@@ -4315,6 +4339,7 @@ impl PluginHost {
             cancel: std::sync::OnceLock::new(),
             sleeper: std::sync::OnceLock::new(),
             config: std::sync::OnceLock::new(),
+            buffer_options: std::sync::OnceLock::new(),
             grant_guard: GrantGuardHandle::default(),
             excerpt_source: std::sync::OnceLock::new(),
             view_args: std::sync::OnceLock::new(),
@@ -4450,6 +4475,14 @@ impl PluginHost {
     /// Idempotent — a second call is ignored, like [`set_tracer`](Self::set_tracer).
     pub fn set_config_registry(&self, registry: Arc<lattice_config::ConfigRegistry>) {
         let _ = self.config.set(registry);
+    }
+
+    /// RF.2e: hand the host the per-buffer option view every store reads
+    /// `get-option-in-buffer` through.
+    ///
+    /// Idempotent — a second call is ignored, like [`set_config_registry`](Self::set_config_registry).
+    pub fn set_buffer_options(&self, view: Arc<config_host::BufferOptionsView>) {
+        let _ = self.buffer_options.set(view);
     }
 
     /// OA.23: hand the host what resolves a composed line to its source file.
@@ -4757,6 +4790,7 @@ impl PluginHost {
             // one. `None` only when boot wired no registry at all, which is the
             // honest degradation (warn + false / none).
             config_registry: self.config.get().cloned(),
+            buffer_options: self.buffer_options.get().cloned(),
             grant_guard: self.grant_guard.clone(),
             // From the manifest id; drives config-option auto-namespacing.
             plugin_name: name.map(str::to_string),

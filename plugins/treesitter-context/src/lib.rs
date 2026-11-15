@@ -557,6 +557,7 @@ impl CallbacksGuest for Component {
         _callback: u32,
         _ctx: lattice::plugin_host::types::OperatorContext,
         _doc: &lattice::plugin_host::buffer::Document,
+        _tree: Option<&TreeSnapshot>,
     ) -> Result<Vec<Effect>, String> {
         Err("treesitter-context contributes no operators".to_string())
     }

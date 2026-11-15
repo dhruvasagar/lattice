@@ -313,6 +313,7 @@ mod tests {
             register: Register::Named('a'),
             count: Count(1),
             args: Args::None,
+            syntax: None,
             cancel: &CancellationToken::never(),
             indent: Default::default(),
             indent_resolver: None,

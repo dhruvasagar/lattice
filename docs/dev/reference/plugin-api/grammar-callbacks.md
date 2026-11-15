@@ -187,7 +187,7 @@ fn apply_motion(
 ### `apply-operator`
 
 ```wit
-apply-operator: func(callback: u32, ctx: operator-context, doc: borrow<document>) -> result<list<effect>, string>
+apply-operator: func(callback: u32, ctx: operator-context, doc: borrow<document>, tree: option<borrow<tree-snapshot>>) -> result<list<effect>, string>
 ```
 
 CM.1: an operator receives `borrow<document>`, the pair the motion,
@@ -197,12 +197,13 @@ contributed an operator — and a comment operator cannot work without
 the text: comment-vs-uncomment, the indent column, and stripping an
 existing leader are all reads.
 
-**No `tree`, deliberately.** `OperatorContext` carries `document` and
-`comment_syntax` but, unlike `TextObjectContext`, no `path` or
-`syntax` — minting a tree resource would mean widening the native
-context and every operator call site for a capability no operator has
-asked for. Add it when one does; the asymmetry is a decision, not an
-oversight.
+RF.4a (0.5.0): and the `tree`, like the other four. The comment that
+stood here said to add it when an operator asked; the refactor
+operators did — raise, split / join and extract act on the syntax node
+a range covers, and an operator is how a refactor composes with a
+Visual selection, a motion or a text object (`refactor.md` §9).
+`none` without the `tree-sitter` grant, for a buffer with no parse, or
+when the parse lags the text (OT.7) — the motion seam's terms.
 
 **Example — A linewise operator that reads the range and returns edits for the host to apply** · [`plugins/comment/src/lib.rs`](../../../../plugins/comment/src/lib.rs)
 
@@ -211,6 +212,7 @@ fn apply_operator(
     callback: u32,
     ctx: OperatorContext,
     doc: &Document,
+    _tree: Option<&TreeSnapshot>,
 ) -> Result<Vec<Effect>, String> {
     if callback != CB_TOGGLE {
         return Err(format!("comment: unknown operator callback {callback}"));

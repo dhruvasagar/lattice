@@ -445,6 +445,7 @@ impl GrammarCallbacks for Component {
         _c: u32,
         _ctx: OperatorContext,
         _doc: &Document,
+        _tree: Option<&TreeSnapshot>,
     ) -> Result<Vec<Effect>, String> {
         Err("refactor: no operators".into())
     }

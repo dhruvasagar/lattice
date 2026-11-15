@@ -561,3 +561,72 @@ fn parse_file_answers_none_for_an_extension_with_no_language() {
         "an unparseable extension degrades to CommandError::Plugin, got {err:?}"
     );
 }
+
+/// RF.4a (plugin API 0.5.0): an operator receives the tree, on the motion
+/// seam's terms. The fixture echoes the root's kind, which only the tree
+/// can answer, so an operator handed `none` fails rather than passing.
+#[test]
+fn a_granted_plugin_operator_receives_the_tree() {
+    if guest_wasm().is_none() {
+        eprintln!("SKIP: multiseam fixture not built");
+        return;
+    }
+    let (commands, _dirs) = register_grammar(CapabilitySet::TREE_SITTER);
+    let id = commands.id_by_name("multiseam-tree-operator").unwrap();
+
+    let snapshot = rust_snapshot(SRC);
+    let mut document = lattice_core::Document::from_text(SRC);
+    let cancel = CancellationToken::never();
+    let env = GrammarEnv {
+        syntax: Some(&snapshot),
+        ..Default::default()
+    };
+    let effect = lattice_grammar::execute_with_env(
+        &commands,
+        &mut document,
+        BufferId(1),
+        cursor_on_x(),
+        CommandInvocation::of(id).with_range(lattice_grammar::range::Range::CurrentLine),
+        &cancel,
+        env,
+    )
+    .expect("a plugin operator dispatches with a tree handle");
+    match effect {
+        lattice_grammar::effect::Effect::Echo { text, .. } => {
+            assert_eq!(text, "tree-op|source_file");
+        }
+        other => panic!("expected the operator's echo, got {other:?}"),
+    }
+}
+
+#[test]
+fn an_operator_without_the_grant_gets_no_tree_handle() {
+    if guest_wasm().is_none() {
+        eprintln!("SKIP: multiseam fixture not built");
+        return;
+    }
+    let (commands, _dirs) = register_grammar(CapabilitySet::empty());
+    let id = commands.id_by_name("multiseam-tree-operator").unwrap();
+
+    let snapshot = rust_snapshot(SRC);
+    let mut document = lattice_core::Document::from_text(SRC);
+    let cancel = CancellationToken::never();
+    let env = GrammarEnv {
+        syntax: Some(&snapshot),
+        ..Default::default()
+    };
+    let err = lattice_grammar::execute_with_env(
+        &commands,
+        &mut document,
+        BufferId(1),
+        cursor_on_x(),
+        CommandInvocation::of(id).with_range(lattice_grammar::range::Range::CurrentLine),
+        &cancel,
+        env,
+    )
+    .expect_err("no grant → the guest operator's tree read is a typed CommandError");
+    assert!(
+        matches!(err, lattice_grammar::CommandError::Plugin(_)),
+        "the ungranted operator degrades to CommandError::Plugin, got {err:?}"
+    );
+}

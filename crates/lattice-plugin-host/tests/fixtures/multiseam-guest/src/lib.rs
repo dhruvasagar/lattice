@@ -26,7 +26,8 @@ use lattice::plugin_host::modes::{
 use lattice::plugin_host::types::{
     ActionContext, ActionSpec, ApplyEditPayload, Args, EchoLevel, EchoPayload, Edit, EditKind,
     ExCommandSpec, LatencyClass, SurfaceForm,
-    Effect, ExCommandContext, MotionContext, MotionResult, MotionSpec, OperatorContext, Position,
+    Effect, ExCommandContext, MotionContext, MotionResult, MotionSpec, OperatorContext,
+    OperatorSpec, Position,
     Range, TextObjectContext, TextObjectSpec,
 };
 use lattice::plugin_host::types::UiZone;
@@ -66,6 +67,20 @@ impl Guest for Component {
                 args_schema: Vec::new(),
             },
             20,
+        );
+        // RF.4a: and operators, since plugin API 0.5.0.
+        grammar::register_operator(
+            "multiseam-tree-operator",
+            "echo the parse tree's root kind (RF.4a)",
+            &OperatorSpec {
+                repeatable: false,
+                args_schema: Vec::new(),
+                blockwise_per_row: false,
+                post_motion_char: false,
+                chord: None,
+                doubled: None,
+            },
+            23,
         );
         grammar::register_text_object(
             "multiseam-tree-object",
@@ -676,11 +691,23 @@ impl GrammarCallbacks for Component {
     }
     // @end-example
     fn apply_operator(
-        _c: u32,
+        c: u32,
         _ctx: OperatorContext,
         _doc: &Document,
+        tree: Option<&TreeSnapshot>,
     ) -> Result<Vec<Effect>, String> {
-        Err("multiseam: no operators".into())
+        match c {
+            // RF.4a: the operator peer of `multiseam-tree-motion` — answers
+            // from the tree alone, so a host that stops minting it fails.
+            23 => {
+                let tree = tree.ok_or_else(|| "multiseam: operator got no tree".to_string())?;
+                Ok(vec![Effect::Echo(EchoPayload {
+                    level: EchoLevel::Info,
+                    text: format!("tree-op|{}", tree.root().kind()),
+                })])
+            }
+            other => Err(format!("multiseam: unknown operator callback {other}")),
+        }
     }
     // @example tree-sitter.node.byte-range: Answer a text object with a tree node's `byte-range`, erring when there is no tree
     fn apply_text_object(

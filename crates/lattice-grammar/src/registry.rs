@@ -369,6 +369,12 @@ pub struct OperatorContext<'a> {
     /// The operator's own arguments, e.g. the captured char for `r{char}` or
     /// surround's `ys{motion}{char}`.
     pub args: Args,
+    /// RF.4a: the per-dispatch tree-sitter snapshot, type-erased and
+    /// borrowed exactly as [`GrammarEnv::syntax`] hands it over. Native
+    /// operators ignore it; the plugin trampoline mints a `tree-snapshot`
+    /// from it, so a plugin operator can act on the node its range covers.
+    /// `None` = no parse.
+    pub syntax: Option<&'a Arc<dyn std::any::Any + Send + Sync>>,
     /// Cooperative cancellation handle (DESIGN.md §5.2.5). Operators
     /// that scan large ranges (`d_whole`, `gU` over a big visual
     /// block) should poll `cancel.check()?` between rows; on a
@@ -768,9 +774,9 @@ pub struct GrammarEnv<'a> {
     /// `None` when the language declares none.
     pub comment_syntax: Option<&'a CommentSyntax>,
     /// TS.1: the per-dispatch tree-sitter snapshot, type-erased and borrowed so
-    /// it stays `Copy`. `execute_action` clones it into `ActionContext::syntax`;
-    /// motions / text-objects / operators ignore it (they read
-    /// `scope_resolver`). `None` = no parse.
+    /// it stays `Copy`. `execute_action` clones it into `ActionContext::syntax`,
+    /// and operators carry it as [`OperatorContext::syntax`] (RF.4a); native
+    /// motions / text-objects read `scope_resolver` instead. `None` = no parse.
     pub syntax: Option<&'a Arc<dyn std::any::Any + Send + Sync>>,
     /// IN.0: one level of indentation, resolved by the host from
     /// `shiftwidth` / `expandtab` / `tabstop` (including any

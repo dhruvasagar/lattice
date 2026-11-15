@@ -358,6 +358,8 @@ fn build_operator_spec(
     guest: &Arc<Mutex<GrammarGuest>>,
     spec: WitOperatorSpec,
     callback: u32,
+    // RF.4a: the gate the motion and text-object seams apply.
+    tree_sitter_granted: bool,
 ) -> Result<OperatorSpec, PluginHostError> {
     let args_schema = convert_args_schema(spec.args_schema)?;
     let authorizer = Arc::clone(
@@ -397,23 +399,37 @@ fn build_operator_spec(
                 // the symptom was `gcc` in a .rs file reporting "this buffer
                 // has no file".
                 //
-                // Still no tree: that genuinely does need a native field
-                // (`syntax`), and no operator has asked for it.
+                // RF.4a: and the tree, minted from `OperatorContext::syntax` on
+                // the motion seam's terms (grant + OT.7 freshness) — the
+                // refactor operators act on the node their range covers.
                 let snapshot = Arc::new(DocumentSnapshot {
                     buffer: ctx.document.buffer().clone(),
                     path: ctx.document.path_shared(),
                     ..Default::default()
                 });
+                let tree_snapshot = resolve_tree_snapshot(tree_sitter_granted, ctx.syntax);
                 let wit = run_callback(&guest, "apply-operator", |b, s| {
                     let owned_doc = s
                         .data_mut()
                         .table
                         .push(DocumentResource::new(snapshot.clone()))?;
                     let doc_borrow = Resource::new_borrow(owned_doc.rep());
+                    let owned_tree = match &tree_snapshot {
+                        Some(snap) => Some(
+                            s.data_mut()
+                                .table
+                                .push(TreeSnapshotResource::new(snap.clone()))?,
+                        ),
+                        None => None,
+                    };
+                    let tree_borrow = owned_tree.as_ref().map(|o| Resource::new_borrow(o.rep()));
                     let result = b
                         .lattice_plugin_host_grammar_callbacks()
-                        .call_apply_operator(&mut *s, callback, &wit_ctx, doc_borrow);
+                        .call_apply_operator(&mut *s, callback, &wit_ctx, doc_borrow, tree_borrow);
                     let _ = s.data_mut().table.delete(owned_doc);
+                    if let Some(t) = owned_tree {
+                        let _ = s.data_mut().table.delete(t);
+                    }
                     result
                 })?;
                 effect_from_guest(&authorizer, wit)
@@ -924,7 +940,7 @@ impl PluginHost {
                     set.operators.push((
                         name,
                         doc,
-                        build_operator_spec(&guest, spec, callback)?,
+                        build_operator_spec(&guest, spec, callback, tree_sitter_granted)?,
                         chord,
                     ))
                 }

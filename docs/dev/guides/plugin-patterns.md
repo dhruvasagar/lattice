@@ -133,6 +133,7 @@ fn apply_operator(
     callback: u32,
     ctx: OperatorContext,
     doc: &Document,
+    _tree: Option<&TreeSnapshot>,
 ) -> Result<Vec<Effect>, String> {
     if callback != CB_TOGGLE {
         return Err(format!("comment: unknown operator callback {callback}"));

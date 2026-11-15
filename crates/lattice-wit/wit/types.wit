@@ -1,4 +1,4 @@
-package lattice:plugin-host@0.4.0;
+package lattice:plugin-host@0.5.0;
 
 /// Shared boundary records/variants — the owned, WIT-serializable mirrors of
 /// the native grammar + picker/completion types (plugin-host.md §4). Every

@@ -184,6 +184,16 @@ because they generalise past this seam:
   concrete `SyntaxSnapshot` cannot be recovered from it to mint a resource. The
   two fields coexist for that reason.
 
+Operators were on the actor route's consumer list before they consumed
+anything: `apply-operator` took no tree until plugin API 0.5.0 (RF.4a), when
+the refactor operators needed the node their range covers
+(`refactor.md` §9). The native `OperatorContext::syntax` is filled from the
+same `GrammarEnv::syntax` at both operator call sites in the dispatcher, so the
+operator seam inherits this route rather than adding a third. Following the
+lesson above, `tree_seam.rs`'s operator tests prove the trampoline only; the
+production gate is proven by RF.4b's end-to-end test, a raise operator driven
+through real keystrokes.
+
 A composed multibuffer view is the one place the answer is legitimately `none`:
 an excerpt list spans several files, so there is no single snapshot to hand over
 (the composed↔source mapping is what `ComposedScopeResolver` exists to apply).

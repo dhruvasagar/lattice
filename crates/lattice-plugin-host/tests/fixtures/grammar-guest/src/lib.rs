@@ -221,6 +221,7 @@ impl Callbacks for Component {
         callback: u32,
         ctx: OperatorContext,
         doc: &Document,
+        _tree: Option<&TreeSnapshot>,
     ) -> Result<Vec<Effect>, String> {
         match callback {
             // Read the first line of the operated range through the borrowed

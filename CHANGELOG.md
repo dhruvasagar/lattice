@@ -28,6 +28,17 @@
 - **`vV` switches to linewise, as in vim.** In Visual, `v`, `V` and `<C-v>` left Visual whichever kind you were in, and `<C-v>` did nothing. Now the current kind's key leaves Visual and another kind's key switches the selection to that kind, keeping both ends.
 - **A chat or ACP conversation no longer misses an update that lands while its buffer opens.** One that arrived while the buffer was being set up went unseen, and the transcript stayed behind until the next update; it is now drawn as soon as the buffer is ready.
 
+### Changed
+- **Plugin API 0.5.0.** A plugin operator receives the parse tree:
+  `grammar-callbacks.apply-operator` gains `tree: option<borrow<tree-snapshot>>`,
+  the argument motions, text objects, actions and ex-commands already take,
+  `none` without the `tree-sitter` grant or a parse. It is what lets a
+  refactor be an operator over any range (Visual, a motion, a text object).
+  Changing a callback's signature is a new ABI generation: a plugin pinned to
+  `lattice-wit = "0.4"` moves its pin to `"0.5"`, adds the parameter to its
+  `apply-operator` (ignore it if unused), and rebuilds. Plugins without a pin
+  rebuild on their own.
+
 ## 0.10.0 — 2026-11-10
 
 ### Added

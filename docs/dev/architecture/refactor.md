@@ -209,7 +209,11 @@ add them is RF.3a's first question: widening `lsp-request` and
 against, which wasmtime's instantiation check may reject; new functions on an
 interface are additive. The answer, checked against a component built for the
 current package, decides whether the plugin-API publish is a patch or a
-bump, and is recorded here when it is known.
+bump, and is recorded here when it is known. RF.4a already made the
+publish 0.5.0, so a widened shape costs nothing extra. What the request
+must carry is settled in §9.1: an explicit `range` (an operator's, not the
+cursor's or the last selection's) and an `otherwise` command for when the
+server has nothing.
 
 ## 9. Operators: every refactor over a range
 
@@ -217,7 +221,7 @@ The v1 commands act on the node at the cursor. That is the weakest part of
 the vim grammar to build on: its power is that an operator composes with
 *any* range — a Visual selection, a motion, or a text object, including the
 syntax objects `af`/`if`, `ac`/`ic`, `aa`/`ia`, `al`/`il` that
-`lattice-syntax` already resolves from `textobjects.scm`. `<leader>rriw`
+`lattice-syntax` already resolves from `textobjects.scm`. `crriw`
 raises an identifier out of its call; `<leader>rr` in Visual raises the
 selection; `cxaa` … `cxaa` exchanges two parameters that are not neighbours.
 (RF.4b found that `aa` / `ia` capture a declaration's parameters but not a
@@ -230,14 +234,35 @@ the public API).
 | Operator | Keys | On the range |
 |---|---|---|
 | exchange | `cx{obj}` twice; `cxx` (line); Visual `X`; `cxc` clears the mark | The first use marks the range, highlighted; the second swaps the two, as vim-exchange does. One replacement spanning both, so one undo step. A range inside the other replaces the larger with the smaller (vim-exchange's rule); a partial overlap is refused and the mark kept; `cx` on the marked text again cancels. An edit that changes the marked text drops the mark and says so. Text only: no tree, so it works in a buffer with no parse. Visual is `X`, not `cx`, because Visual `c` changes the selection at once. |
-| raise | `<leader>rr{obj}` | The node the range covers replaces the expression around it, §3's rule. The range is trimmed of whitespace and separators (`,` `;`) first, then must be exactly one named node: one that is not is refused, never widened to the node around it, because raising more than was selected deletes text the user did not point at. In Visual this is "raise what I selected", the form RF.2d could not offer. |
-| split / join | `<leader>rs{obj}` / `<leader>rj{obj}` | The nearest comma list around the range, §3's rule. Nearest, not exact as raise demands: split and join change only whitespace, so acting on the list around an argument (`<leader>rsiw`) deletes nothing. |
-| extract | `<leader>re{obj}` | The expression the range covers becomes a variable — see below. |
-| inline | `<leader>ri{obj}` | The variable the range names (its declaration or a use) is replaced by its value at every use, and the declaration removed — see below. |
+| raise | `crr{obj}`; Visual `<leader>rr` | The node the range covers replaces the expression around it, §3's rule. The range is trimmed of whitespace and separators (`,` `;`) first, then must be exactly one named node: one that is not is refused, never widened to the node around it, because raising more than was selected deletes text the user did not point at. In Visual this is "raise what I selected", the form RF.2d could not offer. |
+| split / join | `cr<CR>{obj}` / `crj{obj}`; Visual `<leader>r<CR>` / `<leader>rj` | The nearest comma list around the range, §3's rule. Nearest, not exact as raise demands: split and join change only whitespace, so acting on the list around an argument (`cr<CR>iw`) deletes nothing. |
+| extract | `cre{obj}`; Visual `<leader>re` | The expression the range covers becomes a variable — see below. |
+| inline | `cri{obj}`; Visual `<leader>ri` | The variable the range names (its declaration or a use) is replaced by its value at every use, and the declaration removed — see below. |
 
-`cx` is vim-exchange's key and muscle memory carries across editors; nothing
-else has a convention, so the rest share `<leader>r`, as the assistant owns
-`<leader>a`. All of them live on `refactor-mode`'s layer.
+**Keys: the `c` family (decided 2026-11-15).** `cx` is vim-exchange's key
+and muscle memory carries across editors. The rest take `cr`, on the same
+reasoning vim-exchange used: in stock vim `c` followed by `r` does nothing,
+because `r` is not a motion, so the prefix is free and reads as grammar
+("change: refactor"). That keeps `<leader>` for the user and costs no
+leader timeout. Two consequences:
+
+- **Visual cannot use `cr`.** Visual `c` changes the selection the moment
+  it is pressed, which is why exchange's Visual form is `X`. Binding a `c…`
+  chord in Visual would make `c` wait for the next key there, a latency
+  regression on one of the most-used Visual keys. So Visual keeps
+  `<leader>r{x}`, the same letter after the prefix.
+- **vim-abolish's case coercions live on `cr`** (`crs` snake_case, `crc`
+  camelCase, `crm` MixedCase, `cru` UPPER_CASE, `cr-` kebab-case, `cr.`
+  dot.case, `crt` Title Case), and many vim users have them in their
+  fingers. Refactor takes none of those letters, so split is `cr<CR>`
+  ("break onto lines"), not `crs`. Case coercion is itself a refactoring;
+  if it joins `refactor-mode`, it takes abolish's letters, and `cr` is then
+  the whole family.
+
+All of them live on `refactor-mode`'s layer. Rejected: `<leader>r{x}`
+everywhere (the first layout, RF.4b–e) — consistent between Normal and
+Visual, but it takes the user's leader space and adds a timeout to every
+refactor.
 
 **The exchange mark is a tracked range (RF.4d).** The mark has to follow
 every edit made between the two `cx`s, by any path, and show on screen while
@@ -289,56 +314,185 @@ bump, but a second way to get a tree that only operators would use), and a
 second `apply-tree-operator` export (two operator entry points forever) —
 both keep an asymmetry to avoid a version number.
 
-**Extract and inline are not LSP-only.** Each has two sources, tried in the
-order `refactor.source` names (default `lsp,native`), the format chain's
-shape: a server attached and offering a `refactor.extract` /
-`refactor.inline` action for the range wins — it knows types and scopes — and
-otherwise the native source runs. Because they now work without a server,
-the generic names are earned: `:lsp-extract` / `:lsp-inline` become
+**Extract and inline are not LSP-only.** Because they work without a
+server, the generic names are earned: `:lsp-extract` / `:lsp-inline` become
 `:refactor-extract` / `:refactor-inline`. `:lsp-refactor` keeps its name: it
 lists *every* refactoring the server offers, so it is genuinely LSP-only.
 
-- **Native extract is variables only.** Function extraction needs the free
-  variables, the returns and their types; guessed from text it silently
-  changes behaviour, so without a server it says it needs one. The variable:
-  the range must cover one expression (refused otherwise); the declaration
-  goes on its own line before the statement holding it, at that statement's
-  indent; its syntax comes from a per-language table in the plugin
-  (`let {name} = {value};`, `{name} = {value}`, `{name} := {value}`,
-  `const {name} = {value};`, …), overridable through a `refactor.declaration`
-  option a user or mode can set buffer-locally (read with
-  `get-option-in-buffer`). A language in neither refuses. The edit is one
-  snippet whose name placeholder is linked at both sites, so the name is
-  typed once.
+### 9.1 Server first, query data second (decided 2026-11-15)
 
-  *Built (RF.4e).* "The statement holding it" is read from text: the
-  smallest node strictly around the expression that starts a line and whose
-  parent starts on an earlier line (or is the file). So an argument that
-  happens to start a continuation line is not mistaken for a statement. A
-  construct that starts a line inside an expression-bodied block — a
-  `match` arm — counts as one, and the declaration lands where it does not
-  compile; `u` takes it back, and the LSP rung (RF.4g) is the answer there.
-  The snippet needed one more seam: `expand-snippet-over` names a
-  *registered* snippet and re-indents its lines, and extract carries a body
-  of copied code that is already indented. So `insert-snippet { range, body
-  }` (additive, 0.5.0) expands a body as written, in one edit, with its
-  session; the guest escapes `$`, `}` and `\` in the code it copies.
+Whether an extract or an inline is *correct* depends on what the language
+means, not on its shape. RF.4e's native extract showed where shape runs
+out:
 
-  *Gap found (RF.4e′).* A plugin's option cannot be buffer-local. Overrides
-  and `ResolvedOptions` are keyed by the option's Rust `TypeId`, and an
-  option a plugin registers over WIT is stored by name with none, so
-  `:setlocal` answers E518 for it and `get-option-in-buffer` can only
-  return its global value. Extract reads `refactor.declaration` through
-  `get-option-in-buffer` regardless, so it becomes buffer-local without a
-  plugin change once options are keyed by something a runtime option has.
-- **Native inline needs scopes.** The variable's definition and its uses come
-  from the language's `locals.scm` (`@local.scope`, `@local.definition`,
-  `@local.reference`). `lattice-syntax` loads those queries but does not
-  expose them to plugins, so the tree-sitter seam grows a way to run them —
-  additive, in the same 0.5.0 release. Each use is replaced by the value,
-  parenthesised unless the value is one primary node; the declaration is
-  removed; one replacement. A variable assigned again after its declaration
-  is refused: inlining it would change what each use reads.
+| Hazard | Example | Who can see it |
+|---|---|---|
+| Scope | `let y = { let a = 1; a + 2 };` — extracting `a + 2` lifts it above `let y`, where `a` does not exist | tree-sitter, with `locals.scm` |
+| Evaluation order | `f(x)` out of `a && f(x)`, a ternary branch, a `while` condition, a block-less closure or a comprehension: it now runs unconditionally, or once | tree-sitter, with per-language query data |
+| Where a statement is | a Rust `match` arm starts a line and is not a statement; Go's `:=` is illegal outside a function body | tree-sitter, with per-language query data |
+| Types | TypeScript: a lambda lifted out of an argument loses the parameter types it was inferring | a language server only |
+| Ownership | Rust: extracting moves a value, or shortens a temporary's lifetime | a language server only |
+
+So each refactor has three rungs, and each rung is used for what only it
+can know:
+
+1. **The language server, first.** Extract variable / function / constant
+   and inline are standard code actions (`refactor.extract`,
+   `refactor.inline`). rust-analyzer, gopls, tsserver, clangd and jdtls offer
+   them; Python, Ruby and Lua coverage is patchy. The server knows types,
+   scopes and uses, so where it answers it is the right answer.
+2. **Native, on query data.** Every language fact the plugin needs is a
+   query file, not plugin code. A language is added by adding files
+   (paramount #2), and a rule is wrong in one place that a test names.
+3. **Refusal, with the reason.** A native edit that cannot be shown safe
+   is refused, never guessed. A silent change in behaviour is worse than no
+   refactoring: `u` undoes the text, but nothing tells the user the
+   meaning changed. This is raise's rule ("refused, never widened") applied
+   to meaning.
+
+`refactor.source` (`lsp,native` by default; `lsp` or `native` alone) orders
+the first two rungs. A buffer with no server goes straight to native.
+
+**The cascade lives host-side, as data (RF.3a).** The server is asked
+asynchronously and the plugin's operator has already returned, so the
+plugin cannot see the answer and decide then. The operator returns one
+effect, which carries what to do if the server has nothing:
+
+	lsp(code-actions {
+		only: some(extract),
+		range: some(<the operator's range>),
+		otherwise: some(command-ref { id: "refactor-extract-native", args }),
+	})
+
+The host asks the server. If actions come back, they open as today's
+picker; a server offering several (variable, function, constant) lets the
+user choose. If none come back, or no server is attached, or the server
+advertises `codeActionKinds` and none matches `only` (no round trip at
+all), the host invokes `otherwise`. Two rules make that safe:
+
+- **A stale range is not acted on.** The host records the buffer's text
+  version when it asks. If the text changed before the answer came, it
+  invokes nothing and says so ("the buffer changed while the server was
+  asked"). It is generic, not refactor's rule: any `otherwise` was computed
+  for the text as it was.
+- **The result reaches the screen with no key pressed.** The server's answer
+  lands asynchronously, so `otherwise` runs from that landing and goes
+  through the host's async-landed path (`CLAUDE.md`, "async results must
+  reach the screen without a keypress"). Its test asserts the native edit
+  is visible without dispatching another key.
+
+`otherwise` is a `command-ref` rather than a list of effects because a WIT
+variant cannot contain itself, and because a command is computed against
+the snapshot it runs on, not one taken before the round trip. It is an
+API addition every plugin gains ("ask the server, else do this"), not a
+refactor-specific one; the format chain is the next user.
+
+**Native facts are queries, owned where they belong.** A plugin can
+already compile and run a query against its tree (`compile-query`,
+`run-query-ranges`), so no seam is needed to *run* one. The question is
+who owns each file:
+
+- **`locals.scm` belongs to `lattice-syntax`**, beside `textobjects.scm`:
+  scopes, definitions and references are language knowledge that more than
+  refactoring will read (local-symbol highlighting, `gd` without a server).
+  Today `lattice-syntax` takes a locals query for JavaScript and TypeScript
+  and discards it (`registry.rs`, "locals.scm support deferred"); the other
+  languages have none. It compiles them and exposes them to plugins through
+  one additive call, `tree-snapshot.language-query(name) -> option<query>`,
+  answering the host's compiled query for the snapshot's language, so a
+  plugin neither ships its own copy nor recompiles it.
+- **`refactor.scm` belongs to the `refactor` plugin**, embedded and
+  compiled once per language per instance: facts only refactoring reads
+  (a mode owns its surface). Captures:
+  - `@refactor.statement`: a node a declaration may go before, as a child
+    of the block that holds it. It replaces RF.4e's text rule ("the
+    smallest node that starts a line"), which is what put a declaration
+    inside a `match` arm.
+  - `@refactor.hoist-barrier`: a subtree whose code does not run exactly
+    once, in order, when its statement runs — the right operand of `&&` /
+    `||` / `??`, a conditional's branches, a loop's condition, a closure or
+    lambda body, a comprehension, a default argument. An expression inside
+    one, below the chosen statement, is refused, naming the construct.
+- **The declaration form stays a table in the plugin**, one line per
+  language, because a query capture has no way to carry a string (the
+  seam does not expose `#set!` properties, and is not widened for this).
+  A test asserts the table and the `refactor.scm` set name the same
+  languages.
+
+**Native extract, rebuilt on these.** The expression must be one named node
+(unchanged). The declaration goes before the innermost
+`@refactor.statement` holding it. It is refused when the expression lies
+below a `@refactor.hoist-barrier` inside that statement, or when it reads a
+name that `locals.scm` says is defined inside the statement before the
+expression (it would be lifted above its own definition). A language with
+no `refactor.scm` is refused by name, with "a language server can do this";
+RF.4e's text heuristic is removed, not kept as a fallback, because it is the
+part that produced wrong code. Extract function stays server-only.
+
+**Native inline, on the same data (RF.4f).** The variable's definition and
+uses come from `locals.scm`. Each use is replaced by the value,
+parenthesised unless the value is one primary node, and the declaration
+removed, in one replacement. Refused when the name is assigned again in its
+scope (each use would read a different value), and when the value contains
+a call and a use sits below a `@refactor.hoist-barrier` or there is more
+than one use (the call would run a different number of times).
+
+**What stays out of reach natively**, by design: types and ownership. A
+native extract that compiles in Rust may still move a value the next line
+uses; that is the server's to catch, and the help page says so.
+
+**The query sources.** nvim-treesitter's `locals.scm` files cover all
+shipped languages and follow the capture names above; they are Apache-2.0
+and this repository is MIT. Adapting them needs the Apache notice kept on
+each file and a `NOTICE` entry; writing our own from each grammar's
+`node-types.json` costs more and gains nothing but the notice. Taking
+nvim-treesitter's, with attribution, is the proposal; the slice that
+lands them settles it.
+
+*Built before this decision (RF.4e).* Native extract shipped with the text
+rule above and the declaration table. The snippet needed one seam:
+`expand-snippet-over` names a *registered* snippet and re-indents its
+lines, and extract carries a body of copied code that is already indented.
+So `insert-snippet { range, body }` (additive, 0.5.0) expands a body as
+written, in one edit, with its session; the guest escapes `$`, `}` and `\`
+in the code it copies. That part stays.
+
+*Gap found (RF.4e′).* A plugin's option cannot be buffer-local. Overrides
+and `ResolvedOptions` are keyed by the option's Rust `TypeId`, and an
+option a plugin registers over WIT is stored by name with none, so
+`:setlocal` answers E518 for it and `get-option-in-buffer` can only return
+its global value. Extract reads `refactor.declaration` through
+`get-option-in-buffer` regardless, so it becomes buffer-local without a
+plugin change once options are keyed by something a runtime option has.
+
+### 9.2 Options weighed for §9.1
+
+- **Native first, server as an opt-in.** *UX:* worse — the default result
+  is the one that cannot see types, in exactly the languages with the best
+  servers. Rejected.
+- **No native rung; server only.** *UX:* worse — Python with pyright, Lua,
+  and any buffer without a server get no extract or inline at all.
+  *Paramount #2:* nothing is lost by keeping native, since its knowledge
+  is data. Rejected.
+- **Keep RF.4e's text heuristic as native's fallback for languages without
+  `refactor.scm`.** *UX:* it is the source of the wrong edits; a fallback
+  that is sometimes wrong cannot be told apart from one that is right.
+  *Heuristic #1:* "it works for the easy cases" is the risk-aversion
+  argument. Rejected.
+- **For the cascade, the plugin asks which kinds the server supports and
+  decides itself.** Synchronous and simple, but a server that answers
+  `codeActionProvider: true` advertises no kinds, so the plugin still could
+  not know whether native should run; it needs a new LSP read seam and still
+  ends in a host-side fallback. Rejected for `otherwise`.
+- **The host calls the plugin back with the server's answer.** Most
+  general, but a new async callback seam for one decision the host can make
+  from data. *Paramount #4* holds either way; `otherwise` is the smaller
+  surface. Rejected for now; revisit if a plugin needs to *read* the
+  actions.
+- **`locals.scm` embedded in the plugin.** Works today with no seam, but a
+  second copy of language knowledge `lattice-syntax` should own, and no
+  other consumer could use it. Rejected (heuristic #6: the owning crate is
+  `lattice-syntax`; no new crate either way).
 
 ## 10. Rejected alternatives
 
@@ -347,10 +501,15 @@ lists *every* refactoring the server offers, so it is genuinely LSP-only.
   against it: those limits are what plugin authors live with, and a refactor
   feature built within them is the test of whether they are right. (No new
   crate either way; heuristic #6.)
-- **Per-language query tables** (nvim-treesitter-textobjects' `@parameter`
+- **Per-language query tables for the structural edits** (nvim-treesitter-textobjects' `@parameter`
   swaps): precise where a table exists, dead where it does not. The
   named-sibling rule covers every grammar; a table can refine it later for a
-  language that proves the generic rule wrong.
+  language that proves the generic rule wrong. *Extract and inline are the
+  exception (§9.1):* swap, raise and split move text the user pointed at,
+  so a generic rule cannot change meaning; extract and inline move code
+  past other code, and no generic rule says when that is safe. There a
+  table that is dead where it does not exist (a refusal) is what is
+  wanted.
 - **One `expand-region` over both sources** — §4.
 
 ## 11. Decisions
@@ -366,10 +525,21 @@ lists *every* refactoring the server offers, so it is genuinely LSP-only.
    over a native mode, which would undo decision 1.
 5. **Operators (2026-11-15):** every refactor is an operator over a range —
    exchange, raise, split / join, extract, inline — with the cursor commands
-   as shorthand (§9). Keys `cx` (vim-exchange) and `<leader>r{r,s,j,e,i}`.
+   as shorthand (§9). Keys `cx` (vim-exchange) and, since decision 10,
+   `cr{r,e,i,j,<CR>}` in Normal with `<leader>r{…}` in Visual.
 6. **The operator tree seam:** widen `apply-operator`, plugin API 0.5.0 (§9).
 7. **Extract / inline sources:** `lsp,native`; native extract does variables
    only (§9).
 8. **The exchange mark (2026-11-15):** a tracked-range seam — two effects
    plus `document.tracked-range`, ids per plugin, a native tint (§9) — over
    a static highlight import or no highlight.
+9. **Extract / inline rungs (2026-11-15):** language server first, then
+   native on query data (`locals.scm` in `lattice-syntax`, `refactor.scm`
+   in the plugin), then a refusal with the reason; RF.4e's text heuristic
+   removed. The cascade is host-side data, `code-actions { only, range,
+   otherwise }`, with a stale-range guard (§9.1, §9.2).
+10. **The `c` family (2026-11-15):** refactor operators move from
+    `<leader>r{x}` to `cr{x}` in Normal — `crr` raise, `cre` extract, `cri`
+    inline, `crj` join, `cr<CR>` split — keeping `<leader>r{x}` in Visual,
+    where a `c…` chord would delay Visual `c`. abolish's coercion letters
+    stay free (§9).

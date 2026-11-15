@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Added
+- **`<leader>rs{motion}` / `<leader>rj{motion}`** split or join the comma list around any range, Visual, motion or text object: `<leader>rsi(` splits a call's arguments.
 - **`<leader>rr{motion}` raises any range**, the first refactor operator: the syntax node a Visual selection, motion or text object covers replaces the expression around it, so `<leader>rriw` on `bar` in `foo(bar, baz)` gives `bar`. A range that is not one node is refused, not widened.
 - **`:refactor-split` / `:refactor-join`** put the items of the comma-separated list at the cursor (arguments, parameters, an array, a struct literal) one per line, or back on one. The indent is the buffer's own, so Go's tabs stay tabs; a trailing comma is kept as it was. One `u` each.
 - **Plugins can read an option as one buffer sees it.** The new `config.get-option-in-buffer` answers what `:setlocal name?` would, including a mode's override, where `get-option` answers the global value. Additive: existing plugins load unchanged.

@@ -231,7 +231,7 @@ the public API).
 |---|---|---|
 | exchange | `cx{obj}` twice; `cxx` (line); Visual `X`; `cxc` clears the mark | The first use marks the range, highlighted; the second swaps the two, as vim-exchange does. One replacement spanning both, so one undo step. A range inside the other replaces the larger with the smaller (vim-exchange's rule). An edit that changes the marked text drops the mark and says so. Text only: no tree. |
 | raise | `<leader>rr{obj}` | The node the range covers replaces the expression around it, §3's rule. The range is trimmed of whitespace and separators (`,` `;`) first, then must be exactly one named node: one that is not is refused, never widened to the node around it, because raising more than was selected deletes text the user did not point at. In Visual this is "raise what I selected", the form RF.2d could not offer. |
-| split / join | `<leader>rs{obj}` / `<leader>rj{obj}` | The comma list the range covers, §3's rule. |
+| split / join | `<leader>rs{obj}` / `<leader>rj{obj}` | The nearest comma list around the range, §3's rule. Nearest, not exact as raise demands: split and join change only whitespace, so acting on the list around an argument (`<leader>rsiw`) deletes nothing. |
 | extract | `<leader>re{obj}` | The expression the range covers becomes a variable — see below. |
 | inline | `<leader>ri{obj}` | The variable the range names (its declaration or a use) is replaced by its value at every use, and the declaration removed — see below. |
 

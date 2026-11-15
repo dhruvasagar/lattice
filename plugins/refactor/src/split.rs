@@ -18,7 +18,7 @@
 
 use crate::lattice::plugin_host::buffer::Document;
 use crate::lattice::plugin_host::tree_sitter::{Node, TreeSnapshot};
-use crate::span::{span_of, text, Outcome, Pos, Span};
+use crate::span::{covering_node, span_of, text, trim_list_edges, Outcome, Span};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Layout {
@@ -49,9 +49,9 @@ fn comma_items(doc: &Document, n: &Node) -> Option<Vec<Span>> {
     all_commas.then_some(items)
 }
 
-/// The smallest comma list around the cursor.
-fn comma_list(tree: &TreeSnapshot, doc: &Document, cursor: Pos) -> Option<(Node, Vec<Span>)> {
-    let mut node = tree.node_at(cursor.into());
+/// The smallest comma list around `span` (an empty span: around a point).
+fn comma_list(tree: &TreeSnapshot, doc: &Document, span: Span) -> Option<(Node, Vec<Span>)> {
+    let mut node = covering_node(tree, span);
     while let Some(n) = node {
         if n.is_named() {
             if let Some(items) = comma_items(doc, &n) {
@@ -71,15 +71,21 @@ fn indent_of(doc: &Document, line: u32) -> String {
         .collect()
 }
 
-/// Lay out the comma list at `cursor`. `unit` is one level of indentation.
+/// Lay out the smallest comma list around `range` — the cursor for the `:`
+/// commands (an empty range), any range for the operators. The NEAREST list
+/// around the range rather than one the range must match exactly, unlike
+/// raise: split and join change only whitespace, so acting on the list
+/// around an argument deletes nothing the user did not point at.
+/// `unit` is one level of indentation.
 pub fn reshape(
     tree: &TreeSnapshot,
     doc: &Document,
-    cursor: Pos,
+    range: Span,
     layout: Layout,
     unit: &str,
 ) -> Outcome {
-    let Some((list, items)) = comma_list(tree, doc, cursor) else {
+    let range = trim_list_edges(doc, range);
+    let Some((list, items)) = comma_list(tree, doc, range) else {
         return Outcome::Refuse(
             "not in a comma-separated list — split and join act on arguments, parameters, arrays and the like",
         );

@@ -30,6 +30,8 @@ selection, a motion, or a text object.
 | | |
 |---|---|
 | `<leader>rr{obj}` | raise: the node the range covers replaces the expression around it |
+| `<leader>rs{obj}` | split the comma list around the range, one item per line |
+| `<leader>rj{obj}` | join the comma list around the range onto one line |
 
 `<leader>rriw` on `bar` in `foo(bar, baz)` gives `bar`. In Visual, `<leader>rr`
 raises the selection — `<M-o>` a couple of times, then `<leader>rr`. The range
@@ -37,6 +39,11 @@ must be one syntax node (whitespace and a trailing `,` are ignored); a range
 that is not one is refused rather than grown, since raising more than you
 selected would delete text you did not point at. `:refactor-raise` is the
 same edit on the node at the cursor.
+
+Split and join act on the nearest comma list around the range, so
+`<leader>rsi(` and `<leader>rsiw` on an argument both split the call's
+arguments; they change only whitespace. `:refactor-split` / `:refactor-join`
+do the same at the cursor.
 
 ## Swapping list items
 

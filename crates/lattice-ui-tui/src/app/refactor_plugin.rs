@@ -564,6 +564,43 @@ mod tests {
         );
     }
 
+    /// RF.4c: split and join as operators. `<leader>rsi(` splits the call's
+    /// arguments; from an item, `<leader>rjiw` joins the list around it —
+    /// the nearest list, since split / join change only whitespace.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_split_and_join_operators_act_on_the_list_around_the_range() {
+        let split = "fn main() {\n    let x = foo(\n        bar,\n        baz + 1\n    );\n}\n";
+        let Some(mut app) =
+            app_with_refactor("main.rs", RUST, Some(lattice_syntax::Lang::Rust)).await
+        else {
+            return;
+        };
+        press_chars(&mut app, "jfb rsi(");
+        assert_eq!(body(&app), split, "echo: {:?}", echoed(&app));
+
+        press_chars(&mut app, "j^ rjiw");
+        assert_eq!(body(&app), RUST, "echo: {:?}", echoed(&app));
+
+        press_chars(&mut app, "u");
+        assert_eq!(body(&app), split, "one `u` undoes the join");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_split_operator_outside_a_comma_list_says_so() {
+        let Some(mut app) =
+            app_with_refactor("main.rs", RUST, Some(lattice_syntax::Lang::Rust)).await
+        else {
+            return;
+        };
+        press_chars(&mut app, " rsiw");
+        assert_eq!(body(&app), RUST);
+        assert!(
+            echoed(&app).contains("not in a comma-separated list"),
+            "got {:?}",
+            echoed(&app)
+        );
+    }
+
     /// The same rule in Python.
     #[tokio::test(flavor = "multi_thread")]
     async fn swap_works_in_python() {

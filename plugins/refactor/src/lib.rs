@@ -81,6 +81,8 @@ const CB_SPLIT: u32 = 6;
 const CB_JOIN: u32 = 7;
 /// Operators (RF.4): their own callback space, read by `apply-operator`.
 const CB_RAISE_OP: u32 = 50;
+const CB_SPLIT_OP: u32 = 51;
+const CB_JOIN_OP: u32 = 52;
 /// The one parse callback every argument-less ex-command shares.
 const CB_PARSE_NO_ARGS: u32 = 100;
 
@@ -299,6 +301,13 @@ fn buffer_indent_unit(buffer: u32) -> String {
 }
 // @end-example
 
+/// The empty range at an ex-command's cursor — what the `:` forms of the
+/// operators act on.
+fn at_cursor(ctx: &ExCommandContext) -> Span {
+    let p = Pos::from(ctx.cursor);
+    Span { start: p, end: p }
+}
+
 /// Run `edit` against the tree, or say there is none.
 fn with_tree(
     ctx: &ExCommandContext,
@@ -334,6 +343,18 @@ impl Guest for Component {
             "Raise the syntax node the range covers: it replaces the expression around it (`<leader>rria` lifts an argument out of its call).",
             &operator("<leader>rr"),
             CB_RAISE_OP,
+        );
+        grammar::register_operator(
+            "refactor-split-operator",
+            "Split the comma-separated list around the range one item per line, one indent deeper (`<leader>rsi(` splits a call's arguments).",
+            &operator("<leader>rs"),
+            CB_SPLIT_OP,
+        );
+        grammar::register_operator(
+            "refactor-join-operator",
+            "Join the comma-separated list around the range onto one line; the inverse of `<leader>rs`.",
+            &operator("<leader>rj"),
+            CB_JOIN_OP,
         );
         let spec = || ActionSpec {
             args_schema: Vec::new(),
@@ -476,6 +497,15 @@ impl GrammarCallbacks for Component {
         let range = Span::from(ctx.range);
         Ok(match callback {
             CB_RAISE_OP => edit_effects(ctx.buffer_id, raise::raise_range(tree, doc, range)),
+            CB_SPLIT_OP => {
+                let unit = buffer_indent_unit(ctx.buffer_id);
+                let outcome = split::reshape(tree, doc, range, split::Layout::Split, &unit);
+                edit_effects(ctx.buffer_id, outcome)
+            }
+            CB_JOIN_OP => edit_effects(
+                ctx.buffer_id,
+                split::reshape(tree, doc, range, split::Layout::Join, ""),
+            ),
             other => return Err(format!("refactor: unknown operator callback {other}")),
         })
     }
@@ -511,11 +541,11 @@ impl GrammarCallbacks for Component {
             CB_SPLIT => {
                 let unit = buffer_indent_unit(ctx.buffer_id);
                 with_tree(&ctx, tree, |t| {
-                    split::reshape(t, doc, ctx.cursor.into(), split::Layout::Split, &unit)
+                    split::reshape(t, doc, at_cursor(&ctx), split::Layout::Split, &unit)
                 })
             }
             CB_JOIN => with_tree(&ctx, tree, |t| {
-                split::reshape(t, doc, ctx.cursor.into(), split::Layout::Join, "")
+                split::reshape(t, doc, at_cursor(&ctx), split::Layout::Join, "")
             }),
             other => return Err(format!("refactor: unknown ex-command callback {other}")),
         })

@@ -1537,6 +1537,10 @@ impl GpuiApp {
             | Effect::BufferPrev
             | Effect::FocusBuffer(_)
             | Effect::InvokeCommand { .. }
+            // RF.4d: tracked and tinted host-side; the tint reaches this
+            // peer through the published `mode_highlights`.
+            | Effect::TrackRange { .. }
+            | Effect::UntrackRange { .. }
             // SI.10: host-applied (`Editor::expand_snippet_over`).
             | Effect::ExpandSnippetOver { .. }
             | Effect::BufferDelete { .. }

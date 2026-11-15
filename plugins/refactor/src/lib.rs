@@ -58,10 +58,11 @@ use lattice::plugin_host::types::{
     ActionContext, ActionSpec, ApplyEditPayload, Args, EchoLevel, EchoPayload, Edit, EditKind,
     Effect, ExCommandContext, ExCommandSpec, LatencyClass, ModalState, MotionContext, MotionResult,
     OperatorContext, OperatorSpec, Position, Range, Selection, SelectionSet, SurfaceForm,
-    TextObjectContext, VisualKind, VisualMode,
+    TextObjectContext, TrackRangePayload, UntrackRangePayload, VisualKind, VisualMode,
 };
 use lattice::plugin_host::{config, grammar, help, modes};
 
+mod exchange;
 mod raise;
 mod span;
 mod split;
@@ -79,10 +80,12 @@ const CB_SWAP_PREV: u32 = 4;
 const CB_RAISE: u32 = 5;
 const CB_SPLIT: u32 = 6;
 const CB_JOIN: u32 = 7;
+const CB_EXCHANGE_CLEAR: u32 = 8;
 /// Operators (RF.4): their own callback space, read by `apply-operator`.
 const CB_RAISE_OP: u32 = 50;
 const CB_SPLIT_OP: u32 = 51;
 const CB_JOIN_OP: u32 = 52;
+const CB_EXCHANGE_OP: u32 = 53;
 /// The one parse callback every argument-less ex-command shares.
 const CB_PARSE_NO_ARGS: u32 = 100;
 
@@ -109,6 +112,31 @@ thread_local! {
     /// Per buffer id. A component instance is single-threaded, so the
     /// thread-local is the instance's memory, not a lock-free trick.
     static RUNS: RefCell<HashMap<u32, Run>> = RefCell::new(HashMap::new());
+}
+
+/// RF.4d: the exchange mark — the first `cx`'s range, until the second.
+/// One per instance, as vim-exchange keeps one: a second buffer's `cx`
+/// moves it there.
+struct Mark {
+    buffer: u32,
+    /// Where it was marked, and the text it named. The text is how an edit
+    /// to the marked text is noticed; the span is read only if the
+    /// document has not yet taken the `track-range` (its mailbox is FIFO,
+    /// but the next keystroke can be dispatched against an older snapshot).
+    span: Span,
+    text: String,
+}
+
+/// The `track-range` id of the exchange mark, in this plugin's own space.
+const EXCHANGE_MARK: u32 = 1;
+
+/// The tint the mark is shown in: the current search hit's, vim-exchange's
+/// `IncSearch` link. A plugin-owned element waits on grammar-world theme
+/// registration (refactor.md §9).
+const EXCHANGE_TINT: &str = "search.current";
+
+thread_local! {
+    static MARK: RefCell<Option<Mark>> = const { RefCell::new(None) };
 }
 
 // ── effects ───────────────────────────────────────────────────────────────────
@@ -301,6 +329,148 @@ fn buffer_indent_unit(buffer: u32) -> String {
 }
 // @end-example
 
+fn warn(text: &str) -> Vec<Effect> {
+    vec![Effect::Echo(EchoPayload {
+        level: EchoLevel::Warn,
+        text: text.to_string(),
+    })]
+}
+
+fn untrack_mark(buffer: u32) -> Effect {
+    Effect::UntrackRange(UntrackRangePayload {
+        target: buffer,
+        id: EXCHANGE_MARK,
+    })
+}
+
+/// The range an operator acts on, as text to exchange. A linewise range is
+/// its lines without the last newline, so two lines swap their text and keep
+/// the line break between them.
+fn operated_span(ctx: &OperatorContext, doc: &Document) -> Span {
+    let range = Span::from(ctx.range);
+    if !ctx.linewise {
+        return range;
+    }
+    // A linewise range may end at the start of the line after its last.
+    let last = if range.end.byte == 0 && range.end.line > range.start.line {
+        range.end.line - 1
+    } else {
+        range.end.line
+    };
+    let len = doc.line(last).map_or(0, |l| l.len() as u32);
+    Span {
+        start: Pos {
+            line: range.start.line,
+            byte: 0,
+        },
+        end: Pos {
+            line: last,
+            byte: len,
+        },
+    }
+}
+
+/// `cx{motion}`: mark the range, or, with a range marked, swap the two.
+fn exchange_op(ctx: &OperatorContext, doc: &Document) -> Vec<Effect> {
+    let buffer = ctx.buffer_id;
+    let new = operated_span(ctx, doc);
+    if new.start >= new.end {
+        return echo("exchange: nothing to exchange in an empty range");
+    }
+    let marked = MARK.with(|m| m.borrow_mut().take());
+    let mut effects = Vec::new();
+    let mark = match marked {
+        Some(mark) if mark.buffer == buffer => mark,
+        other => {
+            // Nothing marked, or marked in another buffer: this range is the
+            // first of a new pair.
+            if let Some(old) = other {
+                effects.push(untrack_mark(old.buffer));
+            }
+            effects.push(Effect::TrackRange(TrackRangePayload {
+                target: buffer,
+                id: EXCHANGE_MARK,
+                range: new.into(),
+                element: Some(EXCHANGE_TINT.to_string()),
+            }));
+            let text = span::text(doc, new);
+            MARK.with(|m| {
+                *m.borrow_mut() = Some(Mark {
+                    buffer,
+                    span: new,
+                    text,
+                })
+            });
+            return effects;
+        }
+    };
+    // @example buffer.document.tracked-range: Find where a range tracked earlier is now, after the edits since
+    let current = match doc.tracked_range(EXCHANGE_MARK) {
+        // An edit replaced more than the marked text: it is gone.
+        Some(t) if t.collapsed => None,
+        Some(t) => Some(Span::from(t.range)),
+        // Not yet in this snapshot: where it was marked, if the text there is
+        // still what was marked.
+        None => Some(mark.span),
+    };
+    // @end-example
+    let Some(marked) = current.filter(|s| span::text(doc, *s) == mark.text) else {
+        effects.push(untrack_mark(buffer));
+        effects.extend(warn(
+            "exchange: the marked text was edited, so the mark was dropped — `cx` marks again",
+        ));
+        return effects;
+    };
+    let outcome = match exchange::plan(marked, new) {
+        // `cx` twice on the same text: vim-exchange's cancel.
+        exchange::Plan::Same => {
+            effects.push(untrack_mark(buffer));
+            return effects;
+        }
+        exchange::Plan::Overlap => {
+            // Kept: the user meant to exchange the mark, just not with this.
+            MARK.with(|m| *m.borrow_mut() = Some(mark));
+            return echo(
+                "exchange: the two ranges overlap — exchange the mark with text beside it, or `cxc` to clear it",
+            );
+        }
+        exchange::Plan::Contains { outer, inner } => span::Outcome::Edit {
+            range: outer,
+            text: span::text(doc, inner),
+            cursor: outer.start,
+        },
+        exchange::Plan::Disjoint { first, second } => {
+            let gap = Span {
+                start: first.end,
+                end: second.start,
+            };
+            span::Outcome::Edit {
+                range: Span {
+                    start: first.start,
+                    end: second.end,
+                },
+                text: exchange::swapped(
+                    &span::text(doc, first),
+                    &span::text(doc, gap),
+                    &span::text(doc, second),
+                ),
+                cursor: first.start,
+            }
+        }
+    };
+    effects.push(untrack_mark(buffer));
+    effects.extend(edit_effects(buffer, outcome));
+    effects
+}
+
+/// `cxc`: forget the mark.
+fn exchange_clear() -> Vec<Effect> {
+    match MARK.with(|m| m.borrow_mut().take()) {
+        Some(mark) => vec![untrack_mark(mark.buffer)],
+        None => echo("exchange: nothing is marked"),
+    }
+}
+
 /// The empty range at an ex-command's cursor — what the `:` forms of the
 /// operators act on.
 fn at_cursor(ctx: &ExCommandContext) -> Span {
@@ -327,6 +497,28 @@ impl Guest for Component {
         // RF.4: every refactor is an operator over a range — Visual, a motion
         // or a text object (`aa`, `af`, …) — on `refactor-mode`'s layer. The
         // `:` commands below are the cursor shorthand.
+        grammar::register_operator(
+            "refactor-exchange-operator",
+            "Exchange two ranges: the first `cx{motion}` marks one (tinted), the second swaps them. `cxx` is the line; `cxc` clears the mark.",
+            &OperatorSpec {
+                repeatable: true,
+                args_schema: Vec::new(),
+                blockwise_per_row: false,
+                post_motion_char: false,
+                chord: Some("cx".to_string()),
+                // vim-exchange's `cxx`: the current line.
+                doubled: Some("x".to_string()),
+            },
+            CB_EXCHANGE_OP,
+        );
+        grammar::register_action(
+            "refactor-exchange-clear",
+            "Forget the range the first `cx` marked, and its tint.",
+            &ActionSpec {
+                args_schema: Vec::new(),
+            },
+            CB_EXCHANGE_CLEAR,
+        );
         let operator = |chord: &str| OperatorSpec {
             repeatable: true,
             args_schema: Vec::new(),
@@ -447,6 +639,12 @@ impl Guest for Component {
                 // says so. Bound anyway: Normal's lookup strips an unbound
                 // Alt, so a bare `<M-i>` would run `i` and enter Insert.
                 bind(BindingMode::Normal, "<M-i>", "refactor-shrink"),
+                // vim-exchange's clear. `c` is not a motion, so this does not
+                // shadow any `cx{motion}`.
+                bind(BindingMode::Normal, "cxc", "refactor-exchange-clear"),
+                // vim-exchange's Visual form. Not `cx`: in Visual `c` is
+                // change and fires at once.
+                bind(BindingMode::Visual, "X", "refactor-exchange-operator"),
             ],
             target_language: None,
             options: vec![],
@@ -473,6 +671,7 @@ impl GrammarCallbacks for Component {
         Ok(match callback {
             CB_EXPAND => expand(&ctx, doc, tree),
             CB_SHRINK => shrink(&ctx, doc),
+            CB_EXCHANGE_CLEAR => exchange_clear(),
             other => return Err(format!("refactor: unknown action callback {other}")),
         })
     }
@@ -491,6 +690,10 @@ impl GrammarCallbacks for Component {
         doc: &Document,
         tree: Option<&TreeSnapshot>,
     ) -> Result<Vec<Effect>, String> {
+        // Exchange is text only: it works in a buffer with no parse.
+        if callback == CB_EXCHANGE_OP {
+            return Ok(exchange_op(&ctx, doc));
+        }
         let Some(tree) = tree else {
             return Ok(echo("refactor: no syntax tree for this buffer"));
         };

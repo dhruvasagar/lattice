@@ -124,6 +124,35 @@
               "code": "let Some(mine) = doc.path() else {\n    return Err(\"fixture: this buffer has no file\".to_string());\n};\nOk(vec![Effect::WriteToFile(WriteToFilePayload {\n    path: format!(\"{mine}_archive\"),\n    anchor: FileAnchor::End,\n    text: \"* Archived beside me\\n\".to_string(),\n    cut: None,\n    create_parents: false,\n    save: false,\n})])"
             }
           ]
+        },
+        {
+          "name": "[method]document.tracked-range",
+          "display_name": "document.tracked-range",
+          "kind": "method",
+          "resource": "document",
+          "async": false,
+          "params": [
+            {
+              "name": "self",
+              "type": "borrow<document>"
+            },
+            {
+              "name": "id",
+              "type": "u32"
+            }
+          ],
+          "result": "option<tracked-range>",
+          "signature": "tracked-range: func(id: u32) -> option<tracked-range>",
+          "doc": "RF.4d: where a range this plugin tracked (`track-range`) is now,\nor `none` when it is not tracked in this document — never was,\nwas untracked, or the buffer has no text of its own. `id` is\nthe plugin's own, so it reads only its own ranges.\n\nSnapshot semantics like the rest of this resource: the range as\nof the handle's mint. A `track-range` returned by the same call\nis not visible until the next one.",
+          "examples": [
+            {
+              "id": "refactor:buffer.document.tracked-range",
+              "caption": "Find where a range tracked earlier is now, after the edits since",
+              "source": "plugins/refactor/src/lib.rs",
+              "language": "rust",
+              "code": "let current = match doc.tracked_range(EXCHANGE_MARK) {\n    // An edit replaced more than the marked text: it is gone.\n    Some(t) if t.collapsed => None,\n    Some(t) => Some(Span::from(t.range)),\n    // Not yet in this snapshot: where it was marked, if the text there is\n    // still what was marked.\n    None => Some(mark.span),\n};"
+            }
+          ]
         }
       ],
       "types": [
@@ -180,6 +209,11 @@
           "name": "range",
           "from": "types",
           "original": "range"
+        },
+        {
+          "name": "tracked-range",
+          "from": "types",
+          "original": "tracked-range"
         }
       ]
     },
@@ -6699,6 +6733,73 @@
           "examples": []
         },
         {
+          "name": "track-range-payload",
+          "kind": "record",
+          "doc": "RF.4d: what `track-range` asks the host to remember.",
+          "definition": "record track-range-payload {\n    target: u32,\n    id: u32,\n    range: range,\n    element: option<string>,\n}",
+          "members": [
+            {
+              "name": "target",
+              "type": "u32",
+              "doc": "The target `BufferId` (its inner `u32`)."
+            },
+            {
+              "name": "id",
+              "type": "u32",
+              "doc": "The guest's own name for the range, in its own namespace: two\nplugins using the same number name different ranges, and neither\ncan reach a range the editor tracks for itself (a snippet's).\nTracking an id again replaces the range it names."
+            },
+            {
+              "name": "range",
+              "type": "range",
+              "doc": "The text to keep in place, in the buffer's current coordinates."
+            },
+            {
+              "name": "element",
+              "type": "option<string>",
+              "doc": "A theme element whose background tints the range while it is\ntracked (`search.current`, or an element the plugin registered),\nor `none` for no tint. A name no theme defines tints nothing."
+            }
+          ],
+          "examples": []
+        },
+        {
+          "name": "untrack-range-payload",
+          "kind": "record",
+          "doc": "RF.4d: what `untrack-range` asks the host to forget.",
+          "definition": "record untrack-range-payload {\n    target: u32,\n    id: u32,\n}",
+          "members": [
+            {
+              "name": "target",
+              "type": "u32",
+              "doc": "The target `BufferId` (its inner `u32`)."
+            },
+            {
+              "name": "id",
+              "type": "u32",
+              "doc": "The id `track-range` used. An id not tracked is a no-op."
+            }
+          ],
+          "examples": []
+        },
+        {
+          "name": "tracked-range",
+          "kind": "record",
+          "doc": "RF.4d: a tracked range as the document holds it now.",
+          "definition": "record tracked-range {\n    range: range,\n    collapsed: bool,\n}",
+          "members": [
+            {
+              "name": "range",
+              "type": "range",
+              "doc": "Where the text is now, after every edit since it was tracked."
+            },
+            {
+              "name": "collapsed",
+              "type": "bool",
+              "doc": "An edit replaced more than the range, so the text it named is\ngone. The range still moves with later edits, but names nothing."
+            }
+          ],
+          "examples": []
+        },
+        {
           "name": "yank-payload",
           "kind": "record",
           "doc": null,
@@ -8045,7 +8146,7 @@
           "name": "effect",
           "kind": "variant",
           "doc": "Mirrors `lattice_grammar::effect::Effect` (§4.4). Every arm is pure data;\n`Many`/`Global`/`AppAction` are absent by design (see the note above).",
-          "definition": "variant effect {\n    none,\n    declined,\n    edits(list<applied-edit>),\n    apply-edit(apply-edit-payload),\n    write-to-file(write-to-file-payload),\n    selection-change(selection-set),\n    cursor-move(position),\n    confirm(confirm-payload),\n    open-prompt(open-prompt-payload),\n    open-transient(open-transient-payload),\n    yank(yank-payload),\n    enter-mode(modal-state),\n    save-buffer(option<string>),\n    quit-editor(quit-payload),\n    open-buffer(open-buffer-payload),\n    open-buffer-at(open-buffer-at-payload),\n    open-external-uri(string),\n    open-buffer-at-column(open-buffer-at-column-payload),\n    spawn-terminal(spawn-terminal-payload),\n    terminal-input(list<u8>),\n    set-option(string),\n    set-local-option(string),\n    set-global-option(string),\n    clear-search-highlight,\n    set-colorscheme(string),\n    echo(echo-payload),\n    show-diagnostics-popup(list<tuple<string, u8>>),\n    lsp(lsp-request),\n    echo-registers,\n    echo-marks,\n    substitute(substitute-payload),\n    delete-current-line,\n    describe-command(describe-command-payload),\n    describe-buffer,\n    apropos(string),\n    describe-key(string),\n    list-keymap,\n    buffer-next,\n    buffer-prev,\n    list-buffers,\n    open-buffer-picker,\n    open-picker(open-picker-payload),\n    buffer-delete(bool),\n    open-file-tree(option<string>),\n    close-file-tree,\n    open-oil(option<string>),\n    describe-option(string),\n    describe-element(string),\n    list-options,\n    describe-plugin-api(option<string>),\n    list-plugin-apis,\n    export-plugin-api(option<string>),\n    list-commands,\n    describe-plugin(string),\n    list-plugins,\n    open-hover(string),\n    dismiss-popup,\n    dismiss-popup-named(string),\n    open-popup(open-popup-payload),\n    open-help-topic(option<string>),\n    list-diagnostics,\n    next-diagnostic,\n    prev-diagnostic,\n    open-lsp-log(option<string>),\n    open-messages,\n    open-dashboard,\n    toggle-lsp-trace(string),\n    open-lsp-trace-log(option<string>),\n    lsp-status,\n    lsp-server-log-listing,\n    lsp-restart(string),\n    lsp-progress-cancel(option<string>),\n    lsp-expand-region,\n    lsp-shrink-region,\n    set-lsp-log-level(set-lsp-log-level-payload),\n    lsp-log-clear(option<string>),\n    lsp-document-symbol,\n    lsp-workspace-symbol(string),\n    lsp-incoming-calls,\n    lsp-outgoing-calls,\n    lsp-supertypes,\n    lsp-subtypes,\n    lsp-moniker,\n    lsp-code-lens,\n    lsp-color-presentation,\n    lsp-format,\n    lsp-format-range,\n    lsp-signature-help,\n    lsp-complete,\n    lsp-rename(string),\n    lsp-code-action,\n    expand-snippet(range),\n    expand-snippet-over(expand-snippet-over-payload),\n    reload-snippets,\n    describe-events,\n    describe-diff,\n    diff-open,\n    diff-off(bool),\n    diffthis,\n    diffsplit(diffsplit-payload),\n    diff-get-cmd(option<u32>),\n    diff-put-cmd(option<u32>),\n    diff-accept,\n    diff-reject,\n    diff-accept-all,\n    diff-reject-all,\n    close-session-diffs(close-session-diffs-payload),\n    close-all-session-diffs(u64),\n    next-hunk,\n    prev-hunk,\n    describe-event(string),\n    list-modes,\n    describe-mode(string),\n    describe-active-modes,\n    describe-active-bindings,\n    describe-option-resolution(string),\n    customize(option<string>),\n    tutor(option<u32>),\n    toggle-mode(string),\n    app-action(app-effect),\n    record-jump,\n    open-ai-log(option<string>),\n    open-synthetic-buffer(open-synthetic-buffer-payload),\n    focus-buffer(u32),\n    invoke-command(command-ref),\n}",
+          "definition": "variant effect {\n    none,\n    declined,\n    edits(list<applied-edit>),\n    apply-edit(apply-edit-payload),\n    write-to-file(write-to-file-payload),\n    selection-change(selection-set),\n    cursor-move(position),\n    confirm(confirm-payload),\n    open-prompt(open-prompt-payload),\n    open-transient(open-transient-payload),\n    yank(yank-payload),\n    enter-mode(modal-state),\n    save-buffer(option<string>),\n    quit-editor(quit-payload),\n    open-buffer(open-buffer-payload),\n    open-buffer-at(open-buffer-at-payload),\n    open-external-uri(string),\n    open-buffer-at-column(open-buffer-at-column-payload),\n    spawn-terminal(spawn-terminal-payload),\n    terminal-input(list<u8>),\n    set-option(string),\n    set-local-option(string),\n    set-global-option(string),\n    clear-search-highlight,\n    set-colorscheme(string),\n    echo(echo-payload),\n    show-diagnostics-popup(list<tuple<string, u8>>),\n    lsp(lsp-request),\n    echo-registers,\n    echo-marks,\n    substitute(substitute-payload),\n    delete-current-line,\n    describe-command(describe-command-payload),\n    describe-buffer,\n    apropos(string),\n    describe-key(string),\n    list-keymap,\n    buffer-next,\n    buffer-prev,\n    list-buffers,\n    open-buffer-picker,\n    open-picker(open-picker-payload),\n    buffer-delete(bool),\n    open-file-tree(option<string>),\n    close-file-tree,\n    open-oil(option<string>),\n    describe-option(string),\n    describe-element(string),\n    list-options,\n    describe-plugin-api(option<string>),\n    list-plugin-apis,\n    export-plugin-api(option<string>),\n    list-commands,\n    describe-plugin(string),\n    list-plugins,\n    open-hover(string),\n    dismiss-popup,\n    dismiss-popup-named(string),\n    open-popup(open-popup-payload),\n    open-help-topic(option<string>),\n    list-diagnostics,\n    next-diagnostic,\n    prev-diagnostic,\n    open-lsp-log(option<string>),\n    open-messages,\n    open-dashboard,\n    toggle-lsp-trace(string),\n    open-lsp-trace-log(option<string>),\n    lsp-status,\n    lsp-server-log-listing,\n    lsp-restart(string),\n    lsp-progress-cancel(option<string>),\n    lsp-expand-region,\n    lsp-shrink-region,\n    set-lsp-log-level(set-lsp-log-level-payload),\n    lsp-log-clear(option<string>),\n    lsp-document-symbol,\n    lsp-workspace-symbol(string),\n    lsp-incoming-calls,\n    lsp-outgoing-calls,\n    lsp-supertypes,\n    lsp-subtypes,\n    lsp-moniker,\n    lsp-code-lens,\n    lsp-color-presentation,\n    lsp-format,\n    lsp-format-range,\n    lsp-signature-help,\n    lsp-complete,\n    lsp-rename(string),\n    lsp-code-action,\n    expand-snippet(range),\n    expand-snippet-over(expand-snippet-over-payload),\n    reload-snippets,\n    describe-events,\n    describe-diff,\n    diff-open,\n    diff-off(bool),\n    diffthis,\n    diffsplit(diffsplit-payload),\n    diff-get-cmd(option<u32>),\n    diff-put-cmd(option<u32>),\n    diff-accept,\n    diff-reject,\n    diff-accept-all,\n    diff-reject-all,\n    close-session-diffs(close-session-diffs-payload),\n    close-all-session-diffs(u64),\n    next-hunk,\n    prev-hunk,\n    describe-event(string),\n    list-modes,\n    describe-mode(string),\n    describe-active-modes,\n    describe-active-bindings,\n    describe-option-resolution(string),\n    customize(option<string>),\n    tutor(option<u32>),\n    toggle-mode(string),\n    app-action(app-effect),\n    record-jump,\n    open-ai-log(option<string>),\n    open-synthetic-buffer(open-synthetic-buffer-payload),\n    focus-buffer(u32),\n    invoke-command(command-ref),\n    track-range(track-range-payload),\n    untrack-range(untrack-range-payload),\n}",
           "members": [
             {
               "name": "none",
@@ -8671,6 +8772,16 @@
               "name": "invoke-command",
               "type": "command-ref",
               "doc": "CD.3d: run a registered command — an action with typed args, else\nan ex line — AFTER the effects before it in the same batch. A\nwrite-to-file that does not land stops the batch, so work that must\nfollow a successful write (deleting what was filed) goes here rather\nthan in a host call, which runs before any effect is applied."
+            },
+            {
+              "name": "track-range",
+              "type": "track-range-payload",
+              "doc": "RF.4d: keep a range of a buffer's text in place across every edit\n— typed, an operator's, an undo, a language server's — and tint it\nwhile it is tracked. Read it back with `document.tracked-range`.\nThe tint is the host's: no guest code runs to paint it. Appended\nlast so existing variant indices do not move."
+            },
+            {
+              "name": "untrack-range",
+              "type": "untrack-range-payload",
+              "doc": "RF.4d: stop tracking a range, and its tint goes with it."
             }
           ],
           "examples": []
@@ -11974,7 +12085,7 @@
     },
     {
       "name": "refactor-plugin",
-      "doc": "The `refactor` bundled plugin's world (RF.2): editing by syntax node,\nfrom the tree-sitter parse, in every language with a grammar and with no\nlanguage server. Design: `docs/dev/architecture/refactor.md`.\n\n  - **grammar** — the actions: grow / shrink the selection a node at a\n    time, and (RF.2c–e) swap, raise, split and join. Actions rather than\n    operators because each acts on *a node*, which the cursor or the\n    selection already names, and because `apply-action` is handed the\n    tree (`apply-operator` deliberately is not).\n  - **modes** — `refactor-mode`, the minor mode that owns the\n    `<M-o>` / `<M-i>` chords, so `:set refactor.enabled=false` takes\n    the keys with it.\n  - **help** — `:help refactor`, `include_str!`'d from this plugin's\n    `doc/`.\n\n`logging` is intentionally NOT imported, for auto-pair's reason: it would\nput `log` on the sync grammar linker, and these actions are on the\nkeystroke path.",
+      "doc": "The `refactor` bundled plugin's world (RF.2): editing by syntax node,\nfrom the tree-sitter parse, in every language with a grammar and with no\nlanguage server. Design: `docs/dev/architecture/refactor.md`.\n\n  - **grammar** — grow / shrink the selection a node at a time\n    (actions); swap, raise, split and join at the cursor (ex-commands);\n    and, since RF.4, the operators — exchange, raise, split, join — that\n    act on any Visual selection, motion or text object. `apply-operator`\n    is handed the tree since 0.5.0, and exchange tracks its mark with\n    `track-range`.\n  - **modes** — `refactor-mode`, the minor mode that owns the chords\n    (`<M-o>` / `<M-i>`, `cx`, `<leader>r…`), so\n    `:set refactor.enabled=false` takes the keys with it.\n  - **help** — `:help refactor`, `include_str!`'d from this plugin's\n    `doc/`.\n\n`logging` is intentionally NOT imported, for auto-pair's reason: it would\nput `log` on the sync grammar linker, and these actions are on the\nkeystroke path.",
       "imports": [
         "buffer",
         "config",

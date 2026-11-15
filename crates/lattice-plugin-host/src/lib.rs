@@ -1111,6 +1111,11 @@ struct PluginState {
     /// RF.2e: every buffer's resolved options, for `get-option-in-buffer`.
     /// `None` when boot wired no bus; the read then answers the global value.
     buffer_options: Option<Arc<config_host::BufferOptionsView>>,
+    /// RF.4d: this plugin's tracked-range space (its numeric id), so
+    /// `document.tracked-range` reads only the plugin's own ranges — the
+    /// space the trampoline's `EffectAuthorizer` mints them in. Unassigned
+    /// outside a grammar instance, where no range can have been tracked.
+    range_space: u32,
     /// PMF.5: refuses `set-option` on an option a plugin's grant follows.
     grant_guard: GrantGuardHandle,
     /// TC.4: the theme registry a `theme` plugin's `register-element` inserts
@@ -2401,6 +2406,19 @@ impl crate::grammar_host::bindings::lattice::plugin_host::buffer::HostDocument f
         self_: wasmtime::component::Resource<crate::buffer::DocumentResource>,
     ) -> Option<String> {
         self.table.get(&self_).ok().and_then(|d| d.path())
+    }
+
+    fn tracked_range(
+        &mut self,
+        self_: wasmtime::component::Resource<crate::buffer::DocumentResource>,
+        id: u32,
+    ) -> Option<crate::lattice::plugin_host::types::TrackedRange> {
+        let native = crate::effect_authorizer::plugin_range_id(self.range_space, id);
+        let (range, collapsed) = self.table.get(&self_).ok()?.tracked_range(native)?;
+        Some(crate::lattice::plugin_host::types::TrackedRange {
+            range: range.to_wit().ok()?,
+            collapsed,
+        })
     }
 
     fn drop(
@@ -4791,6 +4809,7 @@ impl PluginHost {
             // honest degradation (warn + false / none).
             config_registry: self.config.get().cloned(),
             buffer_options: self.buffer_options.get().cloned(),
+            range_space: crate::effect_authorizer::UNASSIGNED_RANGE_SPACE,
             grant_guard: self.grant_guard.clone(),
             // From the manifest id; drives config-option auto-namespacing.
             plugin_name: name.map(str::to_string),

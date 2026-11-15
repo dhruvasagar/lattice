@@ -55,7 +55,7 @@ Each world's entry points — the `register-*` functions the host calls on load 
 
 | Seam | Direction | Capability | Functions | Types | Summary |
 |---|---|---|---|---|---|
-| [`buffer`](plugin-api/buffer.md) | imports | - | 5 | 2 | Mirrors the native `Document` / `Buffer` read seam (plugin-host.md §4.2, §9.6). |
+| [`buffer`](plugin-api/buffer.md) | imports | - | 6 | 2 | Mirrors the native `Document` / `Buffer` read seam (plugin-host.md §4.2, §9.6). |
 | [`command`](plugin-api/command.md) | types | - | 0 | 0 | Mirrors `CommandRegistry` + `CommandInvocation` + the closed `Effect` enum (lattice-grammar). |
 | [`completion-source`](plugin-api/completion-source.md) | exports | - | 2 | 0 | Mirrors `lattice_completion` completion sources (PH7.6). |
 | [`config`](plugin-api/config.md) | imports | - | 9 | 7 | Mirrors `ConfigRegistry` (lattice-config). |
@@ -85,5 +85,5 @@ Each world's entry points — the `register-*` functions the host calls on load 
 | [`theme`](plugin-api/theme.md) | imports | - | 2 | 3 | Mirrors the theme-element registry (`lattice-theme`). |
 | [`transient-source`](plugin-api/transient-source.md) | exports | - | 2 | 0 | TR.2b: plugin-contributed transient menus. |
 | [`tree-sitter`](plugin-api/tree-sitter.md) | imports | - | 25 | 6 | Structural queries for plugins (plugin-treesitter-seam.md). |
-| [`types`](plugin-api/types.md) | types | - | 0 | 159 | Shared boundary records/variants — the owned, WIT-serializable mirrors of the native grammar + picker/completion types (plugin-host.md §4). |
+| [`types`](plugin-api/types.md) | types | - | 0 | 162 | Shared boundary records/variants — the owned, WIT-serializable mirrors of the native grammar + picker/completion types (plugin-host.md §4). |
 | [`ui`](plugin-api/ui.md) | imports | - | 4 | 0 | The UI-contribution surface (design.md §9.4 `ui`): guest→host emits **data only**, never draw calls (§7, paramount #1). |

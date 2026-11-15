@@ -39,7 +39,27 @@
 
 use std::path::{Path, PathBuf};
 
+use lattice_core::tracked::TrackedRangeId;
 use lattice_grammar::{EchoLevel, Effect as NativeEffect};
+
+/// RF.4d: the space a guest's range id is minted in before the authorizer
+/// knows which plugin sent it. No plugin is given it.
+pub(crate) const UNASSIGNED_RANGE_SPACE: u32 = 0x7fff_ffff;
+
+/// RF.4d: the editor-wide id of plugin range `guest` in range space `space`
+/// (the plugin's numeric id). The top bit marks a plugin's range: native
+/// callers mint theirs from [`TrackedRangeId::next`]'s counter, which never
+/// reaches it, so a plugin cannot name a snippet's placeholder or the
+/// assistant's rewrite region — and, spaces being per plugin, nor another
+/// plugin's range.
+pub(crate) fn plugin_range_id(space: u32, guest: u32) -> TrackedRangeId {
+    TrackedRangeId((1 << 63) | (u64::from(space & 0x7fff_ffff) << 32) | u64::from(guest))
+}
+
+/// The guest's own number for `id`, inverting [`plugin_range_id`].
+pub(crate) fn guest_range_id(id: TrackedRangeId) -> u32 {
+    (id.0 & 0xffff_ffff) as u32
+}
 
 use crate::capability::CapabilityGrant;
 
@@ -57,6 +77,9 @@ pub struct EffectAuthorizer {
     plugin: String,
     /// PMF.6: the option-bound write grants, for naming the option in a refusal.
     option_bound: Vec<crate::capability::OptionBoundGrant>,
+    /// RF.4d: the plugin's range space, where its tracked-range ids live.
+    /// `UNASSIGNED_RANGE_SPACE` until [`Self::with_range_space`].
+    range_space: u32,
 }
 
 impl EffectAuthorizer {
@@ -70,7 +93,15 @@ impl EffectAuthorizer {
                 .collect(),
             plugin: plugin.into(),
             option_bound: Vec::new(),
+            range_space: UNASSIGNED_RANGE_SPACE,
         }
+    }
+
+    /// RF.4d: move this plugin's tracked-range ids into `space`, its numeric
+    /// plugin id — the same space `document.tracked-range` reads from.
+    pub fn with_range_space(mut self, space: u32) -> Self {
+        self.range_space = space;
+        self
     }
 
     /// PMF.6: the option-bound write grants behind `write_prefixes`, so a
@@ -181,6 +212,29 @@ impl EffectAuthorizer {
                     true,
                 )
             }
+            // RF.4d: the id came across in the unassigned space; this is the
+            // one place that knows whose it is.
+            NativeEffect::TrackRange {
+                target,
+                id,
+                range,
+                element,
+            } => (
+                NativeEffect::TrackRange {
+                    target,
+                    id: plugin_range_id(self.range_space, guest_range_id(id)),
+                    range,
+                    element,
+                },
+                false,
+            ),
+            NativeEffect::UntrackRange { target, id } => (
+                NativeEffect::UntrackRange {
+                    target,
+                    id: plugin_range_id(self.range_space, guest_range_id(id)),
+                },
+                false,
+            ),
             other => (other, false),
         }
     }
@@ -587,6 +641,46 @@ mod tests {
                 .refusal(std::path::Path::new("/elsewhere/x.org"))
                 .contains("granted paths"),
             "a fixed-path grant keeps the generic wording"
+        );
+    }
+
+    /// RF.4d: a guest's range ids land in its own space — two plugins using
+    /// the same number name different ranges, and neither reaches a native
+    /// one (those come from `TrackedRangeId::next`, never the top bit).
+    #[test]
+    fn a_tracked_range_id_is_moved_into_the_plugins_own_space() {
+        let track = |id| NativeEffect::TrackRange {
+            target: lattice_core::BufferId(1),
+            id: plugin_range_id(UNASSIGNED_RANGE_SPACE, id),
+            range: lattice_protocol::position::Range::new(
+                lattice_protocol::position::Position::new(0, 0),
+                lattice_protocol::position::Position::new(0, 1),
+            ),
+            element: None,
+        };
+        let id_of = |e: NativeEffect| match e {
+            NativeEffect::TrackRange { id, .. } => id,
+            other => panic!("expected TrackRange, got {other:?}"),
+        };
+        let a = EffectAuthorizer::new(&CapabilityGrant::default(), "a").with_range_space(3);
+        let b = EffectAuthorizer::new(&CapabilityGrant::default(), "b").with_range_space(4);
+        let (ida, idb) = (id_of(a.authorize(track(1))), id_of(b.authorize(track(1))));
+        assert_ne!(ida, idb, "same guest number, different plugins");
+        assert_eq!(
+            ida,
+            plugin_range_id(3, 1),
+            "what `document.tracked-range` reads"
+        );
+        assert_eq!(guest_range_id(ida), 1);
+        assert!(ida.0 >> 63 == 1 && TrackedRangeId::next().0 >> 63 == 0);
+
+        let untracked = a.authorize(NativeEffect::Many(vec![NativeEffect::UntrackRange {
+            target: lattice_core::BufferId(1),
+            id: plugin_range_id(UNASSIGNED_RANGE_SPACE, 1),
+        }]));
+        assert!(
+            matches!(&untracked, NativeEffect::Many(v) if matches!(v[0], NativeEffect::UntrackRange { id, .. } if id == ida)),
+            "inside a batch too: {untracked:?}"
         );
     }
 }

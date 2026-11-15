@@ -340,12 +340,26 @@ pub(crate) fn bind_mode_keymap(
             );
             continue;
         };
+        // RF.4d: an operator bound in Visual or Select acts on the selection,
+        // the one thing an operator can mean there — as the host binds Visual
+        // `x` / `s` to delete / change. Bound bare it would sit waiting for a
+        // range it never gets, so a plugin could not give its operator a
+        // Visual-only key (vim-exchange's `X`).
+        let over_selection = matches!(binding.mode, BindingMode::Visual | BindingMode::Select)
+            && commands
+                .lookup(command_id)
+                .is_some_and(|spec| matches!(spec.kind, lattice_grammar::CommandKind::Operator));
+        let invocation = if over_selection {
+            CommandInvocation::of(command_id).with_range(lattice_grammar::Range::Selection)
+        } else {
+            CommandInvocation::of(command_id)
+        };
         match keymap.try_bind_chord_string(
             capability,
             layer,
             binding.mode,
             &binding.chord,
-            CommandInvocation::of(command_id),
+            invocation,
             SourceLocation::plugin(plugin_id),
         ) {
             Ok(()) => bound += 1,

@@ -1061,6 +1061,32 @@ pub enum Effect {
         /// ex-line case).
         args: crate::args::Args,
     },
+    /// RF.4d: keep `range` of `target`'s text in place across every edit,
+    /// under `id`, tinted with `element` while tracked. The document owns
+    /// the range ([`lattice_core::tracked`]), so it follows edits from every
+    /// path; the host paints it through the range-highlight registry, so no
+    /// producer code runs per frame. Tracking an `id` again replaces it.
+    ///
+    /// A plugin's ids are minted in its own space at the boundary
+    /// (`lattice-plugin-host`'s `plugin_range_id`), so a plugin cannot name
+    /// another's range or one the editor tracks for itself.
+    TrackRange {
+        /// The buffer the range is in. Need not be focused.
+        target: lattice_core::BufferId,
+        /// The range's id.
+        id: lattice_core::tracked::TrackedRangeId,
+        /// The text to track, in `target`'s current coordinates.
+        range: lattice_protocol::position::Range,
+        /// The theme element whose background tints it; `None` for none.
+        element: Option<String>,
+    },
+    /// RF.4d: stop tracking `id` in `target`, and drop its tint.
+    UntrackRange {
+        /// The buffer the range is in.
+        target: lattice_core::BufferId,
+        /// The range's id.
+        id: lattice_core::tracked::TrackedRangeId,
+    },
     /// `:ls` / `:buffers` -- render every open document buffer in a
     /// help-style view.
     ListBuffers,

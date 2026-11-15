@@ -17,6 +17,7 @@ guest→host call through the canonical ABI is exercised at PH7.3d/PH7.4.
 
 - [`position`](types.md#record-position) from [`types`](types.md)
 - [`range`](types.md#record-range) from [`types`](types.md)
+- [`tracked-range`](types.md#record-tracked-range) from [`types`](types.md)
 
 ## Functions (0)
 
@@ -137,6 +138,34 @@ Ok(vec![Effect::WriteToFile(WriteToFilePayload {
     create_parents: false,
     save: false,
 })])
+```
+
+#### `document.tracked-range`
+
+```wit
+tracked-range: func(id: u32) -> option<tracked-range>
+```
+
+RF.4d: where a range this plugin tracked (`track-range`) is now,
+or `none` when it is not tracked in this document — never was,
+was untracked, or the buffer has no text of its own. `id` is
+the plugin's own, so it reads only its own ranges.
+
+Snapshot semantics like the rest of this resource: the range as
+of the handle's mint. A `track-range` returned by the same call
+is not visible until the next one.
+
+**Example — Find where a range tracked earlier is now, after the edits since** · [`plugins/refactor/src/lib.rs`](../../../../plugins/refactor/src/lib.rs)
+
+```rust
+let current = match doc.tracked_range(EXCHANGE_MARK) {
+    // An edit replaced more than the marked text: it is gone.
+    Some(t) if t.collapsed => None,
+    Some(t) => Some(Span::from(t.range)),
+    // Not yet in this snapshot: where it was marked, if the text there is
+    // still what was marked.
+    None => Some(mark.span),
+};
 ```
 
 ## Types (1)

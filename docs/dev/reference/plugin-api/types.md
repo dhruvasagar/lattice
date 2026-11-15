@@ -22,7 +22,7 @@ command mirror (§4.1) and cross as a typed error until then.
 
 _(none — a shared type interface)_
 
-## Types (159)
+## Types (162)
 
 ### variant `arg-value`
 
@@ -1025,6 +1025,64 @@ record apply-edit-payload {
   (line + byte), so a plugin action can place it *between* an inserted
   pair, not only at a row start (AP.2). `none` leaves the caret put.
 
+### record `track-range-payload`
+
+```wit
+record track-range-payload {
+    target: u32,
+    id: u32,
+    range: range,
+    element: option<string>,
+}
+```
+
+RF.4d: what `track-range` asks the host to remember.
+
+**Fields**
+
+- `target`: `u32` — The target `BufferId` (its inner `u32`).
+- `id`: `u32` — The guest's own name for the range, in its own namespace: two
+  plugins using the same number name different ranges, and neither
+  can reach a range the editor tracks for itself (a snippet's).
+  Tracking an id again replaces the range it names.
+- `range`: [`range`](#record-range) — The text to keep in place, in the buffer's current coordinates.
+- `element`: `option<string>` — A theme element whose background tints the range while it is
+  tracked (`search.current`, or an element the plugin registered),
+  or `none` for no tint. A name no theme defines tints nothing.
+
+### record `untrack-range-payload`
+
+```wit
+record untrack-range-payload {
+    target: u32,
+    id: u32,
+}
+```
+
+RF.4d: what `untrack-range` asks the host to forget.
+
+**Fields**
+
+- `target`: `u32` — The target `BufferId` (its inner `u32`).
+- `id`: `u32` — The id `track-range` used. An id not tracked is a no-op.
+
+### record `tracked-range`
+
+```wit
+record tracked-range {
+    range: range,
+    collapsed: bool,
+}
+```
+
+RF.4d: a tracked range as the document holds it now.
+
+**Fields**
+
+- `range`: [`range`](#record-range) — Where the text is now, after every edit since it was tracked.
+- `collapsed`: `bool` — An edit replaced more than the range, so the text it named is
+  gone. The range still moves with later edits, but names nothing.
+
 ### record `yank-payload`
 
 ```wit
@@ -1938,6 +1996,8 @@ variant effect {
     open-synthetic-buffer(open-synthetic-buffer-payload),
     focus-buffer(u32),
     invoke-command(command-ref),
+    track-range(track-range-payload),
+    untrack-range(untrack-range-payload),
 }
 ```
 
@@ -2102,6 +2162,12 @@ Mirrors `lattice_grammar::effect::Effect` (§4.4). Every arm is pure data;
   write-to-file that does not land stops the batch, so work that must
   follow a successful write (deleting what was filed) goes here rather
   than in a host call, which runs before any effect is applied.
+- `track-range`: [`track-range-payload`](#record-track-range-payload) — RF.4d: keep a range of a buffer's text in place across every edit
+  — typed, an operator's, an undo, a language server's — and tint it
+  while it is tracked. Read it back with `document.tracked-range`.
+  The tint is the host's: no guest code runs to paint it. Appended
+  last so existing variant indices do not move.
+- `untrack-range`: [`untrack-range-payload`](#record-untrack-range-payload) — RF.4d: stop tracking a range, and its tint goes with it.
 
 ### variant `arg-kind`
 

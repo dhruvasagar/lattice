@@ -4618,6 +4618,21 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
         // CD.3d: applied in sequence, so it runs only if every effect before it
         // did — `apply_effect_host` stops a batch at a write that did not land.
         Effect::InvokeCommand { id, args } => out.merge(editor.invoke_command_named(&id, args)),
+        // RF.4d: the document keeps the range in place; the registry tints it.
+        Effect::TrackRange {
+            target,
+            id,
+            range,
+            element,
+        } => track_range(editor, target, id, range, element.as_deref()),
+        Effect::UntrackRange { target, id } => {
+            if let Some(handle) = editor.buffers.document_handle(target) {
+                drop(handle.update_tracked_ranges(vec![
+                    lattice_core::tracked::TrackedRangeChange::Untrack(id),
+                ]));
+            }
+            editor.range_highlights.untint_tracked(target, id);
+        }
         // SI.10: `gS`'s end — host-applied, so both peers (and an effect that
         // lands off-keystroke) take the one path.
         Effect::ExpandSnippetOver { snippet, range } => editor.expand_snippet_over(&snippet, range),
@@ -45856,6 +45871,73 @@ fn json_escape(s: &str) -> String {
     out
 }
 
+/// RF.4d: apply [`Effect::TrackRange`](lattice_grammar::Effect): track
+/// `range` of `target` in its document and tint it with `element`.
+///
+/// Graceful, and quiet: a buffer with no text of its own, a range outside
+/// the text, or an element no theme defines is logged at `debug!` and
+/// skipped. The producer finds out by reading the range back
+/// (`document.tracked-range` answers `none`), which is where it can say
+/// something the user can act on.
+fn track_range(
+    editor: &mut Editor,
+    target: BufferId,
+    id: lattice_core::tracked::TrackedRangeId,
+    range: lattice_protocol::position::Range,
+    element: Option<&str>,
+) {
+    let Some(handle) = editor.buffers.document_handle(target) else {
+        tracing::debug!(?target, "track-range: no document for the buffer; skipped");
+        return;
+    };
+    let snapshot = handle.snapshot();
+    let bytes = match (
+        snapshot.buffer.position_to_byte(range.start),
+        snapshot.buffer.position_to_byte(range.end),
+    ) {
+        (Ok(start), Ok(end)) if start <= end => start..end,
+        _ => {
+            tracing::debug!(
+                ?target,
+                ?range,
+                "track-range: range outside the text; skipped"
+            );
+            return;
+        }
+    };
+    // Sent now, on the document's own queue, so it lands before any edit
+    // made after this effect — the mailbox is FIFO.
+    drop(
+        handle.update_tracked_ranges(vec![lattice_core::tracked::TrackedRangeChange::Track {
+            id,
+            bytes: bytes.clone(),
+            stickiness: lattice_core::tracked::Stickiness::NeverGrows,
+        }]),
+    );
+    let element = element.and_then(|name| {
+        let id = editor
+            .services
+            .get::<crate::ui::theme::ThemeRegistryHandle>()?
+            .id(&lattice_theme::ElementName::from(name.to_string()));
+        if id.is_none() {
+            tracing::debug!(
+                element = name,
+                "track-range: no such theme element; not tinted"
+            );
+        }
+        id
+    });
+    match element {
+        Some(element) => {
+            editor
+                .range_highlights
+                .tint_tracked(target, id, element, bytes, snapshot.text_version)
+        }
+        // Re-tracking without an element drops a tint set before.
+        None => editor.range_highlights.untint_tracked(target, id),
+    }
+}
+
 /// 5.5.G.23: True if the Effect indicates an operator-class action
 /// (the buffer changed or content was yanked). Used by Visual mode to
 /// decide whether to auto-exit after the dispatch — motions in Visual
@@ -45870,6 +45952,10 @@ pub fn effect_mutates_or_yanks(effect: &lattice_grammar::Effect) -> bool {
         // `cut` it also deletes from the buffer the action ran in. Visual
         // must auto-exit after it for the same reason `d` does.
         Effect::WriteToFile { .. } => true,
+        // RF.4d: an exchange mark is an operator's whole result (Visual `X`
+        // marks the selection), so Visual ends as it does after `y`. Not a
+        // mutation for `.` — `effect_mutates` says false.
+        Effect::TrackRange { .. } | Effect::UntrackRange { .. } => true,
         // Ex-effects that the host turns into edits / yanks at apply time.
         Effect::Substitute { .. }
         | Effect::Global { .. }
@@ -46038,6 +46124,8 @@ pub fn effect_mutates(effect: &lattice_grammar::Effect) -> bool {
         Effect::ApplyEdit { .. } => true,
         // XF.1: a change rather than a yank, so `.` may repeat it.
         Effect::WriteToFile { .. } => true,
+        // RF.4d: remembering a range changes no text.
+        Effect::TrackRange { .. } | Effect::UntrackRange { .. } => false,
         Effect::Substitute { .. }
         | Effect::Global { .. }
         | Effect::DeleteCurrentLine

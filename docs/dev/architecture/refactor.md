@@ -229,7 +229,7 @@ the public API).
 
 | Operator | Keys | On the range |
 |---|---|---|
-| exchange | `cx{obj}` twice; `cxx` (line); Visual `X`; `cxc` clears the mark | The first use marks the range, highlighted; the second swaps the two, as vim-exchange does. One replacement spanning both, so one undo step. A range inside the other replaces the larger with the smaller (vim-exchange's rule). An edit that changes the marked text drops the mark and says so. Text only: no tree. |
+| exchange | `cx{obj}` twice; `cxx` (line); Visual `X`; `cxc` clears the mark | The first use marks the range, highlighted; the second swaps the two, as vim-exchange does. One replacement spanning both, so one undo step. A range inside the other replaces the larger with the smaller (vim-exchange's rule); a partial overlap is refused and the mark kept; `cx` on the marked text again cancels. An edit that changes the marked text drops the mark and says so. Text only: no tree, so it works in a buffer with no parse. Visual is `X`, not `cx`, because Visual `c` changes the selection at once. |
 | raise | `<leader>rr{obj}` | The node the range covers replaces the expression around it, §3's rule. The range is trimmed of whitespace and separators (`,` `;`) first, then must be exactly one named node: one that is not is refused, never widened to the node around it, because raising more than was selected deletes text the user did not point at. In Visual this is "raise what I selected", the form RF.2d could not offer. |
 | split / join | `<leader>rs{obj}` / `<leader>rj{obj}` | The nearest comma list around the range, §3's rule. Nearest, not exact as raise demands: split and join change only whitespace, so acting on the list around an argument (`<leader>rsiw`) deletes nothing. |
 | extract | `<leader>re{obj}` | The expression the range covers becomes a variable — see below. |
@@ -238,6 +238,45 @@ the public API).
 `cx` is vim-exchange's key and muscle memory carries across editors; nothing
 else has a convention, so the rest share `<leader>r`, as the assistant owns
 `<leader>a`. All of them live on `refactor-mode`'s layer.
+
+**The exchange mark is a tracked range (RF.4d).** The mark has to follow
+every edit made between the two `cx`s, by any path, and show on screen while
+it waits. The document already keeps ranges in place across its own edits
+(`lattice_core::tracked`, a snippet's placeholders), and the host already
+tints text for modes (`RangeHighlightRegistry`); neither crossed WIT. So:
+
+- **`track-range` / `untrack-range` effects**, carrying a buffer, a guest
+  id, a range and an optional theme element. Effects, not host calls: they
+  are applied after the callback returns, in order with the edits it
+  returned, and a host call from the grammar seam would re-enter the actor
+  that is running it.
+- **`document.tracked-range(id)`**, read from the same snapshot as the text,
+  answering the range's current position and whether its text was replaced
+  (`collapsed`).
+- **Ids are per plugin.** A guest names its range with a `u32`; the
+  trampoline's `EffectAuthorizer`, the one place that knows which plugin
+  returned an effect, moves it into that plugin's space (top bit set, the
+  plugin's numeric id beside it), and `tracked-range` reads from the same
+  space. Native ranges come from `TrackedRangeId::next`'s counter, which
+  never sets the top bit, so a plugin can reach neither another plugin's
+  range nor a snippet's.
+- **The tint is native.** The registry keeps which id gets which element and
+  reads the range from the snapshot it is publishing, so the tint moves with
+  the text and no guest code runs per publish (paramount #1). The `Track`
+  reaches the document through its mailbox, so the publish straight after it
+  may hold the snapshot from before; at the same text version the tracked
+  position is still right and is used, so the tint shows at once rather than
+  on the next key.
+
+The mark uses the `search.current` element, vim-exchange's `IncSearch` link,
+because a grammar-world plugin cannot register theme elements yet (that
+lives in the `theme-plugin` world). A plugin-owned `refactor.exchange`
+element is the follow-up.
+
+Rejected for the mark: a static "paint these ranges" import (the tint would
+not move with an edit above it — a pixel change to text the user did not
+edit), and no tint at all (vim-exchange's convention is to show what is
+pending). Decided 2026-11-15.
 
 **Operators need the tree.** `apply-operator` gains
 `tree: option<borrow<tree-snapshot>>`, the argument the motion, text-object,
@@ -310,3 +349,6 @@ lists *every* refactoring the server offers, so it is genuinely LSP-only.
 6. **The operator tree seam:** widen `apply-operator`, plugin API 0.5.0 (§9).
 7. **Extract / inline sources:** `lsp,native`; native extract does variables
    only (§9).
+8. **The exchange mark (2026-11-15):** a tracked-range seam — two effects
+   plus `document.tracked-range`, ids per plugin, a native tint (§9) — over
+   a static highlight import or no highlight.

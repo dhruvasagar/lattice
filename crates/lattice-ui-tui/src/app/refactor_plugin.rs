@@ -601,6 +601,150 @@ mod tests {
         );
     }
 
+    /// The text each published range tint covers — what both renderers
+    /// paint from `mode_highlights`.
+    fn tinted(app: &App) -> Vec<String> {
+        let text = app.editor.document.snapshot().buffer.as_string();
+        let offset = |p: lattice_protocol::position::Position| -> usize {
+            text.split_inclusive('\n')
+                .take(p.line as usize)
+                .map(str::len)
+                .sum::<usize>()
+                + p.byte as usize
+        };
+        app.ad()
+            .mode_highlights
+            .iter()
+            .map(|h| text[offset(h.range.start)..offset(h.range.end)].to_string())
+            .collect()
+    }
+
+    fn esc(app: &mut App) {
+        press(app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    }
+
+    /// RF.4d: `cx{motion}` twice swaps the two ranges in one undo step. The
+    /// first marks, and the mark is tinted at once — not on the next key.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn exchange_swaps_two_ranges_in_one_undo_step() {
+        let Some(mut app) =
+            app_with_refactor("main.rs", RUST, Some(lattice_syntax::Lang::Rust)).await
+        else {
+            return;
+        };
+        press_chars(&mut app, "jfbcxiw");
+        assert_eq!(body(&app), RUST, "the first `cx` only marks");
+        assert_eq!(tinted(&app), vec!["bar"], "and the mark shows");
+
+        press_chars(&mut app, "fzcxiw");
+        assert_eq!(
+            body(&app),
+            "fn main() {\n    let x = foo(baz, bar + 1);\n}\n",
+            "echo: {:?}",
+            echoed(&app)
+        );
+        assert!(tinted(&app).is_empty(), "the tint goes with the mark");
+
+        press_chars(&mut app, "u");
+        assert_eq!(body(&app), RUST, "one `u`");
+    }
+
+    /// The mark is the document's: an edit elsewhere moves it, and the swap
+    /// still lands on the text that was marked.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_exchange_mark_follows_an_edit_before_it() {
+        let Some(mut app) =
+            app_with_refactor("main.rs", RUST, Some(lattice_syntax::Lang::Rust)).await
+        else {
+            return;
+        };
+        press_chars(&mut app, "jfzcxiw0iY");
+        esc(&mut app);
+        assert_eq!(tinted(&app), vec!["baz"], "the tint moved with the text");
+        press_chars(&mut app, "fbcxiw");
+        assert_eq!(
+            body(&app),
+            "fn main() {\nY    let x = foo(baz, bar + 1);\n}\n",
+            "echo: {:?}",
+            echoed(&app)
+        );
+    }
+
+    /// An edit to the marked text drops the mark and says so, rather than
+    /// swapping text the user no longer marked.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn editing_the_marked_text_drops_the_mark() {
+        let Some(mut app) =
+            app_with_refactor("main.rs", RUST, Some(lattice_syntax::Lang::Rust)).await
+        else {
+            return;
+        };
+        press_chars(&mut app, "jfbcxiwxfzcxiw");
+        assert_eq!(
+            body(&app),
+            "fn main() {\n    let x = foo(ar, baz + 1);\n}\n"
+        );
+        assert!(
+            echoed(&app).contains("mark was dropped"),
+            "got {:?}",
+            echoed(&app)
+        );
+        assert!(tinted(&app).is_empty());
+    }
+
+    /// `cxc` forgets the mark, so the next `cx` marks afresh.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn cxc_clears_the_exchange_mark() {
+        let Some(mut app) =
+            app_with_refactor("main.rs", RUST, Some(lattice_syntax::Lang::Rust)).await
+        else {
+            return;
+        };
+        press_chars(&mut app, "jfbcxiwcxc");
+        assert!(tinted(&app).is_empty(), "cleared");
+        press_chars(&mut app, "fzcxiw");
+        assert_eq!(body(&app), RUST, "a fresh mark, not a swap");
+        assert_eq!(tinted(&app), vec!["baz"]);
+    }
+
+    /// In Visual, `X` exchanges the selection — the same operator (`cx`
+    /// cannot: Visual `c` changes the selection at once).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn exchange_in_visual_uses_the_selection() {
+        let Some(mut app) =
+            app_with_refactor("main.rs", RUST, Some(lattice_syntax::Lang::Rust)).await
+        else {
+            return;
+        };
+        press_chars(&mut app, "jfbviwX");
+        assert_eq!(tinted(&app), vec!["bar"]);
+        press_chars(&mut app, "fzviwX");
+        assert_eq!(
+            body(&app),
+            "fn main() {\n    let x = foo(baz, bar + 1);\n}\n",
+            "echo: {:?}",
+            echoed(&app)
+        );
+    }
+
+    /// `cxx` is the line: two `cxx`s swap two lines, the break between them
+    /// kept.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn cxx_exchanges_lines() {
+        let Some(mut app) =
+            app_with_refactor("main.rs", RUST, Some(lattice_syntax::Lang::Rust)).await
+        else {
+            return;
+        };
+        press_chars(&mut app, "jcxxkcxx");
+        assert_eq!(
+            body(&app),
+            "    let x = foo(bar, baz + 1);\nfn main() {\n}\n",
+            "echo: {:?}",
+            echoed(&app)
+        );
+    }
+
     /// The same rule in Python.
     #[tokio::test(flavor = "multi_thread")]
     async fn swap_works_in_python() {

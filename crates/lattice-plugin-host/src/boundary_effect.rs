@@ -741,6 +741,23 @@ fn effect_to_wit(e: &NativeEffect) -> Result<WitEffect, String> {
                 args: args.to_wit()?,
             })
         }
+        NativeEffect::TrackRange {
+            target,
+            id,
+            range,
+            element,
+        } => WitEffect::TrackRange(crate::lattice::plugin_host::types::TrackRangePayload {
+            target: target.0,
+            id: crate::effect_authorizer::guest_range_id(*id),
+            range: range.to_wit()?,
+            element: element.clone(),
+        }),
+        NativeEffect::UntrackRange { target, id } => {
+            WitEffect::UntrackRange(crate::lattice::plugin_host::types::UntrackRangePayload {
+                target: target.0,
+                id: crate::effect_authorizer::guest_range_id(*id),
+            })
+        }
         NativeEffect::OpenFileTree { root } => WitEffect::OpenFileTree(opt_path_to_wit(root)?),
         NativeEffect::CloseFileTree => WitEffect::CloseFileTree,
         NativeEffect::OpenOil { dir } => WitEffect::OpenOil(opt_path_to_wit(dir)?),
@@ -1224,6 +1241,27 @@ fn effect_from_wit(w: WitEffect) -> Result<NativeEffect, String> {
         },
         WitEffect::BufferDelete(force) => NativeEffect::BufferDelete { force },
         WitEffect::FocusBuffer(id) => NativeEffect::FocusBuffer(id),
+        // RF.4d: minted in the UNASSIGNED space here, which no plugin and no
+        // native caller uses; the trampoline's `EffectAuthorizer` moves it
+        // into the calling plugin's own. So a seam that converted without
+        // authorising could collide plugins with each other, never with a
+        // range the editor tracks for itself.
+        WitEffect::TrackRange(p) => NativeEffect::TrackRange {
+            target: BufferId(p.target),
+            id: crate::effect_authorizer::plugin_range_id(
+                crate::effect_authorizer::UNASSIGNED_RANGE_SPACE,
+                p.id,
+            ),
+            range: NativeRange::from_wit(p.range)?,
+            element: p.element,
+        },
+        WitEffect::UntrackRange(p) => NativeEffect::UntrackRange {
+            target: BufferId(p.target),
+            id: crate::effect_authorizer::plugin_range_id(
+                crate::effect_authorizer::UNASSIGNED_RANGE_SPACE,
+                p.id,
+            ),
+        },
         WitEffect::InvokeCommand(c) => NativeEffect::InvokeCommand {
             id: c.id,
             args: NativeArgs::from_wit(c.args)?,
@@ -1708,6 +1746,31 @@ mod tests {
         let back = NativeSelectionSet::from_wit(multi.to_wit().unwrap()).unwrap();
         assert_eq!(multi, back);
         assert_eq!(back.primary_index(), 1);
+    }
+
+    /// RF.4d: both tracked-range effects round-trip. A guest's id crosses in
+    /// the unassigned space; the trampoline's authorizer moves it into the
+    /// plugin's own (`effect_authorizer` tests).
+    #[test]
+    fn tracked_range_effects_round_trip() {
+        use crate::effect_authorizer::{UNASSIGNED_RANGE_SPACE, plugin_range_id};
+        let id = plugin_range_id(UNASSIGNED_RANGE_SPACE, 5);
+        let range = NativeRange::new(NativePosition::new(1, 2), NativePosition::new(1, 6));
+        let track = NativeEffect::TrackRange {
+            target: BufferId(3),
+            id,
+            range,
+            element: Some("search.current".to_string()),
+        };
+        let untrack = NativeEffect::UntrackRange {
+            target: BufferId(3),
+            id,
+        };
+        // `Effect` is not `PartialEq`; its `Debug` names every field.
+        for e in [track, untrack] {
+            let back = NativeEffect::from_wit(e.to_wit().unwrap()).unwrap();
+            assert_eq!(format!("{back:?}"), format!("{e:?}"));
+        }
     }
 
     #[test]

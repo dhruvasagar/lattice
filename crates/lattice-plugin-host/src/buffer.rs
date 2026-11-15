@@ -90,6 +90,18 @@ impl DocumentResource {
             .and_then(|p| p.to_str())
             .map(str::to_string)
     }
+
+    /// RF.4d: tracked range `id` as this snapshot holds it — its
+    /// line/byte range and whether its text was replaced — or `None` when
+    /// it is not tracked here, or no longer lies in the text.
+    pub fn tracked_range(
+        &self,
+        id: lattice_core::tracked::TrackedRangeId,
+    ) -> Option<(NativeRange, bool)> {
+        let r = self.snapshot.tracked_ranges.get(id)?;
+        let at = |b: usize| self.snapshot.buffer.byte_to_position(b).ok();
+        Some((NativeRange::new(at(r.start)?, at(r.end)?), r.collapsed))
+    }
 }
 
 /// Project the borrow-carrying [`ActiveBufferSnapshot`] into the owned WIT
@@ -261,5 +273,27 @@ mod tests {
         assert!(wit.path.is_none());
         assert!(wit.language.is_none());
         assert!(wit.selection.is_none());
+    }
+
+    /// RF.4d: `tracked-range` reads the snapshot's tracked set, in line/byte
+    /// positions, with the collapsed flag; an unknown id is `None`.
+    #[test]
+    fn a_tracked_range_reads_back_in_positions() {
+        let id = lattice_core::tracked::TrackedRangeId(7);
+        let mut tracked = lattice_core::tracked::TrackedRanges::default();
+        tracked.insert(id, 4..6, lattice_core::tracked::Stickiness::NeverGrows);
+        let doc = DocumentResource::new(Arc::new(DocumentSnapshot {
+            buffer: Buffer::from_text("ab\ncdef\n"),
+            tracked_ranges: Arc::new(tracked),
+            ..Default::default()
+        }));
+        assert_eq!(
+            doc.tracked_range(id),
+            Some((NativeRange::new(pos(1, 1), pos(1, 3)), false))
+        );
+        assert_eq!(
+            doc.tracked_range(lattice_core::tracked::TrackedRangeId(8)),
+            None
+        );
     }
 }

@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Added
+- **`cx{motion}` exchanges two ranges**, as vim-exchange does: the first `cx` marks a Visual selection, motion or text object (tinted), the second swaps the two in one undo step. `cxx` is the line, Visual `X` the selection, `cxc` clears. The mark follows edits made elsewhere; editing the marked text drops it.
 - **`<leader>rs{motion}` / `<leader>rj{motion}`** split or join the comma list around any range, Visual, motion or text object: `<leader>rsi(` splits a call's arguments.
 - **`<leader>rr{motion}` raises any range**, the first refactor operator: the syntax node a Visual selection, motion or text object covers replaces the expression around it, so `<leader>rriw` on `bar` in `foo(bar, baz)` gives `bar`. A range that is not one node is refused, not widened.
 - **`:refactor-split` / `:refactor-join`** put the items of the comma-separated list at the cursor (arguments, parameters, an array, a struct literal) one per line, or back on one. The indent is the buffer's own, so Go's tabs stay tabs; a trailing comma is kept as it was. One `u` each.
@@ -41,6 +42,11 @@
   `lattice-wit = "0.4"` moves its pin to `"0.5"`, adds the parameter to its
   `apply-operator` (ignore it if unused), and rebuilds. Plugins without a pin
   rebuild on their own.
+  Also new in 0.5.0, additive: `track-range` / `untrack-range` effects and
+  `document.tracked-range(id)` keep a range of text in place across every
+  edit and tint it, natively, while tracked; ids are per plugin. And a
+  plugin mode that binds an operator in Visual now gets it applied to the
+  selection.
 
 ## 0.10.0 — 2026-11-10
 

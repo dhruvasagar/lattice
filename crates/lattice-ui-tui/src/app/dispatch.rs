@@ -1129,6 +1129,8 @@ impl App {
             | Effect::BufferPrev
             | Effect::FocusBuffer(_)
             | Effect::InvokeCommand { .. }
+            | Effect::TrackRange { .. }
+            | Effect::UntrackRange { .. }
             // SI.10: host-applied (`Editor::expand_snippet_over`).
             | Effect::ExpandSnippetOver { .. }
             | Effect::BufferDelete { .. }
@@ -1504,6 +1506,8 @@ impl App {
 fn effect_mutates_or_yanks(effect: &Effect) -> bool {
     match effect {
         Effect::Edits(_) | Effect::Yank { .. } => true,
+        // RF.4d: as the host's twin — an exchange mark ends Visual.
+        Effect::TrackRange { .. } | Effect::UntrackRange { .. } => true,
         // CR.0: a pending targeted edit mutates a buffer (like `Edits`).
         Effect::ApplyEdit { .. } => true,
         // XF.1: mirrors the host classifier — always a mutation (it inserts
@@ -1734,6 +1738,8 @@ fn effect_mutates(effect: &Effect) -> bool {
         | Effect::BufferPrev
         | Effect::FocusBuffer(_)
         | Effect::InvokeCommand { .. }
+        | Effect::TrackRange { .. }
+        | Effect::UntrackRange { .. }
         | Effect::ListBuffers
         | Effect::OpenBufferPicker
         | Effect::OpenPicker { .. }

@@ -29,9 +29,18 @@ selection, a motion, or a text object.
 
 | | |
 |---|---|
+| `cx{obj}` | exchange: the first marks the range, the second swaps the two |
+| `cxx` / Visual `X` | exchange the line / the selection |
+| `cxc` | clear the exchange mark |
 | `<leader>rr{obj}` | raise: the node the range covers replaces the expression around it |
 | `<leader>rs{obj}` | split the comma list around the range, one item per line |
 | `<leader>rj{obj}` | join the comma list around the range onto one line |
+
+`cxiw` on `bar` in `foo(bar, baz)` marks it (tinted); `cxiw` on `baz` then
+gives `foo(baz, bar)`, in one undo step. The mark stays put while you edit
+elsewhere; editing the marked text drops it, with a message. If one range
+lies inside the other, the larger is replaced by the smaller. Exchange works
+on any text, parsed or not.
 
 `<leader>rriw` on `bar` in `foo(bar, baz)` gives `bar`. In Visual, `<leader>rr`
 raises the selection — `<M-o>` a couple of times, then `<leader>rr`. The range

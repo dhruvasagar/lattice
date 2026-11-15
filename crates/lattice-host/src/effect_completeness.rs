@@ -47,7 +47,10 @@ pub fn effect_is_host_complete(effect: &Effect) -> bool {
         | Effect::EnterMode(..)
         | Effect::ClearSearchHighlight
         | Effect::Echo { .. }
-        | Effect::RecordJump => true,
+        | Effect::RecordJump
+        // RF.4d: tracked and tinted host-side; no peer has a half.
+        | Effect::TrackRange { .. }
+        | Effect::UntrackRange { .. } => true,
 
         Effect::ApplyEdit { .. }
         | Effect::WriteToFile { .. }

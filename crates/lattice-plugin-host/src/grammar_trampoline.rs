@@ -402,9 +402,14 @@ fn build_operator_spec(
                 // RF.4a: and the tree, minted from `OperatorContext::syntax` on
                 // the motion seam's terms (grant + OT.7 freshness) — the
                 // refactor operators act on the node their range covers.
+                //
+                // RF.4d: and the tracked ranges, which `document.tracked-range`
+                // reads. Left to `Default` they were empty here alone, so an
+                // exchange mark the document had moved read back as untracked.
                 let snapshot = Arc::new(DocumentSnapshot {
                     buffer: ctx.document.buffer().clone(),
                     path: ctx.document.path_shared(),
+                    tracked_ranges: ctx.document.tracked_ranges().clone(),
                     ..Default::default()
                 });
                 let tree_snapshot = resolve_tree_snapshot(tree_sitter_granted, ctx.syntax);
@@ -882,6 +887,10 @@ impl PluginHost {
         // Move the store + bindings behind the shared lock every trampoline reads.
         // The `Quarantine` rides inside so one `apply-*` trap quarantines every
         // contribution from this plugin (they share the one guest).
+        // RF.4d: the plugin's tracked ranges live in its own id space; the
+        // authorizer below mints them there, and `document.tracked-range`
+        // reads from the same one.
+        store.data_mut().range_space = id.0;
         let option_bound = store
             .data()
             .grant_guard
@@ -890,7 +899,8 @@ impl PluginHost {
             .bound_for(&manifest.id);
         let authorizer = Arc::new(
             crate::EffectAuthorizer::new(&store.data().grant, manifest.id.clone())
-                .with_option_bound(option_bound),
+                .with_option_bound(option_bound)
+                .with_range_space(id.0),
         );
         let guest = Arc::new(Mutex::new(GrammarGuest {
             store,

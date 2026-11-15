@@ -1,7 +1,7 @@
 # Refactoring: `refactor-mode`
 
 > **Design fragment — agreed 2026-11-14, re-scoped 2026-11-15** (one mode owns
-> every refactor command: §2; the structural v1 set and keys: §10). Contracts,
+> every refactor command: §2; the structural v1 set and keys: §11; the operators: §9). Contracts,
 > rationale, rejected alternatives. Sequencing:
 > [`../operations/slice-plans/refactor.md`](../operations/slice-plans/refactor.md)
 > (RF). Builds on [`plugin-treesitter-seam.md`](plugin-treesitter-seam.md)
@@ -67,7 +67,7 @@ never a node kind, so they work in every grammar with no per-language table.
 | `refactor-expand` (`<M-o>`) | Grow the selection to the smallest named node strictly larger than it (from Normal: the node at the cursor). Enters Visual charwise. A count grows that many levels. |
 | `refactor-shrink` (`<M-i>`) | Step back to the previous, smaller selection from this run of expands; past the first, back to the cursor in Normal. |
 | `:refactor-swap-next` / `-prev` | Swap the list item at the cursor with its next / previous one, and follow it. "The item" is the smallest named node at the cursor whose gap to a neighbouring named sibling is a list separator — a comma, a semicolon, or whitespace holding a line break — so on `a` in `f(a + 1, b)` it is `a + 1`: the gap between `a` and `1` is ` + `, which separates operands, not items. (RF.2c corrected the first draft's "smallest named node that has a named sibling", which picks `a` and swaps it with `1`.) The text between them stays put. A count moves the item that many places, fewer if the list ends first. |
-| `:refactor-raise` | Replace the expression around the node at the cursor with the node. "Around" is the node's parent, unless that parent is a bracket glued to the sibling before it — the `(…)` of a call, the `<…>` of a generic, the `[…]` of an index — which is half an expression, so its parent is replaced instead: raising `b` out of `f(a, b)` gives `b`, while out of `let v = [a, b];` it gives `let v = b;`. Brackets and adjacency are read from the text, not node kinds. Refused at top level, where the only thing around is the file. With a Visual selection, the node the selection covers is raised — once an ex-command can see the selection (RF.3b's seam; see §8). |
+| `:refactor-raise` | Replace the expression around the node at the cursor with the node. "Around" is the node's parent, unless that parent is a bracket glued to the sibling before it — the `(…)` of a call, the `<…>` of a generic, the `[…]` of an index — which is half an expression, so its parent is replaced instead: raising `b` out of `f(a, b)` gives `b`, while out of `let v = [a, b];` it gives `let v = b;`. Brackets and adjacency are read from the text, not node kinds. Refused at top level, where the only thing around is the file. With a Visual selection, the node the selection covers is raised — by §9's raise operator, since an ex-command is handed no selection. |
 | `:refactor-split` | Put each element of the comma-separated node at the cursor on its own line, one indent deeper, the closing delimiter on a line of its own at the node's indent. "One indent" is the buffer's own `shiftwidth` / `expandtab`, read through `config.get-option-in-buffer` (RF.2e), so a mode's buffer-local setting — `go-mode`'s `noexpandtab` — is honoured; the global `get-option` would have split Go with spaces. |
 | `:refactor-join` | The inverse: the node's elements on one line, `, ` between them. |
 
@@ -95,9 +95,11 @@ multi-cursor.
 ## 4. Grammar surface
 
 **Actions, and ex-commands where the cursor is enough.** An action receives the
-document and the tree (`apply-action`, TS.1); an operator does not
-(`grammar.wit`: "No `tree`, deliberately"). Nor is any of these an operator
-over a motion: swap and raise act on *a node*, which the cursor already names.
+document and the tree (`apply-action`, TS.1); an operator did not
+(`grammar.wit`: "No `tree`, deliberately"). The v1 set was therefore built as
+commands on *the node at the cursor*. §9 makes every structural edit an
+operator over a range as well — the primary surface — and these commands
+remain as the cursor shorthand and the palette entry.
 
 Expand and shrink are **actions only** — keys and the command palette, no `:`
 form. Typing `:` leaves Visual, and an ex-command is handed no selection
@@ -105,15 +107,13 @@ form. Typing `:` leaves Visual, and an ex-command is handed no selection
 `:refactor-shrink` could never know what to shrink and a
 `:refactor-expand` would always start from the cursor. Swap, raise, split and
 join act on the node at the cursor, so they are ex-commands too, under their
-own names (raise's Visual form waits on the same missing selection, and
-arrives with §8's ex-command seam, which `:'<,'>lsp-extract` needs for the
-same reason): actions and ex-commands share one name index in the command
+own names (raise's Visual form is §9's operator): actions and ex-commands share one name index in the command
 registry, so a plugin cannot give both the same name.
 
 **Keys.** `<M-o>` / `<M-i>` (Alt-o / Alt-i) expand / shrink — `<M-o>` and `<M-i>` both in Normal and Visual. `<M-i>` has nothing to shrink in Normal and says so, but is bound there anyway: Normal's keymap lookup strips an unbound Alt, so a bare `<M-i>` would run `i` and enter Insert. Helix's
 keys; vim has no convention here, and nvim-treesitter's `gnn` / `grn` would
-collide with lattice's `gr`. Swap, raise, split and join are commands only,
-bound in `init.rs` by whoever wants them. The chords live on the plugin's
+collide with lattice's `gr`. The swap, raise, split and join *commands* have
+no default keys; their operator forms do (§9). The chords live on the plugin's
 minor mode, `refactor-mode` — never at the builtin layer (modes own their
 full surface). The mode is `global`, on every document buffer, because there is
 no activation policy for "has a parse tree"; in a buffer without one, the
@@ -199,6 +199,9 @@ refactoring.
 2. *An ex-command cannot tell it was given the selection.*
    `ex-command-context` carries the cursor and the buffer, no range, so
    `:'<,'>lsp-extract` from a plugin could not ask about the selection.
+   **Dropped (2026-11-15):** §9 makes extract and inline operators, which
+   receive their range from Visual, a motion or a text object natively. The
+   `:` forms act on the node at the cursor, like every other refactor command.
 
 Both are API additions every plugin gains, not refactor-specific ones. How to
 add them is RF.3a's first question: widening `lsp-request` and
@@ -208,7 +211,73 @@ interface are additive. The answer, checked against a component built for the
 current package, decides whether the plugin-API publish is a patch or a
 bump, and is recorded here when it is known.
 
-## 9. Rejected alternatives
+## 9. Operators: every refactor over a range
+
+The v1 commands act on the node at the cursor. That is the weakest part of
+the vim grammar to build on: its power is that an operator composes with
+*any* range — a Visual selection, a motion, or a text object, including the
+syntax objects `af`/`if`, `ac`/`ic`, `aa`/`ia`, `al`/`il` that
+`lattice-syntax` already resolves from `textobjects.scm`. `<leader>rraa`
+raises an argument; `cxaa` … `cxaa` exchanges two arguments that are not
+neighbours; `<leader>reia` extracts one. Every refactor is therefore an
+**operator** first; the `:refactor-*` commands stay as the cursor shorthand
+and the palette entry, running the same code (paramount #3: the grammar is
+the public API).
+
+| Operator | Keys | On the range |
+|---|---|---|
+| exchange | `cx{obj}` twice; `cxx` (line); Visual `X`; `cxc` clears the mark | The first use marks the range, highlighted; the second swaps the two, as vim-exchange does. One replacement spanning both, so one undo step. A range inside the other replaces the larger with the smaller (vim-exchange's rule). An edit that changes the marked text drops the mark and says so. Text only: no tree. |
+| raise | `<leader>rr{obj}` | The node the range covers — the smallest named node spanning it, whitespace trimmed — replaces the expression around it, §3's rule. In Visual this is "raise what I selected", the form RF.2d could not offer. |
+| split / join | `<leader>rs{obj}` / `<leader>rj{obj}` | The comma list the range covers, §3's rule. |
+| extract | `<leader>re{obj}` | The expression the range covers becomes a variable — see below. |
+| inline | `<leader>ri{obj}` | The variable the range names (its declaration or a use) is replaced by its value at every use, and the declaration removed — see below. |
+
+`cx` is vim-exchange's key and muscle memory carries across editors; nothing
+else has a convention, so the rest share `<leader>r`, as the assistant owns
+`<leader>a`. All of them live on `refactor-mode`'s layer.
+
+**Operators need the tree.** `apply-operator` gains
+`tree: option<borrow<tree-snapshot>>`, the argument the motion, text-object,
+action and ex-command callbacks already take, under the same OT.7 freshness
+gate; the native `OperatorContext` carries the syntax snapshot the way
+`TextObjectContext` carries its scope resolver. Changing a signature is
+breaking, so this is plugin API **0.5.0**: in-tree plugins rebuild, external
+ones re-pin. Rejected: an additive `tree-sitter.tree-for(buffer)` import (no
+bump, but a second way to get a tree that only operators would use), and a
+second `apply-tree-operator` export (two operator entry points forever) —
+both keep an asymmetry to avoid a version number.
+
+**Extract and inline are not LSP-only.** Each has two sources, tried in the
+order `refactor.source` names (default `lsp,native`), the format chain's
+shape: a server attached and offering a `refactor.extract` /
+`refactor.inline` action for the range wins — it knows types and scopes — and
+otherwise the native source runs. Because they now work without a server,
+the generic names are earned: `:lsp-extract` / `:lsp-inline` become
+`:refactor-extract` / `:refactor-inline`. `:lsp-refactor` keeps its name: it
+lists *every* refactoring the server offers, so it is genuinely LSP-only.
+
+- **Native extract is variables only.** Function extraction needs the free
+  variables, the returns and their types; guessed from text it silently
+  changes behaviour, so without a server it says it needs one. The variable:
+  the range must cover one expression (refused otherwise); the declaration
+  goes on its own line before the statement holding it, at that statement's
+  indent; its syntax comes from a per-language table in the plugin
+  (`let {name} = {value};`, `{name} = {value}`, `{name} := {value}`,
+  `const {name} = {value};`, …), overridable through a `refactor.declaration`
+  option a user or mode can set buffer-locally (read with
+  `get-option-in-buffer`). A language in neither refuses. The edit is one
+  snippet whose name placeholder is linked at both sites, so the name is
+  typed once.
+- **Native inline needs scopes.** The variable's definition and its uses come
+  from the language's `locals.scm` (`@local.scope`, `@local.definition`,
+  `@local.reference`). `lattice-syntax` loads those queries but does not
+  expose them to plugins, so the tree-sitter seam grows a way to run them —
+  additive, in the same 0.5.0 release. Each use is replaced by the value,
+  parenthesised unless the value is one primary node; the declaration is
+  removed; one replacement. A variable assigned again after its declaration
+  is refused: inlining it would change what each use reads.
+
+## 10. Rejected alternatives
 
 - **Native, in `lattice-syntax`** beside the text objects. It would reach
   `SyntaxSnapshot` directly and skip the seam's limits — which is the argument
@@ -221,9 +290,9 @@ bump, and is recorded here when it is known.
   language that proves the generic rule wrong.
 - **One `expand-region` over both sources** — §4.
 
-## 10. Decisions
+## 11. Decisions
 
-1. **Placement:** a bundled plugin (§2), over native (§9).
+1. **Placement:** a bundled plugin (§2), over native (§10).
 2. **The v1 set:** expand / shrink, swap, raise, and split / join on
    comma-separated nodes (§3).
 3. **Keys:** `<M-o>` / `<M-i>` for expand / shrink on `refactor-mode`;
@@ -232,3 +301,9 @@ bump, and is recorded here when it is known.
    the server's included (§2, §8) — over keeping the LSP refactors with
    `lsp-code-action-mode`, which would leave "refactor" with two owners, and
    over a native mode, which would undo decision 1.
+5. **Operators (2026-11-15):** every refactor is an operator over a range —
+   exchange, raise, split / join, extract, inline — with the cursor commands
+   as shorthand (§9). Keys `cx` (vim-exchange) and `<leader>r{r,s,j,e,i}`.
+6. **The operator tree seam:** widen `apply-operator`, plugin API 0.5.0 (§9).
+7. **Extract / inline sources:** `lsp,native`; native extract does variables
+   only (§9).

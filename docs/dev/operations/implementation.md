@@ -7538,6 +7538,9 @@ command: the server's refactorings by name (`:lsp-refactor` /
 §16's `LspRequest` split), and structural edits — expand / shrink, swap,
 raise, split / join — on `tree-sitter.wit`, needing no server. RF.1 landed
 the server's three as global ex-commands; RF.3 moves them into the mode.
+RF.4 makes every refactor an operator over a range (Visual, motion, text
+object), on plugin API 0.5.0's operator tree seam; extract / inline gain a
+native source beside the server's.
 Design: [`../architecture/refactor.md`](../architecture/refactor.md);
 [`../architecture/lsp-architecture.md`](../architecture/lsp-architecture.md) §16.
 Slice plan: [`slice-plans/refactor.md`](slice-plans/refactor.md).

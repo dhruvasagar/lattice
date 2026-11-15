@@ -1133,6 +1133,7 @@ impl App {
             | Effect::UntrackRange { .. }
             // SI.10: host-applied (`Editor::expand_snippet_over`).
             | Effect::ExpandSnippetOver { .. }
+            | Effect::InsertSnippet { .. }
             | Effect::BufferDelete { .. }
             | Effect::ListModes
             | Effect::DescribeMode { .. }
@@ -1633,6 +1634,7 @@ fn effect_mutates_or_yanks(effect: &Effect) -> bool {
         | Effect::LspRename { .. }
         | Effect::ExpandSnippet { .. }
         | Effect::ExpandSnippetOver { .. }
+        | Effect::InsertSnippet { .. }
         | Effect::ReloadSnippets
         | Effect::ToggleMode { .. }
         | Effect::DescribeEvents
@@ -1804,6 +1806,7 @@ fn effect_mutates(effect: &Effect) -> bool {
         | Effect::LspRename { .. }
         | Effect::ExpandSnippet { .. }
         | Effect::ExpandSnippetOver { .. }
+        | Effect::InsertSnippet { .. }
         | Effect::ReloadSnippets
         | Effect::ToggleMode { .. }
         | Effect::DescribeEvents

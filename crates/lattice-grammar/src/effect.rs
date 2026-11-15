@@ -1080,6 +1080,18 @@ pub enum Effect {
         /// The theme element whose background tints it; `None` for none.
         element: Option<String>,
     },
+    /// RF.4e: expand the snippet `body` (TextMate / LSP syntax) over `range`
+    /// of the active document, verbatim — no line re-indented — in one edit,
+    /// and start its session, so a linked name is typed once at every site.
+    /// The peer of [`Self::ExpandSnippetOver`], which names a registered
+    /// snippet rather than carrying one.
+    InsertSnippet {
+        /// Replaced by the expansion, in the active document's current
+        /// coordinates.
+        range: lattice_protocol::position::Range,
+        /// The snippet body.
+        body: String,
+    },
     /// RF.4d: stop tracking `id` in `target`, and drop its tint.
     UntrackRange {
         /// The buffer the range is in.

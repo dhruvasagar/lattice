@@ -33,7 +33,7 @@
 lattice_plugin_sdk::manifest!(
     r#"
 id = "refactor"
-provides = ["grammar", "modes", "help"]
+provides = ["grammar", "modes", "config", "help"]
 capabilities = ["grammar:chord"]
 editor_capabilities = ["tree-sitter"]
 default_modes = ["refactor-mode"]
@@ -50,19 +50,22 @@ use std::collections::HashMap;
 
 use exports::lattice::plugin_host::grammar_callbacks::Guest as GrammarCallbacks;
 use lattice::plugin_host::buffer::Document;
+use lattice::plugin_host::config::OptionType;
 use lattice::plugin_host::modes::{
     ActivationPolicy, BindingMode, ModeCapabilities, ModeDeclaration, ModeKeymapBinding, ModeKind,
 };
 use lattice::plugin_host::tree_sitter::TreeSnapshot;
 use lattice::plugin_host::types::{
     ActionContext, ActionSpec, ApplyEditPayload, Args, EchoLevel, EchoPayload, Edit, EditKind,
-    Effect, ExCommandContext, ExCommandSpec, LatencyClass, ModalState, MotionContext, MotionResult,
-    OperatorContext, OperatorSpec, Position, Range, Selection, SelectionSet, SurfaceForm,
-    TextObjectContext, TrackRangePayload, UntrackRangePayload, VisualKind, VisualMode,
+    Effect, ExCommandContext, ExCommandSpec, InsertSnippetPayload, LatencyClass, ModalState,
+    MotionContext, MotionResult, OperatorContext, OperatorSpec, Position, Range, Selection,
+    SelectionSet, SurfaceForm, TextObjectContext, TrackRangePayload, UntrackRangePayload,
+    VisualKind, VisualMode,
 };
 use lattice::plugin_host::{config, grammar, help, modes};
 
 mod exchange;
+mod extract;
 mod raise;
 mod span;
 mod split;
@@ -86,6 +89,7 @@ const CB_RAISE_OP: u32 = 50;
 const CB_SPLIT_OP: u32 = 51;
 const CB_JOIN_OP: u32 = 52;
 const CB_EXCHANGE_OP: u32 = 53;
+const CB_EXTRACT_OP: u32 = 54;
 /// The one parse callback every argument-less ex-command shares.
 const CB_PARSE_NO_ARGS: u32 = 100;
 
@@ -463,6 +467,23 @@ fn exchange_op(ctx: &OperatorContext, doc: &Document) -> Vec<Effect> {
     effects
 }
 
+/// `<leader>re{motion}`: extract the expression the range covers into a
+/// variable declared before its statement, the name typed once at both sites.
+fn extract_op(ctx: &OperatorContext, doc: &Document, tree: &TreeSnapshot) -> Vec<Effect> {
+    // Read through the buffer, so a mode (or `:setlocal`) can supply the
+    // declaration form of one language. Until plugin options can be
+    // buffer-local (RF.4e′) this is the global value. Empty: the table's.
+    let template = config::get_option_in_buffer(u64::from(ctx.buffer_id), "refactor.declaration")
+        .filter(|t| !t.trim().is_empty());
+    match extract::extract(tree, doc, Span::from(ctx.range), template.as_deref()) {
+        Ok((range, body)) => vec![Effect::InsertSnippet(InsertSnippetPayload {
+            range: range.into(),
+            body,
+        })],
+        Err(why) => echo(&format!("refactor: {why}")),
+    }
+}
+
 /// `cxc`: forget the mark.
 fn exchange_clear() -> Vec<Effect> {
     match MARK.with(|m| m.borrow_mut().take()) {
@@ -535,6 +556,12 @@ impl Guest for Component {
             "Raise the syntax node the range covers: it replaces the expression around it (`<leader>rria` lifts an argument out of its call).",
             &operator("<leader>rr"),
             CB_RAISE_OP,
+        );
+        grammar::register_operator(
+            "refactor-extract-operator",
+            "Extract the expression the range covers into a variable declared before its statement; the name is typed once, at both sites. Variables only: extracting a function needs a language server.",
+            &operator("<leader>re"),
+            CB_EXTRACT_OP,
         );
         grammar::register_operator(
             "refactor-split-operator",
@@ -651,6 +678,18 @@ impl Guest for Component {
         });
     }
 
+    /// `refactor.declaration`: how extract declares a variable, for a buffer
+    /// whose language the plugin's table does not cover (or covers in a way
+    /// a project does not want). Short name; the host namespaces it.
+    fn register_options() {
+        config::register_option(
+            "declaration",
+            OptionType::String,
+            "",
+            "how `<leader>re` declares the extracted variable: a template over `{name}` and `{value}` (e.g. `const {name} = {value};`). Empty: the language's own form.",
+        );
+    }
+
     fn register_help_topics() {
         let _ = help::register_topic(
             "",
@@ -705,6 +744,7 @@ impl GrammarCallbacks for Component {
                 let outcome = split::reshape(tree, doc, range, split::Layout::Split, &unit);
                 edit_effects(ctx.buffer_id, outcome)
             }
+            CB_EXTRACT_OP => extract_op(&ctx, doc, tree),
             CB_JOIN_OP => edit_effects(
                 ctx.buffer_id,
                 split::reshape(tree, doc, range, split::Layout::Join, ""),

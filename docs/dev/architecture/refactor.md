@@ -310,6 +310,27 @@ lists *every* refactoring the server offers, so it is genuinely LSP-only.
   `get-option-in-buffer`). A language in neither refuses. The edit is one
   snippet whose name placeholder is linked at both sites, so the name is
   typed once.
+
+  *Built (RF.4e).* "The statement holding it" is read from text: the
+  smallest node strictly around the expression that starts a line and whose
+  parent starts on an earlier line (or is the file). So an argument that
+  happens to start a continuation line is not mistaken for a statement. A
+  construct that starts a line inside an expression-bodied block — a
+  `match` arm — counts as one, and the declaration lands where it does not
+  compile; `u` takes it back, and the LSP rung (RF.4g) is the answer there.
+  The snippet needed one more seam: `expand-snippet-over` names a
+  *registered* snippet and re-indents its lines, and extract carries a body
+  of copied code that is already indented. So `insert-snippet { range, body
+  }` (additive, 0.5.0) expands a body as written, in one edit, with its
+  session; the guest escapes `$`, `}` and `\` in the code it copies.
+
+  *Gap found (RF.4e′).* A plugin's option cannot be buffer-local. Overrides
+  and `ResolvedOptions` are keyed by the option's Rust `TypeId`, and an
+  option a plugin registers over WIT is stored by name with none, so
+  `:setlocal` answers E518 for it and `get-option-in-buffer` can only
+  return its global value. Extract reads `refactor.declaration` through
+  `get-option-in-buffer` regardless, so it becomes buffer-local without a
+  plugin change once options are keyed by something a runtime option has.
 - **Native inline needs scopes.** The variable's definition and its uses come
   from the language's `locals.scm` (`@local.scope`, `@local.definition`,
   `@local.reference`). `lattice-syntax` loads those queries but does not

@@ -4636,6 +4636,8 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
         // SI.10: `gS`'s end — host-applied, so both peers (and an effect that
         // lands off-keystroke) take the one path.
         Effect::ExpandSnippetOver { snippet, range } => editor.expand_snippet_over(&snippet, range),
+        // RF.4e: a body a plugin wrote — extract's linked name.
+        Effect::InsertSnippet { range, body } => editor.insert_snippet(&body, range),
         // I3/BC.8c follow-up: SaveBuffer is host-applied (reuses the existing
         // `Editor::do_write`), joining BufferDelete below — so it works on the
         // off-keystroke inbound tick path (claude-code `saveDocument`), where
@@ -30683,6 +30685,23 @@ impl Editor {
         self.expand_snippet_in(&snippet.body, range, vars);
     }
 
+    /// RF.4e: expand the snippet `body` a producer wrote over `range`,
+    /// VERBATIM — `Effect::InsertSnippet`. Unlike the registered-snippet
+    /// paths no line is re-indented: the producer laid the text out for the
+    /// place it goes (extract copies code that already has its indentation),
+    /// so re-indenting would indent it twice.
+    pub fn insert_snippet(&mut self, body: &str, range: lattice_protocol::position::Range) {
+        let parsed = match lattice_snippet::parse(body) {
+            Ok(parsed) => parsed,
+            Err(e) => {
+                self.set_message(EchoLevel::Error, format!("snippet: {e}"));
+                return;
+            }
+        };
+        let vars = self.snippet_variables_for(&parsed);
+        self.splice_snippet(lattice_snippet::render::render(&parsed, &vars), range);
+    }
+
     /// Render `body` against `vars`, splice it over `range`, and start its
     /// session — the one expansion path every trigger ends in.
     fn expand_snippet_in(
@@ -30693,6 +30712,15 @@ impl Editor {
     ) {
         let rendered =
             self.indent_snippet(lattice_snippet::render::render(body, &vars), range.start);
+        self.splice_snippet(rendered, range);
+    }
+
+    /// Splice an already-laid-out snippet over `range` and start its session.
+    fn splice_snippet(
+        &mut self,
+        rendered: lattice_snippet::RenderedSnippet,
+        range: lattice_protocol::position::Range,
+    ) {
         let edit = lattice_protocol::edit::Edit::replace(range, rendered.text.clone());
         let applied = match self.apply_edit_blocking(edit) {
             Ok(a) => a,
@@ -46066,6 +46094,7 @@ pub fn effect_mutates_or_yanks(effect: &lattice_grammar::Effect) -> bool {
         | Effect::LspRename { .. }
         | Effect::ExpandSnippet { .. }
         | Effect::ExpandSnippetOver { .. }
+        | Effect::InsertSnippet { .. }
         | Effect::ReloadSnippets
         | Effect::ToggleMode { .. }
         | Effect::DescribeEvents
@@ -46237,6 +46266,7 @@ pub fn effect_mutates(effect: &lattice_grammar::Effect) -> bool {
         | Effect::LspRename { .. }
         | Effect::ExpandSnippet { .. }
         | Effect::ExpandSnippetOver { .. }
+        | Effect::InsertSnippet { .. }
         | Effect::ReloadSnippets
         | Effect::ToggleMode { .. }
         | Effect::DescribeEvents

@@ -153,6 +153,7 @@ pub fn effect_is_host_complete(effect: &Effect) -> bool {
         | Effect::LspRename { .. }
         | Effect::ExpandSnippet { .. }
         | Effect::ExpandSnippetOver { .. }
+        | Effect::InsertSnippet { .. }
         | Effect::ReloadSnippets
         | Effect::DescribeEvents
         | Effect::DescribeDiff

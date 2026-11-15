@@ -883,6 +883,12 @@ fn effect_to_wit(e: &NativeEffect) -> Result<WitEffect, String> {
                 range: range.to_wit()?,
             })
         }
+        NativeEffect::InsertSnippet { range, body } => {
+            WitEffect::InsertSnippet(crate::lattice::plugin_host::types::InsertSnippetPayload {
+                range: range.to_wit()?,
+                body: body.clone(),
+            })
+        }
         NativeEffect::ReloadSnippets => WitEffect::ReloadSnippets,
         NativeEffect::DescribeEvents => WitEffect::DescribeEvents,
         NativeEffect::DescribeDiff => WitEffect::DescribeDiff,
@@ -1343,6 +1349,10 @@ fn effect_from_wit(w: WitEffect) -> Result<NativeEffect, String> {
             snippet: p.snippet,
             range: NativeRange::from_wit(p.range)?,
         },
+        WitEffect::InsertSnippet(p) => NativeEffect::InsertSnippet {
+            range: NativeRange::from_wit(p.range)?,
+            body: p.body,
+        },
         WitEffect::ReloadSnippets => NativeEffect::ReloadSnippets,
         WitEffect::DescribeEvents => NativeEffect::DescribeEvents,
         WitEffect::DescribeDiff => NativeEffect::DescribeDiff,
@@ -1766,8 +1776,13 @@ mod tests {
             target: BufferId(3),
             id,
         };
+        // RF.4e, the same shape.
+        let snippet = NativeEffect::InsertSnippet {
+            range,
+            body: "let ${1:value} = 2;\n$1".to_string(),
+        };
         // `Effect` is not `PartialEq`; its `Debug` names every field.
-        for e in [track, untrack] {
+        for e in [track, untrack, snippet] {
             let back = NativeEffect::from_wit(e.to_wit().unwrap()).unwrap();
             assert_eq!(format!("{back:?}"), format!("{e:?}"));
         }

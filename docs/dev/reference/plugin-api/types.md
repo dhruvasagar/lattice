@@ -22,7 +22,7 @@ command mirror (§4.1) and cross as a typed error until then.
 
 _(none — a shared type interface)_
 
-## Types (162)
+## Types (163)
 
 ### variant `arg-value`
 
@@ -1025,6 +1025,27 @@ record apply-edit-payload {
   (line + byte), so a plugin action can place it *between* an inserted
   pair, not only at a row start (AP.2). `none` leaves the caret put.
 
+### record `insert-snippet-payload`
+
+```wit
+record insert-snippet-payload {
+    range: range,
+    body: string,
+}
+```
+
+RF.4e: `insert-snippet`'s payload — a snippet body the guest wrote,
+and the text of the active buffer it replaces.
+
+**Fields**
+
+- `range`: [`range`](#record-range) — Replaced by the expansion, in the buffer's current coordinates.
+- `body`: `string` — A TextMate / LSP snippet body: `$1`, `${1:default}`, `$0`, with
+  a repeated number linking its sites (type once, every site
+  changes). Literal `$`, `}` and `\` are escaped with `\`.
+  Laid out VERBATIM — no line is re-indented, so the guest writes
+  the whitespace it means.
+
 ### record `track-range-payload`
 
 ```wit
@@ -1998,6 +2019,7 @@ variant effect {
     invoke-command(command-ref),
     track-range(track-range-payload),
     untrack-range(untrack-range-payload),
+    insert-snippet(insert-snippet-payload),
 }
 ```
 
@@ -2168,6 +2190,11 @@ Mirrors `lattice_grammar::effect::Effect` (§4.4). Every arm is pure data;
   The tint is the host's: no guest code runs to paint it. Appended
   last so existing variant indices do not move.
 - `untrack-range`: [`untrack-range-payload`](#record-untrack-range-payload) — RF.4d: stop tracking a range, and its tint goes with it.
+- `insert-snippet`: [`insert-snippet-payload`](#record-insert-snippet-payload) — RF.4e: expand a snippet body over a range of the active buffer,
+  in one edit (one undo step), and start its session: the first
+  stop is selected, and typing there types at every linked site.
+  The peer of `expand-snippet-over`, which names a registered
+  snippet; this one carries the body.
 
 ### variant `arg-kind`
 

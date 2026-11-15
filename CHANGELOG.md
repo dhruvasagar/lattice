@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Added
+- **`<leader>re{motion}` extracts a variable**, with no language server: the expression a selection, motion or text object covers is declared before its statement in the language's form (`let`, `const`, `:=`, …; `refactor.declaration` sets another), with the name selected and linked at both sites so it is typed once. One undo step.
 - **`cx{motion}` exchanges two ranges**, as vim-exchange does: the first `cx` marks a Visual selection, motion or text object (tinted), the second swaps the two in one undo step. `cxx` is the line, Visual `X` the selection, `cxc` clears. The mark follows edits made elsewhere; editing the marked text drops it.
 - **`<leader>rs{motion}` / `<leader>rj{motion}`** split or join the comma list around any range, Visual, motion or text object: `<leader>rsi(` splits a call's arguments.
 - **`<leader>rr{motion}` raises any range**, the first refactor operator: the syntax node a Visual selection, motion or text object covers replaces the expression around it, so `<leader>rriw` on `bar` in `foo(bar, baz)` gives `bar`. A range that is not one node is refused, not widened.
@@ -46,7 +47,8 @@
   `document.tracked-range(id)` keep a range of text in place across every
   edit and tint it, natively, while tracked; ids are per plugin. And a
   plugin mode that binds an operator in Visual now gets it applied to the
-  selection.
+  selection. And an `insert-snippet` effect expands a snippet body the plugin
+  wrote over a range, verbatim, with linked placeholders.
 
 ## 0.10.0 — 2026-11-10
 

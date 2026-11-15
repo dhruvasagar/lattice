@@ -33,6 +33,7 @@ selection, a motion, or a text object.
 | `cxx` / Visual `X` | exchange the line / the selection |
 | `cxc` | clear the exchange mark |
 | `<leader>rr{obj}` | raise: the node the range covers replaces the expression around it |
+| `<leader>re{obj}` | extract the expression into a variable declared before its statement |
 | `<leader>rs{obj}` | split the comma list around the range, one item per line |
 | `<leader>rj{obj}` | join the comma list around the range onto one line |
 
@@ -48,6 +49,20 @@ must be one syntax node (whitespace and a trailing `,` are ignored); a range
 that is not one is refused rather than grown, since raising more than you
 selected would delete text you did not point at. `:refactor-raise` is the
 same edit on the node at the cursor.
+
+`<leader>re` on `baz + 1` in `let x = foo(bar, baz + 1);` gives
+
+    let value = baz + 1;
+    let x = foo(bar, value);
+
+with `value` selected: type the name once and it changes in both places.
+The range must be one whole expression. The declaration form is the
+language's (`let`, `const`, `:=`, `local`, plain assignment …); for a
+language without one, or to use another, set `refactor.declaration` —
+`:set refactor.declaration=const {name} = {value};`. It applies to every
+buffer for now; per-buffer (`:setlocal`) is not yet possible for a plugin's
+option. Extracting a function needs a language server and is not offered
+without one.
 
 Split and join act on the nearest comma list around the range, so
 `<leader>rsi(` and `<leader>rsiw` on an argument both split the call's

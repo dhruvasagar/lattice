@@ -745,6 +745,117 @@ mod tests {
         );
     }
 
+    /// RF.4e: `<leader>re` over a selected expression declares it before
+    /// its statement and leaves the name selected, linked at both sites:
+    /// typing it once names both. Undo takes it back in one step.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn extract_declares_the_expression_and_links_the_name() {
+        let Some(mut app) =
+            app_with_refactor("main.rs", RUST, Some(lattice_syntax::Lang::Rust)).await
+        else {
+            return;
+        };
+        press_chars(&mut app, "jfz");
+        alt(&mut app, 'o');
+        alt(&mut app, 'o');
+        assert_eq!(selected(&app).as_deref(), Some("baz + 1"));
+        press_chars(&mut app, " re");
+        assert_eq!(
+            body(&app),
+            "fn main() {\n    let value = baz + 1;\n    let x = foo(bar, value);\n}\n",
+            "echo: {:?}",
+            echoed(&app)
+        );
+        press_chars(&mut app, "sum");
+        esc(&mut app);
+        assert_eq!(
+            body(&app),
+            "fn main() {\n    let sum = baz + 1;\n    let x = foo(bar, sum);\n}\n",
+            "the name typed once lands at both sites"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn extract_is_one_undo_step() {
+        let Some(mut app) =
+            app_with_refactor("main.rs", RUST, Some(lattice_syntax::Lang::Rust)).await
+        else {
+            return;
+        };
+        press_chars(&mut app, "jfb reiw");
+        assert_eq!(
+            body(&app),
+            "fn main() {\n    let value = bar;\n    let x = foo(value, baz + 1);\n}\n",
+            "echo: {:?}",
+            echoed(&app)
+        );
+        esc(&mut app);
+        press_chars(&mut app, "u");
+        assert_eq!(body(&app), RUST);
+    }
+
+    /// A range that is not one expression is refused, not widened.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn extract_refuses_a_range_that_is_not_one_expression() {
+        let Some(mut app) =
+            app_with_refactor("main.rs", RUST, Some(lattice_syntax::Lang::Rust)).await
+        else {
+            return;
+        };
+        press_chars(&mut app, "jfb rei(");
+        assert_eq!(body(&app), RUST);
+        assert!(
+            echoed(&app).contains("not one expression"),
+            "got {:?}",
+            echoed(&app)
+        );
+    }
+
+    /// Python declares by assignment, at the statement's own indent.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn extract_in_python_assigns() {
+        let src = "def f():\n    x = foo(bar, baz + 1)\n";
+        let Some(mut app) =
+            app_with_refactor("main.py", src, Some(lattice_syntax::Lang::Python)).await
+        else {
+            return;
+        };
+        press_chars(&mut app, "jfb reiw");
+        assert_eq!(
+            body(&app),
+            "def f():\n    value = bar\n    x = foo(value, baz + 1)\n",
+            "echo: {:?}",
+            echoed(&app)
+        );
+    }
+
+    /// `refactor.declaration`, when set, replaces the language's form — how a
+    /// user gives extract a language the table does not know. Set with `:set`:
+    /// a plugin option cannot be `:setlocal`ed yet (buffer-local overrides are
+    /// keyed by a Rust type a plugin option does not have — RF.4e′). Extract
+    /// reads it with `get-option-in-buffer`, so it turns buffer-local with no
+    /// change to the plugin once that gap closes.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn extract_follows_the_declaration_option() {
+        let Some(mut app) =
+            app_with_refactor("main.rs", RUST, Some(lattice_syntax::Lang::Rust)).await
+        else {
+            return;
+        };
+        press_chars(
+            &mut app,
+            ":set refactor.declaration=const {name}: i32 = {value};",
+        );
+        press(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        press_chars(&mut app, "jfb reiw");
+        assert_eq!(
+            body(&app),
+            "fn main() {\n    const value: i32 = bar;\n    let x = foo(value, baz + 1);\n}\n",
+            "echo: {:?}",
+            echoed(&app)
+        );
+    }
+
     /// The same rule in Python.
     #[tokio::test(flavor = "multi_thread")]
     async fn swap_works_in_python() {

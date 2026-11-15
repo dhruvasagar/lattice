@@ -579,6 +579,18 @@ interface types {
         /// pair, not only at a row start (AP.2). `none` leaves the caret put.
         cursor: option<position>,
     }
+    /// RF.4e: `insert-snippet`'s payload — a snippet body the guest wrote,
+    /// and the text of the active buffer it replaces.
+    record insert-snippet-payload {
+        /// Replaced by the expansion, in the buffer's current coordinates.
+        range: range,
+        /// A TextMate / LSP snippet body: `$1`, `${1:default}`, `$0`, with
+        /// a repeated number linking its sites (type once, every site
+        /// changes). Literal `$`, `}` and `\` are escaped with `\`.
+        /// Laid out VERBATIM — no line is re-indented, so the guest writes
+        /// the whitespace it means.
+        body: string,
+    }
     /// RF.4d: what `track-range` asks the host to remember.
     record track-range-payload {
         /// The target `BufferId` (its inner `u32`).
@@ -952,6 +964,12 @@ interface types {
         track-range(track-range-payload),
         /// RF.4d: stop tracking a range, and its tint goes with it.
         untrack-range(untrack-range-payload),
+        /// RF.4e: expand a snippet body over a range of the active buffer,
+        /// in one edit (one undo step), and start its session: the first
+        /// stop is selected, and typing there types at every linked site.
+        /// The peer of `expand-snippet-over`, which names a registered
+        /// snippet; this one carries the body.
+        insert-snippet(insert-snippet-payload),
     }
 
     // ---- The `app-effect` variant mirror (PH7.3b2) ----

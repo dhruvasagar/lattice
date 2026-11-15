@@ -1543,6 +1543,7 @@ impl GpuiApp {
             | Effect::UntrackRange { .. }
             // SI.10: host-applied (`Editor::expand_snippet_over`).
             | Effect::ExpandSnippetOver { .. }
+            | Effect::InsertSnippet { .. }
             | Effect::BufferDelete { .. }
             | Effect::ListModes
             | Effect::DescribeMode { .. }

@@ -739,6 +739,12 @@ register-grammar: func()
 register-modes: func()
 ```
 
+### `register-options`
+
+```wit
+register-options: func()
+```
+
 ### `register-help-topics`
 
 ```wit

@@ -22,6 +22,24 @@ Both are also in the command palette, as `refactor-expand` and
 `refactor-shrink`. They are not `:` commands: typing `:` leaves Visual, so a
 `:` command could never see the selection it is meant to grow or shrink.
 
+## Swapping list items
+
+| | |
+|---|---|
+| `:refactor-swap-next` | swap the item at the cursor with the next one |
+| `:refactor-swap-prev` | swap it with the previous one |
+
+An *item* is an argument, a parameter, an array or tuple element, a struct
+field, a statement in a block — anything in a list whose items are separated
+by commas, semicolons or line breaks. On `z` in `f(bar, baz + 1)` the item is
+`baz + 1`, not `baz`: `+` joins operands, it does not separate items. The
+separators stay where they were, so `, ` and the indentation between two
+statements are untouched, and the cursor follows the item you moved. One `u`
+undoes a swap.
+
+They have no default keys; bind them in your `init.rs`. With a count (from a
+key you bind), the item moves that many places.
+
 ## Where it works
 
 Any buffer with a syntax tree. In one without (plain text, a language lattice

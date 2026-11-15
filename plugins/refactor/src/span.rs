@@ -91,6 +91,21 @@ pub fn last_char(lines: &impl Lines, span: Span) -> Pos {
     Pos { line, byte }
 }
 
+/// Where text inserted at `start` ends: past its last line break, the column
+/// is the length of what follows it; with none, `start` moved along the line.
+pub fn advance(start: Pos, text: &str) -> Pos {
+    match text.rfind('\n') {
+        Some(i) => Pos {
+            line: start.line + text.matches('\n').count() as u32,
+            byte: (text.len() - i - 1) as u32,
+        },
+        None => Pos {
+            line: start.line,
+            byte: start.byte + text.len() as u32,
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -146,6 +161,14 @@ mod tests {
                 assert_eq!(last_char(&t, span), p(0, head));
             }
         }
+    }
+
+    #[test]
+    fn advance_follows_inserted_text_across_lines() {
+        assert_eq!(advance(p(2, 4), ""), p(2, 4));
+        assert_eq!(advance(p(2, 4), "ab, "), p(2, 8));
+        assert_eq!(advance(p(2, 4), "a();\n    "), p(3, 4));
+        assert_eq!(advance(p(0, 0), "x\n\nyz"), p(2, 2));
     }
 
     #[test]

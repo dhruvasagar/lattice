@@ -224,6 +224,116 @@ mod tests {
         );
     }
 
+    fn body(app: &App) -> String {
+        app.editor.document.snapshot().buffer.as_string()
+    }
+
+    /// The item is the argument, not the identifier inside it: on `z` in
+    /// `baz + 1`, `+` separates operands, so the swap moves `baz + 1`. The
+    /// `, ` stays where it was, the cursor follows the moved item, and one
+    /// `u` takes the whole swap back.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn swap_moves_the_list_item_and_keeps_the_separators() {
+        let Some(mut app) =
+            app_with_refactor("main.rs", RUST, Some(lattice_syntax::Lang::Rust)).await
+        else {
+            return;
+        };
+        press_chars(&mut app, "jfz");
+        submit_ex(&mut app, "refactor-swap-prev");
+        assert_eq!(
+            body(&app),
+            "fn main() {\n    let x = foo(baz + 1, bar);\n}\n"
+        );
+        assert_eq!(
+            (app.editor.cursor.line, app.editor.cursor.byte),
+            (1, 16),
+            "on the moved item"
+        );
+
+        submit_ex(&mut app, "refactor-swap-next");
+        assert_eq!(body(&app), RUST, "and back");
+        assert_eq!((app.editor.cursor.line, app.editor.cursor.byte), (1, 21));
+
+        press_chars(&mut app, "u");
+        assert_eq!(
+            body(&app),
+            "fn main() {\n    let x = foo(baz + 1, bar);\n}\n",
+            "one `u` undoes one swap"
+        );
+    }
+
+    /// Statements are items too — separated by a line break — and the
+    /// indentation between them stays put.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn swap_moves_a_statement_past_the_next() {
+        let src = "fn main() {\n    a();\n    b();\n}\n";
+        let Some(mut app) =
+            app_with_refactor("main.rs", src, Some(lattice_syntax::Lang::Rust)).await
+        else {
+            return;
+        };
+        press_chars(&mut app, "jw");
+        submit_ex(&mut app, "refactor-swap-next");
+        assert_eq!(body(&app), "fn main() {\n    b();\n    a();\n}\n");
+        assert_eq!((app.editor.cursor.line, app.editor.cursor.byte), (2, 4));
+    }
+
+    /// Nothing past the end: the buffer is untouched and the user told why.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn swap_past_the_last_item_says_so_and_changes_nothing() {
+        let Some(mut app) =
+            app_with_refactor("main.rs", RUST, Some(lattice_syntax::Lang::Rust)).await
+        else {
+            return;
+        };
+        press_chars(&mut app, "jfz");
+        submit_ex(&mut app, "refactor-swap-next");
+        assert_eq!(body(&app), RUST);
+        assert!(
+            echoed(&app).contains("no next item"),
+            "got {:?}",
+            echoed(&app)
+        );
+    }
+
+    /// Half-parsed text is never rearranged: whatever the parser made of the
+    /// broken argument, the swap leaves the buffer alone and says why.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn swap_never_rearranges_text_that_does_not_parse() {
+        let src = "fn main() {\n    foo(a, $$ ), b);\n}\n";
+        let Some(mut app) =
+            app_with_refactor("main.rs", src, Some(lattice_syntax::Lang::Rust)).await
+        else {
+            return;
+        };
+        press_chars(&mut app, "jfa");
+        submit_ex(&mut app, "refactor-swap-next");
+        assert_eq!(body(&app), src);
+        assert!(
+            echoed(&app).starts_with("refactor:"),
+            "got {:?}",
+            echoed(&app)
+        );
+    }
+
+    /// The same rule in Python.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn swap_works_in_python() {
+        let Some(mut app) = app_with_refactor(
+            "main.py",
+            "x = f(a, b)\n",
+            Some(lattice_syntax::Lang::Python),
+        )
+        .await
+        else {
+            return;
+        };
+        press_chars(&mut app, "fa");
+        submit_ex(&mut app, "refactor-swap-next");
+        assert_eq!(body(&app), "x = f(b, a)\n");
+    }
+
     /// The rule is language-agnostic: the same keys walk a Python call.
     #[tokio::test(flavor = "multi_thread")]
     async fn the_same_keys_walk_python() {

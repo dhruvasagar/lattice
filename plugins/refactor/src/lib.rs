@@ -54,13 +54,15 @@ use lattice::plugin_host::modes::{
 };
 use lattice::plugin_host::tree_sitter::TreeSnapshot;
 use lattice::plugin_host::types::{
-    ActionContext, ActionSpec, Args, EchoLevel, EchoPayload, Effect, ExCommandContext, ModalState,
-    MotionContext, MotionResult, OperatorContext, Position, Range, Selection, SelectionSet,
-    TextObjectContext, VisualKind, VisualMode,
+    ActionContext, ActionSpec, ApplyEditPayload, Args, EchoLevel, EchoPayload, Edit, EditKind,
+    Effect, ExCommandContext, ExCommandSpec, LatencyClass, ModalState, MotionContext, MotionResult,
+    OperatorContext, Position, Range, Selection, SelectionSet, SurfaceForm, TextObjectContext,
+    VisualKind, VisualMode,
 };
 use lattice::plugin_host::{grammar, help, modes};
 
 mod span;
+mod swap;
 
 use span::{Pos, Span};
 
@@ -69,6 +71,10 @@ struct Component;
 // ── callback ids (guest-local) ────────────────────────────────────────────────
 const CB_EXPAND: u32 = 1;
 const CB_SHRINK: u32 = 2;
+const CB_SWAP_NEXT: u32 = 3;
+const CB_SWAP_PREV: u32 = 4;
+/// The one parse callback every argument-less ex-command shares.
+const CB_PARSE_NO_ARGS: u32 = 100;
 
 // ── shrink history ────────────────────────────────────────────────────────────
 
@@ -256,6 +262,32 @@ fn shrink(ctx: &ActionContext, doc: &Document) -> Vec<Effect> {
     }
 }
 
+fn swap_command(
+    ctx: &ExCommandContext,
+    doc: &Document,
+    tree: Option<&TreeSnapshot>,
+    dir: swap::Dir,
+) -> Vec<Effect> {
+    let Some(tree) = tree else {
+        return echo("refactor: no syntax tree for this buffer");
+    };
+    match swap::swap(tree, doc, ctx.cursor.into(), dir, ctx.count) {
+        swap::Outcome::Edit {
+            range,
+            text,
+            cursor,
+        } => vec![Effect::ApplyEdit(ApplyEditPayload {
+            target: ctx.buffer_id,
+            edit: Edit {
+                range: range.into(),
+                kind: EditKind::Replace(text),
+            },
+            cursor: Some(cursor.into()),
+        })],
+        swap::Outcome::Refuse(why) => echo(&format!("refactor: {why}")),
+    }
+}
+
 // ── registration ──────────────────────────────────────────────────────────────
 
 impl Guest for Component {
@@ -274,6 +306,29 @@ impl Guest for Component {
             "Step back to the selection before the last refactor-expand; past the first, back to the cursor.",
             &spec(),
             CB_SHRINK,
+        );
+        // Swap acts on the item at the cursor, so it needs no selection and
+        // can be a `:` command — unlike expand / shrink.
+        let no_args = || ExCommandSpec {
+            latency_class: LatencyClass::Reflex,
+            accepts_bang: false,
+            accepts_range: false,
+            args_schema: Vec::new(),
+            surface_form: SurfaceForm::Keyword,
+        };
+        grammar::register_ex_command(
+            "refactor-swap-next",
+            "Swap the list item at the cursor (an argument, element, field or statement) with the next one; the separators stay put. A count moves it that many places.",
+            &no_args(),
+            CB_PARSE_NO_ARGS,
+            CB_SWAP_NEXT,
+        );
+        grammar::register_ex_command(
+            "refactor-swap-prev",
+            "Swap the list item at the cursor with the previous one; the separators stay put. A count moves it that many places.",
+            &no_args(),
+            CB_PARSE_NO_ARGS,
+            CB_SWAP_PREV,
         );
     }
 
@@ -360,16 +415,24 @@ impl GrammarCallbacks for Component {
     ) -> Result<Range, String> {
         Err("refactor: no text objects".into())
     }
-    fn parse_ex_args(_c: u32, _rest: String, _bang: bool) -> Result<Args, String> {
-        Err("refactor: no ex-commands".into())
+    fn parse_ex_args(callback: u32, rest: String, _bang: bool) -> Result<Args, String> {
+        match callback {
+            CB_PARSE_NO_ARGS if rest.trim().is_empty() => Ok(Args::None),
+            CB_PARSE_NO_ARGS => Err("takes no arguments".into()),
+            other => Err(format!("refactor: unknown parse callback {other}")),
+        }
     }
     fn apply_ex_command(
-        _c: u32,
-        _ctx: ExCommandContext,
-        _doc: &Document,
-        _tree: Option<&TreeSnapshot>,
+        callback: u32,
+        ctx: ExCommandContext,
+        doc: &Document,
+        tree: Option<&TreeSnapshot>,
     ) -> Result<Vec<Effect>, String> {
-        Err("refactor: no ex-commands".into())
+        Ok(match callback {
+            CB_SWAP_NEXT => swap_command(&ctx, doc, tree, swap::Dir::Next),
+            CB_SWAP_PREV => swap_command(&ctx, doc, tree, swap::Dir::Prev),
+            other => return Err(format!("refactor: unknown ex-command callback {other}")),
+        })
     }
 }
 
@@ -390,6 +453,14 @@ impl From<Pos> for Position {
         Position {
             line: p.line,
             byte: p.byte,
+        }
+    }
+}
+impl From<Span> for Range {
+    fn from(s: Span) -> Self {
+        Range {
+            start: s.start.into(),
+            end: s.end.into(),
         }
     }
 }

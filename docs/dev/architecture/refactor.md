@@ -217,9 +217,12 @@ The v1 commands act on the node at the cursor. That is the weakest part of
 the vim grammar to build on: its power is that an operator composes with
 *any* range — a Visual selection, a motion, or a text object, including the
 syntax objects `af`/`if`, `ac`/`ic`, `aa`/`ia`, `al`/`il` that
-`lattice-syntax` already resolves from `textobjects.scm`. `<leader>rraa`
-raises an argument; `cxaa` … `cxaa` exchanges two arguments that are not
-neighbours; `<leader>reia` extracts one. Every refactor is therefore an
+`lattice-syntax` already resolves from `textobjects.scm`. `<leader>rriw`
+raises an identifier out of its call; `<leader>rr` in Visual raises the
+selection; `cxaa` … `cxaa` exchanges two parameters that are not neighbours.
+(RF.4b found that `aa` / `ia` capture a declaration's parameters but not a
+call's arguments, unlike the nvim-treesitter-textobjects convention; widening
+them is a `lattice-syntax` query change, tracked in the slice plan.) Every refactor is therefore an
 **operator** first; the `:refactor-*` commands stay as the cursor shorthand
 and the palette entry, running the same code (paramount #3: the grammar is
 the public API).
@@ -227,7 +230,7 @@ the public API).
 | Operator | Keys | On the range |
 |---|---|---|
 | exchange | `cx{obj}` twice; `cxx` (line); Visual `X`; `cxc` clears the mark | The first use marks the range, highlighted; the second swaps the two, as vim-exchange does. One replacement spanning both, so one undo step. A range inside the other replaces the larger with the smaller (vim-exchange's rule). An edit that changes the marked text drops the mark and says so. Text only: no tree. |
-| raise | `<leader>rr{obj}` | The node the range covers — the smallest named node spanning it, whitespace trimmed — replaces the expression around it, §3's rule. In Visual this is "raise what I selected", the form RF.2d could not offer. |
+| raise | `<leader>rr{obj}` | The node the range covers replaces the expression around it, §3's rule. The range is trimmed of whitespace and separators (`,` `;`) first, then must be exactly one named node: one that is not is refused, never widened to the node around it, because raising more than was selected deletes text the user did not point at. In Visual this is "raise what I selected", the form RF.2d could not offer. |
 | split / join | `<leader>rs{obj}` / `<leader>rj{obj}` | The comma list the range covers, §3's rule. |
 | extract | `<leader>re{obj}` | The expression the range covers becomes a variable — see below. |
 | inline | `<leader>ri{obj}` | The variable the range names (its declaration or a use) is replaced by its value at every use, and the declaration removed — see below. |

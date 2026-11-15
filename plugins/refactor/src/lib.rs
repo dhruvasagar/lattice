@@ -34,6 +34,7 @@ lattice_plugin_sdk::manifest!(
     r#"
 id = "refactor"
 provides = ["grammar", "modes", "help"]
+capabilities = ["grammar:chord"]
 editor_capabilities = ["tree-sitter"]
 default_modes = ["refactor-mode"]
 "#
@@ -56,8 +57,8 @@ use lattice::plugin_host::tree_sitter::TreeSnapshot;
 use lattice::plugin_host::types::{
     ActionContext, ActionSpec, ApplyEditPayload, Args, EchoLevel, EchoPayload, Edit, EditKind,
     Effect, ExCommandContext, ExCommandSpec, LatencyClass, ModalState, MotionContext, MotionResult,
-    OperatorContext, Position, Range, Selection, SelectionSet, SurfaceForm, TextObjectContext,
-    VisualKind, VisualMode,
+    OperatorContext, OperatorSpec, Position, Range, Selection, SelectionSet, SurfaceForm,
+    TextObjectContext, VisualKind, VisualMode,
 };
 use lattice::plugin_host::{config, grammar, help, modes};
 
@@ -78,6 +79,8 @@ const CB_SWAP_PREV: u32 = 4;
 const CB_RAISE: u32 = 5;
 const CB_SPLIT: u32 = 6;
 const CB_JOIN: u32 = 7;
+/// Operators (RF.4): their own callback space, read by `apply-operator`.
+const CB_RAISE_OP: u32 = 50;
 /// The one parse callback every argument-less ex-command shares.
 const CB_PARSE_NO_ARGS: u32 = 100;
 
@@ -269,14 +272,14 @@ fn shrink(ctx: &ActionContext, doc: &Document) -> Vec<Effect> {
 
 /// The effects of one structural edit at the cursor: the replacement with
 /// the cursor where the command put it, or an echo saying why not.
-fn edit_effects(ctx: &ExCommandContext, outcome: span::Outcome) -> Vec<Effect> {
+fn edit_effects(buffer_id: u32, outcome: span::Outcome) -> Vec<Effect> {
     match outcome {
         span::Outcome::Edit {
             range,
             text,
             cursor,
         } => vec![Effect::ApplyEdit(ApplyEditPayload {
-            target: ctx.buffer_id,
+            target: buffer_id,
             edit: Edit {
                 range: range.into(),
                 kind: EditKind::Replace(text),
@@ -303,7 +306,7 @@ fn with_tree(
     edit: impl FnOnce(&TreeSnapshot) -> span::Outcome,
 ) -> Vec<Effect> {
     match tree {
-        Some(tree) => edit_effects(ctx, edit(tree)),
+        Some(tree) => edit_effects(ctx.buffer_id, edit(tree)),
         None => echo("refactor: no syntax tree for this buffer"),
     }
 }
@@ -312,6 +315,26 @@ fn with_tree(
 
 impl Guest for Component {
     fn register_grammar() {
+        // RF.4: every refactor is an operator over a range — Visual, a motion
+        // or a text object (`aa`, `af`, …) — on `refactor-mode`'s layer. The
+        // `:` commands below are the cursor shorthand.
+        let operator = |chord: &str| OperatorSpec {
+            repeatable: true,
+            args_schema: Vec::new(),
+            // One range, never per row: a refactor acts on the node a range
+            // covers, and a `<C-v>` block split into rows covers none.
+            blockwise_per_row: false,
+            post_motion_char: false,
+            chord: Some(chord.to_string()),
+            // No doubled form: raising "the current line" names no node.
+            doubled: None,
+        };
+        grammar::register_operator(
+            "refactor-raise-operator",
+            "Raise the syntax node the range covers: it replaces the expression around it (`<leader>rria` lifts an argument out of its call).",
+            &operator("<leader>rr"),
+            CB_RAISE_OP,
+        );
         let spec = || ActionSpec {
             args_schema: Vec::new(),
         };
@@ -442,12 +465,19 @@ impl GrammarCallbacks for Component {
         Err("refactor: no motions".into())
     }
     fn apply_operator(
-        _c: u32,
-        _ctx: OperatorContext,
-        _doc: &Document,
-        _tree: Option<&TreeSnapshot>,
+        callback: u32,
+        ctx: OperatorContext,
+        doc: &Document,
+        tree: Option<&TreeSnapshot>,
     ) -> Result<Vec<Effect>, String> {
-        Err("refactor: no operators".into())
+        let Some(tree) = tree else {
+            return Ok(echo("refactor: no syntax tree for this buffer"));
+        };
+        let range = Span::from(ctx.range);
+        Ok(match callback {
+            CB_RAISE_OP => edit_effects(ctx.buffer_id, raise::raise_range(tree, doc, range)),
+            other => return Err(format!("refactor: unknown operator callback {other}")),
+        })
     }
     fn apply_text_object(
         _c: u32,

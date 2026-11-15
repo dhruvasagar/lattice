@@ -16,7 +16,7 @@
 
 use crate::lattice::plugin_host::buffer::Document;
 use crate::lattice::plugin_host::tree_sitter::{Node, TreeSnapshot};
-use crate::span::{span_of, text, Outcome, Pos};
+use crate::span::{covering_node, span_of, text, trim_list_edges, Outcome, Pos, Span};
 
 /// Whether `text` opens with a bracket and closes with its partner.
 pub fn is_bracketed(text: &str) -> bool {
@@ -57,11 +57,35 @@ fn target(doc: &Document, node: &Node) -> Option<Node> {
     }
 }
 
+/// `:refactor-raise`: the node at the cursor.
 pub fn raise(tree: &TreeSnapshot, doc: &Document, cursor: Pos) -> Outcome {
-    let Some(node) = tree.node_at(cursor.into()) else {
-        return Outcome::Refuse("no syntax node here");
-    };
-    let Some(target) = target(doc, &node) else {
+    match tree.node_at(cursor.into()) {
+        Some(node) => raise_node(doc, &node),
+        None => Outcome::Refuse("no syntax node here"),
+    }
+}
+
+/// The raise operator: the node `range` covers — exactly, once whitespace and
+/// separators are trimmed. A range that is not one node is refused rather
+/// than widened to the node around it: raising more than was selected
+/// deletes text the user did not point at.
+pub fn raise_range(tree: &TreeSnapshot, doc: &Document, range: Span) -> Outcome {
+    let range = trim_list_edges(doc, range);
+    if range.start >= range.end {
+        return Outcome::Refuse("nothing to raise in an empty range");
+    }
+    match covering_node(tree, range) {
+        Some(node) if span_of(&node) == range => raise_node(doc, &node),
+        Some(_) => Outcome::Refuse(
+            "that range is not one syntax node — select a whole expression (`<M-o>` grows a selection node by node)",
+        ),
+        None => Outcome::Refuse("no syntax node covers that range"),
+    }
+}
+
+/// Replace the expression around `node` with `node`.
+fn raise_node(doc: &Document, node: &Node) -> Outcome {
+    let Some(target) = target(doc, node) else {
         return Outcome::Refuse("nothing to raise into");
     };
     // The root is the whole file: replacing it with one node would delete
@@ -75,7 +99,7 @@ pub fn raise(tree: &TreeSnapshot, doc: &Document, cursor: Pos) -> Outcome {
     let range = span_of(&target);
     Outcome::Edit {
         range,
-        text: text(doc, span_of(&node)),
+        text: text(doc, span_of(node)),
         cursor: range.start,
     }
 }

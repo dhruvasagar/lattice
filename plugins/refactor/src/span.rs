@@ -129,6 +129,42 @@ pub fn span_of(n: &crate::lattice::plugin_host::tree_sitter::Node) -> Span {
     Span::from(n.byte_range())
 }
 
+/// `span` with whitespace and list separators (`,` `;`) trimmed from both
+/// ends. An operator's range arrives however its source drew it: `aa`
+/// includes the comma after the argument and `ia` does not, and both mean
+/// the argument.
+pub fn trim_list_edges(doc: &Document, span: Span) -> Span {
+    let body = text(doc, span);
+    let edge = |c: char| c.is_whitespace() || c == ',' || c == ';';
+    let lead = body.len() - body.trim_start_matches(edge).len();
+    let kept = body.trim_end_matches(edge).len();
+    if kept <= lead {
+        return Span {
+            start: span.start,
+            end: span.start,
+        };
+    }
+    Span {
+        start: advance(span.start, &body[..lead]),
+        end: advance(span.start, &body[..kept]),
+    }
+}
+
+/// The smallest named node whose span covers `span`.
+pub fn covering_node(
+    tree: &crate::lattice::plugin_host::tree_sitter::TreeSnapshot,
+    span: Span,
+) -> Option<crate::lattice::plugin_host::tree_sitter::Node> {
+    let mut node = tree.node_at(span.start.into());
+    while let Some(n) = node {
+        if n.is_named() && span_of(&n).covers(span) {
+            return Some(n);
+        }
+        node = n.parent();
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

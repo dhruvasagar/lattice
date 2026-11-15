@@ -22,6 +22,22 @@ Both are also in the command palette, as `refactor-expand` and
 `refactor-shrink`. They are not `:` commands: typing `:` leaves Visual, so a
 `:` command could never see the selection it is meant to grow or shrink.
 
+## Operators
+
+Every refactor is also an operator, so it works on any range: a Visual
+selection, a motion, or a text object.
+
+| | |
+|---|---|
+| `<leader>rr{obj}` | raise: the node the range covers replaces the expression around it |
+
+`<leader>rriw` on `bar` in `foo(bar, baz)` gives `bar`. In Visual, `<leader>rr`
+raises the selection — `<M-o>` a couple of times, then `<leader>rr`. The range
+must be one syntax node (whitespace and a trailing `,` are ignored); a range
+that is not one is refused rather than grown, since raising more than you
+selected would delete text you did not point at. `:refactor-raise` is the
+same edit on the node at the cursor.
+
 ## Swapping list items
 
 | | |

@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Added
+- **`<leader>rr{motion}` raises any range**, the first refactor operator: the syntax node a Visual selection, motion or text object covers replaces the expression around it, so `<leader>rriw` on `bar` in `foo(bar, baz)` gives `bar`. A range that is not one node is refused, not widened.
 - **`:refactor-split` / `:refactor-join`** put the items of the comma-separated list at the cursor (arguments, parameters, an array, a struct literal) one per line, or back on one. The indent is the buffer's own, so Go's tabs stay tabs; a trailing comma is kept as it was. One `u` each.
 - **Plugins can read an option as one buffer sees it.** The new `config.get-option-in-buffer` answers what `:setlocal name?` would, including a mode's override, where `get-option` answers the global value. Additive: existing plugins load unchanged.
 - **`:refactor-raise`** replaces the expression around the node at the cursor with the node: `baz + 1` → `baz`, then `foo(bar, baz)` → `baz` (the whole call, not just its brackets). One `u` undoes it; no default key.
@@ -20,6 +21,7 @@
 - **Web tools for LLM chats.** `web.fetch` reads a page as markdown, links kept; it asks before each new site, and "allow this site for this chat" covers that host only. It reaches public sites only: `localhost`, private networks and cloud metadata addresses are refused, and a redirect to another site is reported rather than followed. `web.search` searches through your own SearXNG (no key, queries stay local) or the paid Brave Search API, set in `[llm.web]`, and runs without asking. Select them with `llm.tools = ["web.*"]`. Rules name hosts: `llm.allow = ["web.fetch(docs.rs)", "web.fetch(*.rust-lang.org)"]` fetches from them without asking, and an allow naming a private host exactly (`web.fetch(localhost:8080)`) is the one way to fetch from it. `web.fetch` alone, or `web.*`, is refused in `allow`.
 
 ### Fixed
+- **A plugin operator can use `<leader>` in its chord.** The leader was never expanded for a plugin operator's chord, so `<leader>…` failed to parse and the operator was left reachable by name only.
 - **One `gc` is one undo step.** Commenting several lines with the bundled comment plugin (`gc2j`, `gcip`, Visual `gc`) needed one `u` per line to take back; one `u` now restores them all. The fix is in the host, not the plugin: every edit one command makes to a buffer applies as one undo step, so any plugin that edits several places at once gets the same.
 - **`<gt>` names the `>` key in key sequences**, as in vim. `<lt>` already named `<`, but a bare `>` is rejected, so a keymap or macro string had no way to write `>`.
 - **`:'<,'>lsp-code-action` asks about the selection.** Visual `:` leaves Visual, so the command used to ask the server about the cursor alone. It also dropped the last selected character, and asked about part of the line in a `V` selection; it now sends exactly what is highlighted.

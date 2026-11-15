@@ -72,6 +72,11 @@ mod tests {
                     .services
                     .get::<Arc<ConfigRegistry>>()
                     .map(|h| (*h).clone()),
+                // RF.4: the operators declare chords, which the host wires.
+                operator_chords: ed
+                    .services
+                    .get::<lattice_mode::OperatorChordWirerHandle>()
+                    .map(|h| (*h).clone()),
                 help_topics: Some(ed.help_topics.clone()),
                 ..Default::default()
             },
@@ -479,6 +484,84 @@ mod tests {
         press_chars(&mut app, "fa");
         submit_ex(&mut app, "refactor-split");
         assert_eq!(body(&app), "x = f(\n    a,\n    b\n)\n");
+    }
+
+    /// RF.4b: the raise operator over a text object, driven by real keys.
+    /// `iw` on `bar` is the identifier; raising it replaces the call (the
+    /// `(…)` is glued to `foo`, so the call, not the brackets, is what goes).
+    /// Also the production proof of RF.4a's seam: the operator answers only
+    /// if the actor route handed it the tree.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_raise_operator_lifts_an_argument_out_of_its_call() {
+        let Some(mut app) =
+            app_with_refactor("main.rs", RUST, Some(lattice_syntax::Lang::Rust)).await
+        else {
+            return;
+        };
+        press_chars(&mut app, "jfb rriw");
+        assert_eq!(
+            body(&app),
+            "fn main() {\n    let x = bar;\n}\n",
+            "echo: {:?}",
+            echoed(&app)
+        );
+        press_chars(&mut app, "u");
+        assert_eq!(body(&app), RUST, "one `u`");
+    }
+
+    /// A range's edges are trimmed of whitespace and separators before the
+    /// node is looked for: `vf,` selects `bar,`, which means `bar`.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_raise_operator_ignores_a_separator_at_the_range_edge() {
+        let Some(mut app) =
+            app_with_refactor("main.rs", RUST, Some(lattice_syntax::Lang::Rust)).await
+        else {
+            return;
+        };
+        press_chars(&mut app, "jfbvf, rr");
+        assert_eq!(
+            body(&app),
+            "fn main() {\n    let x = bar;\n}\n",
+            "echo: {:?}",
+            echoed(&app)
+        );
+    }
+
+    /// In Visual the operator raises the selection: `<M-o>` twice selects
+    /// `baz + 1`, `<leader>rr` raises it, and Normal resumes.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_raise_operator_raises_a_visual_selection() {
+        let Some(mut app) =
+            app_with_refactor("main.rs", RUST, Some(lattice_syntax::Lang::Rust)).await
+        else {
+            return;
+        };
+        press_chars(&mut app, "jfz");
+        alt(&mut app, 'o');
+        alt(&mut app, 'o');
+        assert_eq!(selected(&app).as_deref(), Some("baz + 1"));
+        press_chars(&mut app, " rr");
+        assert_eq!(body(&app), "fn main() {\n    let x = baz + 1;\n}\n");
+        assert!(matches!(app.editor.modal, ModalState::Normal));
+    }
+
+    /// A range that is not one node is refused, not widened: raising more
+    /// than was selected would delete text the user did not point at. `i(`
+    /// is both arguments.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_raise_operator_refuses_a_range_that_is_not_one_node() {
+        let Some(mut app) =
+            app_with_refactor("main.rs", RUST, Some(lattice_syntax::Lang::Rust)).await
+        else {
+            return;
+        };
+        press_chars(&mut app, "jfb rri(");
+        assert_eq!(body(&app), RUST);
+        assert!(
+            echoed(&app).contains("not one syntax node"),
+            "got {:?}",
+            echoed(&app)
+        );
     }
 
     /// The same rule in Python.

@@ -56,6 +56,12 @@ impl lattice_mode::OperatorChordWirer for HostOperatorChordWirer {
         origin: lattice_mode::PluginOrigin<'_>,
         post_motion_char: bool,
     ) -> Result<(), String> {
+        // RF.4b: `<leader>` first, as the keymap does for every chord it
+        // registers and `bind_in`'s callers do before calling it. Without
+        // this a plugin operator could not use the leader at all: the token
+        // reached the parser verbatim, failed, and the loader logged "does
+        // not parse" — so `refactor`'s `<leader>rr` never bound.
+        let chord = &self.keymap.expand_leader(chord);
         // A chord that does not parse is a manifest error, reported rather than
         // guessed at. `register-binding` takes the same line: a plugin never
         // silently mis-binds.

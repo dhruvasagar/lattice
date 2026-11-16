@@ -25,17 +25,25 @@ Both are also in the command palette, as `refactor-expand` and
 ## Operators
 
 Every refactor is also an operator, so it works on any range: a Visual
-selection, a motion, or a text object.
+selection, a motion, or a text object. They are the `c` family: `cx` is
+vim-exchange's, and the rest start with `cr` ("change: refactor"). In
+Visual, `c` changes the selection at once, so there each takes `<leader>r`
+with the same letter instead.
 
-| | |
-|---|---|
-| `cx{obj}` | exchange: the first marks the range, the second swaps the two |
-| `cxx` / Visual `X` | exchange the line / the selection |
-| `cxc` | clear the exchange mark |
-| `<leader>rr{obj}` | raise: the node the range covers replaces the expression around it |
-| `<leader>re{obj}` | extract the expression into a variable declared before its statement |
-| `<leader>rs{obj}` | split the comma list around the range, one item per line |
-| `<leader>rj{obj}` | join the comma list around the range onto one line |
+| Normal | Visual | |
+|---|---|---|
+| `cx{obj}` | `X` | exchange: the first marks the range, the second swaps the two |
+| `cxx` | | exchange the line |
+| `cxc` | | clear the exchange mark |
+| `crr{obj}` | `<leader>rr` | raise: the node the range covers replaces the expression around it |
+| `cre{obj}` | `<leader>re` | extract the expression into a variable declared before its statement |
+| `cr<CR>{obj}` | `<leader>r<CR>` | split the comma list around the range, one item per line |
+| `crj{obj}` | `<leader>rj` | join the comma list around the range onto one line |
+
+The letters vim-abolish uses after `cr` for case changes (`s`, `c`, `m`,
+`u`, `-`, `.`, `t`) are left free. All of these keys belong to
+`refactor-mode`: `:set refactor.enabled=false` removes them, and `c` is
+plain `c` again.
 
 `cxiw` on `bar` in `foo(bar, baz)` marks it (tinted); `cxiw` on `baz` then
 gives `foo(baz, bar)`, in one undo step. The mark stays put while you edit
@@ -43,14 +51,14 @@ elsewhere; editing the marked text drops it, with a message. If one range
 lies inside the other, the larger is replaced by the smaller. Exchange works
 on any text, parsed or not.
 
-`<leader>rriw` on `bar` in `foo(bar, baz)` gives `bar`. In Visual, `<leader>rr`
+`crriw` on `bar` in `foo(bar, baz)` gives `bar`. In Visual, `<leader>rr`
 raises the selection — `<M-o>` a couple of times, then `<leader>rr`. The range
 must be one syntax node (whitespace and a trailing `,` are ignored); a range
 that is not one is refused rather than grown, since raising more than you
 selected would delete text you did not point at. `:refactor-raise` is the
 same edit on the node at the cursor.
 
-`<leader>re` on `baz + 1` in `let x = foo(bar, baz + 1);` gives
+`cre` on `baz + 1` in `let x = foo(bar, baz + 1);` gives
 
     let value = baz + 1;
     let x = foo(bar, value);
@@ -65,7 +73,7 @@ option. Extracting a function needs a language server and is not offered
 without one.
 
 Split and join act on the nearest comma list around the range, so
-`<leader>rsi(` and `<leader>rsiw` on an argument both split the call's
+`cr<CR>i(` and `cr<CR>iw` on an argument both split the call's
 arguments; they change only whitespace. `:refactor-split` / `:refactor-join`
 do the same at the cursor.
 

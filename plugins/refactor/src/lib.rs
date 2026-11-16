@@ -467,7 +467,7 @@ fn exchange_op(ctx: &OperatorContext, doc: &Document) -> Vec<Effect> {
     effects
 }
 
-/// `<leader>re{motion}`: extract the expression the range covers into a
+/// `cre{motion}`: extract the expression the range covers into a
 /// variable declared before its statement, the name typed once at both sites.
 fn extract_op(ctx: &OperatorContext, doc: &Document, tree: &TreeSnapshot) -> Vec<Effect> {
     // Read through the buffer, so a mode (or `:setlocal`) can supply the
@@ -518,6 +518,14 @@ impl Guest for Component {
         // RF.4: every refactor is an operator over a range — Visual, a motion
         // or a text object (`aa`, `af`, …) — on `refactor-mode`'s layer. The
         // `:` commands below are the cursor shorthand.
+        //
+        // RF.4j: the keys are the `c` family. `cx` is vim-exchange's; the
+        // rest take `cr`, free in vim because `r` is not a motion. The chord
+        // binds Normal's operator-pending path only; each Visual form is a
+        // `refactor-mode` binding below, on `<leader>r`, because Visual `c`
+        // changes the selection at once. vim-abolish's coercion letters
+        // (`s` `c` `m` `u` `-` `.` `t`) are left free, so split is
+        // `cr<CR>`, not `crs`.
         grammar::register_operator(
             "refactor-exchange-operator",
             "Exchange two ranges: the first `cx{motion}` marks one (tinted), the second swaps them. `cxx` is the line; `cxc` clears the mark.",
@@ -553,26 +561,26 @@ impl Guest for Component {
         };
         grammar::register_operator(
             "refactor-raise-operator",
-            "Raise the syntax node the range covers: it replaces the expression around it (`<leader>rria` lifts an argument out of its call).",
-            &operator("<leader>rr"),
+            "Raise the syntax node the range covers: it replaces the expression around it (`crria` lifts an argument out of its call; Visual `<leader>rr`).",
+            &operator("crr"),
             CB_RAISE_OP,
         );
         grammar::register_operator(
             "refactor-extract-operator",
-            "Extract the expression the range covers into a variable declared before its statement; the name is typed once, at both sites. Variables only: extracting a function needs a language server.",
-            &operator("<leader>re"),
+            "Extract the expression the range covers into a variable declared before its statement; the name is typed once, at both sites (`cre{motion}`; Visual `<leader>re`). Variables only: extracting a function needs a language server.",
+            &operator("cre"),
             CB_EXTRACT_OP,
         );
         grammar::register_operator(
             "refactor-split-operator",
-            "Split the comma-separated list around the range one item per line, one indent deeper (`<leader>rsi(` splits a call's arguments).",
-            &operator("<leader>rs"),
+            "Split the comma-separated list around the range one item per line, one indent deeper (`cr<CR>i(` splits a call's arguments; Visual `<leader>r<CR>`).",
+            &operator("cr<CR>"),
             CB_SPLIT_OP,
         );
         grammar::register_operator(
             "refactor-join-operator",
-            "Join the comma-separated list around the range onto one line; the inverse of `<leader>rs`.",
-            &operator("<leader>rj"),
+            "Join the comma-separated list around the range onto one line; the inverse of `cr<CR>` (`crj{motion}`; Visual `<leader>rj`).",
+            &operator("crj"),
             CB_JOIN_OP,
         );
         let spec = || ActionSpec {
@@ -672,6 +680,20 @@ impl Guest for Component {
                 // vim-exchange's Visual form. Not `cx`: in Visual `c` is
                 // change and fires at once.
                 bind(BindingMode::Visual, "X", "refactor-exchange-operator"),
+                // RF.4j: the Visual forms of the `cr` operators, for the same
+                // reason. The same letter after the prefix.
+                bind(BindingMode::Visual, "<leader>rr", "refactor-raise-operator"),
+                bind(
+                    BindingMode::Visual,
+                    "<leader>re",
+                    "refactor-extract-operator",
+                ),
+                bind(BindingMode::Visual, "<leader>rj", "refactor-join-operator"),
+                bind(
+                    BindingMode::Visual,
+                    "<leader>r<CR>",
+                    "refactor-split-operator",
+                ),
             ],
             target_language: None,
             options: vec![],
@@ -686,7 +708,7 @@ impl Guest for Component {
             "declaration",
             OptionType::String,
             "",
-            "how `<leader>re` declares the extracted variable: a template over `{name}` and `{value}` (e.g. `const {name} = {value};`). Empty: the language's own form.",
+            "how `cre` declares the extracted variable: a template over `{name}` and `{value}` (e.g. `const {name} = {value};`). Empty: the language's own form.",
         );
     }
 

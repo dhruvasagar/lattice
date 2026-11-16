@@ -60,7 +60,7 @@ mod tests {
         let host = Arc::new(
             PluginHost::with_dirs(base.join("cache"), base.join("data")).expect("host builds"),
         );
-        let loader = PluginLoader::with_services(
+        let loader = Arc::new(PluginLoader::with_services(
             host,
             LoaderServices {
                 runtime: Some(tokio::runtime::Handle::current()),
@@ -80,7 +80,10 @@ mod tests {
                 help_topics: Some(ed.help_topics.clone()),
                 ..Default::default()
             },
-        );
+        ));
+        // Production's `install` wires the `<id>.enabled` gate this way; without
+        // it `:set refactor.enabled=false` has no listener.
+        loader.subscribe_mode_gates();
         let loaded = loader
             .discover_and_load(&base.join("plugins"), TrustTier::Bundled)
             .await;
@@ -89,6 +92,11 @@ mod tests {
             settle_mode(&mut app, "refactor-mode").await,
             "`refactor-mode` activates from the manifest's `default_modes`, not by hand"
         );
+        // Held as production's `install` holds it: the `<id>.enabled` gate
+        // keeps only a `Weak` to the loader, and dies with the last strong one.
+        Arc::get_mut(&mut app.editor.services)
+            .expect("the harness's service registry is not shared yet")
+            .register::<lattice_plugin_loader::PluginLoaderHandle>(loader);
         Some(app)
     }
 
@@ -498,7 +506,7 @@ mod tests {
         else {
             return;
         };
-        press_chars(&mut app, "jfb rriw");
+        press_chars(&mut app, "jfbcrriw");
         assert_eq!(
             body(&app),
             "fn main() {\n    let x = bar;\n}\n",
@@ -555,7 +563,7 @@ mod tests {
         else {
             return;
         };
-        press_chars(&mut app, "jfb rri(");
+        press_chars(&mut app, "jfbcrri(");
         assert_eq!(body(&app), RUST);
         assert!(
             echoed(&app).contains("not one syntax node"),
@@ -564,8 +572,8 @@ mod tests {
         );
     }
 
-    /// RF.4c: split and join as operators. `<leader>rsi(` splits the call's
-    /// arguments; from an item, `<leader>rjiw` joins the list around it —
+    /// RF.4c: split and join as operators. `cr<CR>i(` splits the call's
+    /// arguments; from an item, `crjiw` joins the list around it —
     /// the nearest list, since split / join change only whitespace.
     #[tokio::test(flavor = "multi_thread")]
     async fn the_split_and_join_operators_act_on_the_list_around_the_range() {
@@ -575,10 +583,12 @@ mod tests {
         else {
             return;
         };
-        press_chars(&mut app, "jfb rsi(");
+        press_chars(&mut app, "jfbcr");
+        enter(&mut app);
+        press_chars(&mut app, "i(");
         assert_eq!(body(&app), split, "echo: {:?}", echoed(&app));
 
-        press_chars(&mut app, "j^ rjiw");
+        press_chars(&mut app, "j^crjiw");
         assert_eq!(body(&app), RUST, "echo: {:?}", echoed(&app));
 
         press_chars(&mut app, "u");
@@ -592,7 +602,9 @@ mod tests {
         else {
             return;
         };
-        press_chars(&mut app, " rsiw");
+        press_chars(&mut app, "cr");
+        enter(&mut app);
+        press_chars(&mut app, "iw");
         assert_eq!(body(&app), RUST);
         assert!(
             echoed(&app).contains("not in a comma-separated list"),
@@ -617,6 +629,10 @@ mod tests {
             .iter()
             .map(|h| text[offset(h.range.start)..offset(h.range.end)].to_string())
             .collect()
+    }
+
+    fn enter(app: &mut App) {
+        press(app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     }
 
     fn esc(app: &mut App) {
@@ -745,7 +761,7 @@ mod tests {
         );
     }
 
-    /// RF.4e: `<leader>re` over a selected expression declares it before
+    /// RF.4e: Visual `<leader>re` over a selected expression declares it before
     /// its statement and leaves the name selected, linked at both sites:
     /// typing it once names both. Undo takes it back in one step.
     #[tokio::test(flavor = "multi_thread")]
@@ -782,7 +798,7 @@ mod tests {
         else {
             return;
         };
-        press_chars(&mut app, "jfb reiw");
+        press_chars(&mut app, "jfbcreiw");
         assert_eq!(
             body(&app),
             "fn main() {\n    let value = bar;\n    let x = foo(value, baz + 1);\n}\n",
@@ -802,7 +818,7 @@ mod tests {
         else {
             return;
         };
-        press_chars(&mut app, "jfb rei(");
+        press_chars(&mut app, "jfbcrei(");
         assert_eq!(body(&app), RUST);
         assert!(
             echoed(&app).contains("not one expression"),
@@ -820,7 +836,7 @@ mod tests {
         else {
             return;
         };
-        press_chars(&mut app, "jfb reiw");
+        press_chars(&mut app, "jfbcreiw");
         assert_eq!(
             body(&app),
             "def f():\n    value = bar\n    x = foo(value, baz + 1)\n",
@@ -847,12 +863,88 @@ mod tests {
             ":set refactor.declaration=const {name}: i32 = {value};",
         );
         press(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-        press_chars(&mut app, "jfb reiw");
+        press_chars(&mut app, "jfbcreiw");
         assert_eq!(
             body(&app),
             "fn main() {\n    const value: i32 = bar;\n    let x = foo(value, baz + 1);\n}\n",
             "echo: {:?}",
             echoed(&app)
+        );
+    }
+
+    /// RF.4j: the Visual forms are `refactor-mode`'s own `<leader>r` bindings,
+    /// the same letter as the Normal `cr` chord: split and join over a
+    /// selection.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_visual_forms_live_on_leader_r() {
+        let split = "fn main() {\n    let x = foo(\n        bar,\n        baz + 1\n    );\n}\n";
+        let Some(mut app) =
+            app_with_refactor("main.rs", RUST, Some(lattice_syntax::Lang::Rust)).await
+        else {
+            return;
+        };
+        press_chars(&mut app, "jfbviw r");
+        enter(&mut app);
+        assert_eq!(body(&app), split, "echo: {:?}", echoed(&app));
+        assert!(matches!(app.editor.modal, ModalState::Normal));
+        press_chars(&mut app, "jwviw rj");
+        assert_eq!(body(&app), RUST, "echo: {:?}", echoed(&app));
+    }
+
+    /// RF.4j: no `c…` chord is bound in Visual, so Visual `c` still changes
+    /// the selection at once — it does not wait for a second key.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn visual_c_still_changes_at_once() {
+        let Some(mut app) =
+            app_with_refactor("main.rs", RUST, Some(lattice_syntax::Lang::Rust)).await
+        else {
+            return;
+        };
+        press_chars(&mut app, "jfbviwc");
+        assert!(
+            matches!(app.editor.modal, ModalState::Insert),
+            "got {:?}",
+            app.editor.modal
+        );
+        assert_eq!(body(&app), "fn main() {\n    let x = foo(, baz + 1);\n}\n");
+    }
+
+    /// RF.4j: the chords are `refactor-mode`'s. Turned off, `cre` is plain
+    /// vim again — `c` with `r`, which is not a motion, so nothing — and the
+    /// Visual `<leader>re` is gone with it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_cr_keys_go_with_the_mode() {
+        let Some(mut app) =
+            app_with_refactor("main.rs", RUST, Some(lattice_syntax::Lang::Rust)).await
+        else {
+            return;
+        };
+        press_chars(&mut app, ":set refactor.enabled=false");
+        enter(&mut app);
+        let id = lattice_mode::ModeId::new("refactor-mode");
+        assert!(
+            settle(&mut app, |a| {
+                !a.editor
+                    .active_modes
+                    .get(&a.editor.document_buffer_id)
+                    .is_some_and(|m| m.is_active(id))
+            })
+            .await,
+            "`refactor-mode` leaves the buffer"
+        );
+        press_chars(&mut app, "jfbcreiw");
+        esc(&mut app);
+        assert!(
+            !body(&app).contains("let value"),
+            "extract ran with the mode off: {:?}",
+            body(&app)
+        );
+        press_chars(&mut app, "u0fbviw re");
+        esc(&mut app);
+        assert!(
+            !body(&app).contains("let value"),
+            "Visual `<leader>re` ran with the mode off: {:?}",
+            body(&app)
         );
     }
 

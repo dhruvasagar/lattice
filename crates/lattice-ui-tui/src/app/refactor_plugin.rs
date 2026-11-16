@@ -1104,30 +1104,204 @@ mod tests {
         );
     }
 
-    /// RF.4g: `cri` asks the server for an inline; without one, and with no
-    /// native inline yet (RF.4f), it says so and changes nothing.
+    /// RF.4f: run `criiw` with the caret on the `q` on line `line`; the buffer
+    /// afterwards and the echo.
+    async fn inline_q(
+        file: &str,
+        src: &str,
+        lang: lattice_syntax::Lang,
+        line: usize,
+    ) -> Option<(String, String)> {
+        let mut app = app_with_refactor(file, src, Some(lang)).await?;
+        press_chars(&mut app, &format!("{}fqcriiw", "j".repeat(line)));
+        Some((body(&app), echoed(&app)))
+    }
+
+    /// RF.4f: with no server, `cri` inlines natively. From the declaration
+    /// or from a use (Visual `<leader>ri`), it is the same edit, and one
+    /// undo step.
     #[tokio::test(flavor = "multi_thread")]
-    async fn inline_without_a_server_says_it_is_not_built_yet() {
-        let src = "fn main() {\n    let a = 1;\n    let b = a + 2;\n}\n";
+    async fn inline_replaces_every_use_and_deletes_the_declaration() {
+        let src = "fn main() {\n    let q = 1;\n    let b = q + 2;\n    g(q);\n}\n";
+        let want = "fn main() {\n    let b = 1 + 2;\n    g(1);\n}\n";
+        let Some((after, echo)) = inline_q("main.rs", src, lattice_syntax::Lang::Rust, 1).await
+        else {
+            return;
+        };
+        assert_eq!(after, want, "echo: {echo:?}");
+
+        let mut app = app_with_refactor("main.rs", src, Some(lattice_syntax::Lang::Rust))
+            .await
+            .expect("built above");
+        press_chars(&mut app, "jjjfqviw ri");
+        assert_eq!(body(&app), want, "echo: {:?}", echoed(&app));
+        esc(&mut app);
+        press_chars(&mut app, "u");
+        assert_eq!(body(&app), src, "one undo step");
+    }
+
+    /// RF.4f: `refactor.source=native` inlines from the operator itself,
+    /// with no request to a server in between.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn inline_with_source_native_does_not_ask_the_server() {
+        let src = "fn main() {\n    let q = 1;\n    g(q);\n}\n";
         let Some(mut app) =
             app_with_refactor("main.rs", src, Some(lattice_syntax::Lang::Rust)).await
         else {
             return;
         };
-        press_chars(&mut app, "jwwcriw");
-        assert_eq!(body(&app), src);
-        assert!(
-            echoed(&app).contains("not built yet"),
-            "got {:?}",
+        set(&mut app, "refactor.source=native");
+        press_chars(&mut app, "jfqcriiw");
+        assert_eq!(
+            body(&app),
+            "fn main() {\n    g(1);\n}\n",
+            "echo: {:?}",
             echoed(&app)
         );
-        // The Visual form goes the same way.
-        press_chars(&mut app, "viw ri");
-        assert_eq!(body(&app), src);
+    }
+
+    /// RF.4f: an operator value is parenthesised where an operand goes, and
+    /// left bare as a whole argument.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn inline_parenthesises_an_operator_value_only_where_it_binds() {
+        let src = "fn main() {\n    let q = x + 1;\n    g(q, q * 2);\n}\n";
+        let Some((after, echo)) = inline_q("main.rs", src, lattice_syntax::Lang::Rust, 1).await
+        else {
+            return;
+        };
+        assert_eq!(
+            after, "fn main() {\n    g(x + 1, (x + 1) * 2);\n}\n",
+            "echo: {echo:?}"
+        );
+    }
+
+    /// RF.4f: a call would run once per use.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn inline_of_a_call_used_twice_is_refused() {
+        let src = "fn main() {\n    let q = f();\n    g(q);\n    h(q);\n}\n";
+        let Some((after, echo)) = inline_q("main.rs", src, lattice_syntax::Lang::Rust, 1).await
+        else {
+            return;
+        };
+        assert_eq!(after, src);
+        assert!(echo.contains("2 times"), "got {echo:?}");
+    }
+
+    /// RF.4f: a call used once moves into a loop, where it would run every
+    /// time round.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn inline_of_a_call_into_a_loop_is_refused() {
+        let src = "fn main() {\n    let q = f();\n    while go() {\n        g(q);\n    }\n}\n";
+        let Some((after, echo)) = inline_q("main.rs", src, lattice_syntax::Lang::Rust, 1).await
+        else {
+            return;
+        };
+        assert_eq!(after, src);
+        assert!(echo.contains("loop"), "got {echo:?}");
+    }
+
+    /// RF.4f: `S { q }` names the field too, so it becomes `S { q: value }`.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn inline_into_a_field_shorthand_keeps_the_field() {
+        let src = "fn main() {\n    let q = 1;\n    let s = S { q };\n}\n";
+        let Some((after, echo)) = inline_q("main.rs", src, lattice_syntax::Lang::Rust, 1).await
+        else {
+            return;
+        };
+        assert_eq!(
+            after, "fn main() {\n    let s = S { q: 1 };\n}\n",
+            "echo: {echo:?}"
+        );
+    }
+
+    /// RF.4f: `"{q}"` reads `q` with no node for it, so inline would miss it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn inline_with_a_use_in_a_format_string_is_refused() {
+        let src = "fn main() {\n    let q = 1;\n    println!(\"{q}\");\n}\n";
+        let Some((after, echo)) = inline_q("main.rs", src, lattice_syntax::Lang::Rust, 1).await
+        else {
+            return;
+        };
+        assert_eq!(after, src);
+        assert!(echo.contains("format string"), "got {echo:?}");
+    }
+
+    /// RF.4f: a second `let` shadows rather than assigns, so the first
+    /// inlines into the uses before it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn inline_stops_at_a_shadowing_declaration() {
+        let src = "fn main() {\n    let q = 1;\n    let q = q + 1;\n    g(q);\n}\n";
+        let Some((after, echo)) = inline_q("main.rs", src, lattice_syntax::Lang::Rust, 1).await
+        else {
+            return;
+        };
+        assert_eq!(
+            after, "fn main() {\n    let q = 1 + 1;\n    g(q);\n}\n",
+            "echo: {echo:?}"
+        );
+    }
+
+    /// RF.4f: `let mut` is not one value.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn inline_of_a_mutable_binding_is_refused() {
+        let src = "fn main() {\n    let mut q = 1;\n    g(q);\n}\n";
+        let Some((after, echo)) = inline_q("main.rs", src, lattice_syntax::Lang::Rust, 1).await
+        else {
+            return;
+        };
+        assert_eq!(after, src);
+        assert!(echo.contains("not a variable declared"), "got {echo:?}");
+    }
+
+    /// RF.4f: in Python, binding is assignment, so a second `q =` in the
+    /// same function means the uses read different values.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn inline_in_python_refuses_a_reassigned_name() {
+        let src = "def f():\n    q = 1\n    g(q)\n    q = 2\n";
+        let Some((after, echo)) = inline_q("main.py", src, lattice_syntax::Lang::Python, 1).await
+        else {
+            return;
+        };
+        assert_eq!(after, src);
+        assert!(echo.contains("assigned again"), "got {echo:?}");
+        let ok = "def f():\n    q = a + 1\n    return q * 2\n";
+        let Some((after, echo)) = inline_q("main.py", ok, lattice_syntax::Lang::Python, 1).await
+        else {
+            return;
+        };
+        assert_eq!(
+            after, "def f():\n    return (a + 1) * 2\n",
+            "echo: {echo:?}"
+        );
+    }
+
+    /// RF.4f: JavaScript's `{ q }` keeps the property name.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn inline_in_javascript_keeps_a_shorthand_property() {
+        let src = "function m() {\n  const q = 1;\n  return { q };\n}\n";
+        let Some((after, echo)) =
+            inline_q("main.js", src, lattice_syntax::Lang::JavaScript, 1).await
+        else {
+            return;
+        };
+        assert_eq!(
+            after, "function m() {\n  return { q: 1 };\n}\n",
+            "echo: {echo:?}"
+        );
+    }
+
+    /// RF.4f: the value reads `y`, which changes before the use.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn inline_in_go_refuses_a_value_whose_input_changes() {
+        let src = "package main\n\nfunc main() {\n\ty := 1\n\tq := y\n\ty++\n\tg(q)\n}\n";
+        let Some((after, echo)) = inline_q("main.go", src, lattice_syntax::Lang::Go, 4).await
+        else {
+            return;
+        };
+        assert_eq!(after, src);
         assert!(
-            echoed(&app).contains("not built yet"),
-            "got {:?}",
-            echoed(&app)
+            echo.contains("`y`") && echo.contains("assigned after"),
+            "got {echo:?}"
         );
     }
 

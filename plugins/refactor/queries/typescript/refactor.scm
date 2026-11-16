@@ -32,3 +32,38 @@
 (assignment_pattern right: (_) @refactor.hoist-barrier.default)
 (required_parameter value: (_) @refactor.hoist-barrier.default)
 (optional_parameter value: (_) @refactor.hoist-barrier.default)
+
+; Inline (RF.4f). Captures:
+;   @refactor.binding (+ .name, .value)  a declaration of one name with a
+;                                        value: what inline deletes
+;   @refactor.assigned                   a name written to after it is bound
+;   @refactor.effect                     a value that runs code or makes a
+;                                        new object each time it runs
+;   @refactor.compound                   a value that needs parentheses
+;                                        where an operand goes
+;   @refactor.shorthand                  a use that names a field too
+;                                        (`S { x }`): it becomes `x: value`
+;   @refactor.opaque                     text that may read a name without
+;                                        a node for it (a format string)
+;   @refactor.declarator-only            a value that only means something
+;                                        in its declaration
+
+(lexical_declaration (variable_declarator name: (identifier) @refactor.binding.name value: (_) @refactor.binding.value)) @refactor.binding
+(variable_declaration (variable_declarator name: (identifier) @refactor.binding.name value: (_) @refactor.binding.value)) @refactor.binding
+
+(assignment_expression left: (identifier) @refactor.assigned)
+(augmented_assignment_expression left: (identifier) @refactor.assigned)
+(update_expression argument: (identifier) @refactor.assigned)
+
+[(call_expression) (new_expression) (array) (object) (arrow_function) (function_expression) (class) (await_expression) (yield_expression)] @refactor.effect
+[(binary_expression) (unary_expression) (ternary_expression) (assignment_expression) (sequence_expression) (arrow_function) (await_expression) (yield_expression)] @refactor.compound
+(shorthand_property_identifier) @refactor.shorthand
+[(as_expression) (satisfies_expression)] @refactor.compound
+
+; Bodies that run sometimes or repeatedly. Extract never sees these as
+; barriers (they hold statements of their own, and only a barrier inside
+; the chosen statement counts); inline moves a value INTO one.
+(switch_case body: (_) @refactor.hoist-barrier.branch)
+(switch_default body: (_) @refactor.hoist-barrier.branch)
+(for_in_statement body: (_) @refactor.hoist-barrier.loop)
+(function_declaration body: (_) @refactor.hoist-barrier.closure)

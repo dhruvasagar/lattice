@@ -482,6 +482,50 @@ scope (each use would read a different value), and when the value contains
 a call and a use sits below a `@refactor.hoist-barrier` or there is more
 than one use (the call would run a different number of times).
 
+*Resolution.* A reference means the visible definition in the innermost
+`@local.scope` around it, the latest when one scope holds several. Visible
+means its declaration has ended, so the `x` in `let x = x + 1` is the outer
+one. This is the one rule the plugin applies to `locals.scm`, for every
+language, with no per-language code.
+
+*What `locals.scm` cannot say, `refactor.scm` adds*, built as RF.4f found
+each gap:
+
+- `@refactor.binding` with `.name` and `.value`, in one match: a
+  declaration of one name with one value, which is what inline deletes. A
+  `let mut`, a pattern, a parameter and a multi-name declaration are not
+  bindings, so inline names why rather than guessing.
+- `@refactor.assigned`: a name written to. In Python, Ruby and Lua binding
+  *is* assignment, so the binding's own name is captured too, and a second
+  definition of the name in the same scope counts as a write. A Rust
+  second `let` is not captured, so it shadows (the first inlines into the
+  uses before it) rather than refusing.
+- `@refactor.effect`, widening "contains a call" to *runs code or makes a
+  new object each time*: a call, `new`, a macro, a list, map or struct
+  literal, a closure, `await`. Copying `[]` to two uses makes two lists.
+- `@refactor.compound`: a value whose root is an operator, parenthesised
+  at a use unless the use is a whole argument, statement or right-hand
+  side.
+- `@refactor.shorthand`: `S { x }` and `{ x }` name a field as well, so
+  the use becomes `x: value`.
+- `@refactor.opaque`: text that may read the name with no node for it.
+  Rust's `format!("{x}")` is a use `locals.scm` cannot see, and missing it
+  would leave the code not compiling, so inline refuses.
+- `@refactor.declarator-only`: Java's `{1, 2}` and C++'s `{…}` / `(…)`
+  initialisers mean something only in their declaration.
+- **Bodies** as barriers: a loop's or a branch's block, and a nested
+  function's. Extract is unaffected, since only a barrier inside the chosen
+  statement counts there, and a body holds statements of its own. Inline
+  moves a value *into* one.
+
+A name the value reads must also mean the same at every use as at the
+declaration, and must not be written after it. Otherwise `let y = x;
+x += 1; f(y)` would become `f(x)`, reading the new `x`.
+
+Inline reads the whole file once (resolution needs every scope a use, or a
+name the value reads, could be in). It is a one-off command on the plugin's
+thread, never per keystroke.
+
 **What stays out of reach natively**, by design: types and ownership. A
 native extract that compiles in Rust may still move a value the next line
 uses; that is the server's to catch, and the help page says so.

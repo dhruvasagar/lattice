@@ -37,7 +37,7 @@ with the same letter instead.
 | `cxc` | | clear the exchange mark |
 | `crr{obj}` | `<leader>rr` | raise: the node the range covers replaces the expression around it |
 | `cre{obj}` | `<leader>re` | extract: the language server's extractions, else the expression into a variable declared before its statement |
-| `cri{obj}` | `<leader>ri` | inline: the language server's inlines (no native inline yet) |
+| `cri{obj}` | `<leader>ri` | inline: the language server's inlines, else every use of the variable becomes its value and the declaration goes |
 | `cr<CR>{obj}` | `<leader>r<CR>` | split the comma list around the range, one item per line |
 | `crj{obj}` | `<leader>rj` | join the comma list around the range onto one line |
 
@@ -106,7 +106,28 @@ shown, and nothing else runs. `refactor.source` sets the order:
 | `lsp` | the server only; nothing when it has nothing |
 | `native,lsp` | native only, as `native`: it always answers, so the server would never be asked |
 
-Inline has no native half yet, so without a server `cri` says so.
+`criiw` on a variable, at its declaration or at any use, gives
+
+    let q = x + 1;          →    g(x + 1, (x + 1) * 2);
+    g(q, q * 2);
+
+the value parenthesised only where an operator could bind tighter, and
+`S { q }` becoming `S { q: x + 1 }`. One undo step. Native inline refuses,
+saying why, when copying the value would change what the code does:
+
+- the variable is assigned again, or declared `mut`;
+- the value runs code or makes a new object (a call, `new`, a list or
+  object literal, a closure) and is used more than once, or its one use is
+  in a branch, a loop or a closure;
+- a name the value reads means something else at a use (it is shadowed
+  there), or is assigned after the declaration;
+- a format string may read the name (Rust's `"{q}"`), which inline cannot
+  see;
+- the declaration names more than one variable, or a pattern.
+
+A call used once moves to its use: if code between the two depends on
+when it runs, check it. Native inline knows the same languages as native
+extract.
 
 Split and join act on the nearest comma list around the range, so
 `cr<CR>i(` and `cr<CR>iw` on an argument both split the call's

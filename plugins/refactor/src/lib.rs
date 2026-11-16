@@ -66,6 +66,7 @@ use lattice::plugin_host::{config, grammar, help, modes};
 
 mod exchange;
 mod extract;
+mod inline;
 mod raise;
 mod span;
 mod split;
@@ -543,9 +544,28 @@ fn fallback_range(ctx: &ActionContext) -> Result<Span, Vec<Effect>> {
     }
 }
 
-/// `cri{motion}`'s native half. Not built yet (RF.4f): say so plainly.
-fn inline_native() -> Vec<Effect> {
-    echo("refactor: no language server offers an inline here, and native inline is not built yet")
+/// `cri{motion}`'s native half (RF.4f): every use of the variable the range
+/// names becomes its value, and the declaration goes, in one replacement.
+fn inline_native(
+    buffer_id: u32,
+    doc: &Document,
+    tree: Option<&TreeSnapshot>,
+    range: Span,
+) -> Vec<Effect> {
+    let Some(tree) = tree else {
+        return echo("refactor: no syntax tree for this buffer");
+    };
+    match inline::inline(tree, doc, range) {
+        Ok((range, text, cursor)) => edit_effects(
+            buffer_id,
+            span::Outcome::Edit {
+                range,
+                text,
+                cursor,
+            },
+        ),
+        Err(why) => echo(&format!("refactor: not inlined: {why}")),
+    }
 }
 
 /// `cre{motion}`: extract the expression the range covers into a variable
@@ -670,7 +690,7 @@ impl Guest for Component {
         );
         grammar::register_operator(
             "refactor-inline-operator",
-            "Inline the variable the range names: its value replaces each use and the declaration goes (`cri{motion}`; Visual `<leader>ri`). Asks the language server; without one, not built yet.",
+            "Inline the variable the range names: its value replaces each use and the declaration goes (`cri{motion}`; Visual `<leader>ri`). Asks the language server first; without one, natively.",
             &operator("cri"),
             CB_INLINE_OP,
         );
@@ -870,7 +890,7 @@ impl GrammarCallbacks for Component {
                 Err(effects) => effects,
             },
             CB_INLINE_NATIVE => match fallback_range(&ctx) {
-                Ok(_) => inline_native(),
+                Ok(range) => inline_native(ctx.buffer_id, doc, tree, range),
                 Err(effects) => effects,
             },
             other => return Err(format!("refactor: unknown action callback {other}")),
@@ -905,7 +925,7 @@ impl GrammarCallbacks for Component {
                 &ctx,
                 CodeActionKind::Inline,
                 INLINE_NATIVE,
-                |_| inline_native(),
+                |range| inline_native(ctx.buffer_id, doc, tree, range),
             ));
         }
         let Some(tree) = tree else {

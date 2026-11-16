@@ -186,6 +186,12 @@ pub fn trim_list_edges(doc: &Document, span: Span) -> Span {
     }
 }
 
+/// The innermost of nested `spans`: the latest start, then the earliest
+/// end. A length comparison is wrong for two spans over the same lines.
+pub fn innermost(spans: impl Iterator<Item = Span>) -> Option<Span> {
+    spans.max_by_key(|s| (s.start, std::cmp::Reverse(s.end)))
+}
+
 /// The smallest named node whose span covers `span`.
 pub fn covering_node(
     tree: &crate::lattice::plugin_host::tree_sitter::TreeSnapshot,

@@ -66,7 +66,7 @@ thread_local! {
 }
 
 /// `language`'s compiled `refactor.scm`, compiling it the first time.
-fn refactor_query(tree: &TreeSnapshot, language: &str) -> Result<Rc<Query>, String> {
+pub(crate) fn refactor_query(tree: &TreeSnapshot, language: &str) -> Result<Rc<Query>, String> {
     if let Some(q) = QUERIES.with(|m| m.borrow().get(language).cloned()) {
         return Ok(q);
     }
@@ -159,20 +159,14 @@ pub mod facts {
 
     /// The innermost statement holding `expr`.
     pub fn statement_for(expr: Span, structure: &Structure) -> Result<Span, String> {
-        structure
-            .statements
-            .iter()
-            .copied()
-            .filter(|s| s.covers(expr))
-            .min_by_key(|s| {
-                (
-                    s.end.line - s.start.line,
-                    s.end.byte.wrapping_sub(s.start.byte),
-                )
-            })
-            .ok_or_else(|| {
-                "no statement around the expression to put the declaration before".into()
-            })
+        crate::span::innermost(
+            structure
+                .statements
+                .iter()
+                .copied()
+                .filter(|s| s.covers(expr)),
+        )
+        .ok_or_else(|| "no statement around the expression to put the declaration before".into())
     }
 
     /// Refuse when a barrier inside `statement` holds `expr`: lifted past
@@ -186,12 +180,7 @@ pub mod facts {
             .barriers
             .iter()
             .filter(|(b, _)| *b != statement && statement.covers(*b) && b.covers(expr))
-            .min_by_key(|(b, _)| {
-                (
-                    b.end.line - b.start.line,
-                    b.end.byte.wrapping_sub(b.start.byte),
-                )
-            });
+            .max_by_key(|(b, _)| (b.start, std::cmp::Reverse(b.end)));
         match inner {
             Some((_, why)) => Err(format!("not extracted: {}", reason(why))),
             None => Ok(()),

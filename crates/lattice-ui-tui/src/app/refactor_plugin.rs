@@ -1034,11 +1034,9 @@ mod tests {
     }
 
     /// `refactor.declaration`, when set, replaces the language's form — how a
-    /// user gives extract a language the table does not know. Set with `:set`:
-    /// a plugin option cannot be `:setlocal`ed yet (buffer-local overrides are
-    /// keyed by a Rust type a plugin option does not have — RF.4e′). Extract
-    /// reads it with `get-option-in-buffer`, so it turns buffer-local with no
-    /// change to the plugin once that gap closes.
+    /// user gives extract a language the table does not know. Set globally
+    /// with `:set`; `extract_follows_a_buffer_local_declaration` covers
+    /// `:setlocal`.
     #[tokio::test(flavor = "multi_thread")]
     async fn extract_follows_the_declaration_option() {
         let Some(mut app) =
@@ -1056,6 +1054,55 @@ mod tests {
             body(&app),
             "fn main() {\n    const value: i32 = bar;\n    let x = foo(value, baz + 1);\n}\n",
             "echo: {:?}",
+            echoed(&app)
+        );
+    }
+
+    /// RF.4e′: a plugin option is settable per buffer. `:setlocal` used to
+    /// answer E518 for one (overrides were keyed by a Rust type a plugin
+    /// option does not have). Extract reads it through
+    /// `get-option-in-buffer`, so the plugin needed no change: the local
+    /// value applies, the global one is untouched, and `&` clears it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn extract_follows_a_buffer_local_declaration() {
+        let Some(mut app) =
+            app_with_refactor("main.rs", RUST, Some(lattice_syntax::Lang::Rust)).await
+        else {
+            return;
+        };
+        press_chars(
+            &mut app,
+            ":setlocal refactor.declaration=const {name}: i32 = {value};",
+        );
+        enter(&mut app);
+        assert!(
+            echoed(&app).contains("(buffer-local)"),
+            "the write is buffer-local; echo {:?}",
+            echoed(&app)
+        );
+        assert_eq!(
+            app.editor
+                .config
+                .get_string_by_name("refactor.declaration")
+                .as_deref(),
+            Some(""),
+            "the global value is untouched"
+        );
+        press_chars(&mut app, "jfbcreiw");
+        assert_eq!(
+            body(&app),
+            "fn main() {\n    const value: i32 = bar;\n    let x = foo(value, baz + 1);\n}\n",
+            "echo: {:?}",
+            echoed(&app)
+        );
+        esc(&mut app);
+        press_chars(&mut app, "u:setlocal refactor.declaration&");
+        enter(&mut app);
+        press_chars(&mut app, "ggjfbcreiw");
+        assert_eq!(
+            body(&app),
+            "fn main() {\n    let value = bar;\n    let x = foo(value, baz + 1);\n}\n",
+            "cleared: the language's own form; echo {:?}",
             echoed(&app)
         );
     }
@@ -1436,11 +1483,15 @@ mod tests {
         esc(&mut app);
         press_chars(&mut app, ":lsp-refactor");
         enter(&mut app);
+        // Wait on what lands (the answer's picker), not on the server's log:
+        // a request reaching the mock wakes nothing, so a predicate on the
+        // log alone is only re-checked when something else lands.
         assert!(
-            settle_woken(&mut app, |_| code_action_requests(&log).len() == 2).await,
-            "a second request; echo {:?}",
+            settle_woken(&mut app, |a| a.editor.picker.is_some()).await,
+            "the second answer opens a picker; echo {:?}",
             echoed(&app)
         );
+        assert_eq!(code_action_requests(&log).len(), 2, "a second request");
         assert_eq!(
             code_action_requests(&log)[1]["context"]["only"],
             serde_json::json!(["refactor"])

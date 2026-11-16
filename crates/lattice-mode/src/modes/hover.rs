@@ -89,7 +89,7 @@ mod tests {
         let opts = HoverMode.options();
         let value_of = |id: std::any::TypeId| {
             opts.iter()
-                .find(|o| o.option_type_id == id)
+                .find(|o| o.key == id)
                 .and_then(|o| o.value.downcast_ref::<bool>().copied())
         };
         assert_eq!(

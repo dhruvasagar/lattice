@@ -148,13 +148,13 @@ fn a_user_override_beats_a_modes_contribution() {
     use lattice_config::{OptionOrigin, OptionOverride, OptionOverrideSet, OverridePriority};
 
     let mode_set: OptionOverrideSet = std::iter::once(OptionOverride {
-        option_type_id: std::any::TypeId::of::<AutoWrapOption>(),
+        key: lattice_config::OptionKey::of::<AutoWrapOption>(),
         value: std::sync::Arc::new(AutoWrap::Comments),
         priority: OverridePriority::Normal,
     })
     .collect();
     let user_set: OptionOverrideSet = std::iter::once(OptionOverride {
-        option_type_id: std::any::TypeId::of::<AutoWrapOption>(),
+        key: lattice_config::OptionKey::of::<AutoWrapOption>(),
         value: std::sync::Arc::new(AutoWrap::All),
         priority: OverridePriority::Normal,
     })
@@ -206,13 +206,13 @@ fn a_user_override_beats_even_a_high_priority_mode() {
     use lattice_config::{OptionOrigin, OptionOverride, OptionOverrideSet, OverridePriority};
 
     let mode_set: OptionOverrideSet = std::iter::once(OptionOverride {
-        option_type_id: std::any::TypeId::of::<AutoWrapOption>(),
+        key: lattice_config::OptionKey::of::<AutoWrapOption>(),
         value: std::sync::Arc::new(AutoWrap::Comments),
         priority: OverridePriority::High,
     })
     .collect();
     let user_set: OptionOverrideSet = std::iter::once(OptionOverride {
-        option_type_id: std::any::TypeId::of::<AutoWrapOption>(),
+        key: lattice_config::OptionKey::of::<AutoWrapOption>(),
         value: std::sync::Arc::new(AutoWrap::All),
         priority: OverridePriority::Normal,
     })
@@ -252,13 +252,13 @@ fn global_config_still_loses_to_a_mode_contribution() {
     use lattice_config::{OptionOrigin, OptionOverride, OptionOverrideSet, OverridePriority};
 
     let global_set: OptionOverrideSet = std::iter::once(OptionOverride {
-        option_type_id: std::any::TypeId::of::<AutoWrapOption>(),
+        key: lattice_config::OptionKey::of::<AutoWrapOption>(),
         value: std::sync::Arc::new(AutoWrap::All),
         priority: OverridePriority::Normal,
     })
     .collect();
     let mode_set: OptionOverrideSet = std::iter::once(OptionOverride {
-        option_type_id: std::any::TypeId::of::<AutoWrapOption>(),
+        key: lattice_config::OptionKey::of::<AutoWrapOption>(),
         value: std::sync::Arc::new(AutoWrap::Comments),
         priority: OverridePriority::Normal,
     })

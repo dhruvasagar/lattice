@@ -86,8 +86,7 @@ mod tests {
         let opts = TextMode.options();
         assert!(
             opts.iter()
-                .any(|o| o.option_type_id
-                    == std::any::TypeId::of::<lattice_config::AutoWrapOption>()),
+                .any(|o| o.key == std::any::TypeId::of::<lattice_config::AutoWrapOption>()),
             "text-mode must override autowrap to `all`"
         );
     }

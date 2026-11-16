@@ -34,10 +34,8 @@
 //! prepopulate with default values explicitly; tests do this
 //! directly.
 
-use std::any::TypeId;
-
 use crate::origin::OptionOrigin;
-use crate::overrides::{OptionOverride, OptionOverrideSet, OverridePriority};
+use crate::overrides::{OptionKey, OptionOverride, OptionOverrideSet, OverridePriority};
 use crate::resolved::ResolvedOptions;
 
 /// Walks layered overrides and emits a fresh [`ResolvedOptions`].
@@ -168,7 +166,7 @@ impl Resolver {
         layers: impl IntoIterator<Item = (&'a OptionOverrideSet, OptionOrigin)>,
         out: &mut ResolvedOptions,
     ) {
-        let mut winners: std::collections::HashMap<TypeId, Candidate<'_>> =
+        let mut winners: std::collections::HashMap<&OptionKey, Candidate<'_>> =
             std::collections::HashMap::new();
 
         for (layer_idx, (set, origin)) in layers.into_iter().enumerate() {
@@ -180,21 +178,21 @@ impl Resolver {
                     within_layer_pos: pos,
                     origin: origin.clone(),
                 };
-                match winners.get(&ov.option_type_id) {
+                match winners.get(&ov.key) {
                     None => {
-                        winners.insert(ov.option_type_id, candidate);
+                        winners.insert(&ov.key, candidate);
                     }
                     Some(existing) => {
                         if Self::candidate_better(&candidate, existing) {
-                            winners.insert(ov.option_type_id, candidate);
+                            winners.insert(&ov.key, candidate);
                         }
                     }
                 }
             }
         }
 
-        for (type_id, c) in winners {
-            out.insert_erased_with_origin(type_id, c.ov.value.clone(), c.origin);
+        for (key, c) in winners {
+            out.insert_erased_with_origin(key.clone(), c.ov.value.clone(), c.origin);
         }
     }
 

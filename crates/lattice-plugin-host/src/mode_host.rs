@@ -226,7 +226,7 @@ fn resolve_mode_options(
         // make `{ name, value }` mean two different things.
         let spec = format!("{}={}", ov.name, ov.value);
         match config.parse_for_buffer_local(&spec) {
-            Ok((type_id, value, canonical)) => {
+            Ok((key, value, canonical)) => {
                 tracing::debug!(
                     mode = mode_id,
                     option = %canonical,
@@ -234,7 +234,7 @@ fn resolve_mode_options(
                     "register-mode: option override resolved"
                 );
                 set.push(OptionOverride {
-                    option_type_id: type_id,
+                    key,
                     value,
                     priority: ov.priority,
                 });
@@ -702,7 +702,7 @@ mod tests {
         assert_eq!(set.len(), 1, "the override crossed");
         let ov = set.iter().next().expect("one override");
         assert_eq!(
-            ov.option_type_id,
+            ov.key,
             std::any::TypeId::of::<FoldMethodOption>(),
             "resolved to the NATIVE option's identity, not a name the mode kept"
         );
@@ -759,7 +759,7 @@ mod tests {
 
         assert_eq!(set.len(), 1, "the bad entry is dropped, not the set");
         assert_eq!(
-            set.iter().next().expect("one").option_type_id,
+            set.iter().next().expect("one").key,
             std::any::TypeId::of::<Number>(),
             "and it is the GOOD one that survived"
         );
@@ -782,13 +782,14 @@ mod tests {
         );
     }
 
-    /// **The known hole, asserted so it is a decision and not a surprise.** An
-    /// option the plugin itself registered through the config seam has no native
-    /// type identity, and `OptionOverride` is keyed by `TypeId`. It is skipped
-    /// with a warning naming it. `plugin-mode-options.md` §3c is the fix, and it
-    /// waits for a consumer.
+    /// RF.4e′ closed the hole this test used to assert. An option the plugin
+    /// itself registered through the config seam has no native type identity,
+    /// and `OptionOverride` was keyed by `TypeId`, so the override was skipped
+    /// with a warning. `plugin-mode-options.md` §3c was the fix, waiting for a
+    /// consumer; `refactor.declaration` was it. The key is now the option's
+    /// canonical name, so the override crosses like a native one.
     #[test]
-    fn a_plugin_declared_option_cannot_yet_be_overridden() {
+    fn a_plugin_declared_option_can_be_overridden() {
         let cfg = config();
         assert!(
             crate::config_host::register_plugin_option(
@@ -810,9 +811,18 @@ mod tests {
         decl.options = vec![override_of("testplug.inline-images", "true")];
 
         let id = register_plugin_mode(&mut registry, Some(&cfg), &decl).expect("registers");
-        assert!(
-            registry.get(id).expect("registered").options().is_empty(),
-            "a plugin's own option has no TypeId, so it cannot be an override yet"
+        let set = registry.get(id).expect("registered").options();
+        assert_eq!(set.len(), 1, "the override crossed, not skipped");
+        let ov = set.iter().next().expect("one override");
+        assert_eq!(
+            ov.key,
+            lattice_config::OptionKey::Plugin("testplug.inline-images".into()),
+            "keyed by the option's canonical name"
+        );
+        assert_eq!(
+            ov.downcast_value::<bool>(),
+            Some(&true),
+            "and coerced by the option's own parser"
         );
     }
 

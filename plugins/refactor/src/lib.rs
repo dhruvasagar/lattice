@@ -604,8 +604,7 @@ fn extract_native(
         return echo("refactor: no syntax tree for this buffer");
     };
     // Read through the buffer, so a mode (or `:setlocal`) can supply the
-    // declaration form of one language. Until plugin options can be
-    // buffer-local (RF.4e′) this is the global value. Empty: the table's.
+    // declaration form of one language (RF.4e′). Empty: the table's.
     let template = config::get_option_in_buffer(u64::from(buffer_id), "refactor.declaration")
         .filter(|t| !t.trim().is_empty());
     match extract::extract(tree, doc, range, template.as_deref()) {

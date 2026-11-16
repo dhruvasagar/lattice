@@ -964,9 +964,9 @@ mod tests {
     fn options_are_read_only_no_file_and_unguided() {
         let overrides = CompilationMode::COMPILE.options();
         let has_true = |type_id: std::any::TypeId| {
-            overrides.iter().any(|ov| {
-                ov.option_type_id == type_id && ov.downcast_value::<bool>() == Some(&true)
-            })
+            overrides
+                .iter()
+                .any(|ov| ov.key == type_id && ov.downcast_value::<bool>() == Some(&true))
         };
         assert!(
             has_true(std::any::TypeId::of::<lattice_config::ReadOnly>()),
@@ -978,8 +978,7 @@ mod tests {
         );
         assert!(
             overrides.iter().any(|ov| {
-                ov.option_type_id
-                    == std::any::TypeId::of::<lattice_config::core_options::IndentGuides>()
+                ov.key == std::any::TypeId::of::<lattice_config::core_options::IndentGuides>()
                     && ov.downcast_value::<bool>() == Some(&false)
             }),
             "a build log is not indented code: no guides through rustc's gutter"

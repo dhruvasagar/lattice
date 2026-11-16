@@ -22319,7 +22319,7 @@ impl Editor {
                 );
                 continue;
             }
-            let (type_id, erased, canonical) = match self.config.parse_for_buffer_local(&option) {
+            let (key, erased, canonical) = match self.config.parse_for_buffer_local(&option) {
                 Ok(triple) => triple,
                 Err(e) => {
                     tracing::warn!(
@@ -22334,7 +22334,7 @@ impl Editor {
                 .entry(buffer_id)
                 .or_default()
                 .push(lattice_config::OptionOverride {
-                    option_type_id: type_id,
+                    key,
                     value: erased,
                     priority: lattice_config::OverridePriority::Normal,
                 });
@@ -41274,20 +41274,16 @@ impl Editor {
                         .lookup(&name)
                         .map(|o| o.name().to_string())
                         .unwrap_or(name.clone());
-                    // The option's TypeId is all that is needed to find its
+                    // The option's key is all that is needed to find its
                     // override. Asking the registry by name avoids parsing a
                     // dummy value, which a validated option (a closed set of
                     // words, say) would reject, leaving it impossible to clear.
-                    let Some(type_id) = self.config.type_id_for_name(&canonical) else {
+                    let Some(key) = self.config.key_for_name(&canonical) else {
                         self.set_message(EchoLevel::Error, format!("E518: Unknown option: {name}"));
                         return Vec::new();
                     };
                     // Remove the override for this TypeId.
-                    let overrides: Vec<_> = set
-                        .iter()
-                        .filter(|o| o.option_type_id != type_id)
-                        .cloned()
-                        .collect();
+                    let overrides: Vec<_> = set.iter().filter(|o| o.key != key).cloned().collect();
                     *set = overrides.into_iter().collect();
                 }
                 self.recompute_options_for_buffer(buffer_id);
@@ -41296,7 +41292,7 @@ impl Editor {
             }
             ParsedSet::Query(name) => {
                 // `:setlocal name?` — echo local value or "not set locally (global: X)".
-                let msg = if let Some(type_id) = self.config.type_id_for_name(&name) {
+                let msg = if let Some(key) = self.config.key_for_name(&name) {
                     let global_fmt = self
                         .config
                         .lookup(&name)
@@ -41310,7 +41306,7 @@ impl Editor {
                     let local_fmt = self
                         .buffer_local_overrides
                         .get(&buffer_id)
-                        .and_then(|set| set.iter().filter(|ov| ov.option_type_id == type_id).last())
+                        .and_then(|set| set.iter().filter(|ov| ov.key == key).last())
                         .and_then(|ov| {
                             self.config
                                 .lookup(&canonical_name)
@@ -41350,7 +41346,7 @@ impl Editor {
     /// pushes to `buffer_local_overrides`, recomputes + cascades.
     fn do_set_local_write(&mut self, option: &str) -> Vec<RendererSignal> {
         let buffer_id = self.document_buffer_id;
-        let (type_id, erased, canonical) = match self.config.parse_for_buffer_local(option) {
+        let (key, erased, canonical) = match self.config.parse_for_buffer_local(option) {
             Ok(triple) => triple,
             Err(e) => {
                 self.set_message(EchoLevel::Error, e.to_string());
@@ -41358,7 +41354,7 @@ impl Editor {
             }
         };
         let override_val = lattice_config::OptionOverride {
-            option_type_id: type_id,
+            key,
             value: erased,
             priority: lattice_config::OverridePriority::Normal,
         };
@@ -41887,25 +41883,34 @@ impl Editor {
         lines.push(String::new());
         lines.push(format!("## Buffer-local options ({local_count} overrides)"));
         if let Some(local_set) = local_set.filter(|_| local_count > 0) {
-            // Collect canonical names from OPTION_DECLS so we can display them.
-            // Deduplicate by TypeId (last-pushed wins, matching resolver semantics).
+            // Deduplicate by key (last-pushed wins, matching resolver
+            // semantics), then name each: a native option by its
+            // declaration, a plugin option (RF.4e′) by the name it is keyed
+            // by.
             let mut seen = std::collections::HashMap::new();
             for ov in local_set.iter() {
-                seen.insert(ov.option_type_id, ov);
+                seen.insert(&ov.key, ov);
             }
-            // Sort by canonical name for deterministic output.
-            let mut entries: Vec<_> = lattice_config::OPTION_DECLS
-                .iter()
-                .filter_map(|meta| {
-                    let tid = (meta.type_id)();
-                    seen.get(&tid).map(|ov| (meta.name, tid, *ov))
+            let mut entries: Vec<(String, &lattice_config::OptionOverride)> = seen
+                .into_iter()
+                .filter_map(|(key, ov)| {
+                    let name = match key {
+                        lattice_config::OptionKey::Native(tid) => lattice_config::OPTION_DECLS
+                            .iter()
+                            .find(|meta| (meta.type_id)() == *tid)?
+                            .name
+                            .to_string(),
+                        lattice_config::OptionKey::Plugin(name) => name.to_string(),
+                    };
+                    Some((name, ov))
                 })
                 .collect();
-            entries.sort_by_key(|(name, _, _)| *name);
-            for (name, _tid, ov) in entries {
+            // Sort by canonical name for deterministic output.
+            entries.sort_by(|(a, _), (b, _)| a.cmp(b));
+            for (name, ov) in entries {
                 let value_str = self
                     .config
-                    .lookup(name)
+                    .lookup(&name)
                     .and_then(|opt| opt.format_erased_value(&ov.value))
                     .unwrap_or_else(|| "?".into());
                 lines.push(format!("- {name}={value_str}"));
@@ -43309,17 +43314,17 @@ impl Editor {
                 lines.push(header);
                 // BL.3: show per-buffer effective value + origin when it
                 // differs from the global registry value.
-                let type_id = (meta.type_id)();
+                let key = lattice_config::OptionKey::Native((meta.type_id)());
                 let buf_id = self.document_buffer_id;
                 let origin = self
                     .resolved_options
                     .get(&buf_id)
-                    .map(|r| r.get_origin_for_typeid(type_id))
+                    .map(|r| r.get_origin_for(&key))
                     .unwrap_or_default();
                 let effective = self
                     .resolved_options
                     .get(&buf_id)
-                    .and_then(|r| r.get_erased(type_id))
+                    .and_then(|r| r.get_erased(&key))
                     .and_then(|erased| spec.as_ref().and_then(|o| o.format_erased_value(erased)));
                 match (&origin, &effective) {
                     (OptionOrigin::BufferLocal, Some(eff)) => {
@@ -43400,7 +43405,7 @@ impl Editor {
         lines.push("- modal-state: (empty -- v1 wires no modal-overrides)".into());
 
         let local_has = buffer_local
-            .map(|set| set.iter().any(|o| o.option_type_id == target_type_id))
+            .map(|set| set.iter().any(|o| o.key == target_type_id))
             .unwrap_or(false);
         if local_has {
             lines.push("- buffer-local (`:setlocal`): contributes ⭐".into());
@@ -43419,7 +43424,7 @@ impl Editor {
                     continue;
                 };
                 let opts = minor.options();
-                let contributes = opts.iter().any(|o| o.option_type_id == target_type_id);
+                let contributes = opts.iter().any(|o| o.key == target_type_id);
                 if contributes {
                     if !any_contributes {
                         lines.push("- minors:".into());
@@ -43440,7 +43445,7 @@ impl Editor {
             Some(major_id) => match self.mode_registry.load().get(major_id) {
                 Some(major) => {
                     let opts = major.options();
-                    let contributes = opts.iter().any(|o| o.option_type_id == target_type_id);
+                    let contributes = opts.iter().any(|o| o.key == target_type_id);
                     if contributes {
                         lines.push(format!("- major: `{major_id}` contributes ⭐"));
                     } else {
@@ -44683,10 +44688,13 @@ impl Editor {
         } else {
             lines.push(format!("- contributed options ({}):", opts.iter().count()));
             for ovr in opts.iter() {
-                let name = type_id_to_name
-                    .get(&ovr.option_type_id)
-                    .copied()
-                    .unwrap_or("(unknown option)");
+                let name = match &ovr.key {
+                    lattice_config::OptionKey::Native(tid) => type_id_to_name
+                        .get(tid)
+                        .copied()
+                        .unwrap_or("(unknown option)"),
+                    lattice_config::OptionKey::Plugin(name) => name,
+                };
                 lines.push(format!("    - `{name}`"));
             }
         }
@@ -45039,10 +45047,11 @@ impl Editor {
         for (mode_id, _kind) in self.mode_registry.load().iter_meta() {
             if let Some(mode) = self.mode_registry.load().get(mode_id) {
                 let opts = mode.options();
-                if opts
-                    .iter()
-                    .any(|o| customizable_type_ids.contains(&o.option_type_id))
-                {
+                if opts.iter().any(|o| {
+                    o.key
+                        .type_id()
+                        .is_some_and(|t| customizable_type_ids.contains(&t))
+                }) {
                     customisable_modes.push(mode_id);
                 }
             }
@@ -45203,7 +45212,7 @@ impl Editor {
 
         let mut entries: Vec<&'static lattice_config::OptionDeclMetadata> = Vec::new();
         for ovr in mode.options().iter() {
-            if let Some(meta) = by_type_id.get(&ovr.option_type_id)
+            if let Some(meta) = ovr.key.type_id().and_then(|t| by_type_id.get(&t))
                 && meta.customizable
             {
                 entries.push(meta);

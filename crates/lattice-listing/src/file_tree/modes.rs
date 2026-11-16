@@ -294,7 +294,7 @@ mod tests {
         let ids: Vec<std::any::TypeId> = FileTreeMode
             .options()
             .iter()
-            .map(|o| o.option_type_id)
+            .filter_map(|o| o.key.type_id())
             .collect();
         assert!(
             ids.contains(&std::any::TypeId::of::<lattice_config::ReadOnly>()),

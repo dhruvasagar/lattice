@@ -652,19 +652,21 @@ impl ConfigRegistry {
             let arc = std::sync::Arc::clone(arc);
             let value_erased = arc.current_value_erased();
             out.insert_erased_with_origin(
-                *type_id,
+                crate::OptionKey::Native(*type_id),
                 value_erased,
                 crate::OptionOrigin::GlobalConfig,
             );
         }
     }
 
-    /// Look up the `TypeId` registered for an option's canonical name.
-    /// Returns `None` if the option was not registered via
-    /// `register_with_typeid` (e.g. a bare `try_register` call, or the
-    /// option simply doesn't exist).
-    pub fn type_id_for_name(&self, name: &str) -> std::option::Option<std::any::TypeId> {
-        self.typeid_for_name(name).ok()
+    /// The [`crate::OptionKey`] an option is known by in overrides and
+    /// resolved snapshots (RF.4e′): its declaration `TypeId` when it has one,
+    /// else its canonical name — a plugin option registered through the
+    /// `config` seam. Aliases resolve to the canonical name, so `:setlocal`
+    /// by alias and a mode override by full name land on one key. `None`
+    /// for a name nothing registered.
+    pub fn key_for_name(&self, name: &str) -> std::option::Option<crate::OptionKey> {
+        self.key_for(name).ok()
     }
 
     /// Boot loop: walk the [`OPTION_DECLS`] linkme slice and
@@ -1057,8 +1059,10 @@ impl ConfigRegistry {
 
     /// Parse an option spec string for use as a buffer-local override,
     /// without writing to the global registry. Returns the triple
-    /// `(TypeId, erased_value, canonical_name)` needed to construct an
-    /// [`crate::OptionOverride`] for the buffer-local layer.
+    /// `(key, erased_value, canonical_name)` needed to construct an
+    /// [`crate::OptionOverride`] for the buffer-local layer. The key is
+    /// [`Self::key_for_name`]'s, so a plugin option is as settable per
+    /// buffer as a native one (RF.4e′).
     ///
     /// - `NameOnly(name)` — for bool options, returns erased `true`.
     ///   For non-bool, returns `Err` (callers echo the value instead).
@@ -1075,20 +1079,19 @@ impl ConfigRegistry {
     /// # Examples
     ///
     /// ```
-    /// use std::any::TypeId;
-    /// use lattice_config::{ConfigRegistry, OptionOverride, Tabstop};
+    /// use lattice_config::{ConfigRegistry, OptionKey, OptionOverride, Tabstop};
     ///
     /// let reg = ConfigRegistry::new();
     /// reg.init_from_linkme();
     ///
-    /// let (type_id, value, name) = reg.parse_for_buffer_local("ts=2").unwrap();
-    /// assert_eq!(type_id, TypeId::of::<Tabstop>());
+    /// let (key, value, name) = reg.parse_for_buffer_local("ts=2").unwrap();
+    /// assert_eq!(key, OptionKey::of::<Tabstop>());
     /// assert_eq!(name, "tabstop");
     /// assert_eq!(value.downcast_ref::<i64>(), Some(&2));
     /// // The global value is untouched.
     /// assert_eq!(*reg.get_typed::<Tabstop>().unwrap(), 4);
     ///
-    /// let ov = OptionOverride { option_type_id: type_id, value, priority: Default::default() };
+    /// let ov = OptionOverride { key, value, priority: Default::default() };
     /// assert_eq!(ov.downcast_value::<i64>(), Some(&2));
     /// ```
     pub fn parse_for_buffer_local(
@@ -1096,7 +1099,7 @@ impl ConfigRegistry {
         input: &str,
     ) -> Result<
         (
-            std::any::TypeId,
+            crate::OptionKey,
             std::sync::Arc<dyn std::any::Any + Send + Sync>,
             String,
         ),
@@ -1113,11 +1116,11 @@ impl ConfigRegistry {
                         "E474: use :setlocal {name}=value to set a non-boolean option"
                     )));
                 }
-                let type_id = self.typeid_for_name(opt.name())?;
+                let key = self.key_for(opt.name())?;
                 let erased = opt
                     .parse_to_erased("true")
                     .map_err(ConfigError::Validation)?;
-                Ok((type_id, erased, opt.name().to_string()))
+                Ok((key, erased, opt.name().to_string()))
             }
             ParsedSet::Negate(name) => {
                 let opt = self
@@ -1126,21 +1129,21 @@ impl ConfigRegistry {
                 if !opt.is_bool() {
                     return Err(ConfigError::NotBoolean(name));
                 }
-                let type_id = self.typeid_for_name(opt.name())?;
+                let key = self.key_for(opt.name())?;
                 let erased = opt
                     .parse_to_erased("false")
                     .map_err(ConfigError::Validation)?;
-                Ok((type_id, erased, opt.name().to_string()))
+                Ok((key, erased, opt.name().to_string()))
             }
             ParsedSet::Assign { name, value } => {
                 let opt = self
                     .lookup(&name)
                     .ok_or(ConfigError::UnknownOption(name.clone()))?;
-                let type_id = self.typeid_for_name(opt.name())?;
+                let key = self.key_for(opt.name())?;
                 let erased = opt
                     .parse_to_erased(&value)
                     .map_err(ConfigError::Validation)?;
-                Ok((type_id, erased, opt.name().to_string()))
+                Ok((key, erased, opt.name().to_string()))
             }
             ParsedSet::Query(name) | ParsedSet::Reset(name) => {
                 Err(ConfigError::QueryNotAllowed(name))
@@ -1164,28 +1167,32 @@ impl ConfigRegistry {
     ) -> std::option::Option<String> {
         let opt = self.lookup(name)?;
         let local = resolved.and_then(|r| {
-            let type_id = self.typeid_for_name(opt.name()).ok()?;
-            opt.format_erased_value(r.get_erased(type_id)?)
+            let key = self.key_for(opt.name()).ok()?;
+            opt.format_erased_value(r.get_erased(&key)?)
         });
         Some(local.unwrap_or_else(|| opt.get_formatted()))
     }
 
-    /// Internal helper: look up the `TypeId` registered for an option's
-    /// canonical name. Returns `ConfigError::UnknownOption` if the
-    /// option was registered without a typeid (e.g. via bare
-    /// `try_register` rather than `register_with_typeid`).
-    fn typeid_for_name(&self, canonical: &str) -> Result<std::any::TypeId, ConfigError> {
+    /// Internal helper for [`Self::key_for_name`]: the native key when the
+    /// option was registered with a declaration type
+    /// (`register_with_typeid`), else the plugin key by canonical name.
+    /// `ConfigError::UnknownOption` for a name nothing registered.
+    fn key_for(&self, name: &str) -> Result<crate::OptionKey, ConfigError> {
         let inner = self.inner.lock().expect("ConfigRegistry poisoned");
         let &idx = inner
             .by_name
-            .get(canonical)
-            .ok_or_else(|| ConfigError::UnknownOption(canonical.to_string()))?;
-        inner
-            .by_typeid
-            .iter()
-            .find(|(_, i)| **i == idx)
-            .map(|(tid, _)| *tid)
-            .ok_or_else(|| ConfigError::UnknownOption(canonical.to_string()))
+            .get(name)
+            .ok_or_else(|| ConfigError::UnknownOption(name.to_string()))?;
+        if let Some((tid, _)) = inner.by_typeid.iter().find(|(_, i)| **i == idx) {
+            return Ok(crate::OptionKey::Native(*tid));
+        }
+        let canonical = inner
+            .by_id
+            .get(idx)
+            .and_then(|slot| slot.as_ref())
+            .map(|o| o.name().to_string())
+            .ok_or_else(|| ConfigError::UnknownOption(name.to_string()))?;
+        Ok(crate::OptionKey::Plugin(canonical.into()))
     }
 
     fn erased_at(&self, idx: usize) -> std::option::Option<Arc<dyn ErasedOption>> {
@@ -1269,6 +1276,61 @@ mod tests {
             "absent from the snapshot: the global value"
         );
         assert_eq!(r.format_resolved("no-such-option", Some(&resolved)), None);
+    }
+
+    /// RF.4e′: an option with no declaration type — a plugin's — has a key
+    /// too, its canonical name, so it can be overridden per buffer. The
+    /// override resolves through the same layers a native one does, aliases
+    /// land on the same key, and a snapshot without the override reads the
+    /// global value.
+    #[test]
+    fn a_runtime_option_is_keyed_by_name_and_resolves_per_buffer() {
+        let r = ConfigRegistry::new();
+        r.init_from_linkme();
+        r.register(
+            Option::<String>::builder("myplugin.style", "plain".to_string(), "Style.")
+                .aliases(&["mps"])
+                .build(),
+        );
+        let key = r.key_for_name("mps").expect("registered");
+        assert_eq!(key, crate::OptionKey::Plugin("myplugin.style".into()));
+        assert_eq!(
+            r.key_for_name("expandtab"),
+            Some(crate::OptionKey::of::<crate::ExpandTab>())
+        );
+        assert_eq!(r.key_for_name("no-such-option"), None);
+
+        let (key, value, name) = r.parse_for_buffer_local("myplugin.style=fancy").unwrap();
+        assert_eq!(name, "myplugin.style");
+        let local: crate::OptionOverrideSet = [crate::OptionOverride {
+            key,
+            value,
+            priority: Default::default(),
+        }]
+        .into_iter()
+        .collect();
+        let mut resolved = crate::ResolvedOptions::new();
+        crate::Resolver::new()
+            .resolve_into_with_origins([(&local, crate::OptionOrigin::BufferLocal)], &mut resolved);
+        assert_eq!(
+            r.format_resolved("mps", Some(&resolved)).as_deref(),
+            Some("fancy")
+        );
+        assert_eq!(
+            resolved.get_origin_for(&crate::OptionKey::Plugin("myplugin.style".into())),
+            crate::OptionOrigin::BufferLocal
+        );
+        assert_eq!(
+            r.format_resolved("myplugin.style", Some(&crate::ResolvedOptions::new()))
+                .as_deref(),
+            Some("plain"),
+            "no override in this buffer: the global value"
+        );
+        assert_eq!(
+            r.format_resolved("myplugin.style", None).as_deref(),
+            Some("plain"),
+            "the global value is untouched"
+        );
     }
 
     #[test]

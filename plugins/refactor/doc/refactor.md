@@ -68,10 +68,10 @@ with `value` selected: type the name once and it changes in both places.
 The range must be one whole expression. The declaration form is the
 language's (`let`, `const`, `:=`, `local`, plain assignment …); for a
 language without one, or to use another, set `refactor.declaration` —
-`:set refactor.declaration=const {name} = {value};`. It applies to every
-buffer for now; per-buffer (`:setlocal`) is not yet possible for a plugin's
-option. Extracting a function needs a language server and is not offered
-without one.
+`:set refactor.declaration=const {name} = {value};` for every buffer, or
+`:setlocal` for one (`:setlocal refactor.declaration&` puts the language's
+form back). Extracting a function needs a language server and is not
+offered without one.
 
 The declaration goes before the innermost statement holding the
 expression, so inside a closure's or a branch's own block when it is in

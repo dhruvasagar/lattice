@@ -239,11 +239,10 @@ it does not outrank a buffer-local `:setlocal`.
 **An override the host cannot resolve is skipped, warned, and named** —
 the rest of the set still applies, because one bad entry must not cost a
 mode its other options. Two things do not resolve: an option name nothing
-registered, and a value the option's own validator rejects. A third is
-worth stating because it will surprise: an option the PLUGIN ITSELF
-registered through the `config` seam has no native type identity, so it
-cannot be overridden here yet. That is a known hole with a known fix
-(`plugin-mode-options.md` §3c) and no consumer yet.
+registered, and a value the option's own validator rejects. An option the
+PLUGIN ITSELF registered through the `config` seam resolves like any
+other (RF.4e′, `plugin-mode-options.md` §8): a mode can override its own
+plugin's options.
 
 **Fields**
 

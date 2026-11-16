@@ -20,6 +20,7 @@ use std::sync::Arc;
 
 use crate::option_decl::OptionDecl;
 use crate::origin::OptionOrigin;
+use crate::overrides::OptionKey;
 
 /// Cached snapshot of the resolved value for every option a
 /// buffer reads. Built by the [`crate::Resolver`]; invalidated
@@ -38,6 +39,11 @@ pub struct ResolvedOptions {
     /// Entries are inserted in lockstep with `by_type`; missing entries
     /// default to [`OptionOrigin::Default`].
     origins: HashMap<TypeId, OptionOrigin>,
+    /// RF.4e′: plugin options a layer overrode, by canonical name, with the
+    /// layer that won. Separate from `by_type` so the native typed read stays
+    /// one `TypeId` lookup. Not seeded: a plugin option absent here has no
+    /// override in this buffer, and reads its global value.
+    by_name: HashMap<Arc<str>, (Arc<dyn Any + Send + Sync>, OptionOrigin)>,
 }
 
 impl ResolvedOptions {
@@ -85,12 +91,19 @@ impl ResolvedOptions {
     /// origin-aware path and by `bootstrap_resolved_with_current_values`.
     pub(crate) fn insert_erased_with_origin(
         &mut self,
-        type_id: TypeId,
+        key: OptionKey,
         value: Arc<dyn Any + Send + Sync>,
         origin: OptionOrigin,
     ) {
-        self.by_type.insert(type_id, value);
-        self.origins.insert(type_id, origin);
+        match key {
+            OptionKey::Native(type_id) => {
+                self.by_type.insert(type_id, value);
+                self.origins.insert(type_id, origin);
+            }
+            OptionKey::Plugin(name) => {
+                self.by_name.insert(name, (value, origin));
+            }
+        }
     }
 
     /// Look up the origin for option type `T`. Returns
@@ -103,32 +116,43 @@ impl ResolvedOptions {
             .unwrap_or_default()
     }
 
-    /// TypeId-keyed origin lookup for sites that only have a runtime
-    /// `TypeId` (e.g. the query echo path in `do_set`).
-    pub fn get_origin_for_typeid(&self, type_id: TypeId) -> OptionOrigin {
-        self.origins.get(&type_id).cloned().unwrap_or_default()
+    /// Key-based origin lookup for sites that only have a runtime key
+    /// (e.g. the query echo path in `do_set`). [`OptionOrigin::Default`]
+    /// when nothing resolved it, which for a plugin option means no layer
+    /// overrode it.
+    pub fn get_origin_for(&self, key: &OptionKey) -> OptionOrigin {
+        match key {
+            OptionKey::Native(type_id) => self.origins.get(type_id).cloned(),
+            OptionKey::Plugin(name) => self.by_name.get(name).map(|(_, o)| o.clone()),
+        }
+        .unwrap_or_default()
     }
 
-    /// TypeId-keyed erased value lookup. Used by the query echo path
+    /// Key-based erased value lookup. Used by the query echo path
     /// to format the resolved value when the concrete type isn't
-    /// statically known.
-    pub fn get_erased(&self, type_id: TypeId) -> Option<&Arc<dyn Any + Send + Sync>> {
-        self.by_type.get(&type_id)
+    /// statically known. `None` for a plugin option no layer overrode:
+    /// its value is the global one.
+    pub fn get_erased(&self, key: &OptionKey) -> Option<&Arc<dyn Any + Send + Sync>> {
+        match key {
+            OptionKey::Native(type_id) => self.by_type.get(type_id),
+            OptionKey::Plugin(name) => self.by_name.get(name).map(|(v, _)| v),
+        }
     }
 
     /// Number of entries (for tests and `:describe-buffer` /
     /// introspection diagnostic output).
     pub fn len(&self) -> usize {
-        self.by_type.len()
+        self.by_type.len() + self.by_name.len()
     }
 
     /// `true` when no option has been resolved into the cache.
     pub fn is_empty(&self) -> bool {
-        self.by_type.is_empty()
+        self.by_type.is_empty() && self.by_name.is_empty()
     }
 
-    /// Iterate over `(TypeId, erased Arc)` pairs. Used by
-    /// `:describe-option-resolution` (M.8) and tests.
+    /// Iterate over the native `(TypeId, erased Arc)` pairs. Used by
+    /// `:describe-option-resolution` (M.8) and tests. Plugin options a
+    /// layer overrode are not here; read them by key ([`Self::get_erased`]).
     pub fn iter(&self) -> impl Iterator<Item = (&TypeId, &Arc<dyn Any + Send + Sync>)> {
         self.by_type.iter()
     }

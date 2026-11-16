@@ -583,13 +583,14 @@ So `insert-snippet { range, body }` (additive, 0.5.0) expands a body as
 written, in one edit, with its session; the guest escapes `$`, `}` and `\`
 in the code it copies. That part stays.
 
-*Gap found (RF.4e′).* A plugin's option cannot be buffer-local. Overrides
-and `ResolvedOptions` are keyed by the option's Rust `TypeId`, and an
-option a plugin registers over WIT is stored by name with none, so
-`:setlocal` answers E518 for it and `get-option-in-buffer` can only return
-its global value. Extract reads `refactor.declaration` through
-`get-option-in-buffer` regardless, so it becomes buffer-local without a
-plugin change once options are keyed by something a runtime option has.
+*Gap found and closed (RF.4e′).* A plugin's option could not be
+buffer-local. Overrides and `ResolvedOptions` were keyed by the option's
+Rust `TypeId`, and an option a plugin registers over WIT has none, so
+`:setlocal` answered E518 for it and `get-option-in-buffer` could only
+return its global value. Options are now keyed by `OptionKey`, which is
+the name for a plugin option (`plugin-mode-options.md` §8). Extract read
+`refactor.declaration` through `get-option-in-buffer` all along, so it
+turned buffer-local with no plugin change.
 
 ### 9.2 Options weighed for §9.1
 

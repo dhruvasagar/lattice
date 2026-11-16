@@ -524,9 +524,7 @@ mod tests {
         let opts = MagitHunkMode.options();
         let ov = opts
             .iter()
-            .find(|o| {
-                o.option_type_id == std::any::TypeId::of::<lattice_config::FoldMethodOption>()
-            })
+            .find(|o| o.key == std::any::TypeId::of::<lattice_config::FoldMethodOption>())
             .expect("magit-hunk-mode must pin `foldmethod`");
         assert_eq!(
             ov.downcast_value::<lattice_core::FoldMethod>().copied(),

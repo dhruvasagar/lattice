@@ -795,7 +795,7 @@ mod tests {
     fn contributes_listing_display_options_but_not_read_only() {
         use std::any::TypeId;
         let opts = DirectoryListingMode.options();
-        let ids: Vec<TypeId> = opts.iter().map(|o| o.option_type_id).collect();
+        let ids: Vec<TypeId> = opts.iter().filter_map(|o| o.key.type_id()).collect();
 
         for (want, why) in [
             (
@@ -835,7 +835,7 @@ mod tests {
         let tree: Vec<TypeId> = crate::file_tree::FileTreeMode
             .options()
             .iter()
-            .map(|o| o.option_type_id)
+            .filter_map(|o| o.key.type_id())
             .collect();
         assert!(
             tree.contains(&TypeId::of::<lattice_config::Number>()),
@@ -845,7 +845,7 @@ mod tests {
         let oil: Vec<TypeId> = crate::oil::OilMode
             .options()
             .iter()
-            .map(|o| o.option_type_id)
+            .filter_map(|o| o.key.type_id())
             .collect();
         assert!(
             !oil.contains(&TypeId::of::<lattice_config::Number>()),

@@ -82,22 +82,69 @@ pub enum OverridePriority {
     High,
 }
 
+/// What an option is known by in an override and in a resolved snapshot
+/// (RF.4e′, `plugin-mode-options.md` §8).
+///
+/// A native option is a Rust `OptionDecl` type, and its `TypeId` is its key:
+/// the typed reads on the per-frame path (`ResolvedOptions::get::<T>()`) hash
+/// nothing else. An option a plugin registered through the `config` seam has
+/// no Rust type, and Rust cannot mint a `TypeId` at runtime, so it is known by
+/// its canonical registered name (`refactor.declaration`). Without that, a
+/// plugin option could not be `:setlocal`, overridden by a mode, or read per
+/// buffer: there was nothing to file the value under.
+///
+/// Compares equal to a bare `TypeId` when it is that native key, so a check
+/// like `ov.key == TypeId::of::<Wrap>()` reads as it did before.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum OptionKey {
+    /// A declared option: the `TypeId` of its `OptionDecl` type.
+    Native(TypeId),
+    /// A runtime-registered (plugin) option: its canonical name.
+    Plugin(Arc<str>),
+}
+
+impl OptionKey {
+    /// The native key of declaration type `T`.
+    pub fn of<T: 'static>() -> Self {
+        Self::Native(TypeId::of::<T>())
+    }
+
+    /// The `TypeId`, for a native key; `None` for a plugin option.
+    pub fn type_id(&self) -> Option<TypeId> {
+        match self {
+            Self::Native(id) => Some(*id),
+            Self::Plugin(_) => None,
+        }
+    }
+}
+
+impl From<TypeId> for OptionKey {
+    fn from(id: TypeId) -> Self {
+        Self::Native(id)
+    }
+}
+
+impl PartialEq<TypeId> for OptionKey {
+    fn eq(&self, other: &TypeId) -> bool {
+        matches!(self, Self::Native(id) if id == other)
+    }
+}
+
 /// One option-value override from a single layer producer (a
 /// mode, a buffer-local set, a modal-state hook).
 ///
-/// Identity is the `option_type_id` — the `TypeId` of the
-/// declaration type (e.g. `TypeId::of::<Tabstop>()`). The
-/// resolver looks up the option by this id; the typed downcast
-/// against the option's `Value` is performed when emitting the
+/// Identity is the [`OptionKey`]: the `TypeId` of a declaration
+/// type (e.g. `TypeId::of::<Tabstop>()`), or a plugin option's
+/// name. The resolver merges by this key; the typed downcast
+/// against the option's `Value` is performed when reading the
 /// resolved cache.
 #[derive(Clone)]
 pub struct OptionOverride {
-    /// `TypeId` of the `OptionDecl` type this override targets.
-    /// `OptionDecl` lives in `lattice-config`; we don't have
-    /// access to the trait at this layer, so we identify by
-    /// `TypeId` and trust the macro / consumer to construct
-    /// type-correctly.
-    pub option_type_id: TypeId,
+    /// The option this override targets. Construct type-correctly:
+    /// the `overrides!` macro checks a native value against its
+    /// declaration; a runtime caller parses through the option's
+    /// own `parse_to_erased`.
+    pub key: OptionKey,
     /// The override value, type-erased. Downcast at resolution
     /// time to the declaration's `Value` type.
     pub value: Arc<dyn Any + Send + Sync>,
@@ -108,7 +155,7 @@ pub struct OptionOverride {
 impl std::fmt::Debug for OptionOverride {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("OptionOverride")
-            .field("option_type_id", &self.option_type_id)
+            .field("key", &self.key)
             .field("priority", &self.priority)
             .finish_non_exhaustive()
     }
@@ -122,9 +169,9 @@ impl OptionOverride {
     /// (it generates a typed let-binding before the call). For
     /// runtime / plugin construction, the caller is responsible
     /// for honouring the contract.
-    pub fn new<V: Clone + Send + Sync + 'static>(option_type_id: TypeId, value: V) -> Self {
+    pub fn new<V: Clone + Send + Sync + 'static>(key: impl Into<OptionKey>, value: V) -> Self {
         Self {
-            option_type_id,
+            key: key.into(),
             value: Arc::new(value),
             priority: OverridePriority::default(),
         }
@@ -132,12 +179,12 @@ impl OptionOverride {
 
     /// Same as [`Self::new`] but with explicit priority.
     pub fn with_priority<V: Clone + Send + Sync + 'static>(
-        option_type_id: TypeId,
+        key: impl Into<OptionKey>,
         value: V,
         priority: OverridePriority,
     ) -> Self {
         Self {
-            option_type_id,
+            key: key.into(),
             value: Arc::new(value),
             priority,
         }
@@ -237,7 +284,7 @@ mod tests {
     #[test]
     fn override_carries_typed_value() {
         let ov = OptionOverride::new(TypeId::of::<OptionA>(), 42i64);
-        assert_eq!(ov.option_type_id, TypeId::of::<OptionA>());
+        assert_eq!(ov.key, TypeId::of::<OptionA>());
         assert_eq!(ov.priority, OverridePriority::Normal);
         assert_eq!(ov.downcast_value::<i64>().copied(), Some(42));
     }
@@ -252,7 +299,7 @@ mod tests {
     fn override_targets_correct_type() {
         let a = OptionOverride::new(TypeId::of::<OptionA>(), 1i64);
         let b = OptionOverride::new(TypeId::of::<OptionB>(), 2i64);
-        assert_ne!(a.option_type_id, b.option_type_id);
+        assert_ne!(a.key, b.key);
     }
 
     #[test]
@@ -260,7 +307,7 @@ mod tests {
         let mut set = OptionOverrideSet::new();
         set.push(OptionOverride::new(TypeId::of::<OptionA>(), 1i64));
         set.push(OptionOverride::new(TypeId::of::<OptionB>(), 2i64));
-        let collected: Vec<_> = set.iter().map(|o| o.option_type_id).collect();
+        let collected: Vec<_> = set.iter().filter_map(|o| o.key.type_id()).collect();
         assert_eq!(
             collected,
             vec![TypeId::of::<OptionA>(), TypeId::of::<OptionB>()]

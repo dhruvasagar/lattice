@@ -422,7 +422,7 @@ mod tests {
         D::Value: Clone + Send + Sync + 'static,
     {
         set.iter()
-            .find(|o| o.option_type_id == std::any::TypeId::of::<D>())
+            .find(|o| o.key == std::any::TypeId::of::<D>())
             .and_then(|o| o.value.downcast_ref::<D::Value>())
             .cloned()
     }
@@ -589,7 +589,7 @@ mod tests {
         let opts = MarkdownMode.options();
         let found = opts
             .iter()
-            .any(|o| o.option_type_id == std::any::TypeId::of::<lattice_config::AutoWrapOption>());
+            .any(|o| o.key == std::any::TypeId::of::<lattice_config::AutoWrapOption>());
         assert!(found, "markdown-mode must override autowrap");
 
         // A code major must NOT — it inherits the conservative default,
@@ -598,8 +598,7 @@ mod tests {
             !RustMode
                 .options()
                 .iter()
-                .any(|o| o.option_type_id
-                    == std::any::TypeId::of::<lattice_config::AutoWrapOption>()),
+                .any(|o| o.key == std::any::TypeId::of::<lattice_config::AutoWrapOption>()),
             "rust-mode must inherit `autowrap=comments`, not override it"
         );
     }

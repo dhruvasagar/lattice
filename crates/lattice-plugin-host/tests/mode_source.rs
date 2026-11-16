@@ -266,7 +266,7 @@ async fn a_modes_declared_option_overrides_cross_the_seam_end_to_end() {
     );
     let ov = set.iter().next().expect("one override");
     assert_eq!(
-        ov.option_type_id,
+        ov.key,
         std::any::TypeId::of::<FoldMethodOption>(),
         "resolved to the native option identity"
     );

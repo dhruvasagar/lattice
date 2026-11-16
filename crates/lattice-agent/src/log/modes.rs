@@ -170,9 +170,9 @@ mod tests {
     fn options_are_read_only_and_no_file() {
         let overrides = AiLogMode.options();
         let has_true = |type_id: std::any::TypeId| {
-            overrides.iter().any(|ov| {
-                ov.option_type_id == type_id && ov.downcast_value::<bool>() == Some(&true)
-            })
+            overrides
+                .iter()
+                .any(|ov| ov.key == type_id && ov.downcast_value::<bool>() == Some(&true))
         };
         assert!(
             has_true(std::any::TypeId::of::<lattice_config::ReadOnly>()),

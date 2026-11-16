@@ -675,7 +675,7 @@ mod tests {
             TypeId::of::<lattice_config::TextWidth>(),
         ] {
             assert!(
-                opts.iter().any(|o| o.option_type_id == want),
+                opts.iter().any(|o| o.key == want),
                 "magit-commit-mode must set both autowrap and textwidth"
             );
         }

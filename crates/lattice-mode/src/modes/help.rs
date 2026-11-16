@@ -214,7 +214,7 @@ mod tests {
         D::Value: Clone + Send + Sync + 'static,
     {
         opts.iter()
-            .find(|o| o.option_type_id == std::any::TypeId::of::<D>())
+            .find(|o| o.key == std::any::TypeId::of::<D>())
             .and_then(|o| o.value.clone().downcast::<D::Value>().ok())
             .map(|v| (*v).clone())
     }
@@ -230,7 +230,7 @@ mod tests {
         // indent-guides opt-out, and a bare number could not say which
         // option was missing or extra — the same failure mode the doc
         // comment above already calls out for `Wrap`.
-        let ids: Vec<std::any::TypeId> = opts.iter().map(|o| o.option_type_id).collect();
+        let ids: Vec<std::any::TypeId> = opts.iter().filter_map(|o| o.key.type_id()).collect();
         for (want, why) in [
             (
                 std::any::TypeId::of::<lattice_config::ReadOnly>(),

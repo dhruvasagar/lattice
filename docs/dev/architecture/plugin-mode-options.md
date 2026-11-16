@@ -317,3 +317,70 @@ treatment would apply here at the cost of a WASM round-trip on buffer-open (not
 a keystroke path). Not done yet, deliberately: the flicker is predicted rather
 than observed, and it should be measured on a real option before event delivery
 semantics are changed for every subscriber.
+
+---
+
+## 8. Plugin options get a key (RF.4e′, 2026-11-16)
+
+§4 chose (a) and deferred (c) until a consumer existed. The consumer is the
+`refactor` plugin's `refactor.declaration`. It is the declaration form extract
+writes, and it differs per language, so it wants `:setlocal` in a Go buffer and
+a mode override in a language's own mode. Neither worked: `:setlocal` answered
+E518, and `get-option-in-buffer` could only return the global value. Dhruva
+gave the go on 2026-11-16.
+
+**The key.** `lattice_config::OptionKey { Native(TypeId), Plugin(Arc<str>) }`,
+the enum §3c named. A native option keeps its declaration `TypeId`. An option
+registered through the `config` seam is keyed by its canonical name.
+`ConfigRegistry::key_for_name` answers both, and resolves an alias to the
+canonical name, so `:setlocal` by alias and a mode override by full name land
+on one key.
+
+**Where it is used.** `OptionOverride.key` replaces `option_type_id`.
+`parse_for_buffer_local`, the parser `:setlocal`, `set-option-in-buffer` and
+the plugin mode-override adapter share, returns it. The `Resolver` merges by
+it.
+
+**The per-frame read is unchanged.** §4's worry was a wider key on a path read
+per option per buffer. `ResolvedOptions` keeps its `TypeId` map for native
+options, so `get::<T>()` is the same single lookup it was. Plugin options a
+layer overrode go in a separate map by name. That map is not seeded: a plugin
+option absent from it has no override in that buffer and reads its global
+value, which is what `format_resolved` (behind `get-option-in-buffer`) already
+did for an option missing from the snapshot.
+
+**What it is not.** It is not a second option system. The value is parsed and
+validated by the option's own `parse_to_erased`, ranked by the same layers and
+priorities, and cleared by `:setlocal name&`, as for a native option. Only
+surfaces built from the compile-time declaration slices (`:customize`, the
+`:options` listing) still list native options alone. `plugin_option_groups`
+already covers plugin options there, by namespace.
+
+**Rejected: a separate name-keyed store beside the resolver.** It would have
+served `:setlocal` alone, with fewer touched sites. A mode overriding its own
+option, the case §3c was about, would still have failed. Two override systems
+with different precedence is the inferior primitive heuristic #1 forbids
+keeping for the sake of a smaller diff.
+
+> **UX (higher court):** a plugin option behaves like a native one under
+> `:setlocal`, `:setlocal name?` and `name&`, and under a mode's override. No
+> rendering change.
+> **Paramount goals:** protects #2, since a plugin mode now owns all its
+> options, its own included. #1 is unchanged: the native typed read is the
+> same lookup, and plugin options are read by name only on the guest's own
+> `get-option-in-buffer` call.
+> **Heuristic #1:** the complete answer §3c described, taken once a consumer
+> existed. It was deferred because no consumer needed it, not because of the
+> size of the change.
+> **Heuristic #6:** no new crate. `lattice-config` widens a key it owns.
+
+**Tests:**
+- `lattice-config`: a runtime option is keyed by name, an alias resolves to
+  it, its override resolves per buffer with its origin, and a snapshot
+  without the override reads the global value.
+- `mode_host`: the test that asserted the hole now asserts the override
+  crosses, keyed by name and coerced by the option's parser.
+- End to end: `:setlocal refactor.declaration=…` changes what `cre` writes in
+  that buffer only, leaves the global value alone, and `&` restores the
+  default.
+

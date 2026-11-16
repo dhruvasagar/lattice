@@ -193,11 +193,8 @@ fn overrides_macro_builds_typed_set() {
     assert_eq!(set.len(), 2);
     let entries: Vec<_> = set.iter().collect();
     // Each entry's TypeId matches its declaration's TypeId.
-    assert_eq!(entries[0].option_type_id, std::any::TypeId::of::<Simple>());
-    assert_eq!(
-        entries[1].option_type_id,
-        std::any::TypeId::of::<WithAliases>()
-    );
+    assert_eq!(entries[0].key, std::any::TypeId::of::<Simple>());
+    assert_eq!(entries[1].key, std::any::TypeId::of::<WithAliases>());
     // Default priority is Normal.
     assert_eq!(entries[0].priority, crate::OverridePriority::Normal);
 }

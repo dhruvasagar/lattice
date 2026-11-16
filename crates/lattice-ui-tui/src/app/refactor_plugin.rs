@@ -1500,6 +1500,10 @@ mod tests {
         );
         assert_eq!(body(&app), RUST, "the server answered: native did not run");
         esc(&mut app);
+        assert!(
+            app.editor.picker.is_none(),
+            "`esc` closes the answer's picker"
+        );
         press_chars(&mut app, ":lsp-refactor");
         enter(&mut app);
         // Wait on what lands (the answer's picker), not on the server's log:
@@ -1507,8 +1511,9 @@ mod tests {
         // log alone is only re-checked when something else lands.
         assert!(
             settle_woken(&mut app, |a| a.editor.picker.is_some()).await,
-            "the second answer opens a picker; echo {:?}",
-            echoed(&app)
+            "the second answer opens a picker; echo {:?}, {} requests",
+            echoed(&app),
+            code_action_requests(&log).len()
         );
         assert_eq!(code_action_requests(&log).len(), 2, "a second request");
         assert_eq!(

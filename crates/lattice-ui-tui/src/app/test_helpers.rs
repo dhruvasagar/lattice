@@ -267,11 +267,25 @@ pub(super) async fn settle(app: &mut App, mut until: impl FnMut(&App) -> bool) -
             return until(app);
         }
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        let signals = app.editor.run_tick_pending();
-        for s in signals {
-            app.handle_renderer_signal(s);
-        }
+        tick_as_the_actor_does(app);
     }
+}
+
+/// One drain, as the editor actor's `async_landed` arm runs it: the tick,
+/// then `publish_render_state`. The TUI translates the next key against
+/// the PUBLISHED state (`ad().picker_open`, the modal state …), not the
+/// editor's fields, so a drain that opened a picker and did not publish
+/// left the next `esc` resolving as if no picker were open. That was a
+/// harness-only bug (production publishes in that arm,
+/// `editor_actor.rs`), and it made a test fail only when the server's
+/// answer landed during a settle rather than in a key's own dispatch
+/// tail, which publishes: under load, about one suite run in five.
+fn tick_as_the_actor_does(app: &mut App) {
+    let signals = app.editor.run_tick_pending();
+    for s in signals {
+        app.handle_renderer_signal(s);
+    }
+    app.editor.publish_render_state();
 }
 
 /// [`settle`] for a result that must arrive WITHOUT a keystroke.
@@ -296,10 +310,7 @@ pub(super) async fn settle_woken(app: &mut App, mut until: impl FnMut(&App) -> b
         {
             return until(app);
         }
-        let signals = app.editor.run_tick_pending();
-        for s in signals {
-            app.handle_renderer_signal(s);
-        }
+        tick_as_the_actor_does(app);
     }
 }
 

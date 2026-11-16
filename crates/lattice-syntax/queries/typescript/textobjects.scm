@@ -30,6 +30,11 @@
 (optional_parameter) @parameter.outer
 (optional_parameter) @parameter.inner
 
+; RF.4b′: a call's arguments are `aa` / `ia` too, as the help promises
+; and nvim-treesitter-textobjects does: `daa` in `f(a, b)` reaches `b`.
+(arguments (_) @parameter.outer)
+(arguments (_) @parameter.inner)
+
 ; Inner bodies.
 
 ; Function bodies.

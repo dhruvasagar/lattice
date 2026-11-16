@@ -24,3 +24,10 @@
 ; Note: tree-sitter-lua v0.5.0 has no single `parameter` node;
 ; see `parameters` (a list node). Parameter textobjects are
 ; unsupported in this grammar version.
+
+; Parameters and arguments (`aa` / `ia`). RF.4b′: Lua had neither, so `aa`
+; resolved nothing in a Lua buffer.
+(parameters (_) @parameter.outer)
+(parameters (_) @parameter.inner)
+(arguments (_) @parameter.outer)
+(arguments (_) @parameter.inner)

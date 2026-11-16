@@ -49,6 +49,11 @@
 (formal_parameters (_) @parameter.outer)
 (formal_parameters (_) @parameter.inner)
 
+; RF.4b′: a call's arguments are `aa` / `ia` too, as the help promises
+; and nvim-treesitter-textobjects does: `daa` in `f(a, b)` reaches `b`.
+(arguments (_) @parameter.outer)
+(arguments (_) @parameter.inner)
+
 ; Loops (`al` / `il`).
 (for_statement) @loop.outer
 (for_in_statement) @loop.outer

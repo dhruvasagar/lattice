@@ -1107,6 +1107,25 @@ mod tests {
         );
     }
 
+    /// RF.4b′: `aa` reaches a call's argument, so the operators can take
+    /// one by text object. RF.4b found `crraa` resolved nothing in a call:
+    /// the queries captured a declaration's parameters only.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn raise_takes_a_call_argument_by_text_object() {
+        let Some(mut app) =
+            app_with_refactor("main.rs", RUST, Some(lattice_syntax::Lang::Rust)).await
+        else {
+            return;
+        };
+        press_chars(&mut app, "jfbcrraa");
+        assert_eq!(
+            body(&app),
+            "fn main() {\n    let x = bar;\n}\n",
+            "echo: {:?}",
+            echoed(&app)
+        );
+    }
+
     /// RF.4g: set an option the way a user does.
     fn set(app: &mut App, assignment: &str) {
         press_chars(app, &format!(":set {assignment}"));

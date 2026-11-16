@@ -60,6 +60,11 @@
 (parameter) @parameter.outer
 (parameter) @parameter.inner
 
+; RF.4b′: a call's arguments are `aa` / `ia` too, as the help promises
+; and nvim-treesitter-textobjects does: `daa` in `f(a, b)` reaches `b`.
+(arguments (_) @parameter.outer)
+(arguments (_) @parameter.inner)
+
 ; Loops (`al` / `il`). The loop node is the outer; its body block the inner.
 (for_expression) @loop.outer
 (while_expression) @loop.outer

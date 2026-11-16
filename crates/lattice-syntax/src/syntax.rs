@@ -1972,6 +1972,58 @@ const MAX: i32 = 10;\n\
         assert_eq!(s.scope_at_cursor(1, 4, "function.inner"), rng(1, 4, 2, 14));
     }
 
+    /// RF.4b′: `aa` / `ia` reach a CALL's argument in every language that
+    /// has the object, not only a declaration's parameter. The help and the
+    /// `]a` motion always said "parameter / argument"; the queries captured
+    /// parameters alone, so `daa` in `f(a, bb)` found nothing. Lua had
+    /// neither, so it also gains its parameters.
+    #[test]
+    fn scope_at_cursor_parameter_reaches_a_call_argument() {
+        // (language, source, cursor line, `bb`'s start column)
+        let cases = [
+            (Lang::Rust, "fn m() { f(a, bb); }\n", 0, 14),
+            (Lang::Python, "f(a, bb)\n", 0, 5),
+            (Lang::Go, "package p\nfunc m() { f(a, bb) }\n", 1, 16),
+            (Lang::JavaScript, "f(a, bb);\n", 0, 5),
+            (Lang::TypeScript, "f(a, bb);\n", 0, 5),
+            (Lang::Lua, "f(a, bb)\n", 0, 5),
+            (Lang::Ruby, "f(a, bb)\n", 0, 5),
+            (Lang::Java, "class C { void m() { f(a, bb); } }\n", 0, 26),
+            (Lang::Cpp, "void m() { f(a, bb); }\n", 0, 16),
+            (Lang::C, "void m() { f(a, bb); }\n", 0, 16),
+        ];
+        for (lang, src, line, col) in cases {
+            let mut s = Syntax::for_language(lang).unwrap().unwrap();
+            s.parse(src);
+            for capture in ["parameter.outer", "parameter.inner"] {
+                assert_eq!(
+                    s.scope_at_cursor(line, col + 1, capture),
+                    rng(line, col, line, col + 2),
+                    "{lang:?} {capture}: `bb` in the call"
+                );
+            }
+        }
+        // Lua's parameters, which it did not capture at all.
+        let mut s = Syntax::for_language(Lang::Lua).unwrap().unwrap();
+        s.parse("function g(x, yy) end\n");
+        assert_eq!(
+            s.scope_at_cursor(0, 14, "parameter.inner"),
+            rng(0, 14, 0, 16),
+            "Lua parameter"
+        );
+        // Nested calls: the innermost argument around the cursor.
+        let mut s = Syntax::for_language(Lang::Rust).unwrap().unwrap();
+        s.parse("fn m() { f(g(a), b); }\n");
+        assert_eq!(
+            s.scope_at_cursor(0, 13, "parameter.inner"),
+            rng(0, 13, 0, 14)
+        );
+        assert_eq!(
+            s.scope_at_cursor(0, 11, "parameter.inner"),
+            rng(0, 11, 0, 15)
+        );
+    }
+
     #[test]
     fn scope_at_cursor_javascript_parameter_byte_precise() {
         // line 0: function add(x, y) { return x + y; }

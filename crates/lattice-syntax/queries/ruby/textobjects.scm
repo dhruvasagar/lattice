@@ -38,3 +38,8 @@
 (method_parameters (_) @parameter.inner)
 (block_parameters (_) @parameter.outer)
 (block_parameters (_) @parameter.inner)
+
+; RF.4b′: a call's arguments are `aa` / `ia` too, as the help promises
+; and nvim-treesitter-textobjects does: `daa` in `f(a, b)` reaches `b`.
+(argument_list (_) @parameter.outer)
+(argument_list (_) @parameter.inner)

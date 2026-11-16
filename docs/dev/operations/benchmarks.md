@@ -4229,6 +4229,39 @@ mode, and at 35.8 ns it is noise against everything else on that path.
 `text-reflow.md` rules out a tree-sitter query for the "is this a comment"
 test — the whole operation has to stay in this range, and a parse does not.
 
+## `locals.scm` compile (`crates/lattice-syntax/benches/locals.rs`, RF.4h)
+
+⚠️ **AMD Ryzen 7 9700X, WSL2 (Linux 6.18), rustc 1.94.0, 2026-11-16.**
+
+RF.4h adds `locals.scm` (scopes, definitions, references and member names)
+for the ten languages refactoring acts on
+([`refactor.md`](../architecture/refactor.md) §9.1). The question was
+whether to compile them with the registry's other queries at boot.
+
+| `Query::new` | Median |
+|---|---|
+| lua | 0.24 ms |
+| go | 0.65 ms |
+| javascript | 1.8 ms |
+| java | 2.0 ms |
+| rust | 2.3 ms |
+| typescript / tsx | 4.2 ms each |
+| python | 4.3 ms |
+| ruby | 10.1 ms |
+| cpp | 11.8 ms |
+| **all ten** | **42.2 ms** |
+
+**Not at boot.** Eagerly, the ten would add 42 ms to every startup (the
+registry's ~1.2 s grows by ~3.5%) for a feature most sessions never touch.
+Every other query in the registry is read on every open of a file in its
+language; locals are read only when a refactoring runs. So they compile on
+first use (`LazyQuery`, a `OnceLock` per language): boot pays nothing, and
+the first `cre` in a language pays its own row above, once per process, on
+the plugin's thread and never the UI's. `locals_compile_on_first_use_not_at_boot`
+pins that.
+
+---
+
 ## What's NOT here
 
 Benches we'd want before claiming §8.2 coverage but haven't built

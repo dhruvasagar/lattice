@@ -123,6 +123,47 @@ const YAML_FOLDS_QUERY: &str = include_str!("../queries/yaml/folds.scm");
 const YAML_SYMBOLS_QUERY: &str = include_str!("../queries/yaml/symbols.scm");
 const YAML_TEXTOBJECTS_QUERY: &str = include_str!("../queries/yaml/textobjects.scm");
 
+/// A query compiled the first time it is asked for, then shared (RF.4h).
+///
+/// The source is fixed when the config is built, so the answer cannot
+/// depend on which name or alias the first caller used. A source that does
+/// not compile is a bug the tests catch (`locals::tests`); in a build that
+/// shipped one anyway it is logged once and answers `None`, as a language
+/// without the file does, rather than failing a keypress.
+pub(crate) struct LazyQuery {
+    name: String,
+    source: Option<&'static str>,
+    compiled: std::sync::OnceLock<Option<Arc<Query>>>,
+}
+
+impl LazyQuery {
+    fn new(name: &str, source: Option<&'static str>) -> Self {
+        Self {
+            name: name.to_string(),
+            source,
+            compiled: std::sync::OnceLock::new(),
+        }
+    }
+
+    fn get(&self, language: &Language) -> Option<Arc<Query>> {
+        self.compiled
+            .get_or_init(|| {
+                let source = self.source?;
+                match Query::new(language, source) {
+                    Ok(query) => Some(Arc::new(query)),
+                    Err(e) => {
+                        tracing::warn!(
+                            language = %self.name,
+                            "locals.scm does not compile, so this language has no locals: {e}"
+                        );
+                        None
+                    }
+                }
+            })
+            .clone()
+    }
+}
+
 /// Per-language compiled state held by the shared registry.
 ///
 /// Phase note: `highlight` is the legacy `tree_sitter_highlight`
@@ -188,6 +229,18 @@ pub(crate) struct LangConfig {
     /// name-keyed table also keeps the `include_str!` beside the
     /// engine that consumes it.
     pub(crate) indents: Option<Query>,
+    /// RF.4h: `locals.scm` (scopes, definitions, references and member
+    /// names — the contract is [`crate::locals`]), when the language ships
+    /// one. Its source is resolved by name like `indents`.
+    ///
+    /// **Compiled on first use, not at boot.** Every query above is read on
+    /// every open of a file in the language; locals are read only when a
+    /// refactoring runs. Eagerly the ten cost ~42 ms of startup (C++ 12 ms,
+    /// Ruby 10 ms; `benches/locals.rs`) that most sessions would never use.
+    /// Lazily, the first `cre` in a language pays its one compile on the
+    /// plugin's thread, never the UI's, once per process. Shared, because
+    /// the plugin seam hands this very query out.
+    pub(crate) locals: LazyQuery,
     /// LG.3a: the host-issued id of the plugin that contributed this
     /// language, or `None` for one compiled into the editor. Teardown
     /// is `retain(|c| c.provenance != Some(id))` — by provenance, not by
@@ -278,7 +331,6 @@ impl LangRegistry {
                 "rust",
                 tree_sitter_rust::HIGHLIGHTS_QUERY,
                 tree_sitter_rust::INJECTIONS_QUERY,
-                "",
                 Some(RUST_FOLDS_QUERY),
                 Some(RUST_SYMBOLS_QUERY),
                 Some(RUST_TEXTOBJECTS_QUERY),
@@ -290,7 +342,6 @@ impl LangRegistry {
                 tree_sitter_python::LANGUAGE.into(),
                 "python",
                 tree_sitter_python::HIGHLIGHTS_QUERY,
-                "",
                 "",
                 Some(PYTHON_FOLDS_QUERY),
                 Some(PYTHON_SYMBOLS_QUERY),
@@ -311,7 +362,6 @@ impl LangRegistry {
                 "javascript",
                 &js_highlights,
                 tree_sitter_javascript::INJECTIONS_QUERY,
-                tree_sitter_javascript::LOCALS_QUERY,
                 Some(JAVASCRIPT_FOLDS_QUERY),
                 Some(JAVASCRIPT_SYMBOLS_QUERY),
                 Some(JAVASCRIPT_TEXTOBJECTS_QUERY),
@@ -336,7 +386,6 @@ impl LangRegistry {
                     "{}\n{MARKDOWN_INJECTIONS_QUERY}",
                     tree_sitter_md::INJECTION_QUERY_BLOCK
                 ),
-                "",
                 Some(MARKDOWN_FOLDS_QUERY),
                 None,
                 None,
@@ -349,7 +398,6 @@ impl LangRegistry {
                 "markdown_inline",
                 tree_sitter_md::HIGHLIGHT_QUERY_INLINE,
                 tree_sitter_md::INJECTION_QUERY_INLINE,
-                "",
                 None,
                 None,
                 None,
@@ -364,7 +412,6 @@ impl LangRegistry {
                 "bash",
                 tree_sitter_bash::HIGHLIGHT_QUERY,
                 "",
-                "",
                 Some(BASH_FOLDS_QUERY),
                 Some(BASH_SYMBOLS_QUERY),
                 Some(BASH_TEXTOBJECTS_QUERY),
@@ -376,7 +423,6 @@ impl LangRegistry {
                 tree_sitter_c::LANGUAGE.into(),
                 "c",
                 tree_sitter_c::HIGHLIGHT_QUERY,
-                "",
                 "",
                 Some(C_FOLDS_QUERY),
                 Some(C_SYMBOLS_QUERY),
@@ -398,7 +444,6 @@ impl LangRegistry {
                 "cpp",
                 &cpp_highlights,
                 "",
-                "",
                 Some(CPP_FOLDS_QUERY),
                 Some(CPP_SYMBOLS_QUERY),
                 Some(CPP_TEXTOBJECTS_QUERY),
@@ -410,7 +455,6 @@ impl LangRegistry {
                 tree_sitter_css::LANGUAGE.into(),
                 "css",
                 tree_sitter_css::HIGHLIGHTS_QUERY,
-                "",
                 "",
                 Some(CSS_FOLDS_QUERY),
                 Some(CSS_SYMBOLS_QUERY),
@@ -427,7 +471,6 @@ impl LangRegistry {
                 "go",
                 tree_sitter_go::HIGHLIGHTS_QUERY,
                 "",
-                "",
                 Some(GO_FOLDS_QUERY),
                 Some(GO_SYMBOLS_QUERY),
                 Some(GO_TEXTOBJECTS_QUERY),
@@ -440,7 +483,6 @@ impl LangRegistry {
                 "html",
                 tree_sitter_html::HIGHLIGHTS_QUERY,
                 tree_sitter_html::INJECTIONS_QUERY,
-                "",
                 Some(HTML_FOLDS_QUERY),
                 Some(HTML_SYMBOLS_QUERY),
                 Some(HTML_TEXTOBJECTS_QUERY),
@@ -452,7 +494,6 @@ impl LangRegistry {
                 tree_sitter_java::LANGUAGE.into(),
                 "java",
                 tree_sitter_java::HIGHLIGHTS_QUERY,
-                "",
                 "",
                 Some(JAVA_FOLDS_QUERY),
                 Some(JAVA_SYMBOLS_QUERY),
@@ -466,7 +507,6 @@ impl LangRegistry {
                 "json",
                 tree_sitter_json::HIGHLIGHTS_QUERY,
                 "",
-                "",
                 Some(JSON_FOLDS_QUERY),
                 Some(JSON_SYMBOLS_QUERY),
                 Some(JSON_TEXTOBJECTS_QUERY),
@@ -478,7 +518,6 @@ impl LangRegistry {
                 tree_sitter_lua::LANGUAGE.into(),
                 "lua",
                 tree_sitter_lua::HIGHLIGHTS_QUERY,
-                "",
                 "",
                 Some(LUA_FOLDS_QUERY),
                 Some(LUA_SYMBOLS_QUERY),
@@ -492,7 +531,6 @@ impl LangRegistry {
                 "ruby",
                 tree_sitter_ruby::HIGHLIGHTS_QUERY,
                 "",
-                "",
                 Some(RUBY_FOLDS_QUERY),
                 Some(RUBY_SYMBOLS_QUERY),
                 Some(RUBY_TEXTOBJECTS_QUERY),
@@ -504,7 +542,6 @@ impl LangRegistry {
                 tree_sitter_sequel::LANGUAGE.into(),
                 "sql",
                 tree_sitter_sequel::HIGHLIGHTS_QUERY,
-                "",
                 "",
                 Some(SQL_FOLDS_QUERY),
                 Some(SQL_SYMBOLS_QUERY),
@@ -527,7 +564,6 @@ impl LangRegistry {
                 "wit",
                 WIT_HIGHLIGHTS_QUERY,
                 "",
-                "",
                 Some(WIT_FOLDS_QUERY),
                 None,
                 None,
@@ -540,7 +576,6 @@ impl LangRegistry {
                 "toml",
                 tree_sitter_toml_ng::HIGHLIGHTS_QUERY,
                 "",
-                "",
                 Some(TOML_FOLDS_QUERY),
                 Some(TOML_SYMBOLS_QUERY),
                 Some(TOML_TEXTOBJECTS_QUERY),
@@ -551,7 +586,7 @@ impl LangRegistry {
         // We register "typescript" with the TS grammar; see "tsx"
         // for the TSX variant.
         //
-        // Its highlights and locals queries are only the TypeScript
+        // Its highlights query is only the TypeScript
         // DELTA (types, `interface`, `readonly`, ...): the grammar
         // extends JavaScript's and expects JavaScript's queries
         // underneath, as the tree-sitter CLI, Helix and Neovim all
@@ -570,11 +605,6 @@ impl LangRegistry {
             tree_sitter_typescript::HIGHLIGHTS_QUERY,
         ]
         .concat();
-        let ts_locals = [
-            tree_sitter_javascript::LOCALS_QUERY,
-            tree_sitter_typescript::LOCALS_QUERY,
-        ]
-        .concat();
         configs.insert(
             "typescript",
             build_config(
@@ -582,7 +612,6 @@ impl LangRegistry {
                 "typescript",
                 &ts_highlights,
                 tree_sitter_javascript::INJECTIONS_QUERY,
-                &ts_locals,
                 Some(TYPESCRIPT_FOLDS_QUERY),
                 Some(TYPESCRIPT_SYMBOLS_QUERY),
                 Some(TYPESCRIPT_TEXTOBJECTS_QUERY),
@@ -601,7 +630,6 @@ impl LangRegistry {
                 "tsx",
                 &tsx_highlights,
                 tree_sitter_javascript::INJECTIONS_QUERY,
-                &ts_locals,
                 Some(TYPESCRIPT_FOLDS_QUERY),
                 Some(TYPESCRIPT_SYMBOLS_QUERY),
                 Some(TYPESCRIPT_TEXTOBJECTS_QUERY),
@@ -613,7 +641,6 @@ impl LangRegistry {
                 tree_sitter_yaml::LANGUAGE.into(),
                 "yaml",
                 tree_sitter_yaml::HIGHLIGHTS_QUERY,
-                "",
                 "",
                 Some(YAML_FOLDS_QUERY),
                 Some(YAML_SYMBOLS_QUERY),
@@ -691,6 +718,16 @@ impl LangRegistry {
         self.lookup(name).map(|c| c.language.clone())
     }
 
+    /// RF.4h: the compiled `locals.scm` for the language registered as
+    /// `name`, or `None` for one that ships none (or no such language). The
+    /// capture contract is [`crate::locals`].
+    ///
+    /// The first call for a language compiles it (see [`LangConfig`]'s
+    /// `locals`); every later one is an `Arc` bump on that same query.
+    pub fn locals_query(&self, name: &str) -> Option<Arc<Query>> {
+        self.lookup(name).and_then(|c| c.locals.get(&c.language))
+    }
+
     /// H.2: this language's compiled conceal rules, or an empty slice.
     ///
     /// Returns the `Arc` rather than a borrow so the display-matrix
@@ -750,7 +787,6 @@ fn build_config(
     name: &str,
     highlights: &str,
     injections: &str,
-    locals: &str,
     folds: Option<&str>,
     symbols: Option<&str>,
     textobjects: Option<&str>,
@@ -805,7 +841,8 @@ fn build_config(
         ),
         None => None,
     };
-    let _ = locals; // locals.scm support deferred to a follow-up commit.
+    // RF.4h: resolved by name, as `indents` is; compiled on first use.
+    let locals = LazyQuery::new(name, crate::locals::source(name));
     Ok(LangConfig {
         language,
         folds,
@@ -816,6 +853,7 @@ fn build_config(
         symbols,
         textobjects,
         indents,
+        locals,
         provenance: None,
         conceal_rules: native_conceal_rules(name),
     })
@@ -849,6 +887,23 @@ mod tests {
     /// MDL.3: a compiled-in language's conceal rules reach the registry, and
     /// only the language that declares them pays for them. A refused native
     /// rule is a bug in this crate, so every declared rule must compile.
+
+    /// RF.4h: building the registry compiles no locals; the first ask
+    /// compiles that one language's, and an alias reaches the same query.
+    #[test]
+    fn locals_compile_on_first_use_not_at_boot() {
+        let registry = LangRegistry::build_standard().expect("registry");
+        for name in crate::locals::LANGUAGES {
+            let config = registry.lookup(name).expect("registered");
+            assert!(config.locals.compiled.get().is_none(), "{name} at boot");
+        }
+        let first = registry.locals_query("rs").expect("rust locals");
+        let again = registry.locals_query("rust").expect("rust locals");
+        assert!(Arc::ptr_eq(&first, &again), "one compile, shared");
+        let python = registry.lookup("python").expect("registered");
+        assert!(python.locals.compiled.get().is_none(), "only rust compiled");
+    }
+
     #[test]
     fn native_conceal_rules_compile() {
         let r = LangRegistry::standard().unwrap();
@@ -1164,6 +1219,8 @@ pub(crate) fn compile_plugin_config(
         symbols: None,
         textobjects: opt("textobjects.scm", &spec.textobjects)?,
         indents: opt("indents.scm", &spec.indents)?,
+        // A plugin language's spec has no locals field yet.
+        locals: LazyQuery::new(name, None),
         provenance: Some(provenance),
         conceal_rules: Arc::from(conceal_rules.into_boxed_slice()),
     };

@@ -107,7 +107,9 @@ fn meta_of(node: Node<'_>) -> NodeMeta {
 /// the language it was compiled against (so `run-query` can guard a mismatched
 /// snapshot). Owned by the guest; reusable across snapshots of the same language.
 pub struct QueryResource {
-    query: Query,
+    /// Shared: a `language-query` answer is the registry's own compiled
+    /// query (RF.4h), so it is an `Arc` bump, never a recompile.
+    query: Arc<Query>,
     lang: Lang,
 }
 
@@ -282,7 +284,23 @@ impl TreeSnapshotResource {
             .tree_sitter_language(lang.name())
             .ok_or_else(|| format!("no tree-sitter grammar for language '{}'", lang.name()))?;
         let query = Query::new(&language, source).map_err(|e| e.to_string())?;
-        Ok(QueryResource { query, lang })
+        Ok(QueryResource {
+            query: Arc::new(query),
+            lang,
+        })
+    }
+
+    /// RF.4h: the host's compiled query named `name` for this snapshot's
+    /// language, or `None` for an unknown name or a language without that
+    /// file. Today one name, `"locals"` (the contract is
+    /// `lattice_syntax::locals`).
+    pub fn language_query(&self, name: &str) -> Option<QueryResource> {
+        let lang = self.snapshot.lang();
+        let query = match name {
+            "locals" => self.snapshot.registry().locals_query(lang.name())?,
+            _ => return None,
+        };
+        Some(QueryResource { query, lang })
     }
 
     /// TS.2: run `query` over the whole tree (or `within` a point range),
@@ -952,6 +970,70 @@ mod tests {
         assert!(
             caps.iter().any(|c| c.1 != caps[0].1),
             "the second match must not share the first match's index"
+        );
+    }
+
+    /// RF.4h: `language-query("locals")` is the registry's compiled locals
+    /// for the snapshot's language, runnable like any query: a definition,
+    /// its reference and a scope come back by the contract's names.
+    #[test]
+    fn language_query_hands_out_the_hosts_locals() {
+        let src = "fn m() {\n    let x = 1;\n    x\n}\n";
+        let ts = TreeSnapshotResource::new(rust_snapshot(src));
+        let q = ts.language_query("locals").expect("rust ships locals.scm");
+        let caps = ts.run_query_ranges(&q, None);
+        // A scope spans lines; the identifiers asserted on do not.
+        let text = |r: &NativeRange| {
+            if r.start.line != r.end.line {
+                return String::new();
+            }
+            let line = src.lines().nth(r.start.line as usize).unwrap_or_default();
+            line[r.start.byte as usize..r.end.byte as usize].to_string()
+        };
+        let named = |name: &str| -> Vec<String> {
+            caps.iter()
+                .filter(|c| c.0 == name)
+                .map(|c| text(&c.2))
+                .collect()
+        };
+        assert!(named("local.definition").contains(&"x".to_string()));
+        assert!(named("local.definition").contains(&"m".to_string()));
+        assert!(
+            named("local.reference")
+                .iter()
+                .filter(|t| *t == "x")
+                .count()
+                >= 2,
+            "the catch-all matches the definition and the use"
+        );
+        assert!(!named("local.scope").is_empty());
+    }
+
+    /// The very query the registry compiled, not a copy: two answers share
+    /// one allocation.
+    #[test]
+    fn language_query_is_shared_not_recompiled() {
+        let ts = TreeSnapshotResource::new(rust_snapshot("fn m() {}\n"));
+        let a = ts.language_query("locals").expect("locals");
+        let b = ts.language_query("locals").expect("locals");
+        assert!(Arc::ptr_eq(&a.query, &b.query));
+    }
+
+    /// An unknown name, and a language without the file, both answer `none`.
+    #[test]
+    fn language_query_is_none_for_an_unknown_name_or_a_language_without_one() {
+        let ts = TreeSnapshotResource::new(rust_snapshot("fn m() {}\n"));
+        assert!(ts.language_query("no-such-query").is_none());
+        assert!(
+            ts.language_query("highlights").is_none(),
+            "only the named set"
+        );
+        let mut c = Syntax::for_language(Lang::C).unwrap().unwrap();
+        c.parse("int main(void) { return 0; }\n");
+        let ts = TreeSnapshotResource::new(Arc::new(c.snapshot_owned()));
+        assert!(
+            ts.language_query("locals").is_none(),
+            "C ships no locals.scm"
         );
     }
 

@@ -56,6 +56,8 @@ pub mod handle;
 // `.scm` files). IN.2 adds the `indents.scm` evaluator here.
 pub mod indent;
 pub mod lang;
+// RF.4h: `locals.scm` sources and the capture contract (refactor.md §9.1).
+pub mod locals;
 // MDL.1: markdown link scanning + heading slugs, shared by markdown-mode's
 // follow-link and help buffers. See `docs/dev/architecture/markdown-links.md`.
 pub mod markdown;

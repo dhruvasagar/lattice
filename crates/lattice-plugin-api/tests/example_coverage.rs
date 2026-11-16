@@ -37,6 +37,10 @@ const PENDING: &[(&str, &str)] = &[
         "no guest calls it (treesitter-context moved to `run-query-ranges` in TC.10)",
     ),
     ("tree-sitter.node.is-error", NO_GUEST),
+    (
+        "tree-sitter.tree-snapshot.language-query",
+        "added in RF.4h; its first caller is the refactor plugin's native extract (RF.4i)",
+    ),
     ("tree-sitter.node.is-named", NO_GUEST),
     ("tree-sitter.node.next-named-sibling", NO_GUEST),
     ("tree-sitter.node.parent", NO_GUEST),

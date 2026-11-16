@@ -481,13 +481,27 @@ than one use (the call would run a different number of times).
 native extract that compiles in Rust may still move a value the next line
 uses; that is the server's to catch, and the help page says so.
 
-**The query sources.** nvim-treesitter's `locals.scm` files cover all
-shipped languages and follow the capture names above; they are Apache-2.0
-and this repository is MIT. Adapting them needs the Apache notice kept on
-each file and a `NOTICE` entry; writing our own from each grammar's
-`node-types.json` costs more and gains nothing but the notice. Taking
-nvim-treesitter's, with attribution, is the proposal; the slice that
-lands them settles it.
+**The query sources (settled 2026-11-16, RF.4h).** Written for lattice
+against each pinned grammar, not adapted from nvim-treesitter's Apache-2.0
+files. This keeps the repository MIT with no `NOTICE` obligation, and the
+queries are tested against OUR grammar versions. nvim-treesitter's track
+their own grammar revisions, so adapting them would have meant rewriting
+them anyway, which removed the argument for copying. They cover the ten
+languages refactoring acts on: rust, python, ruby, go, javascript,
+typescript, tsx, cpp, java and lua. A language without one is refused by
+name, as it is today.
+
+**The capture contract** has four names, not three: `@local.scope`,
+`@local.definition`, `@local.reference` (a catch-all on the grammar's
+identifier kind) and `@local.member`. In Python, Ruby, Lua, Java and Go's
+keyed literals, a member or label name (`obj.x`, `f(x=1)`, `{k = v}`,
+`Point{X: 1}`) has the same node kind as a variable. A tree-sitter query
+cannot exclude it from the catch-all, since it has no negated child pattern
+and the seam evaluates only text predicates. So the file marks those
+positions, and the rule is that **a node captured as a definition or a
+member is not a reference**. Without the fourth name, inlining `x` would
+rewrite `obj.x`. `lattice_syntax::locals` states the contract, and the WIT
+doc of `language-query` repeats it.
 
 *Built before this decision (RF.4e).* Native extract shipped with the text
 rule above and the declaration table. The snippet needed one seam:

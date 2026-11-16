@@ -2572,6 +2572,20 @@ impl crate::grammar_host::bindings::lattice::plugin_host::tree_sitter::HostTreeS
             .map_err(|e| format!("query resource push: {e}"))
     }
 
+    fn language_query(
+        &mut self,
+        self_: wasmtime::component::Resource<crate::tree_resource::TreeSnapshotResource>,
+        name: String,
+    ) -> Option<wasmtime::component::Resource<crate::tree_resource::QueryResource>> {
+        let query = self.table.get(&self_).ok()?.language_query(&name)?;
+        // A table that refuses the push answers `none`, as a missing query
+        // does: the guest falls back the same way, and the host says why.
+        self.table
+            .push(query)
+            .map_err(|e| tracing::warn!("language-query resource push: {e}"))
+            .ok()
+    }
+
     fn run_query(
         &mut self,
         self_: wasmtime::component::Resource<crate::tree_resource::TreeSnapshotResource>,

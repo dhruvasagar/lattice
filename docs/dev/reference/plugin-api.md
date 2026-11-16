@@ -84,6 +84,6 @@ Each world's entry points — the `register-*` functions the host calls on load 
 | [`signs`](plugin-api/signs.md) | imports | - | 1 | 1 | Mirrors the sign registry (`lattice_mode::SignRegistry`). |
 | [`theme`](plugin-api/theme.md) | imports | - | 2 | 3 | Mirrors the theme-element registry (`lattice-theme`). |
 | [`transient-source`](plugin-api/transient-source.md) | exports | - | 2 | 0 | TR.2b: plugin-contributed transient menus. |
-| [`tree-sitter`](plugin-api/tree-sitter.md) | imports | - | 25 | 6 | Structural queries for plugins (plugin-treesitter-seam.md). |
+| [`tree-sitter`](plugin-api/tree-sitter.md) | imports | - | 26 | 6 | Structural queries for plugins (plugin-treesitter-seam.md). |
 | [`types`](plugin-api/types.md) | types | - | 0 | 165 | Shared boundary records/variants — the owned, WIT-serializable mirrors of the native grammar + picker/completion types (plugin-host.md §4). |
 | [`ui`](plugin-api/ui.md) | imports | - | 4 | 0 | The UI-contribution surface (design.md §9.4 `ui`): guest→host emits **data only**, never draw calls (§7, paramount #1). |

@@ -96,6 +96,11 @@ harness = false
 name = "lang_detect"
 harness = false
 
+# RF.4h: the boot cost of compiling `locals.scm` for its ten languages.
+[[bench]]
+name = "locals"
+harness = false
+
 # H.3: the one new per-line cost conceal adds to a matrix rebuild.
 [[bench]]
 name = "conceal"

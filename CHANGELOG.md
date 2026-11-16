@@ -58,6 +58,11 @@
   of that kind, or an empty answer, never an error, and not if the text
   changed meanwhile). A plugin that returned the bare `lsp-code-action`
   passes a request with every field `none`; nothing in-tree did.
+  Also new in 0.5.0, additive: `tree-snapshot.language-query(name)` hands a
+  plugin a query the editor already compiled for the buffer's language. The
+  first is `"locals"`: scopes, definitions, references, and member names
+  (`obj.x`), which are never references, for rust, python, ruby, go,
+  javascript, typescript, tsx, cpp, java and lua. Run it like any query.
 
 ## 0.10.0 — 2026-11-10
 

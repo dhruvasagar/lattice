@@ -4976,7 +4976,15 @@
           "result": "option<query>",
           "signature": "language-query: func(name: string) -> option<query>",
           "doc": "RF.4h: a query the HOST compiled for this snapshot's language, by\nname, or `none` for a name it does not know or a language that\nships no such file. It is the editor's own compiled query, shared,\nso a plugin neither carries a copy nor compiles one; run it with\n`run-query` / `run-query-ranges` like any other.\n\nOne name today, `\"locals\"`: `@local.scope` (a node that opens a\nscope), `@local.definition` (an identifier that introduces a local\nname), `@local.reference` (a catch-all on identifiers that may read\none) and `@local.member` (an identifier in a member or label\nposition, `obj.x` / `f(x=1)`). A node captured as a definition or a\nmember is NOT a reference, though the catch-all matches it too:\ntake the references minus the other two.",
-          "examples": []
+          "examples": [
+            {
+              "id": "refactor:tree-sitter.tree-snapshot.language-query",
+              "caption": "Use the editor's compiled locals query, and refuse plainly when the language has none",
+              "source": "plugins/refactor/src/extract.rs",
+              "language": "rust",
+              "code": "let Some(query) = tree.language_query(\"locals\") else {\n    return Err(format!(\n        \"no locals.scm for {} — a language server can do this\",\n        tree.language()\n    ));\n};\nlet captures = tree.run_query_ranges(&query, Some(statement.into()));"
+            }
+          ]
         },
         {
           "name": "[method]tree-snapshot.node-at",

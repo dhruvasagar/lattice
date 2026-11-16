@@ -448,11 +448,16 @@ who owns each file:
     of the block that holds it. It replaces RF.4e's text rule ("the
     smallest node that starts a line"), which is what put a declaration
     inside a `match` arm.
-  - `@refactor.hoist-barrier`: a subtree whose code does not run exactly
-    once, in order, when its statement runs — the right operand of `&&` /
-    `||` / `??`, a conditional's branches, a loop's condition, a closure or
-    lambda body, a comprehension, a default argument. An expression inside
-    one, below the chosen statement, is refused, naming the construct.
+  - `@refactor.hoist-barrier.<why>`: a subtree whose code does not run
+    exactly once, in order, when its statement runs. `<why>` is one of
+    `short-circuit` (the right operand of `&&` / `||` / `??`), `branch` (a
+    conditional's branches, a `match` arm), `loop` (a loop's condition,
+    step or body), `closure` (a closure or lambda body), `comprehension`
+    or `default` (a default argument). An expression inside one, below the
+    chosen statement, is refused, and the refusal says which. The reason
+    rides in the capture name because a capture carries no other string
+    (see the declaration form below); the plugin maps the six to sentences,
+    and a test pins that each has one.
 - **The declaration form stays a table in the plugin**, one line per
   language, because a query capture has no way to carry a string (the
   seam does not expose `#set!` properties, and is not widened for this).

@@ -875,6 +875,164 @@ mod tests {
         );
     }
 
+    /// RF.4i: every `refactor.scm` the plugin ships compiles against the
+    /// grammar the editor pins. A plugin compiles its query only when a
+    /// refactoring first runs in that language, so an error would otherwise
+    /// surface as one user's refusal, not a red test.
+    #[test]
+    fn every_refactor_query_compiles_against_the_pinned_grammar() {
+        let registry = lattice_syntax::registry::LangRegistry::standard().unwrap();
+        for (lang, dir) in [
+            ("rust", "rust"),
+            ("python", "python"),
+            ("ruby", "ruby"),
+            ("go", "go"),
+            ("javascript", "javascript"),
+            ("typescript", "typescript"),
+            ("tsx", "typescript"),
+            ("cpp", "cpp"),
+            ("java", "java"),
+            ("lua", "lua"),
+        ] {
+            let path = format!("{PLUGIN_DIR}/queries/{dir}/refactor.scm");
+            let source = std::fs::read_to_string(&path).unwrap();
+            let language = registry.tree_sitter_language(lang).unwrap();
+            if let Err(e) = tree_sitter::Query::new(&language, &source) {
+                panic!("{lang}: {path}: {e}");
+            }
+        }
+    }
+
+    /// RF.4i: run `cre{motion}` over `src` with the caret at the `q` on
+    /// line `line`; the buffer afterwards and the echo.
+    async fn extract_q(
+        file: &str,
+        src: &str,
+        lang: lattice_syntax::Lang,
+        line: usize,
+    ) -> Option<(String, String)> {
+        let mut app = app_with_refactor(file, src, Some(lang)).await?;
+        press_chars(&mut app, &format!("{}fqcreiw", "j".repeat(line)));
+        Some((body(&app), echoed(&app)))
+    }
+
+    /// RF.4i: an expression in one `match` arm runs only when that arm is
+    /// taken. RF.4e's text rule declared it inside the arm; the query facts
+    /// refuse it, naming why.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn extract_out_of_a_match_arm_is_refused() {
+        let src = "fn main() {\n    let r = match k {\n        1 => foo(q),\n        _ => 0,\n    };\n}\n";
+        let Some((after, echo)) = extract_q("main.rs", src, lattice_syntax::Lang::Rust, 2).await
+        else {
+            return;
+        };
+        assert_eq!(after, src);
+        assert!(echo.contains("branch"), "got {echo:?}");
+    }
+
+    /// RF.4i: the right of `&&` does not always run, so it is not lifted.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn extract_from_the_right_of_a_short_circuit_is_refused() {
+        let src = "fn main() {\n    let ok = a && good(q);\n}\n";
+        let Some((after, echo)) = extract_q("main.rs", src, lattice_syntax::Lang::Rust, 1).await
+        else {
+            return;
+        };
+        assert_eq!(after, src);
+        assert!(echo.contains("short-circuit"), "got {echo:?}");
+    }
+
+    /// RF.4i: a closure with a block body has statements of its own, so the
+    /// declaration goes inside it, at the inner indent.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn extract_inside_a_closure_block_declares_inside_it() {
+        let src = "fn main() {\n    let f = |a| {\n        go(q)\n    };\n}\n";
+        let Some((after, echo)) = extract_q("main.rs", src, lattice_syntax::Lang::Rust, 2).await
+        else {
+            return;
+        };
+        assert_eq!(
+            after,
+            "fn main() {\n    let f = |a| {\n        let value = q;\n        go(value)\n    };\n}\n",
+            "echo: {echo:?}"
+        );
+    }
+
+    /// RF.4i: `v` is defined in the `if`'s own initializer, so lifting the
+    /// condition above the `if` would read it before it exists. Read from
+    /// `locals.scm` through `language-query`.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn extract_that_reads_a_name_defined_earlier_in_its_statement_is_refused() {
+        let src = "package main\n\nfunc main() {\n\tif v := f(); v > q {\n\t}\n}\n";
+        let Some((after, echo)) = extract_q("main.go", src, lattice_syntax::Lang::Go, 3).await
+        else {
+            return;
+        };
+        // `q` alone reads nothing defined there: it is extracted.
+        assert!(
+            after.contains("value := q\n\tif v := f(); v > value"),
+            "{after:?} / {echo:?}"
+        );
+        let mut app = app_with_refactor("main.go", src, Some(lattice_syntax::Lang::Go))
+            .await
+            .expect("built above");
+        // `v > q`: the comparison reads `v`.
+        press_chars(&mut app, "jjjfv;v");
+        press_chars(&mut app, "fq re");
+        assert_eq!(body(&app), src);
+        assert!(echoed(&app).contains("`v`"), "got {:?}", echoed(&app));
+    }
+
+    /// RF.4i: one side of a conditional expression runs, not both.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn extract_from_a_ternary_branch_is_refused() {
+        let src = "def f():\n    x = a if c else g(q)\n";
+        let Some((after, echo)) = extract_q("main.py", src, lattice_syntax::Lang::Python, 1).await
+        else {
+            return;
+        };
+        assert_eq!(after, src);
+        assert!(echo.contains("branch"), "got {echo:?}");
+    }
+
+    /// RF.4i: a loop's condition runs every time round, not once.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn extract_from_a_loop_condition_is_refused() {
+        let src = "fn main() {\n    while go(q) {\n    }\n}\n";
+        let Some((after, echo)) = extract_q("main.rs", src, lattice_syntax::Lang::Rust, 1).await
+        else {
+            return;
+        };
+        assert_eq!(after, src);
+        assert!(echo.contains("loop"), "got {echo:?}");
+    }
+
+    /// RF.4i: an arrow function's expression body runs when it is called.
+    /// It has no statements of its own, so there is nowhere inside to go.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn extract_from_an_expression_bodied_closure_is_refused() {
+        let src = "function m() {\n  const f = (a) => g(q);\n}\n";
+        let Some((after, echo)) =
+            extract_q("main.ts", src, lattice_syntax::Lang::TypeScript, 1).await
+        else {
+            return;
+        };
+        assert_eq!(after, src);
+        assert!(echo.contains("closure"), "got {echo:?}");
+    }
+
+    /// RF.4i: a comprehension's body runs once per item.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn extract_from_a_comprehension_is_refused() {
+        let src = "def f():\n    xs = [g(q) for y in ys]\n";
+        let Some((after, echo)) = extract_q("main.py", src, lattice_syntax::Lang::Python, 1).await
+        else {
+            return;
+        };
+        assert_eq!(after, src);
+        assert!(echo.contains("comprehension"), "got {echo:?}");
+    }
+
     /// `refactor.declaration`, when set, replaces the language's form — how a
     /// user gives extract a language the table does not know. Set with `:set`:
     /// a plugin option cannot be `:setlocal`ed yet (buffer-local overrides are

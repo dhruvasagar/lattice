@@ -73,6 +73,24 @@ buffer for now; per-buffer (`:setlocal`) is not yet possible for a plugin's
 option. Extracting a function needs a language server and is not offered
 without one.
 
+The declaration goes before the innermost statement holding the
+expression, so inside a closure's or a branch's own block when it is in
+one. Lifting can change what the code does, and native extract refuses
+rather than guess when it would:
+
+- the expression only runs sometimes: the right of `&&`, `||`, `and`,
+  `or` or `??`, one branch of an `if` or `?:`, or a `match` arm;
+- it runs more than once: a loop's condition, step or body, or a
+  comprehension;
+- it runs later: a closure or lambda body with no block of its own, or a
+  default argument;
+- it reads a name defined earlier in the same statement, such as `v` in
+  Go's `if v := f(); v > 0`.
+
+Each refusal says which. Native extract knows Rust, Python, Ruby, Go,
+JavaScript, TypeScript / TSX, C++, Java and Lua; in other languages it
+says a language server can do it.
+
 **Server first.** `cre` and `cri` first ask the buffer's language server
 for its extractions or inlines over the same range. If it offers any, they
 open in a picker (extract function, extract constant, whatever the server

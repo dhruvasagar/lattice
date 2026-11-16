@@ -209,6 +209,18 @@ position, `obj.x` / `f(x=1)`). A node captured as a definition or a
 member is NOT a reference, though the catch-all matches it too:
 take the references minus the other two.
 
+**Example — Use the editor's compiled locals query, and refuse plainly when the language has none** · [`plugins/refactor/src/extract.rs`](../../../../plugins/refactor/src/extract.rs)
+
+```rust
+let Some(query) = tree.language_query("locals") else {
+    return Err(format!(
+        "no locals.scm for {} — a language server can do this",
+        tree.language()
+    ));
+};
+let captures = tree.run_query_ranges(&query, Some(statement.into()));
+```
+
 #### `tree-snapshot.node-at`
 
 ```wit

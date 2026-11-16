@@ -52,7 +52,28 @@ mod tests {
         std::fs::create_dir_all(&plugin_dir).unwrap();
         std::fs::write(plugin_dir.join("component.wasm"), wasm).unwrap();
 
-        let mut app = app_with_path(text, 20, base.join(file));
+        // RF.4g: no language server can attach. The builtin configs name
+        // whatever `rust-analyzer` is on PATH, and `cre` asks the server
+        // first, so a test would race a real server's startup and its answer
+        // would depend on the machine. The table is emptied BEFORE the file
+        // opens, as peer_conformance's boot does: opening it with a path
+        // already set starts the server before anything can stop it.
+        let path = base.join(file);
+        std::fs::write(&path, text).unwrap();
+        let mut app = app_with("\n", 20);
+        app.editor
+            .lsp
+            .set_configs(Vec::new())
+            .await
+            .expect("the supervisor takes the empty set");
+        press_chars(&mut app, &format!(":e {}", path.display()));
+        press(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(
+            settle(&mut app, |a| a.editor.document.path() == Some(path.clone())
+                && a.editor.document.snapshot().buffer.as_string() == text)
+            .await,
+            "the harness's file opens"
+        );
         if let Some(lang) = lang {
             attach_test_syntax(&mut app, lang);
         }
@@ -97,6 +118,15 @@ mod tests {
         Arc::get_mut(&mut app.editor.services)
             .expect("the harness's service registry is not shared yet")
             .register::<lattice_plugin_loader::PluginLoaderHandle>(loader);
+        // And `lsp-mode` off, so a request meets the closed gate and the
+        // native rung runs inside the keystroke that asked: the tests read
+        // the result straight after the keys. A test of the server rung turns
+        // the mode back on (`with_lsp_mode`), with or without a server.
+        let buffer = app.editor.document_buffer_id;
+        let _ = app
+            .editor
+            .deactivate_mode_by_id(buffer, lattice_lsp::modes::LspMode::mode_id());
+        assert!(!app.editor.lsp_mode_enabled_for(buffer));
         Some(app)
     }
 
@@ -870,6 +900,263 @@ mod tests {
             "echo: {:?}",
             echoed(&app)
         );
+    }
+
+    /// RF.4g: set an option the way a user does.
+    fn set(app: &mut App, assignment: &str) {
+        press_chars(app, &format!(":set {assignment}"));
+        enter(app);
+    }
+
+    /// RF.4g: `refactor.source=native` skips the server altogether, so the
+    /// native extract runs from the operator itself.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn extract_with_source_native_does_not_ask_the_server() {
+        let Some(mut app) =
+            app_with_refactor("main.rs", RUST, Some(lattice_syntax::Lang::Rust)).await
+        else {
+            return;
+        };
+        set(&mut app, "refactor.source=native");
+        press_chars(&mut app, "jfbcreiw");
+        assert_eq!(
+            body(&app),
+            "fn main() {\n    let value = bar;\n    let x = foo(value, baz + 1);\n}\n",
+            "echo: {:?}",
+            echoed(&app)
+        );
+    }
+
+    /// RF.4g: `refactor.source=lsp` names no fallback, so with no server
+    /// nothing is extracted and the request says why.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn extract_with_source_lsp_and_no_server_changes_nothing() {
+        let Some(mut app) =
+            app_with_refactor("main.rs", RUST, Some(lattice_syntax::Lang::Rust)).await
+        else {
+            return;
+        };
+        set(&mut app, "refactor.source=lsp");
+        press_chars(&mut app, "jfbcreiw");
+        assert_eq!(body(&app), RUST);
+        assert!(
+            echoed(&app).contains("lsp-mode disabled"),
+            "got {:?}",
+            echoed(&app)
+        );
+    }
+
+    /// RF.4g: `cri` asks the server for an inline; without one, and with no
+    /// native inline yet (RF.4f), it says so and changes nothing.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn inline_without_a_server_says_it_is_not_built_yet() {
+        let src = "fn main() {\n    let a = 1;\n    let b = a + 2;\n}\n";
+        let Some(mut app) =
+            app_with_refactor("main.rs", src, Some(lattice_syntax::Lang::Rust)).await
+        else {
+            return;
+        };
+        press_chars(&mut app, "jwwcriw");
+        assert_eq!(body(&app), src);
+        assert!(
+            echoed(&app).contains("not built yet"),
+            "got {:?}",
+            echoed(&app)
+        );
+        // The Visual form goes the same way.
+        press_chars(&mut app, "viw ri");
+        assert_eq!(body(&app), src);
+        assert!(
+            echoed(&app).contains("not built yet"),
+            "got {:?}",
+            echoed(&app)
+        );
+    }
+
+    /// An in-process language server's runtime, shut down without blocking
+    /// so a failing assertion inside the async test does not abort.
+    struct MockServer(Option<tokio::runtime::Runtime>);
+
+    impl Drop for MockServer {
+        fn drop(&mut self) {
+            if let Some(rt) = self.0.take() {
+                rt.shutdown_background();
+            }
+        }
+    }
+
+    /// RF.4g: `lsp-mode` back on, with no server in the table: what a
+    /// machine without the language's server has.
+    async fn with_lsp_mode(app: &mut App) {
+        let buffer = app.editor.document_buffer_id;
+        let _ = app
+            .editor
+            .activate_mode_by_id(buffer, lattice_lsp::modes::LspMode::mode_id());
+        assert!(settle_mode(app, "lsp-code-action-mode").await);
+        let uri = app.editor.buffer_uris.get(&buffer).cloned().expect("a uri");
+        assert!(
+            app.editor.lsp.servers_for(&uri).is_empty(),
+            "no real server"
+        );
+    }
+
+    /// RF.4g: `lsp-mode` back on (with no server in the table) and an
+    /// in-process server attached that answers `textDocument/codeAction`
+    /// with `actions` and advertises `kinds`.
+    async fn with_server(
+        app: &mut App,
+        kinds: serde_json::Value,
+        actions: serde_json::Value,
+    ) -> (MockServer, lattice_host::peer_conformance::MockLspLog) {
+        with_lsp_mode(app).await;
+        let path = app
+            .editor
+            .document
+            .path()
+            .expect("the harness opens a file")
+            .to_path_buf();
+        let serve: lattice_host::peer_conformance::MockLspServe =
+            Arc::new(move |method, _params| match method {
+                "textDocument/codeAction" => (actions.clone(), std::time::Duration::ZERO),
+                _ => (serde_json::Value::Null, std::time::Duration::ZERO),
+            });
+        let (rt, log) = tokio::task::block_in_place(|| {
+            lattice_host::peer_conformance::attach_mock_lsp_serving(
+                app,
+                &path,
+                serde_json::json!({ "codeActionProvider": { "codeActionKinds": kinds } }),
+                serve,
+            )
+        });
+        (MockServer(Some(rt)), log)
+    }
+
+    /// The `textDocument/codeAction` requests a mock server received.
+    fn code_action_requests(
+        log: &lattice_host::peer_conformance::MockLspLog,
+    ) -> Vec<serde_json::Value> {
+        log.lock()
+            .expect("log")
+            .iter()
+            .filter(|(method, _)| method == "textDocument/codeAction")
+            .map(|(_, params)| params.clone())
+            .collect()
+    }
+
+    /// RF.4g: with a server, `cre` asks it for extractions — that kind only,
+    /// over the operator's own range — and its answer opens as a picker,
+    /// with no key pressed after the chord. Native extract does not run.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn extract_asks_the_server_first() {
+        let Some(mut app) =
+            app_with_refactor("main.rs", RUST, Some(lattice_syntax::Lang::Rust)).await
+        else {
+            return;
+        };
+        let (_server, log) = with_server(
+            &mut app,
+            serde_json::json!(["quickfix", "refactor.extract"]),
+            serde_json::json!([
+                { "title": "Extract into variable", "kind": "refactor.extract.variable" }
+            ]),
+        )
+        .await;
+        press_chars(&mut app, "jfbcreiw");
+        assert!(
+            settle_woken(&mut app, |a| a.editor.picker.is_some()).await,
+            "the server's extraction opens as a picker; echo {:?}",
+            echoed(&app)
+        );
+        assert_eq!(body(&app), RUST, "native extract did not run");
+        let requests = code_action_requests(&log);
+        assert_eq!(requests.len(), 1, "one request: {requests:?}");
+        let params = &requests[0];
+        assert_eq!(
+            params["context"]["only"],
+            serde_json::json!(["refactor.extract"])
+        );
+        // `iw` on `bar`: line 1, bytes 16..19 — the range the operator was
+        // handed, not the cursor's.
+        assert_eq!(
+            params["range"],
+            serde_json::json!({
+                "start": { "line": 1, "character": 16 },
+                "end": { "line": 1, "character": 19 }
+            })
+        );
+    }
+
+    /// RF.4g: `lsp-mode` on and no server for the language — the common case
+    /// — asks, learns there is none, and runs native extract off that wake,
+    /// with no key pressed after the chord.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn with_no_server_extract_falls_back_off_the_wake() {
+        let Some(mut app) =
+            app_with_refactor("main.rs", RUST, Some(lattice_syntax::Lang::Rust)).await
+        else {
+            return;
+        };
+        with_lsp_mode(&mut app).await;
+        press_chars(&mut app, "jfbcreiw");
+        let extracted = "fn main() {\n    let value = bar;\n    let x = foo(value, baz + 1);\n}\n";
+        assert!(
+            settle_woken(&mut app, |a| body(a) == extracted).await,
+            "body {:?}, echo {:?}",
+            body(&app),
+            echoed(&app)
+        );
+    }
+
+    /// RF.4g: a server with nothing to offer hands over to native extract,
+    /// off the wake that carries its answer.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_empty_server_answer_falls_back_to_native() {
+        let Some(mut app) =
+            app_with_refactor("main.rs", RUST, Some(lattice_syntax::Lang::Rust)).await
+        else {
+            return;
+        };
+        let (_server, log) = with_server(
+            &mut app,
+            serde_json::json!(["refactor.extract"]),
+            serde_json::json!([]),
+        )
+        .await;
+        press_chars(&mut app, "jfbcreiw");
+        let extracted = "fn main() {\n    let value = bar;\n    let x = foo(value, baz + 1);\n}\n";
+        assert!(
+            settle_woken(&mut app, |a| body(a) == extracted).await,
+            "body {:?}, echo {:?}",
+            body(&app),
+            echoed(&app)
+        );
+        assert_eq!(code_action_requests(&log).len(), 1);
+    }
+
+    /// RF.4g: a server whose advertised kinds leave out extract is not asked
+    /// at all, and native extract runs.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_server_without_extractions_is_not_asked() {
+        let Some(mut app) =
+            app_with_refactor("main.rs", RUST, Some(lattice_syntax::Lang::Rust)).await
+        else {
+            return;
+        };
+        let (_server, log) = with_server(
+            &mut app,
+            serde_json::json!(["quickfix"]),
+            serde_json::json!([{ "title": "never asked", "kind": "refactor.extract" }]),
+        )
+        .await;
+        press_chars(&mut app, "jfbcreiw");
+        let extracted = "fn main() {\n    let value = bar;\n    let x = foo(value, baz + 1);\n}\n";
+        assert!(
+            settle_woken(&mut app, |a| body(a) == extracted).await,
+            "body {:?}, echo {:?}",
+            body(&app),
+            echoed(&app)
+        );
+        assert!(code_action_requests(&log).is_empty());
     }
 
     /// RF.4j: the Visual forms are `refactor-mode`'s own `<leader>r` bindings,

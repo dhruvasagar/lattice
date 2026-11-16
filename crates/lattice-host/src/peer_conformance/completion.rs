@@ -305,7 +305,7 @@ fn attach_mock_lsp<P: PeerUnderTest>(
 
 /// Every message a mock server received: `(method, params)`, requests and
 /// notifications alike, in arrival order.
-pub(super) type MockLspLog = Arc<std::sync::Mutex<Vec<(String, serde_json::Value)>>>;
+pub type MockLspLog = Arc<std::sync::Mutex<Vec<(String, serde_json::Value)>>>;
 
 /// [`attach_mock_lsp`] with whole completion items (`insertTextFormat`,
 /// `textEdit`, `additionalTextEdits`, `command` …) and `extra_capabilities`
@@ -318,6 +318,46 @@ pub(super) fn attach_mock_lsp_with<P: PeerUnderTest>(
     items: Vec<serde_json::Value>,
     delay: Duration,
     extra_capabilities: serde_json::Value,
+) -> (tokio::runtime::Runtime, MockLspLog) {
+    let items = serde_json::json!({ "isIncomplete": false, "items": items });
+    let attached = attach_mock_lsp_serving(
+        peer,
+        path,
+        extra_capabilities,
+        Arc::new(move |method, _params| match method {
+            "textDocument/completion" => (items.clone(), delay),
+            _ => (serde_json::Value::Null, Duration::ZERO),
+        }),
+    );
+    let editor = peer.editor_mut();
+    let buffer = editor.document_buffer_id;
+    let _ = editor.activate_mode_by_id(
+        buffer,
+        lattice_lsp::completion::LspCompletionMode::mode_id(),
+    );
+    peer.republish();
+    attached
+}
+
+/// How a mock server answers a request: `(method, params)` to the result
+/// and how long to take over it. `initialize` is the mock's own.
+pub type MockLspServe =
+    Arc<dyn Fn(&str, &serde_json::Value) -> (serde_json::Value, Duration) + Send + Sync>;
+
+/// An in-process language server over a pipe, attached to the buffer at
+/// `path`, answering each request with `serve`. `extra_capabilities` merge
+/// into its `initialize` reply. Returns its runtime, which must outlive the
+/// scenario, and the log of everything it received.
+///
+/// It activates no mode: a scenario turns on the `lsp-*` mode its feature
+/// needs (the completion helpers above do). Call it from synchronous code:
+/// it runs the handshake on a runtime of its own, which a caller inside a
+/// tokio runtime does through `tokio::task::block_in_place`.
+pub fn attach_mock_lsp_serving<P: PeerUnderTest>(
+    peer: &mut P,
+    path: &Path,
+    extra_capabilities: serde_json::Value,
+    serve: MockLspServe,
 ) -> (tokio::runtime::Runtime, MockLspLog) {
     use lattice_lsp::{LspReader, LspWriter, Message, Response};
 
@@ -369,11 +409,12 @@ pub(super) fn attach_mock_lsp_with<P: PeerUnderTest>(
                             "capabilities": capabilities,
                             "serverInfo": { "name": "conformance-mock" }
                         }),
-                        "textDocument/completion" => {
+                        method => {
+                            let (result, delay) =
+                                serve(method, &req.params.clone().unwrap_or_default());
                             tokio::time::sleep(delay).await;
-                            serde_json::json!({ "isIncomplete": false, "items": items })
+                            result
                         }
-                        _ => serde_json::Value::Null,
                     };
                     let reply = Message::Response(Response::ok(req.id.clone(), result));
                     if writer.write_message(&reply).await.is_err() {
@@ -405,7 +446,9 @@ pub(super) fn attach_mock_lsp_with<P: PeerUnderTest>(
     });
 
     let uri = lattice_lsp::actor::uri_from_path(path);
-    let text = std::fs::read_to_string(path).expect("read");
+    // What the buffer holds, which is what the server is told is open: the
+    // file need not exist on disk.
+    let text = peer.editor().document.snapshot().buffer.as_string();
     rt.block_on(peer.editor().lsp.attach_handle(
         uri.clone(),
         root,
@@ -418,10 +461,6 @@ pub(super) fn attach_mock_lsp_with<P: PeerUnderTest>(
     let editor = peer.editor_mut();
     let buffer = editor.document_buffer_id;
     editor.buffer_uris.insert(buffer, uri);
-    let _ = editor.activate_mode_by_id(
-        buffer,
-        lattice_lsp::completion::LspCompletionMode::mode_id(),
-    );
     peer.republish();
     (rt, log)
 }

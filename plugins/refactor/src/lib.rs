@@ -56,11 +56,11 @@ use lattice::plugin_host::modes::{
 };
 use lattice::plugin_host::tree_sitter::TreeSnapshot;
 use lattice::plugin_host::types::{
-    ActionContext, ActionSpec, ApplyEditPayload, Args, EchoLevel, EchoPayload, Edit, EditKind,
-    Effect, ExCommandContext, ExCommandSpec, InsertSnippetPayload, LatencyClass, ModalState,
-    MotionContext, MotionResult, OperatorContext, OperatorSpec, Position, Range, Selection,
-    SelectionSet, SurfaceForm, TextObjectContext, TrackRangePayload, UntrackRangePayload,
-    VisualKind, VisualMode,
+    ActionContext, ActionSpec, ApplyEditPayload, Args, CodeActionKind, CodeActionRequest,
+    CommandRef, EchoLevel, EchoPayload, Edit, EditKind, Effect, ExCommandContext, ExCommandSpec,
+    InsertSnippetPayload, LatencyClass, ModalState, MotionContext, MotionResult, OperatorContext,
+    OperatorSpec, Position, Range, Selection, SelectionSet, SurfaceForm, TextObjectContext,
+    TrackRangePayload, UntrackRangePayload, VisualKind, VisualMode,
 };
 use lattice::plugin_host::{config, grammar, help, modes};
 
@@ -90,6 +90,14 @@ const CB_SPLIT_OP: u32 = 51;
 const CB_JOIN_OP: u32 = 52;
 const CB_EXCHANGE_OP: u32 = 53;
 const CB_EXTRACT_OP: u32 = 54;
+const CB_INLINE_OP: u32 = 55;
+const CB_EXTRACT_NATIVE: u32 = 56;
+const CB_INLINE_NATIVE: u32 = 57;
+
+/// RF.4g: the fallback commands an extract / inline request names, run by
+/// the host when the server has nothing to offer.
+const EXTRACT_NATIVE: &str = "refactor-extract-native";
+const INLINE_NATIVE: &str = "refactor-inline-native";
 /// The one parse callback every argument-less ex-command shares.
 const CB_PARSE_NO_ARGS: u32 = 100;
 
@@ -467,15 +475,104 @@ fn exchange_op(ctx: &OperatorContext, doc: &Document) -> Vec<Effect> {
     effects
 }
 
-/// `cre{motion}`: extract the expression the range covers into a
-/// variable declared before its statement, the name typed once at both sites.
-fn extract_op(ctx: &OperatorContext, doc: &Document, tree: &TreeSnapshot) -> Vec<Effect> {
+/// Where extract and inline look, in order: `refactor.source`, a comma list
+/// of `lsp` and `native` (refactor.md §9.1). Unknown words are skipped; an
+/// empty or all-unknown list means the default, `lsp,native`.
+#[derive(Debug, PartialEq, Eq)]
+struct Sources {
+    lsp: bool,
+    native: bool,
+    lsp_first: bool,
+}
+
+fn sources(value: Option<&str>) -> Sources {
+    let words: Vec<&str> = value
+        .unwrap_or("")
+        .split(',')
+        .map(str::trim)
+        .filter(|w| matches!(*w, "lsp" | "native"))
+        .collect();
+    if words.is_empty() {
+        return Sources {
+            lsp: true,
+            native: true,
+            lsp_first: true,
+        };
+    }
+    Sources {
+        lsp: words.contains(&"lsp"),
+        native: words.contains(&"native"),
+        lsp_first: words[0] == "lsp",
+    }
+}
+
+/// RF.4g: an extract or inline over `range`, server first when
+/// `refactor.source` says so. The server's answer decides: actions open as
+/// a picker; nothing runs the native command `native` names, over the same
+/// range, on the text as it was (the host checks).
+fn server_or_native(
+    ctx: &OperatorContext,
+    kind: CodeActionKind,
+    native: &str,
+    run_native: impl FnOnce(Span) -> Vec<Effect>,
+) -> Vec<Effect> {
+    let range = Span::from(ctx.range);
+    let source = sources(
+        config::get_option_in_buffer(u64::from(ctx.buffer_id), "refactor.source").as_deref(),
+    );
+    if source.native && !(source.lsp && source.lsp_first) {
+        return run_native(range);
+    }
+    vec![Effect::LspCodeAction(CodeActionRequest {
+        only: Some(kind),
+        range: Some(range.into()),
+        otherwise: source.native.then(|| CommandRef {
+            id: native.to_string(),
+            args: Args::Bytes(range.to_bytes()),
+        }),
+    })]
+}
+
+/// The range a fallback command was handed, or why it has none.
+fn fallback_range(ctx: &ActionContext) -> Result<Span, Vec<Effect>> {
+    match &ctx.args {
+        Args::Bytes(bytes) => Span::from_bytes(bytes).ok_or_else(|| echo("refactor: bad range")),
+        _ => Err(echo(
+            "refactor: this runs when a language server has nothing to offer; use `cre` / `cri`",
+        )),
+    }
+}
+
+/// `cri{motion}`'s native half. Not built yet (RF.4f): say so plainly.
+fn inline_native() -> Vec<Effect> {
+    echo("refactor: no language server offers an inline here, and native inline is not built yet")
+}
+
+/// `cre{motion}`: extract the expression the range covers into a variable
+/// declared before its statement, the name typed once at both sites.
+fn extract_op(ctx: &OperatorContext, doc: &Document, tree: Option<&TreeSnapshot>) -> Vec<Effect> {
+    server_or_native(ctx, CodeActionKind::Extract, EXTRACT_NATIVE, |range| {
+        extract_native(ctx.buffer_id, doc, tree, range)
+    })
+}
+
+/// The native extract over `range`, from the operator or from the host's
+/// fallback.
+fn extract_native(
+    buffer_id: u32,
+    doc: &Document,
+    tree: Option<&TreeSnapshot>,
+    range: Span,
+) -> Vec<Effect> {
+    let Some(tree) = tree else {
+        return echo("refactor: no syntax tree for this buffer");
+    };
     // Read through the buffer, so a mode (or `:setlocal`) can supply the
     // declaration form of one language. Until plugin options can be
     // buffer-local (RF.4e′) this is the global value. Empty: the table's.
-    let template = config::get_option_in_buffer(u64::from(ctx.buffer_id), "refactor.declaration")
+    let template = config::get_option_in_buffer(u64::from(buffer_id), "refactor.declaration")
         .filter(|t| !t.trim().is_empty());
-    match extract::extract(tree, doc, Span::from(ctx.range), template.as_deref()) {
+    match extract::extract(tree, doc, range, template.as_deref()) {
         Ok((range, body)) => vec![Effect::InsertSnippet(InsertSnippetPayload {
             range: range.into(),
             body,
@@ -570,6 +667,30 @@ impl Guest for Component {
             "Extract the expression the range covers into a variable declared before its statement; the name is typed once, at both sites (`cre{motion}`; Visual `<leader>re`). Variables only: extracting a function needs a language server.",
             &operator("cre"),
             CB_EXTRACT_OP,
+        );
+        grammar::register_operator(
+            "refactor-inline-operator",
+            "Inline the variable the range names: its value replaces each use and the declaration goes (`cri{motion}`; Visual `<leader>ri`). Asks the language server; without one, not built yet.",
+            &operator("cri"),
+            CB_INLINE_OP,
+        );
+        // RF.4g: what the host runs when the server has nothing to offer.
+        // Not for a key: each takes the range its operator asked about.
+        grammar::register_action(
+            EXTRACT_NATIVE,
+            "Extract, without a language server, over the range a `cre` request carried. Run by the host when the server offers nothing.",
+            &ActionSpec {
+                args_schema: Vec::new(),
+            },
+            CB_EXTRACT_NATIVE,
+        );
+        grammar::register_action(
+            INLINE_NATIVE,
+            "Inline, without a language server, over the range a `cri` request carried. Run by the host when the server offers nothing.",
+            &ActionSpec {
+                args_schema: Vec::new(),
+            },
+            CB_INLINE_NATIVE,
         );
         grammar::register_operator(
             "refactor-split-operator",
@@ -688,6 +809,11 @@ impl Guest for Component {
                     "<leader>re",
                     "refactor-extract-operator",
                 ),
+                bind(
+                    BindingMode::Visual,
+                    "<leader>ri",
+                    "refactor-inline-operator",
+                ),
                 bind(BindingMode::Visual, "<leader>rj", "refactor-join-operator"),
                 bind(
                     BindingMode::Visual,
@@ -704,6 +830,12 @@ impl Guest for Component {
     /// whose language the plugin's table does not cover (or covers in a way
     /// a project does not want). Short name; the host namespaces it.
     fn register_options() {
+        config::register_option(
+            "source",
+            OptionType::String,
+            "lsp,native",
+            "where `cre` / `cri` look, in order: `lsp` (the language server's refactorings), `native` (the plugin's own), or both, comma-separated. With `lsp` first, native runs only when the server has nothing to offer.",
+        );
         config::register_option(
             "declaration",
             OptionType::String,
@@ -733,6 +865,14 @@ impl GrammarCallbacks for Component {
             CB_EXPAND => expand(&ctx, doc, tree),
             CB_SHRINK => shrink(&ctx, doc),
             CB_EXCHANGE_CLEAR => exchange_clear(),
+            CB_EXTRACT_NATIVE => match fallback_range(&ctx) {
+                Ok(range) => extract_native(ctx.buffer_id, doc, tree, range),
+                Err(effects) => effects,
+            },
+            CB_INLINE_NATIVE => match fallback_range(&ctx) {
+                Ok(_) => inline_native(),
+                Err(effects) => effects,
+            },
             other => return Err(format!("refactor: unknown action callback {other}")),
         })
     }
@@ -755,6 +895,19 @@ impl GrammarCallbacks for Component {
         if callback == CB_EXCHANGE_OP {
             return Ok(exchange_op(&ctx, doc));
         }
+        // RF.4g: extract and inline ask the server first, which needs no
+        // parse; their native half checks for the tree itself.
+        if callback == CB_EXTRACT_OP {
+            return Ok(extract_op(&ctx, doc, tree));
+        }
+        if callback == CB_INLINE_OP {
+            return Ok(server_or_native(
+                &ctx,
+                CodeActionKind::Inline,
+                INLINE_NATIVE,
+                |_| inline_native(),
+            ));
+        }
         let Some(tree) = tree else {
             return Ok(echo("refactor: no syntax tree for this buffer"));
         };
@@ -766,7 +919,6 @@ impl GrammarCallbacks for Component {
                 let outcome = split::reshape(tree, doc, range, split::Layout::Split, &unit);
                 edit_effects(ctx.buffer_id, outcome)
             }
-            CB_EXTRACT_OP => extract_op(&ctx, doc, tree),
             CB_JOIN_OP => edit_effects(
                 ctx.buffer_id,
                 split::reshape(tree, doc, range, split::Layout::Join, ""),
@@ -851,5 +1003,61 @@ impl From<Range> for Span {
             start: r.start.into(),
             end: r.end.into(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{sources, Sources};
+    use crate::span::{Pos, Span};
+
+    #[test]
+    fn refactor_source_orders_the_rungs() {
+        let both = Sources {
+            lsp: true,
+            native: true,
+            lsp_first: true,
+        };
+        assert_eq!(sources(None), both);
+        assert_eq!(sources(Some("")), both, "empty is the default");
+        assert_eq!(sources(Some("lsp, native")), both);
+        assert_eq!(
+            sources(Some("native,lsp")),
+            Sources {
+                lsp: true,
+                native: true,
+                lsp_first: false
+            }
+        );
+        assert_eq!(
+            sources(Some("lsp")),
+            Sources {
+                lsp: true,
+                native: false,
+                lsp_first: true
+            }
+        );
+        assert_eq!(
+            sources(Some("native")),
+            Sources {
+                lsp: false,
+                native: true,
+                lsp_first: false
+            }
+        );
+        assert_eq!(sources(Some("bogus")), both, "unknown words are skipped");
+    }
+
+    #[test]
+    fn a_span_survives_its_bytes() {
+        let span = Span {
+            start: Pos { line: 3, byte: 7 },
+            end: Pos {
+                line: 70_000,
+                byte: 12,
+            },
+        };
+        assert_eq!(Span::from_bytes(&span.to_bytes()), Some(span));
+        assert_eq!(Span::from_bytes(&[1, 2, 3]), None);
     }
 }

@@ -36,7 +36,8 @@ with the same letter instead.
 | `cxx` | | exchange the line |
 | `cxc` | | clear the exchange mark |
 | `crr{obj}` | `<leader>rr` | raise: the node the range covers replaces the expression around it |
-| `cre{obj}` | `<leader>re` | extract the expression into a variable declared before its statement |
+| `cre{obj}` | `<leader>re` | extract: the language server's extractions, else the expression into a variable declared before its statement |
+| `cri{obj}` | `<leader>ri` | inline: the language server's inlines (no native inline yet) |
 | `cr<CR>{obj}` | `<leader>r<CR>` | split the comma list around the range, one item per line |
 | `crj{obj}` | `<leader>rj` | join the comma list around the range onto one line |
 
@@ -71,6 +72,23 @@ language without one, or to use another, set `refactor.declaration` —
 buffer for now; per-buffer (`:setlocal`) is not yet possible for a plugin's
 option. Extracting a function needs a language server and is not offered
 without one.
+
+**Server first.** `cre` and `cri` first ask the buffer's language server
+for its extractions or inlines over the same range. If it offers any, they
+open in a picker (extract function, extract constant, whatever the server
+knows). If it offers none (no server, a server without that kind, or an
+empty answer), the plugin's own extract runs on the text as it was; if the
+text changed meanwhile, nothing runs and it says so. A server error is
+shown, and nothing else runs. `refactor.source` sets the order:
+
+| `refactor.source` | |
+|---|---|
+| `lsp,native` (default) | the server first, native when it has nothing |
+| `native` | native only; the server is not asked |
+| `lsp` | the server only; nothing when it has nothing |
+| `native,lsp` | native only, as `native`: it always answers, so the server would never be asked |
+
+Inline has no native half yet, so without a server `cri` says so.
 
 Split and join act on the nearest comma list around the range, so
 `cr<CR>i(` and `cr<CR>iw` on an argument both split the call's

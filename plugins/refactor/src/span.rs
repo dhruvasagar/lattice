@@ -23,6 +23,42 @@ pub struct Span {
 }
 
 impl Span {
+    /// RF.4g: the span as the opaque `args.bytes` a fallback command carries
+    /// — four little-endian `u32`s, start then end.
+    pub fn to_bytes(self) -> Vec<u8> {
+        [
+            self.start.line,
+            self.start.byte,
+            self.end.line,
+            self.end.byte,
+        ]
+        .iter()
+        .flat_map(|n| n.to_le_bytes())
+        .collect()
+    }
+
+    /// The inverse of [`Self::to_bytes`]; `None` for anything else.
+    pub fn from_bytes(bytes: &[u8]) -> Option<Span> {
+        if bytes.len() != 16 {
+            return None;
+        }
+        let n = |i: usize| {
+            let mut word = [0u8; 4];
+            word.copy_from_slice(&bytes[i * 4..i * 4 + 4]);
+            u32::from_le_bytes(word)
+        };
+        Some(Span {
+            start: Pos {
+                line: n(0),
+                byte: n(1),
+            },
+            end: Pos {
+                line: n(2),
+                byte: n(3),
+            },
+        })
+    }
+
     /// Whether this span contains all of `other`.
     pub fn covers(self, other: Span) -> bool {
         self.start <= other.start && other.end <= self.end

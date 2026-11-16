@@ -215,6 +215,38 @@ must carry is settled in §9.1: an explicit `range` (an operator's, not the
 cursor's or the last selection's) and an `otherwise` command for when the
 server has nothing.
 
+**Settled (RF.3a).** The field-less `lsp-code-action` case is widened in
+place, not joined by a second case:
+
+	enum code-action-kind { refactor, extract, inline }
+	record code-action-request {
+		/// The kind family to ask for; `none` is every action.
+		only: option<code-action-kind>,
+		/// The text to ask about; `none` is the cursor, or the live
+		/// Visual selection if one is up.
+		range: option<range>,
+		/// Run when the server has nothing to offer (§9.1).
+		otherwise: option<command-ref>,
+	}
+	effect: lsp-code-action(code-action-request)
+
+The request with every field `none` is the old unfiltered one. A second
+case beside the old one would be two ways to ask the same question for
+good, which is the asymmetry §9 rejected for `apply-operator`; widening
+breaks only components built against `lsp-code-action` with no payload,
+and nothing in this repository or the org plugin returns it. RF.4a already
+made the publish 0.5.0, so there is no patch release to protect, and the
+instantiation check that would decide patch-or-bump has nothing left to
+decide. `command-ref` is reused as it is: its `id` is a registered command
+*name* (the `confirm` / `invoke-command` precedent), never a host id.
+`:'<,'>` has no WIT form, deliberately: §8's second gap was dropped, so the
+native `on_selection` flag stays native.
+
+Natively, `LspRequest::CodeActions` gains `range: Option<Range>` and
+`otherwise: Option<CommandRef>`, with `range` winning over `on_selection`
+when both are given. `CommandRef { id, args }` is a new lattice-grammar
+type, the same pair `Effect::InvokeCommand` carries.
+
 ## 9. Operators: every refactor over a range
 
 The v1 commands act on the node at the cursor. That is the weakest part of
@@ -370,6 +402,13 @@ user choose. If none come back, or no server is attached, or the server
 advertises `codeActionKinds` and none matches `only` (no round trip at
 all), the host invokes `otherwise`. Two rules make that safe:
 
+- **An answer, not a timeout.** `otherwise` runs only on an answer that
+  says "nothing": no server, a server whose advertised kinds exclude the
+  request, or an empty list. A server that errors is reported as its own
+  failure and nothing else runs; one that hangs is waited for, and `<C-g>`
+  stops it. This is the format chain's rule (`:format` "cascades on
+  availability, not on failure"): falling back on failure needs a timeout,
+  and no timeout is right.
 - **A stale range is not acted on.** The host records the buffer's text
   version when it asks. If the text changed before the answer came, it
   invokes nothing and says so ("the buffer changed while the server was

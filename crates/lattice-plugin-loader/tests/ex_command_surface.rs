@@ -122,6 +122,7 @@ fn invoke(commands: &CommandRegistryHandle, name: &str, arg: Option<&str>) -> Ef
         buffer: Default::default(),
         path: None,
         syntax: None,
+        selection: None,
         cancel: CancellationToken::never(),
     };
     (spec.apply)(&ctx).expect("apply returns an effect")

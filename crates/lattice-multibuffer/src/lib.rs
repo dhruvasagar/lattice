@@ -2573,6 +2573,8 @@ impl MultibufferDocumentHandle {
                 // `None` is the honest answer, and matches the `syntax` and
                 // `indent_resolver` deferrals either side of it.
                 selection: None,
+                // RF.3c: the same, for a `:'<,'>` line's selection.
+                ex_selection: None,
                 // VM.3c: forwarded, not deferred — see `dispatch_with_env`.
                 last_find,
                 // VM.3i: forwarded, not deferred — see `dispatch_with_env`.

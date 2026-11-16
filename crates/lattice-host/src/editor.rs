@@ -673,6 +673,12 @@ pub struct Editor {
     /// so `gv` can re-enter Visual with the same anchor /
     /// head / kind.
     pub last_visual: Option<LastVisual>,
+    /// RF.3c: while a `:'<,'>` line dispatches, the exact selection it
+    /// named ([`Self::ex_selection_extent`]); `None` otherwise. Set and put
+    /// back around the one dispatch by `execute_ex_line`, and read into
+    /// `DispatchEnv::ex_selection`, so an ex-command sees what was selected
+    /// and not only the lines `resolve_ex_range` made of it.
+    pub ex_selection: Option<lattice_protocol::position::Range>,
     /// Last f/F/t/T find on this buffer, for `;` / `,`.
     pub last_find: Option<LastFind>,
     /// Per-Replace-session log of overwritten bytes so

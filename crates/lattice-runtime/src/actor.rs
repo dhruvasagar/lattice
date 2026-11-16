@@ -339,17 +339,18 @@ impl DocumentActor {
                     env.fold_resolver.as_deref().map(|r| r as _);
                 // Read against the host's version; carried over any append
                 // since, as a typed key is.
-                let (cursor, selection) = match env.based_on {
-                    Some(v) => (
-                        self.document.rebase_position(cursor, v),
-                        env.selection.map(|r| {
-                            lattice_protocol::position::Range::new(
-                                self.document.rebase_position(r.start, v),
-                                self.document.rebase_position(r.end, v),
-                            )
-                        }),
+                let rebase = |r: lattice_protocol::position::Range| match env.based_on {
+                    Some(v) => lattice_protocol::position::Range::new(
+                        self.document.rebase_position(r.start, v),
+                        self.document.rebase_position(r.end, v),
                     ),
-                    None => (cursor, env.selection),
+                    None => r,
+                };
+                let selection = env.selection.map(rebase);
+                let ex_selection = env.ex_selection.map(rebase);
+                let cursor = match env.based_on {
+                    Some(v) => self.document.rebase_position(cursor, v),
+                    None => cursor,
                 };
                 let to_env = lattice_grammar::GrammarEnv {
                     scope_resolver,
@@ -382,6 +383,7 @@ impl DocumentActor {
                     // `env` for the whole dispatch, so the borrow cannot
                     // outlive it.
                     curswant_out: env.curswant_out.as_deref(),
+                    ex_selection,
                 };
                 // B3b: snapshot the registry wait-free for this dispatch. A
                 // plugin registered at runtime (loader RCU-store into the

@@ -3047,8 +3047,13 @@ fn code_actions_spec(only: Option<CodeActionKindFilter>) -> ExCommandSpec {
         apply: Arc::new(move |ctx| {
             Ok(Effect::Lsp(LspRequest::CodeActions {
                 only,
+                // RF.3c: `'<,'>` reaches here as lines (the host resolves
+                // it before dispatch), so what was selected comes in
+                // `ctx.selection`, exactly, and is asked about as the range.
+                // `on_selection` stays for a caller that dispatches the
+                // symbolic form without resolving it.
                 on_selection: is_selection_range(&ctx.range),
-                range: None,
+                range: ctx.selection,
                 otherwise: None,
             }))
         }),

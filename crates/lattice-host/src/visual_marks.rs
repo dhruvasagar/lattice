@@ -60,6 +60,28 @@ impl Editor {
             VisualKind::Charwise | VisualKind::Blockwise => (start, end),
         })
     }
+
+    /// RF.3c: the last Visual selection as the half-open range it covered:
+    /// a charwise selection includes the character its head sits on, a
+    /// linewise one runs to the end of its last line. Blockwise has no
+    /// linear shape and gives its bounding characters, as an LSP request
+    /// about it does (`lsp_helpers::selection_lsp_range`). `None` before
+    /// any Visual selection.
+    pub(crate) fn ex_selection_extent(&self) -> Option<lattice_protocol::position::Range> {
+        let (start, end) = self.visual_marks()?;
+        let buffer = &self.document.snapshot().buffer;
+        let line_len = |line: u32| buffer.line(line).map_or(0, |l| l.len() as u32);
+        let end = if end.byte == u32::MAX {
+            Position::new(end.line, line_len(end.line))
+        } else {
+            let width = buffer
+                .line(end.line)
+                .and_then(|l| l.get(end.byte as usize..)?.chars().next())
+                .map_or(0, |c| c.len_utf8() as u32);
+            Position::new(end.line, end.byte + width)
+        };
+        Some(lattice_protocol::position::Range::new(start, end))
+    }
 }
 
 #[cfg(test)]

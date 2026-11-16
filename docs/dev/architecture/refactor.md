@@ -200,9 +200,22 @@ refactoring.
 2. *An ex-command cannot tell it was given the selection.*
    `ex-command-context` carries the cursor and the buffer, no range, so
    `:'<,'>lsp-extract` from a plugin could not ask about the selection.
-   **Dropped (2026-11-15):** §9 makes extract and inline operators, which
-   receive their range from Visual, a motion or a text object natively. The
-   `:` forms act on the node at the cursor, like every other refactor command.
+   *Dropped 2026-11-15, reopened and closed 2026-11-16 (RF.3c, decided
+   with Dhruva):* §9 made extract and inline operators, which get their
+   range natively. But moving the commands as cursor-only would have
+   regressed the documented `:'<,'>lsp-extract`, and every plugin's `:`
+   command would have kept seeing less than a native one, the asymmetry
+   OC.10 closed for `cursor` and `buffer-id`. So `ex-command-context` gained
+   `range: option<range>`, resolved by the host: exactly what was selected
+   for `:'<,'>`, whole lines for any other range.
+
+   Building it found the same gap natively. `execute_ex_line` makes `'<,'>`
+   whole lines before dispatch (vim's ex addresses are lines), so
+   `:'<,'>lsp-code-action` could not tell it had been given the selection,
+   and asked about the caret. The exact selection now rides beside the lines
+   (`ExCommandContext::selection`, through `DispatchEnv::ex_selection`). The
+   code-action command sends it as the request's range. The WIT field
+   projects it, and falls back to the lines for any other range.
 
 Both are API additions every plugin gains, not refactor-specific ones. How to
 add them is RF.3a's first question: widening `lsp-request` and

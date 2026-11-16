@@ -259,6 +259,7 @@ fn execute_ex_command(
         buffer: document.buffer().clone(),
         path: document.path_shared(),
         syntax: env.syntax.map(std::sync::Arc::clone),
+        selection: env.ex_selection,
         cancel: cancel.clone(),
     };
     (spec.apply)(&ctx)

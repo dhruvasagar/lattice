@@ -10002,8 +10002,8 @@
         {
           "name": "ex-command-context",
           "kind": "record",
-          "doc": "Mirrors `lattice_grammar::registry::ExCommandContext` (owned projection).\nThe native `range: option<lattice_grammar::range::Range>` is ABSENT by\ndesign: the grammar `Range` is recursive (`RangeBound::Offset { base:\nBox<..> }`) and carries a plugin `RangeId`, which a WIT record cannot\nexpress (the `Global` / `NarrowTrigger` precedent). A v1 ex-command\nplugin gets `bang` / `args` / `register` / `count`; the resolved range\nlands with the range mirror.",
-          "definition": "record ex-command-context {\n    bang: bool,\n    args: args,\n    register: register,\n    count: count,\n    cursor: position,\n    buffer-id: u32,\n}",
+          "doc": "Mirrors `lattice_grammar::registry::ExCommandContext` (owned projection).\nThe native symbolic `range` (recursive, `RangeBound::Offset { base:\nBox<..> }`, a plugin `RangeId`) does not cross; `range` below is what\nit RESOLVES to, which is all a command can act on.",
+          "definition": "record ex-command-context {\n    bang: bool,\n    args: args,\n    register: register,\n    count: count,\n    cursor: position,\n    buffer-id: u32,\n    range: option<range>,\n}",
           "members": [
             {
               "name": "bang",
@@ -10034,6 +10034,11 @@
               "name": "buffer-id",
               "type": "u32",
               "doc": null
+            },
+            {
+              "name": "range",
+              "type": "option<range>",
+              "doc": "RF.3c: the buffer range the command's `:` range names, half-open,\nresolved by the host; `none` without one. `:'<,'>` gives exactly\nwhat was selected: a charwise selection including the character\nits head is on, a linewise one to the end of its last line.\nAny other range (`:3,5`, `:.`, `:%`, `:/pat/,$`) gives its whole\nlines, start of the first to end of the last, as vim's ex\naddresses are lines.\n\nIt was absent, so a plugin's `:'<,'>cmd` could not see the\nselection a native command sees; the same asymmetry OC.10 closed\nfor `cursor` and `buffer-id`. A command that wants lines reads\n`range.start.line` and `range.end.line`."
             }
           ],
           "examples": []

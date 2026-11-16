@@ -878,6 +878,12 @@ pub struct GrammarEnv<'a> {
     /// `Send + Sync`. The lock is uncontended — one motion writes it once per
     /// dispatch, on the same thread that reads it.
     pub curswant_out: Option<&'a std::sync::Mutex<Option<Curswant>>>,
+    /// RF.3c: the Visual selection a `:'<,'>` line named, exactly — what an
+    /// ex-command's [`ExCommandContext::selection`] is filled from. Separate
+    /// from [`Self::selection`] (the LIVE region, anchor to caret) because
+    /// `:` has left Visual by the time the command runs, and the two differ
+    /// in shape: this one is head-inclusive. `None` everywhere else.
+    pub ex_selection: Option<lattice_protocol::position::Range>,
     /// VM.3f: `scrolloff`, the margin `H` / `L` keep from the window's edges.
     /// `0` — the default — leaves them on the first and last lines shown,
     /// which is vim with `scrolloff=0`.
@@ -1010,6 +1016,16 @@ pub struct ExCommandContext {
     /// [`ActionContext::syntax`] is. Cloned at the same instant as `buffer`, so
     /// tree and text agree on version (§7).
     pub syntax: Option<Arc<dyn std::any::Any + Send + Sync>>,
+    /// RF.3c: the exact extent of the Visual selection the `:` line named
+    /// (`:'<,'>cmd`), half-open: a charwise selection includes the
+    /// character its head sits on, a linewise one covers its whole lines.
+    /// `None` when the range is anything else, or there is none.
+    ///
+    /// [`Self::range`] cannot say this: the host makes `'<,'>` whole lines
+    /// before dispatch (vim's ex addresses are lines), so a command that
+    /// acts on what was selected (`:'<,'>refactor-extract` over `a + b`,
+    /// `:'<,'>lsp-code-action`) would otherwise see the lines around it.
+    pub selection: Option<lattice_protocol::position::Range>,
     /// Cooperative cancellation handle (DESIGN.md §5.2.5); owned so a
     /// closure can keep it.
     pub cancel: crate::CancellationToken,
@@ -2134,6 +2150,7 @@ mod tests {
             buffer: Buffer::default(),
             path: None,
             syntax: None,
+            selection: None,
             cancel: crate::CancellationToken::new(),
         };
         match (spec.apply)(&ctx) {

@@ -13026,10 +13026,32 @@ impl Editor {
             // The line's range is resolved to concrete lines first, here,
             // where the cursor, the marks and the buffer are (see
             // `ex_range`).
-            Ok(inv) => match self.resolve_ex_range(inv) {
-                Ok(inv) => self.dispatch_invocation(inv, out),
-                Err(err) => self.set_message(EchoLevel::Error, err.to_string()),
-            },
+            Ok(inv) => {
+                // RF.3c: `'<,'>` becomes whole lines below, as every ex
+                // address does; what was selected is kept beside it, for the
+                // commands that act on the selection rather than its lines.
+                // Put back afterwards, not cleared, so a `:` line run from
+                // inside another (`:g`) cannot unset the outer one's.
+                let names_selection = matches!(
+                    &inv.range,
+                    Some(lattice_grammar::range::Range::Selection)
+                        | Some(lattice_grammar::range::Range::Span {
+                            start: lattice_grammar::range::RangeBound::Mark('<'),
+                            end: lattice_grammar::range::RangeBound::Mark('>'),
+                        })
+                );
+                match self.resolve_ex_range(inv) {
+                    Ok(inv) => {
+                        let named = names_selection
+                            .then(|| self.ex_selection_extent())
+                            .flatten();
+                        let outer = std::mem::replace(&mut self.ex_selection, named);
+                        self.dispatch_invocation(inv, out);
+                        self.ex_selection = outer;
+                    }
+                    Err(err) => self.set_message(EchoLevel::Error, err.to_string()),
+                }
+            }
             Err(err) => {
                 self.set_message(EchoLevel::Error, err.to_string());
             }
@@ -23094,6 +23116,9 @@ impl Editor {
                 // "because actions go through the gate" -- is the OT.4 mistake
                 // this file already records one field down.
                 selection: self.active_region(),
+                // RF.3c: what a `:'<,'>` line selected, for the ex-command it
+                // runs (set by `execute_ex_line` around this dispatch).
+                ex_selection: self.ex_selection,
                 // VM.3c: the last `f` / `F` / `t` / `T`, so `;` and `,`
                 // resolve as motions. Same reasoning as `selection` above —
                 // `;` is an ordinary keystroke motion and comes through this

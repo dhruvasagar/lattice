@@ -155,10 +155,38 @@ pub fn project_text_object_context(
     })
 }
 
-/// Project an [`ExCommandContext`](NativeExCommandContext) (host→guest). The
-/// native `range: Option<grammar::Range>` is absent — the recursive grammar
-/// `Range` cannot cross a WIT record (the `Global` / `NarrowTrigger` precedent),
-/// so a v1 ex-command plugin gets `bang` / `args` / `register` / `count`.
+/// RF.3c: the buffer range an ex-command's `:` range names. The symbolic
+/// native range does not cross a WIT record (it is recursive); what it
+/// resolves to does. The selection a `:'<,'>` line named, exactly, when
+/// there is one; else the range's whole lines, which the host has already
+/// made absolute (`ex_range`); `None` without a range.
+fn ex_range(ctx: &NativeExCommandContext) -> Option<lattice_protocol::position::Range> {
+    use lattice_grammar::range::{Range, RangeBound};
+    use lattice_protocol::position::{Position, Range as Span};
+    if let Some(selection) = ctx.selection {
+        return Some(selection);
+    }
+    let last = ctx.buffer.content_line_count().saturating_sub(1);
+    let len = |line: u32| ctx.buffer.line(line).map_or(0, |l| l.len() as u32);
+    let lines = |a: u32, b: u32| {
+        let (a, b) = (a.min(b).min(last), a.max(b).min(last));
+        Span::new(Position::new(a, 0), Position::new(b, len(b)))
+    };
+    match ctx.range.as_ref()? {
+        Range::CurrentLine => Some(lines(ctx.cursor.line, ctx.cursor.line)),
+        Range::Whole => Some(lines(0, last)),
+        Range::Span {
+            start: RangeBound::Line(a),
+            end: RangeBound::Line(b),
+        } => Some(lines(*a, *b)),
+        // Unresolved (a caller that dispatched without `ex_range`), the
+        // selection with no Visual behind it, or a plugin's custom range:
+        // nothing a buffer range can say.
+        _ => None,
+    }
+}
+
+/// Project an [`ExCommandContext`](NativeExCommandContext) (host→guest).
 pub fn project_ex_command_context(
     ctx: &NativeExCommandContext,
 ) -> Result<WitExCommandContext, String> {
@@ -173,6 +201,7 @@ pub fn project_ex_command_context(
         // stays off the boundary and only the scalars cross.
         cursor: ctx.cursor.to_wit()?,
         buffer_id: ctx.buffer_id.0,
+        range: ex_range(ctx).map(|r| r.to_wit()).transpose()?,
     })
 }
 
@@ -366,6 +395,7 @@ mod tests {
             buffer: Default::default(),
             path: None,
             syntax: None,
+            selection: None,
             cancel: CancellationToken::never(),
         };
         let wit = project_ex_command_context(&ctx).unwrap();
@@ -374,6 +404,83 @@ mod tests {
         assert!(matches!(wit.args, WitArgs::List(ref v) if v.len() == 2));
         assert_eq!(wit.cursor.line, 3);
         assert_eq!(wit.buffer_id, 7);
+    }
+
+    /// RF.3c: the range crosses resolved. The selection wins; a line range
+    /// is its whole lines; `.` and `%` too; none is none.
+    #[test]
+    fn ex_command_context_projects_the_resolved_range() {
+        use lattice_grammar::range::{Range as ExRange, RangeBound};
+        let ctx = |range: Option<ExRange>, selection| NativeExCommandContext {
+            bang: false,
+            args: Args::None,
+            range,
+            register: Register::Unnamed,
+            count: Count(1),
+            buffer_id: lattice_core::BufferId(1),
+            cursor: pos(1, 2),
+            buffer: Buffer::from_text("ab\ncdé\nfghi\n"),
+            path: None,
+            syntax: None,
+            selection,
+            cancel: CancellationToken::never(),
+        };
+        let span = |r: Option<crate::lattice::plugin_host::types::Range>| {
+            r.map(|r| ((r.start.line, r.start.byte), (r.end.line, r.end.byte)))
+        };
+        let lines = Some(ExRange::Span {
+            start: RangeBound::Line(2),
+            end: RangeBound::Line(1),
+        });
+        assert_eq!(
+            span(
+                project_ex_command_context(&ctx(lines.clone(), None))
+                    .unwrap()
+                    .range
+            ),
+            Some(((1, 0), (2, 4))),
+            "whole lines, ordered, to the end of the last"
+        );
+        let picked = lattice_protocol::position::Range::new(pos(1, 1), pos(1, 4));
+        assert_eq!(
+            span(
+                project_ex_command_context(&ctx(lines, Some(picked)))
+                    .unwrap()
+                    .range
+            ),
+            Some(((1, 1), (1, 4))),
+            "the selection, exactly"
+        );
+        assert_eq!(
+            span(
+                project_ex_command_context(&ctx(Some(ExRange::CurrentLine), None))
+                    .unwrap()
+                    .range
+            ),
+            Some(((1, 0), (1, 4))),
+            "`.` is the cursor's line; `é` is two bytes"
+        );
+        assert_eq!(
+            span(
+                project_ex_command_context(&ctx(Some(ExRange::Whole), None))
+                    .unwrap()
+                    .range
+            ),
+            Some(((0, 0), (2, 4)))
+        );
+        assert_eq!(
+            span(project_ex_command_context(&ctx(None, None)).unwrap().range),
+            None
+        );
+        assert_eq!(
+            span(
+                project_ex_command_context(&ctx(Some(ExRange::Selection), None))
+                    .unwrap()
+                    .range
+            ),
+            None,
+            "the selection with no Visual behind it"
+        );
     }
 
     #[test]

@@ -65,6 +65,12 @@
   first is `"locals"`: scopes, definitions, references, and member names
   (`obj.x`), which are never references, for rust, python, ruby, go,
   javascript, typescript, tsx, cpp, java and lua. Run it like any query.
+  Also breaking in 0.5.0: `ex-command-context` gains `range: option<range>`,
+  what the command's `:` range names, resolved: exactly what was selected
+  for `:'<,'>` (charwise including the character under the head, linewise to
+  the end of the last line), whole lines for any other range, `none` without
+  one. A plugin's `:'<,'>cmd` could not see the selection before. A guest
+  built against the old record must be rebuilt.
 
 ## 0.10.0 — 2026-11-10
 

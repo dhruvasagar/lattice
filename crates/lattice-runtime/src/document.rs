@@ -145,6 +145,11 @@ pub struct DispatchEnv {
     /// That is the OT.4 failure verbatim, and it is cheaper to carry the field
     /// than to rediscover it.
     pub selection: Option<lattice_protocol::position::Range>,
+    /// RF.3c: the Visual selection a `:'<,'>` line named, exactly (see
+    /// `lattice_grammar::GrammarEnv::ex_selection`). Carried for the reason
+    /// `selection` is: an ex-command dispatches through the actor, so a
+    /// field the host does not thread here is one no command ever sees.
+    pub ex_selection: Option<lattice_protocol::position::Range>,
     /// VM.3c: the last `f` / `F` / `t` / `T`, so `;` and `,` can be motions.
     ///
     /// Same reasoning as every field above it: `;` is an ordinary motion on

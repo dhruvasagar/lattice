@@ -1136,6 +1136,7 @@ mod tests {
             buffer: Default::default(),
             path: None,
             syntax: None,
+            selection: None,
             cancel: lattice_protocol::CancellationToken::never(),
         };
         let from_ex = (spec.apply)(&ex_ctx).expect("apply");

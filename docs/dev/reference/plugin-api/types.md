@@ -3121,16 +3121,14 @@ record ex-command-context {
     count: count,
     cursor: position,
     buffer-id: u32,
+    range: option<range>,
 }
 ```
 
 Mirrors `lattice_grammar::registry::ExCommandContext` (owned projection).
-The native `range: option<lattice_grammar::range::Range>` is ABSENT by
-design: the grammar `Range` is recursive (`RangeBound::Offset { base:
-Box<..> }`) and carries a plugin `RangeId`, which a WIT record cannot
-express (the `Global` / `NarrowTrigger` precedent). A v1 ex-command
-plugin gets `bang` / `args` / `register` / `count`; the resolved range
-lands with the range mirror.
+The native symbolic `range` (recursive, `RangeBound::Offset { base:
+Box<..> }`, a plugin `RangeId`) does not cross; `range` below is what
+it RESOLVES to, which is all a command can act on.
 
 **Fields**
 
@@ -3150,6 +3148,18 @@ lands with the range mirror.
   "a command reached that way was seeing strictly less than the same
   command reached by a chord" — and the mirror simply never followed.
 - `buffer-id`: `u32`
+- `range`: `option<range>` — RF.3c: the buffer range the command's `:` range names, half-open,
+  resolved by the host; `none` without one. `:'<,'>` gives exactly
+  what was selected: a charwise selection including the character
+  its head is on, a linewise one to the end of its last line.
+  Any other range (`:3,5`, `:.`, `:%`, `:/pat/,$`) gives its whole
+  lines, start of the first to end of the last, as vim's ex
+  addresses are lines.
+
+  It was absent, so a plugin's `:'<,'>cmd` could not see the
+  selection a native command sees; the same asymmetry OC.10 closed
+  for `cursor` and `buffer-id`. A command that wants lines reads
+  `range.start.line` and `range.end.line`.
 
 ### record `action-context`
 

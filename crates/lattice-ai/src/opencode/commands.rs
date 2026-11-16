@@ -70,6 +70,7 @@ mod tests {
             buffer: Default::default(),
             path: None,
             syntax: None,
+            selection: None,
             cancel: CancellationToken::new(),
         }
     }

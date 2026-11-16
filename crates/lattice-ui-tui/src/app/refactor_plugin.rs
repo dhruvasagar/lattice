@@ -1375,6 +1375,41 @@ mod tests {
             .collect()
     }
 
+    /// RF.3c: `:'<,'>lsp-code-action` asks about what was selected, not
+    /// the lines around it. `execute_ex_line` makes `'<,'>` whole lines
+    /// before dispatch, which left the command unable to tell it had been
+    /// given the selection, so it asked about the cursor; the exact
+    /// selection now rides beside the lines (`ExCommandContext::selection`).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_selection_range_asks_the_server_about_the_selection() {
+        let Some(mut app) =
+            app_with_refactor("main.rs", RUST, Some(lattice_syntax::Lang::Rust)).await
+        else {
+            return;
+        };
+        let (_server, log) = with_server(
+            &mut app,
+            serde_json::json!(["refactor.extract"]),
+            serde_json::json!([]),
+        )
+        .await;
+        // `baz + 1`: bytes 21..=27 on line 1.
+        press_chars(&mut app, "jfzhhvf1:lsp-code-action");
+        enter(&mut app);
+        assert!(
+            settle_woken(&mut app, |_| !code_action_requests(&log).is_empty()).await,
+            "a request went out; echo {:?}",
+            echoed(&app)
+        );
+        assert_eq!(
+            code_action_requests(&log)[0]["range"],
+            serde_json::json!({
+                "start": { "line": 1, "character": 21 },
+                "end": { "line": 1, "character": 28 }
+            })
+        );
+    }
+
     /// RF.4g: with a server, `cre` asks it for extractions — that kind only,
     /// over the operator's own range — and its answer opens as a picker,
     /// with no key pressed after the chord. Native extract does not run.

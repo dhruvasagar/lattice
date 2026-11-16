@@ -175,12 +175,16 @@ node's span verbatim; refinements are follow-ups, not blockers):
   (rust / js). Python's suite is delimiter-free, so its inner objects are clean.
   Delimiter-stripping (returning the span *between* `{` and `}`) is a future
   resolver refinement.
-- **Parameter outer == inner.** `@parameter.outer` falls back to the bare
-  parameter node — the single-node resolver can't extend the span to include a
-  trailing comma/separator (nvim does this with `#make-range!` predicates Lattice
-  doesn't yet model). So `aa` and `ia` resolve identically for now. The
-  byte-precision win still holds: `daa` deletes exactly `x: i32`, not the whole
-  signature line.
+- **`aa` takes its separator (RF.4b′.2).** Both captures are the bare
+  item (a parameter, or a call's argument since RF.4b′.1); the `aa` object
+  then widens the span from the buffer text. It takes the trailing `,` and the
+  blanks after it on that line, or failing that the leading `,` and the blanks
+  before the item, or nothing for an only item. `ia` is the item alone. This is
+  nvim-treesitter-textobjects' result, reached without `#make-range!`: the
+  resolver stays a "which node" question and the separator is the object's
+  concern (`text_objects::with_separator`). A line break is never taken, so in
+  a one-item-per-line list `daa` removes the item and its comma and leaves the
+  line for `dd`.
 - **Visual objects** (`vaf`) are not yet bound: the builtin objects (`viw`) have
   no Visual keymap binding either, so structural objects match that parity.
   Visual text-object support is a separate slice covering *all* objects.

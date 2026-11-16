@@ -21,6 +21,8 @@
 
 use lattice_grammar::TextObjectId;
 use lattice_grammar::registry::{CommandRegistry, TextObjectSpec};
+use lattice_protocol::Position;
+use lattice_protocol::position::Range;
 use std::sync::Arc;
 
 /// The eight structural text-object [`TextObjectId`]s, returned by
@@ -75,11 +77,13 @@ pub fn register_syntax_text_objects(registry: &mut CommandRegistry) -> SyntaxTex
              `@class.inner`.",
             "class.inner",
         ),
-        around_parameter: reg(
+        around_parameter: reg_with(
             registry,
             "text-object:around-parameter",
-            "A parameter / argument (`aa`). `@parameter.outer`.",
+            "A parameter / argument with its separator (`aa`): the trailing \
+             `, `, or the leading one for the last item. `@parameter.outer`.",
             "parameter.outer",
+            with_separator,
         ),
         inner_parameter: reg(
             registry,
@@ -112,6 +116,19 @@ fn reg(
     doc: &str,
     capture_suffix: &'static str,
 ) -> TextObjectId {
+    reg_with(registry, name, doc, capture_suffix, |range, _| range)
+}
+
+/// [`reg`], with the resolved span then reshaped from the buffer's text.
+/// `aa` uses it to take its separator; the resolver stays a pure
+/// "which node" question.
+fn reg_with(
+    registry: &mut CommandRegistry,
+    name: &str,
+    doc: &str,
+    capture_suffix: &'static str,
+    shape: fn(Range, &dyn Fn(u32) -> Option<String>) -> Range,
+) -> TextObjectId {
     registry.register_text_object(
         name,
         doc,
@@ -120,11 +137,60 @@ fn reg(
                 Ok(ctx
                     .scope_resolver
                     .and_then(|r| r.scope_at(ctx.at.line, ctx.at.byte, capture_suffix))
-                    .unwrap_or_else(|| lattice_protocol::position::Range::empty(ctx.at)))
+                    .map(|range| shape(range, &|line| ctx.buffer.line(line)))
+                    .unwrap_or_else(|| Range::empty(ctx.at)))
             }),
             args_schema: Vec::new(),
         },
     )
+}
+
+/// RF.4b′.2: `aa` is the item with ONE of its separators, so `daa` leaves
+/// a well-formed list. The trailing one (`,` and the blanks after it on
+/// that line) when there is one, as `daa` on `b` in `f(a, b, c)` leaves
+/// `f(a, c)`. Else the leading one (the `,` and the blanks between it and
+/// the item), so on the last item `f(a, c)` becomes `f(a)`. An only item
+/// has neither and is the item alone. That is the nvim-treesitter-
+/// textobjects and targets.vim result.
+///
+/// Only blanks on the item's own line are taken, never a line break: in a
+/// list laid out one item per line, `daa` removes the item and its comma
+/// and leaves the line structure for `dd` to own. Separators are `,`
+/// in every language the object covers; the scan is over ASCII bytes, so
+/// a byte column is never split inside a character.
+fn with_separator(range: Range, line: &dyn Fn(u32) -> Option<String>) -> Range {
+    let blank = |b: u8| b == b' ' || b == b'\t';
+    if let Some(text) = line(range.end.line) {
+        let bytes = text.as_bytes();
+        let mut j = range.end.byte as usize;
+        while j < bytes.len() && blank(bytes[j]) {
+            j += 1;
+        }
+        if bytes.get(j) == Some(&b',') {
+            j += 1;
+            while j < bytes.len() && blank(bytes[j]) {
+                j += 1;
+            }
+            return Range {
+                start: range.start,
+                end: Position::new(range.end.line, j as u32),
+            };
+        }
+    }
+    if let Some(text) = line(range.start.line) {
+        let bytes = text.as_bytes();
+        let mut i = (range.start.byte as usize).min(bytes.len());
+        while i > 0 && blank(bytes[i - 1]) {
+            i -= 1;
+        }
+        if i > 0 && bytes[i - 1] == b',' {
+            return Range {
+                start: Position::new(range.start.line, (i - 1) as u32),
+                end: range.end,
+            };
+        }
+    }
+    range
 }
 
 #[cfg(test)]
@@ -155,5 +221,43 @@ mod tests {
         // Resolvable by their dashed namespaced names.
         assert!(registry.id_by_name("text-object:around-function").is_some());
         assert!(registry.id_by_name("text-object:inner-loop").is_some());
+    }
+
+    /// RF.4b′.2: which separator `aa` takes.
+    #[test]
+    fn around_parameter_takes_one_separator() {
+        // (line, item start, item end, expected start, expected end)
+        let one = |text: &str, from: u32, to: u32| {
+            let text = text.to_string();
+            let r = with_separator(
+                Range {
+                    start: Position::new(0, from),
+                    end: Position::new(0, to),
+                },
+                &|l| (l == 0).then(|| text.clone()),
+            );
+            (r.start.byte, r.end.byte)
+        };
+        // First and middle items: the trailing `, `.
+        assert_eq!(one("f(a, b, c)", 2, 3), (2, 5));
+        assert_eq!(one("f(a, b, c)", 5, 6), (5, 8));
+        // The last item: the leading `, `.
+        assert_eq!(one("f(a, b, c)", 8, 9), (6, 9));
+        // An only item: itself.
+        assert_eq!(one("f(a)", 2, 3), (2, 3));
+        // A trailing comma before a line break: the comma, not the break.
+        assert_eq!(one("    b,", 4, 5), (4, 6));
+        // Blanks before the comma are crossed (`a ,`).
+        assert_eq!(one("f(a , b)", 2, 3), (2, 6));
+        // Across lines: trailing on the end line, leading on the start line.
+        let lines = ["f(g(", "  x), y)"];
+        let r = with_separator(
+            Range {
+                start: Position::new(0, 2),
+                end: Position::new(1, 4),
+            },
+            &|l| lines.get(l as usize).map(|t| t.to_string()),
+        );
+        assert_eq!((r.start, r.end), (Position::new(0, 2), Position::new(1, 6)));
     }
 }

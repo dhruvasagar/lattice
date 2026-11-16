@@ -272,10 +272,12 @@ the vim grammar to build on: its power is that an operator composes with
 syntax objects `af`/`if`, `ac`/`ic`, `aa`/`ia`, `al`/`il` that
 `lattice-syntax` already resolves from `textobjects.scm`. `crriw`
 raises an identifier out of its call; `<leader>rr` in Visual raises the
-selection; `cxaa` … `cxaa` exchanges two parameters that are not neighbours.
-(RF.4b found that `aa` / `ia` capture a declaration's parameters but not a
-call's arguments, unlike the nvim-treesitter-textobjects convention; widening
-them is a `lattice-syntax` query change, tracked in the slice plan.) Every refactor is therefore an
+selection; `cxia` … `cxia` exchanges two arguments that are not neighbours.
+(Exchange swaps text exactly as drawn, so it takes `ia`; `aa` carries a
+separator. Raise, split, extract and inline trim separators from their range,
+so either object works for them. RF.4b found that `aa` / `ia` reached a
+declaration's parameters but not a call's arguments; RF.4b′ fixed that in
+`lattice-syntax` and gave `aa` its separator.) Every refactor is therefore an
 **operator** first; the `:refactor-*` commands stay as the cursor shorthand
 and the palette entry, running the same code (paramount #3: the grammar is
 the public API).

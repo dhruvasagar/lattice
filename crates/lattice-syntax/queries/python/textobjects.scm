@@ -28,8 +28,8 @@
 
 ; --- N.1.4c: inner bodies, parameters, and loop objects ---
 ; `.inner` captures the body suite -- Python's suite is delimiter-free
-; (indentation, no braces), so `if` / `ic` are clean. Parameters fall
-; back to the bare param node (`aa` == `ia`).
+; (indentation, no braces), so `if` / `ic` are clean. Parameters are
+; the bare item; `aa` adds its separator (RF.4b′.2).
 
 ; Function / lambda bodies (`if`).
 (function_definition body: (block) @function.inner)

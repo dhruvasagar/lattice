@@ -378,8 +378,11 @@ tree, off the UI thread.
 **v1 notes.** Resolution is byte-precise — `daa` deletes exactly
 `x: i32`, not the whole signature line. Two rough edges for now:
 `if` / `ic` / `il` include the body's braces in brace languages
-(Python's brace-less suite is clean); and `aa` and `ia` resolve
-identically (the trailing comma isn't captured yet). The comment
+(Python's brace-less suite is clean). `aa` takes one separator with
+the argument, `ia` the argument alone: on `b` in `f(a, b, c)`, `daa`
+leaves `f(a, c)` and `dia` leaves `f(a, , c)`. The separator is the
+trailing `, ` when there is one, else the leading one, so `daa` on the
+last argument removes the comma before it. The comment
 object scans line comments (`//`, `#`); block comments (`/* */`) and
 trailing comments are a follow-up. Visual-mode selection applies to
 *every* object uniformly (`vaf` / `vaC` / `viw` / …) — the Visual

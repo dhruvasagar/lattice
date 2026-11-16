@@ -268,6 +268,47 @@ mod tests {
     use lattice_protocol::edit::Edit;
     use lattice_protocol::selection::VisualMode;
 
+    // ---- RF.4b′: `aa` / `ia` in a call, through real keystrokes ----
+
+    /// `daa` leaves a well-formed argument list wherever the cursor sits,
+    /// and `dia` takes the argument alone. Before RF.4b′ `aa` reached no
+    /// call argument at all, and once it did it took no separator, so
+    /// `daa` on `b` would have left `f(a, , c)`.
+    #[test]
+    fn daa_and_dia_on_a_call_argument() {
+        use crate::app::test_helpers::press_chars;
+        let text = "fn m() { f(a, b, c); }\n";
+        let run = |keys: &str| {
+            let mut a = app_with(text, 10);
+            attach_test_syntax(&mut a, lattice_syntax::Lang::Rust);
+            press_chars(&mut a, keys);
+            a.editor.document.text().to_string()
+        };
+        // Cursor on `a`, `b`, then `c` (`f` jumps to the character).
+        assert_eq!(
+            run("fadaa"),
+            "fn m() { f(b, c); }\n",
+            "first: trailing `, `"
+        );
+        assert_eq!(
+            run("fbdaa"),
+            "fn m() { f(a, c); }\n",
+            "middle: trailing `, `"
+        );
+        assert_eq!(run("fcdaa"), "fn m() { f(a, b); }\n", "last: leading `, `");
+        assert_eq!(
+            run("fbdia"),
+            "fn m() { f(a, , c); }\n",
+            "`ia` is the argument alone"
+        );
+        // Visual draws the same span the operator gets.
+        assert_eq!(
+            run("fbvaad"),
+            "fn m() { f(a, c); }\n",
+            "`vaa` matches `daa`"
+        );
+    }
+
     // ---- RF.2: `gq` / `gw` through real keystrokes ----
 
     /// Both chords reach the same reflow, through the real trie.

@@ -42,8 +42,8 @@
 ; `.inner` captures the body node (block / item list). For brace-
 ; delimited bodies the braces are INCLUDED (the resolver returns the
 ; node span verbatim; delimiter-stripping is a future refinement).
-; `@parameter.outer` falls back to the bare parameter node -- the
-; single-node resolver can't grab a trailing comma -- so `aa` == `ia`.
+; `@parameter.outer` is the bare item; the `aa` object adds its
+; separator from the text (RF.4b′.2, `text_objects::with_separator`).
 
 ; Function / closure bodies (`if`).
 (function_item body: (block) @function.inner)

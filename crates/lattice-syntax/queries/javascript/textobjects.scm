@@ -32,8 +32,8 @@
 
 ; --- N.1.4c: inner bodies, parameters, and loop objects ---
 ; `.inner` captures the body block (braces included, v1). Arrow bodies
-; may be an expression or a block. Parameters fall back to the bare
-; param node (`aa` == `ia`).
+; may be an expression or a block. Parameters are the bare item;
+; `aa` adds its separator (RF.4b′.2).
 
 ; Function bodies (`if`).
 (function_declaration body: (statement_block) @function.inner)

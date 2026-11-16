@@ -40,6 +40,7 @@
 - **A chat or ACP conversation no longer misses an update that lands while its buffer opens.** One that arrived while the buffer was being set up went unseen, and the transcript stayed behind until the next update; it is now drawn as soon as the buffer is ready.
 
 ### Changed
+- **`aa` takes the argument's separator.** `daa` on `b` in `f(a, b, c)` now leaves `f(a, c)`, not `f(a, , c)`; on the last argument it takes the comma before it. `ia` is still the argument alone. To exchange two arguments use `cxia`, since `aa` now includes a comma.
 - **Plugin API 0.5.0.** A plugin operator receives the parse tree:
   `grammar-callbacks.apply-operator` gains `tree: option<borrow<tree-snapshot>>`,
   the argument motions, text objects, actions and ex-commands already take,

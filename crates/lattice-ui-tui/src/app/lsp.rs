@@ -3615,7 +3615,7 @@ mod tests {
             Some(lattice_host::editor::PendingCodeActionFallback {
                 command: set_shiftwidth_fallback(),
                 buffer: a.editor.active_buffer_id(),
-                version: a.editor.document.version(),
+                version: a.editor.document.text_version(),
             });
         tx
     }
@@ -3714,6 +3714,20 @@ mod tests {
         assert_eq!(shiftwidth(&a), before);
         let msg = a.editor.last_message.as_ref().expect("echo");
         assert!(msg.text.contains("buffer changed"), "got {:?}", msg.text);
+    }
+
+    /// Only the caret moved (as an operator moves it, leaving Visual, after
+    /// asking): the text the fallback was computed for is unchanged, so it
+    /// runs.
+    #[test]
+    fn a_caret_move_is_not_stale() {
+        let mut a = app_with("xx\n", 10);
+        let tx = armed(&mut a);
+        crate::app::test_helpers::press_chars(&mut a, "l");
+        tx.send(super::CodeActionOutcome::Items(Vec::new()))
+            .unwrap();
+        a.drain_pending_code_actions();
+        assert_eq!(shiftwidth(&a), "3");
     }
 
     /// The server offered something: its picker opens and the fallback is

@@ -303,7 +303,8 @@ pub struct PendingCodeActionFallback {
     pub command: lattice_grammar::CommandRef,
     /// The buffer the request asked about.
     pub buffer: lattice_core::BufferId,
-    /// That buffer's text version when it asked.
+    /// That buffer's TEXT version when it asked (`text_version`, not
+    /// `version`, which a caret move or a mode change also bumps).
     pub version: u64,
 }
 

@@ -20920,7 +20920,8 @@ impl Editor {
         &mut self,
         fallback: crate::editor::PendingCodeActionFallback,
     ) -> Vec<RendererSignal> {
-        if self.active_buffer_id() != fallback.buffer || self.document.version() != fallback.version
+        if self.active_buffer_id() != fallback.buffer
+            || self.document.text_version() != fallback.version
         {
             self.set_message(
                 EchoLevel::Info,
@@ -32846,7 +32847,10 @@ impl Editor {
             otherwise.map(|command| crate::editor::PendingCodeActionFallback {
                 command,
                 buffer: self.active_buffer_id(),
-                version: self.document.version(),
+                // The TEXT version: an operator moves the caret and leaves
+                // Visual after asking, which bumps `version()` without the
+                // text the fallback was computed for changing.
+                version: self.document.text_version(),
             });
         let has_fallback = self.pending_code_action_otherwise.is_some();
         // With a fallback, "no server" is an answer to hand on, not a

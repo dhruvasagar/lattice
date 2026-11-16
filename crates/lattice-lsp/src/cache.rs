@@ -577,6 +577,10 @@ pub enum CodeActionOutcome {
     /// accepted action, so it should not size every outcome.
     Resolved(Box<lsp_types::CodeAction>),
     NoProvider,
+    /// RF.3b: the request failed — the server answered with an error. Kept
+    /// apart from an empty `Items` because a request's `otherwise` runs on
+    /// "nothing to offer", never on a failure (refactor.md §9.1).
+    Failed(String),
 }
 
 // ---- Rename ------------------------------------------------------------

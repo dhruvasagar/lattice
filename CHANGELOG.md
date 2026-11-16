@@ -50,6 +50,13 @@
   plugin mode that binds an operator in Visual now gets it applied to the
   selection. And an `insert-snippet` effect expands a snippet body the plugin
   wrote over a range, verbatim, with linked placeholders.
+  Also breaking in 0.5.0: the `lsp-code-action` effect takes a
+  `code-action-request { only, range, otherwise }`. A plugin can now ask for
+  just the refactorings (`only`), about a range it names, and give a command
+  to run when the server has nothing to offer (`otherwise`: no server, none
+  of that kind, or an empty answer, never an error, and not if the text
+  changed meanwhile). A plugin that returned the bare `lsp-code-action`
+  passes a request with every field `none`; nothing in-tree did.
 
 ## 0.10.0 — 2026-11-10
 

@@ -251,6 +251,30 @@ interface types {
         line: u32,
         col: u32,
     }
+    /// RF.3b: the kind family a code-action request asks for — an LSP
+    /// `CodeActionKind` prefix, so `extract` admits `refactor.extract.function`.
+    enum code-action-kind {
+        /// `refactor`: every refactoring.
+        refactor,
+        /// `refactor.extract`: extract variable / function / constant.
+        extract,
+        /// `refactor.inline`: inline variable / function.
+        inline,
+    }
+    /// RF.3b: what `lsp-code-action` asks the server.
+    record code-action-request {
+        /// The kind family to ask for; `none` is every action.
+        only: option<code-action-kind>,
+        /// The text to ask about; `none` is the cursor, or the live Visual
+        /// selection. An operator passes its range.
+        range: option<range>,
+        /// Run when the server has nothing to offer: no server, a server
+        /// whose advertised kinds exclude `only`, or an empty answer. Never
+        /// on an error or a hang. Not run if the text changed while the
+        /// server was asked. This is how a plugin falls back to its own
+        /// implementation without seeing the server's answer.
+        otherwise: option<command-ref>,
+    }
     record command-ref {
         id: string,
         args: args,
@@ -910,7 +934,10 @@ interface types {
         lsp-signature-help,
         lsp-complete,
         lsp-rename(string),
-        lsp-code-action,
+        /// Ask the attached server for code actions; they open as a picker.
+        /// RF.3b widened it: every field `none` is the old unfiltered
+        /// request at the cursor (or the live Visual selection).
+        lsp-code-action(code-action-request),
         expand-snippet(range),
         /// SI.10: expand a named snippet around `range`, the range's text
         /// becoming its `$TM_SELECTED_TEXT` — what `gS` ends in.

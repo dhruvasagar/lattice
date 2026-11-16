@@ -22,7 +22,7 @@ command mirror (§4.1) and cross as a typed error until then.
 
 _(none — a shared type interface)_
 
-## Types (163)
+## Types (165)
 
 ### variant `arg-value`
 
@@ -412,6 +412,25 @@ record location {
 }
 ```
 
+### enum `code-action-kind`
+
+```wit
+enum code-action-kind {
+    refactor,
+    extract,
+    inline,
+}
+```
+
+RF.3b: the kind family a code-action request asks for — an LSP
+`CodeActionKind` prefix, so `extract` admits `refactor.extract.function`.
+
+**Cases**
+
+- `refactor` — `refactor`: every refactoring.
+- `extract` — `refactor.extract`: extract variable / function / constant.
+- `inline` — `refactor.inline`: inline variable / function.
+
 ### record `command-ref`
 
 ```wit
@@ -502,6 +521,29 @@ Mirrors `lattice_protocol::position::Range`.
 
 - `start`: [`position`](#record-position)
 - `end`: [`position`](#record-position)
+
+### record `code-action-request`
+
+```wit
+record code-action-request {
+    only: option<code-action-kind>,
+    range: option<range>,
+    otherwise: option<command-ref>,
+}
+```
+
+RF.3b: what `lsp-code-action` asks the server.
+
+**Fields**
+
+- `only`: `option<code-action-kind>` — The kind family to ask for; `none` is every action.
+- `range`: `option<range>` — The text to ask about; `none` is the cursor, or the live Visual
+  selection. An operator passes its range.
+- `otherwise`: `option<command-ref>` — Run when the server has nothing to offer: no server, a server
+  whose advertised kinds exclude `only`, or an empty answer. Never
+  on an error or a hang. Not run if the text changed while the
+  server was asked. This is how a plugin falls back to its own
+  implementation without seeing the server's answer.
 
 ### variant `edit-kind`
 
@@ -1982,7 +2024,7 @@ variant effect {
     lsp-signature-help,
     lsp-complete,
     lsp-rename(string),
-    lsp-code-action,
+    lsp-code-action(code-action-request),
     expand-snippet(range),
     expand-snippet-over(expand-snippet-over-payload),
     reload-snippets,
@@ -2141,7 +2183,9 @@ Mirrors `lattice_grammar::effect::Effect` (§4.4). Every arm is pure data;
 - `lsp-signature-help`
 - `lsp-complete`
 - `lsp-rename`: `string`
-- `lsp-code-action`
+- `lsp-code-action`: [`code-action-request`](#record-code-action-request) — Ask the attached server for code actions; they open as a picker.
+  RF.3b widened it: every field `none` is the old unfiltered
+  request at the cursor (or the live Visual selection).
 - `expand-snippet`: [`range`](#record-range)
 - `expand-snippet-over`: [`expand-snippet-over-payload`](#record-expand-snippet-over-payload) — SI.10: expand a named snippet around `range`, the range's text
   becoming its `$TM_SELECTED_TEXT` — what `gS` ends in.

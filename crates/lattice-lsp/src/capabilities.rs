@@ -671,6 +671,19 @@ impl Capabilities {
         static_ok || self.dynamic.has("textDocument/codeAction")
     }
 
+    /// RF.3b: the `codeActionKinds` the server advertises, or `None` when
+    /// it advertises none (a bare `true`, or options without the list) —
+    /// in which case it may offer any kind and has to be asked.
+    pub fn code_action_kinds(&self) -> Option<Vec<String>> {
+        match self.server.code_action_provider.as_ref() {
+            Some(lsp_types::CodeActionProviderCapability::Options(o)) => o
+                .code_action_kinds
+                .as_ref()
+                .map(|kinds| kinds.iter().map(|k| k.as_str().to_string()).collect()),
+            _ => None,
+        }
+    }
+
     /// Whether the server advertises `resolveProvider` on its
     /// codeActionProvider options. When true, codeAction
     /// items may arrive without `edit` and need

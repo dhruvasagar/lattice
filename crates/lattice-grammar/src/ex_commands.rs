@@ -3048,6 +3048,8 @@ fn code_actions_spec(only: Option<CodeActionKindFilter>) -> ExCommandSpec {
             Ok(Effect::Lsp(LspRequest::CodeActions {
                 only,
                 on_selection: is_selection_range(&ctx.range),
+                range: None,
+                otherwise: None,
             }))
         }),
         args_schema: vec![],
@@ -3337,7 +3339,9 @@ mod tests {
                 run(&mut doc, name, None),
                 LspRequest::CodeActions {
                     only,
-                    on_selection: false
+                    on_selection: false,
+                    range: None,
+                    otherwise: None,
                 },
                 "{name} at the cursor"
             );
@@ -3345,7 +3349,9 @@ mod tests {
                 run(&mut doc, name, visual.clone()),
                 LspRequest::CodeActions {
                     only,
-                    on_selection: true
+                    on_selection: true,
+                    range: None,
+                    otherwise: None,
                 },
                 "{name} over '<,'>"
             );
@@ -3359,7 +3365,9 @@ mod tests {
             run(&mut doc, "ex:lsp-extract", lines),
             LspRequest::CodeActions {
                 only: Some(CodeActionKindFilter::Extract),
-                on_selection: false
+                on_selection: false,
+                range: None,
+                otherwise: None,
             }
         );
     }

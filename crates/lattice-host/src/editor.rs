@@ -294,6 +294,19 @@ pub struct CellMetrics {
     pub col_px: f32,
 }
 
+/// RF.3b: a code-action request's `otherwise`, waiting on the server's
+/// answer. Run only if the answer offers nothing AND the buffer is still the
+/// one, at the text version, the request was made for (refactor.md §9.1).
+#[derive(Debug, Clone)]
+pub struct PendingCodeActionFallback {
+    /// The command to run.
+    pub command: lattice_grammar::CommandRef,
+    /// The buffer the request asked about.
+    pub buffer: lattice_core::BufferId,
+    /// That buffer's text version when it asked.
+    pub version: u64,
+}
+
 /// Renderer-agnostic editor state.
 ///
 /// The renderer-agnostic half of every editor App. Each
@@ -2251,6 +2264,9 @@ pub struct Editor {
     /// so an empty result can say "no refactorings here" rather than "no
     /// code actions".
     pub pending_code_action_only: Option<lattice_grammar::CodeActionKindFilter>,
+    /// RF.3b: what the in-flight code-action request runs if the server has
+    /// nothing to offer, and the buffer + text version it was computed for.
+    pub pending_code_action_otherwise: Option<PendingCodeActionFallback>,
     pub pending_selection_range_rx:
         Option<tokio::sync::mpsc::UnboundedReceiver<SelectionRangeOutcome>>,
     pub pending_selection_range_token: Option<CancellationToken>,

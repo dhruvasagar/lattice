@@ -14347,8 +14347,13 @@ impl Editor {
                 Vec::new()
             }
             LspRequest::FollowLink => self.do_lsp_follow_link_at_cursor(),
-            LspRequest::CodeActions { only, on_selection } => {
-                self.do_lsp_code_action_request(only, on_selection);
+            LspRequest::CodeActions {
+                only,
+                on_selection,
+                range,
+                otherwise,
+            } => {
+                self.do_lsp_code_action_request(only, on_selection, range, otherwise);
                 Vec::new()
             }
         }
@@ -20896,6 +20901,41 @@ impl Editor {
         signals
     }
 
+    /// RF.3b: queue a code-action outcome known without asking a server, so
+    /// it reaches [`Self::drain_pending_code_actions`] — and any fallback
+    /// runs — on the async-landed path, as a server's answer would.
+    fn send_code_action_outcome_now(&mut self, outcome: lattice_lsp::cache::CodeActionOutcome) {
+        let (tx, rx) =
+            tokio::sync::mpsc::unbounded_channel::<lattice_lsp::cache::CodeActionOutcome>();
+        let _ = tx.send(outcome);
+        self.pending_code_action_rx = Some(rx);
+        self.async_landed.notify_one();
+    }
+
+    /// RF.3b: run a code-action request's `otherwise`, unless the text it
+    /// was computed for has changed since — then say so and run nothing.
+    /// Off a keystroke, so effects a renderer would apply are absorbed here
+    /// (WK.10) rather than dropped.
+    fn run_code_action_fallback(
+        &mut self,
+        fallback: crate::editor::PendingCodeActionFallback,
+    ) -> Vec<RendererSignal> {
+        if self.active_buffer_id() != fallback.buffer || self.document.version() != fallback.version
+        {
+            self.set_message(
+                EchoLevel::Info,
+                format!(
+                    "{}: the buffer changed while the server was asked — nothing done",
+                    fallback.command.id
+                ),
+            );
+            return Vec::new();
+        }
+        let mut out = self.invoke_command_named(&fallback.command.id, fallback.command.args);
+        self.absorb_off_keystroke_effects(&mut out);
+        out.renderer_signals
+    }
+
     /// Drain queued `CodeActionOutcome`s. Items open a picker
     /// (host-side `editor.picker` mutation); `NoProvider` echoes
     /// "no server with codeActionProvider"; `Resolved` outcomes
@@ -20927,12 +20967,21 @@ impl Editor {
         };
         self.pending_code_action_token = None;
         use lattice_lsp::cache::CodeActionOutcome;
+        // RF.3b: the fallback belongs to this answer and no later one.
+        let fallback = self.pending_code_action_otherwise.take();
         match outcome {
             CodeActionOutcome::NoProvider => {
+                if let Some(fallback) = fallback {
+                    return self.run_code_action_fallback(fallback);
+                }
                 self.set_message(
                     EchoLevel::Info,
                     "no server with codeActionProvider".to_string(),
                 );
+                Vec::new()
+            }
+            CodeActionOutcome::Failed(error) => {
+                self.set_message(EchoLevel::Error, format!("code actions: {error}"));
                 Vec::new()
             }
             CodeActionOutcome::Resolved(action) => {
@@ -20940,6 +20989,11 @@ impl Editor {
                 self.apply_resolved_code_action(handle, *action)
             }
             CodeActionOutcome::Items(items) => {
+                if items.is_empty()
+                    && let Some(fallback) = fallback
+                {
+                    return self.run_code_action_fallback(fallback);
+                }
                 if items.is_empty() {
                     let noun = self
                         .pending_code_action_only
@@ -32768,31 +32822,71 @@ impl Editor {
     /// return others. A bare `Command` has no kind, so a filtered request
     /// drops it. `on_selection` asks about the last Visual selection
     /// (`:'<,'>…`) rather than the cursor.
+    ///
+    /// RF.3b: `range` (an operator's) wins over `on_selection`. `otherwise`
+    /// runs when the server has nothing to offer — no server, advertised
+    /// kinds that exclude `only`, or an empty list — and only if the buffer
+    /// and its text are as they were when asked (refactor.md §9.1). Every
+    /// "nothing" goes through the drain, even one known now, so the
+    /// fallback always runs from the async-landed path, outside the
+    /// dispatch that asked.
     pub fn do_lsp_code_action_request(
         &mut self,
         only: Option<lattice_grammar::CodeActionKindFilter>,
         on_selection: bool,
+        range: Option<lattice_protocol::position::Range>,
+        otherwise: Option<lattice_grammar::CommandRef>,
     ) {
         if let Some(token) = self.pending_code_action_token.take() {
             token.cancel();
         }
         self.pending_tag_origin = None;
-        if !self.check_lsp_sub_mode_gate(
-            lattice_lsp::modes::LspCodeActionMode::mode_id(),
-            "lsp-code-action-mode",
-        ) {
-            return;
-        }
-        let Some(uri) = self.buffer_uris.get(&self.document_buffer_id).cloned() else {
-            self.set_message(
-                EchoLevel::Info,
-                "no LSP server attached to current buffer".to_string(),
-            );
+        self.pending_code_action_only = only;
+        self.pending_code_action_otherwise =
+            otherwise.map(|command| crate::editor::PendingCodeActionFallback {
+                command,
+                buffer: self.active_buffer_id(),
+                version: self.document.version(),
+            });
+        let has_fallback = self.pending_code_action_otherwise.is_some();
+        // With a fallback, "no server" is an answer to hand on, not a
+        // dead end to report: say nothing and let the drain run it.
+        let gate_open = if has_fallback {
+            self.lsp_mode_enabled_for(self.document_buffer_id)
+                && self.minor_mode_enabled_for(
+                    self.document_buffer_id,
+                    lattice_lsp::modes::LspCodeActionMode::mode_id(),
+                )
+        } else {
+            self.check_lsp_sub_mode_gate(
+                lattice_lsp::modes::LspCodeActionMode::mode_id(),
+                "lsp-code-action-mode",
+            )
+        };
+        let uri = self.buffer_uris.get(&self.document_buffer_id).cloned();
+        let (true, Some(uri)) = (gate_open, uri) else {
+            if has_fallback {
+                self.send_code_action_outcome_now(
+                    lattice_lsp::cache::CodeActionOutcome::NoProvider,
+                );
+            } else if gate_open {
+                self.set_message(
+                    EchoLevel::Info,
+                    "no LSP server attached to current buffer".to_string(),
+                );
+            }
             return;
         };
         let snapshot = self.document.snapshot();
-        let range = self.code_action_range(&snapshot.buffer, on_selection);
-        self.pending_code_action_only = only;
+        let range = match range {
+            Some(r) => lattice_lsp::lsp_types::Range {
+                start: crate::lsp_helpers::app_to_lsp_position(&snapshot.buffer, r.start)
+                    .unwrap_or_default(),
+                end: crate::lsp_helpers::app_to_lsp_position(&snapshot.buffer, r.end)
+                    .unwrap_or_default(),
+            },
+            None => self.code_action_range(&snapshot.buffer, on_selection),
+        };
         let context = lattice_lsp::lsp_types::CodeActionContext {
             diagnostics: self.diagnostics_for_range(&uri, &range),
             only: only.map(|f| vec![lattice_lsp::lsp_types::CodeActionKind::from(f.lsp_kind())]),
@@ -32817,6 +32911,17 @@ impl Editor {
                 async_landed.notify_one();
                 return;
             };
+            // RF.3b: a server that lists its kinds and lists none of this
+            // family has answered already — no round trip.
+            if let (Some(family), Some(kinds)) = (only, handle.capabilities().code_action_kinds())
+                && !kinds
+                    .iter()
+                    .any(|k| crate::lsp_helpers::code_action_kind_overlaps(family, k))
+            {
+                let _ = tx.send(lattice_lsp::cache::CodeActionOutcome::NoProvider);
+                async_landed.notify_one();
+                return;
+            }
             let params = lattice_lsp::lsp_types::CodeActionParams {
                 text_document: lattice_lsp::lsp_types::TextDocumentIdentifier { uri: uri.clone() },
                 range,
@@ -32824,7 +32929,15 @@ impl Editor {
                 work_done_progress_params: Default::default(),
                 partial_result_params: Default::default(),
             };
-            if let Ok(Some(resp)) = handle.code_action(params, token.clone()).await {
+            let answer = handle.code_action(params, token.clone()).await;
+            if let Err(e) = &answer {
+                // RF.3b: a failure is the server's to report, not a reason
+                // to run something else (refactor.md §9.1).
+                let _ = tx.send(lattice_lsp::cache::CodeActionOutcome::Failed(e.to_string()));
+                async_landed.notify_one();
+                return;
+            }
+            if let Ok(Some(resp)) = answer {
                 let rows: Vec<lattice_lsp::cache::CodeActionRow> = resp
                     .into_iter()
                     .filter(|act| crate::lsp_helpers::code_action_admitted(act, only))
@@ -49966,7 +50079,7 @@ mod tests {
             lattice_grammar::LspRequest::References,
             lattice_grammar::LspRequest::FollowLink,
         ] {
-            let e = lattice_grammar::Effect::Lsp(req);
+            let e = lattice_grammar::Effect::Lsp(req.clone());
             assert!(!effect_mutates_or_yanks(&e), "{req:?} must not mutate/yank");
             assert!(!effect_mutates(&e), "{req:?} must not be a mutation");
         }

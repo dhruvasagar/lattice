@@ -3586,6 +3586,167 @@ mod tests {
         assert!(a.editor.pending_code_action_items.is_some());
     }
 
+    // ── RF.3b: a code-action request's `otherwise` ────────────────────────
+
+    /// The fallback every RF.3b test hands the request: `:set shiftwidth=3`,
+    /// an ex line whose effect is easy to read back.
+    fn set_shiftwidth_fallback() -> lattice_grammar::CommandRef {
+        lattice_grammar::CommandRef {
+            id: "set".to_string(),
+            args: lattice_grammar::Args::String("shiftwidth=3".to_string()),
+        }
+    }
+
+    fn shiftwidth(a: &App) -> String {
+        a.editor
+            .config
+            .lookup("shiftwidth")
+            .map(|o| o.get_formatted())
+            .unwrap_or_default()
+    }
+
+    /// Arm a fallback for the buffer as it is now, with an answer channel
+    /// the test feeds — the state a sent request leaves behind.
+    fn armed(a: &mut App) -> tokio::sync::mpsc::UnboundedSender<super::CodeActionOutcome> {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<super::CodeActionOutcome>();
+        a.editor.pending_code_action_rx = Some(rx);
+        a.editor.pending_code_action_token = Some(lattice_protocol::CancellationToken::new());
+        a.editor.pending_code_action_otherwise =
+            Some(lattice_host::editor::PendingCodeActionFallback {
+                command: set_shiftwidth_fallback(),
+                buffer: a.editor.active_buffer_id(),
+                version: a.editor.document.version(),
+            });
+        tx
+    }
+
+    /// No server attached: the fallback runs — off the async-landed wake,
+    /// with no key pressed after the request.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn code_actions_with_no_server_run_the_fallback_without_a_key() {
+        let mut a = app_with("xx\n", 10);
+        assert_ne!(shiftwidth(&a), "3");
+        a.editor.do_lsp_code_action_request(
+            Some(lattice_grammar::CodeActionKindFilter::Extract),
+            false,
+            None,
+            Some(set_shiftwidth_fallback()),
+        );
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            a.editor.async_landed.notified(),
+        )
+        .await
+        .expect("the request wakes the editor");
+        let _ = a.editor.run_tick_pending();
+        assert_eq!(shiftwidth(&a), "3", "the fallback ran");
+        assert!(a.editor.pending_code_action_otherwise.is_none());
+    }
+
+    /// With no fallback, the request still reports why it went nowhere,
+    /// as before RF.3b (here the gate: this buffer has `lsp-mode` off), and
+    /// queues nothing.
+    #[test]
+    fn code_actions_with_no_server_and_no_fallback_say_so() {
+        let mut a = app_with("xx\n", 10);
+        a.editor.do_lsp_code_action_request(None, false, None, None);
+        let msg = a.editor.last_message.as_ref().expect("echo");
+        assert!(msg.text.contains("lsp-mode disabled"), "got {:?}", msg.text);
+        assert!(a.editor.pending_code_action_rx.is_none());
+    }
+
+    /// The server answered with nothing: the fallback runs.
+    #[test]
+    fn an_empty_answer_runs_the_fallback() {
+        let mut a = app_with("xx\n", 10);
+        let tx = armed(&mut a);
+        tx.send(super::CodeActionOutcome::Items(Vec::new()))
+            .unwrap();
+        a.drain_pending_code_actions();
+        assert_eq!(shiftwidth(&a), "3");
+        assert!(a.editor.picker.is_none());
+    }
+
+    /// A server that lacks a code-action provider (or advertises no kind
+    /// of this family) answers the same way.
+    #[test]
+    fn no_provider_runs_the_fallback() {
+        let mut a = app_with("xx\n", 10);
+        let tx = armed(&mut a);
+        tx.send(super::CodeActionOutcome::NoProvider).unwrap();
+        a.drain_pending_code_actions();
+        assert_eq!(shiftwidth(&a), "3");
+    }
+
+    /// A failure is the server's to report; nothing else runs.
+    #[test]
+    fn a_failed_request_does_not_run_the_fallback() {
+        let mut a = app_with("xx\n", 10);
+        let before = shiftwidth(&a);
+        let tx = armed(&mut a);
+        tx.send(super::CodeActionOutcome::Failed("server crashed".into()))
+            .unwrap();
+        a.drain_pending_code_actions();
+        assert_eq!(shiftwidth(&a), before, "no fallback on failure");
+        let msg = a.editor.last_message.as_ref().expect("echo");
+        assert!(msg.text.contains("server crashed"), "got {:?}", msg.text);
+        assert!(a.editor.pending_code_action_otherwise.is_none());
+    }
+
+    /// The text changed while the server was asked: the fallback was
+    /// computed for other text, so it does not run, and says why.
+    #[test]
+    fn a_stale_fallback_does_not_run() {
+        let mut a = app_with("xx\n", 10);
+        let before = shiftwidth(&a);
+        let tx = armed(&mut a);
+        crate::app::test_helpers::press_chars(&mut a, "iy");
+        crate::app::test_helpers::press(
+            &mut a,
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Esc,
+                crossterm::event::KeyModifiers::NONE,
+            ),
+        );
+        tx.send(super::CodeActionOutcome::Items(Vec::new()))
+            .unwrap();
+        a.drain_pending_code_actions();
+        assert_eq!(shiftwidth(&a), before);
+        let msg = a.editor.last_message.as_ref().expect("echo");
+        assert!(msg.text.contains("buffer changed"), "got {:?}", msg.text);
+    }
+
+    /// The server offered something: its picker opens and the fallback is
+    /// dropped with the request.
+    #[test]
+    fn offered_actions_open_the_picker_and_drop_the_fallback() {
+        let mut a = app_with("xx\n", 10);
+        let before = shiftwidth(&a);
+        let tx = armed(&mut a);
+        let act = lattice_lsp::lsp_types::CodeAction {
+            title: "Extract into variable".into(),
+            kind: Some(lattice_lsp::lsp_types::CodeActionKind::REFACTOR_EXTRACT),
+            diagnostics: None,
+            edit: None,
+            command: None,
+            is_preferred: None,
+            disabled: None,
+            data: None,
+        };
+        tx.send(super::CodeActionOutcome::Items(vec![
+            super::CodeActionRow {
+                title: act.title.clone(),
+                kind_glyph: "🛠",
+                action: lattice_lsp::lsp_types::CodeActionOrCommand::CodeAction(act),
+            },
+        ]))
+        .unwrap();
+        a.drain_pending_code_actions();
+        assert!(a.editor.picker.is_some());
+        assert_eq!(shiftwidth(&a), before);
+        assert!(a.editor.pending_code_action_otherwise.is_none());
+    }
+
     #[test]
     fn flatten_workspace_edit_collects_legacy_changes_map() {
         use std::collections::HashMap;

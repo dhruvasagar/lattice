@@ -196,6 +196,7 @@ refactoring.
 1. *A plugin cannot ask for a filtered code action.* The WIT effect has
    `lsp-code-action` with no fields, and the boundary refuses
    `CodeActions { only: Some(_), .. }` ("no WIT mirror yet", RF.1).
+   **Closed (RF.3b):** the request crosses whole, below.
 2. *An ex-command cannot tell it was given the selection.*
    `ex-command-context` carries the cursor and the buffer, no range, so
    `:'<,'>lsp-extract` from a plugin could not ask about the selection.

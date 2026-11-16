@@ -442,11 +442,19 @@ impl WitBoundary for NativeLspRequest {
             // the picker when it asked for the editable view.
             NativeLspRequest::ReferencesView
             | NativeLspRequest::ReferencesViewRefresh
-            | NativeLspRequest::ReferencesToErrorList
-            | NativeLspRequest::CodeActions { .. } => {
+            | NativeLspRequest::ReferencesToErrorList => {
                 return Err(
                     "LspRequest::ReferencesView (`:lsp-references`) has no WIT mirror yet; \
                      adding one is a versioned plugin-API change (lsp-architecture.md §17)"
+                        .to_string(),
+                );
+            }
+            // RF.3b: crosses as the `lsp-code-action` effect, which the
+            // effect mapping matches before reaching here.
+            NativeLspRequest::CodeActions { .. } => {
+                return Err(
+                    "LspRequest::CodeActions crosses as the `lsp-code-action` effect, \
+                     not as an `lsp-request`"
                         .to_string(),
                 );
             }
@@ -669,14 +677,37 @@ fn effect_to_wit(e: &NativeEffect) -> Result<WitEffect, String> {
         NativeEffect::ShowDiagnosticsPopup { lines } => {
             WitEffect::ShowDiagnosticsPopup(lines.clone())
         }
-        // RF.1: the WIT `lsp-code-action` is the unfiltered request at
-        // the cursor or live selection. The kind-filtered and `:'<,'>`
-        // forms have no WIT mirror yet; refusing them beats handing a
-        // plugin the whole picker when it asked for refactorings.
+        // RF.3b: the whole request crosses, filter, range and fallback
+        // included. `:'<,'>` (`on_selection`) does not: an ex-command from
+        // a plugin cannot see the selection (refactor.md §8), so the flag
+        // stays native and is refused rather than dropped.
         NativeEffect::Lsp(NativeLspRequest::CodeActions {
-            only: None,
+            on_selection: true, ..
+        }) => {
+            return Err(
+                "LspRequest::CodeActions { on_selection: true } (`:'<,'>lsp-code-action`) has \
+                 no WIT form; a plugin passes the range instead (refactor.md §8)"
+                    .to_string(),
+            );
+        }
+        NativeEffect::Lsp(NativeLspRequest::CodeActions {
+            only,
             on_selection: false,
-        }) => WitEffect::LspCodeAction,
+            range,
+            otherwise,
+        }) => WitEffect::LspCodeAction(crate::lattice::plugin_host::types::CodeActionRequest {
+            only: only.map(code_action_kind_to_wit),
+            range: range.map(|r| r.to_wit()).transpose()?,
+            otherwise: otherwise
+                .as_ref()
+                .map(|c| {
+                    Ok::<_, String>(crate::lattice::plugin_host::types::CommandRef {
+                        id: c.id.clone(),
+                        args: c.args.to_wit()?,
+                    })
+                })
+                .transpose()?,
+        }),
         NativeEffect::Lsp(req) => WitEffect::Lsp(req.to_wit()?),
         NativeEffect::EchoRegisters => WitEffect::EchoRegisters,
         NativeEffect::EchoMarks => WitEffect::EchoMarks,
@@ -1338,9 +1369,19 @@ fn effect_from_wit(w: WitEffect) -> Result<NativeEffect, String> {
         WitEffect::LspSignatureHelp => NativeEffect::LspSignatureHelp,
         WitEffect::LspComplete => NativeEffect::LspComplete,
         WitEffect::LspRename(new_name) => NativeEffect::LspRename { new_name },
-        WitEffect::LspCodeAction => NativeEffect::Lsp(NativeLspRequest::CodeActions {
-            only: None,
+        WitEffect::LspCodeAction(p) => NativeEffect::Lsp(NativeLspRequest::CodeActions {
+            only: p.only.map(code_action_kind_from_wit),
             on_selection: false,
+            range: p.range.map(NativeRange::from_wit).transpose()?,
+            otherwise: p
+                .otherwise
+                .map(|c| {
+                    Ok::<_, String>(lattice_grammar::CommandRef {
+                        id: c.id,
+                        args: NativeArgs::from_wit(c.args)?,
+                    })
+                })
+                .transpose()?,
         }),
         WitEffect::ExpandSnippet(range) => NativeEffect::ExpandSnippet {
             replace_range: NativeRange::from_wit(range)?,
@@ -1405,6 +1446,32 @@ fn effect_from_wit(w: WitEffect) -> Result<NativeEffect, String> {
             activate_minor: p.activate_minor,
         },
     })
+}
+
+/// RF.3b: the code-action kind family across the boundary.
+fn code_action_kind_to_wit(
+    k: lattice_grammar::CodeActionKindFilter,
+) -> crate::lattice::plugin_host::types::CodeActionKind {
+    use crate::lattice::plugin_host::types::CodeActionKind as W;
+    use lattice_grammar::CodeActionKindFilter as N;
+    match k {
+        N::Refactor => W::Refactor,
+        N::Extract => W::Extract,
+        N::Inline => W::Inline,
+    }
+}
+
+/// RF.3b: the inverse of [`code_action_kind_to_wit`].
+fn code_action_kind_from_wit(
+    k: crate::lattice::plugin_host::types::CodeActionKind,
+) -> lattice_grammar::CodeActionKindFilter {
+    use crate::lattice::plugin_host::types::CodeActionKind as W;
+    use lattice_grammar::CodeActionKindFilter as N;
+    match k {
+        W::Refactor => N::Refactor,
+        W::Extract => N::Extract,
+        W::Inline => N::Inline,
+    }
 }
 
 #[cfg(test)]
@@ -1761,6 +1828,39 @@ mod tests {
     /// RF.4d: both tracked-range effects round-trip. A guest's id crosses in
     /// the unassigned space; the trampoline's authorizer moves it into the
     /// plugin's own (`effect_authorizer` tests).
+    /// RF.3b: the whole code-action request crosses — filter, range and
+    /// fallback — and the native-only `:'<,'>` flag is refused, not dropped.
+    #[test]
+    fn code_action_requests_round_trip() {
+        let range = NativeRange::new(NativePosition::new(1, 2), NativePosition::new(1, 6));
+        let full = NativeEffect::Lsp(NativeLspRequest::CodeActions {
+            only: Some(lattice_grammar::CodeActionKindFilter::Extract),
+            on_selection: false,
+            range: Some(range),
+            otherwise: Some(lattice_grammar::CommandRef {
+                id: "refactor-extract-native".to_string(),
+                args: NativeArgs::String("x".to_string()),
+            }),
+        });
+        let bare = NativeEffect::Lsp(NativeLspRequest::CodeActions {
+            only: None,
+            on_selection: false,
+            range: None,
+            otherwise: None,
+        });
+        for e in [full, bare] {
+            let back = NativeEffect::from_wit(e.to_wit().unwrap()).unwrap();
+            assert_eq!(format!("{back:?}"), format!("{e:?}"));
+        }
+        let selection = NativeEffect::Lsp(NativeLspRequest::CodeActions {
+            only: None,
+            on_selection: true,
+            range: None,
+            otherwise: None,
+        });
+        assert!(selection.to_wit().is_err());
+    }
+
     #[test]
     fn tracked_range_effects_round_trip() {
         use crate::effect_authorizer::{UNASSIGNED_RANGE_SPACE, plugin_range_id};
@@ -2170,6 +2270,8 @@ mod tests {
             NativeEffect::Lsp(NativeLspRequest::CodeActions {
                 only: None,
                 on_selection: false,
+                range: None,
+                otherwise: None,
             }),
             NativeEffect::ReloadSnippets,
             NativeEffect::DescribeEvents,

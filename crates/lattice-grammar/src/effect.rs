@@ -188,7 +188,9 @@ pub struct Utf16Pos {
 /// handler carries no position — the substrate reads live `Editor`
 /// cursor/scroll, so the popup/jump anchors to the symbol the chord
 /// fired on.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+// Not `Copy` / `Eq` since RF.3b: `CodeActions` carries a `CommandRef`,
+// whose `Args` is neither.
+#[derive(Debug, Clone, PartialEq)]
 pub enum LspRequest {
     /// `K` -- `textDocument/hover`.
     Hover,
@@ -247,7 +249,29 @@ pub enum LspRequest {
         only: Option<CodeActionKindFilter>,
         /// Ask about the last Visual selection (`:'<,'>…`).
         on_selection: bool,
+        /// RF.3b: the text to ask about — an operator's range. Wins over
+        /// `on_selection` when both are given; `None` is the cursor, or the
+        /// live Visual selection.
+        range: Option<lattice_protocol::position::Range>,
+        /// RF.3b: run when the server has nothing to offer — no server, a
+        /// server whose advertised kinds exclude `only`, or an empty list.
+        /// Never on an error or a hang (refactor.md §9.1). Not run if the
+        /// text changed while the server was asked.
+        otherwise: Option<CommandRef>,
     },
+}
+
+/// A registered command, by NAME, and the arguments to run it with — what
+/// [`Effect::InvokeCommand`] carries, as a value another request can hold
+/// (RF.3b: a code-action request's `otherwise`). A name rather than a
+/// command id because a plugin cannot hold a host id.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CommandRef {
+    /// A registered command name; an action is dispatched with `args`, any
+    /// other command runs as an ex line.
+    pub id: String,
+    /// The command's arguments.
+    pub args: crate::Args,
 }
 
 /// The kind families a code-action request can be narrowed to

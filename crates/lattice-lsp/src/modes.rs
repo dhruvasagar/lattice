@@ -566,7 +566,7 @@ impl Mode for LspMode {
         fn nav(action_name: &'static str, req: LspRequest) -> ActionHandlerContribution {
             let handler: ActionHandler =
                 std::sync::Arc::new(move |_ctx: &ActionContext<'_>| -> Option<Effect> {
-                    Some(Effect::Lsp(req))
+                    Some(Effect::Lsp(req.clone()))
                 });
             ActionHandlerContribution {
                 action_name,

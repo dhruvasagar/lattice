@@ -391,6 +391,32 @@ pub fn code_action_admitted(
     }
 }
 
+/// RF.3b: can a server advertising code-action kind `advertised` offer an
+/// action of `family`? Yes when either contains the other: a server
+/// advertising `refactor` may offer `refactor.extract.function`, and one
+/// advertising `refactor.extract.function` offers an `Extract`.
+///
+/// ```
+/// use lattice_grammar::CodeActionKindFilter as F;
+/// use lattice_host::lsp_helpers::code_action_kind_overlaps;
+///
+/// assert!(code_action_kind_overlaps(F::Extract, "refactor"));
+/// assert!(code_action_kind_overlaps(F::Extract, "refactor.extract.function"));
+/// assert!(!code_action_kind_overlaps(F::Extract, "refactor.inline"));
+/// assert!(!code_action_kind_overlaps(F::Extract, "quickfix"));
+/// ```
+pub fn code_action_kind_overlaps(
+    family: lattice_grammar::CodeActionKindFilter,
+    advertised: &str,
+) -> bool {
+    let wanted = family.lsp_kind();
+    family.admits(advertised)
+        || wanted == advertised
+        || (wanted.len() > advertised.len()
+            && wanted.starts_with(advertised)
+            && wanted.as_bytes()[advertised.len()] == b'.')
+}
+
 /// Convert an editor-side `Position` (line + utf-8 byte column)
 /// into the LSP-side `lattice_lsp::lsp_types::Position` (line + utf-16 code-
 /// unit column). Returns `None` when the line index is past the

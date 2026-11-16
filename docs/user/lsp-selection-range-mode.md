@@ -1,5 +1,5 @@
 ---
-summary: "lsp-selection-range-mode: per-buffer gate for textDocument/selectionRange — turn it off and expand-selection falls back to the syntactic implementation."
+summary: "lsp-selection-range-mode: per-buffer gate for textDocument/selectionRange — turn it off and the server is not asked; refactor-mode's tree-sitter expand keeps working."
 related: [lsp, lsp-mode]
 ---
 
@@ -21,7 +21,10 @@ the LSP client:
 :lsp-selection-range-mode
 ```
 
-Toggling it off means expand-selection falls back to the syntactic implementation. Nothing else about the attachment
+Toggling it off means the server-driven expand / shrink stops asking the
+server, and says the mode is off. It does not fall back to anything. The
+syntax-tree expand, `refactor-mode`'s `<M-o>` / `<M-i>` (`:help refactor`),
+needs no server and keeps working either way. Nothing else about the attachment
 changes — the server stays running, and every other feature keeps
 working.
 
@@ -41,3 +44,4 @@ None of its own.
 
 - [`lsp-mode`](help:lsp-mode) — the umbrella that implies this one.
 - [`lsp`](help:lsp) — attaching servers, and what each feature does.
+- `:help refactor` — expand / shrink by syntax node, with no server.

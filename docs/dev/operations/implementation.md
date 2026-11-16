@@ -7530,7 +7530,7 @@ writes what a review left unsaved.
 Design: [`../architecture/lsp-architecture.md`](../architecture/lsp-architecture.md) §18.
 Slice plan: [`slice-plans/archive/workspace-edits.md`](slice-plans/archive/workspace-edits.md).
 
-## Refactoring (RF, 2026-11-14 — ✅ RF.1, 🚧 RF.2)
+## Refactoring (RF, 2026-11-14 — ✅ RF.1–RF.3, 🚧 RF.4: RF.4b′ / RF.4e′ await a go)
 
 One `refactor-mode`, in the bundled `refactor` plugin, owns every refactor
 command: the server's refactorings by name (`:lsp-refactor`, and

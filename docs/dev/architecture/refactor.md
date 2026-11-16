@@ -23,9 +23,10 @@ Refactoring comes from two sources, and a user should not have to know which.
   a list. No server offers these, and `:lsp-expand-region` grows a selection
   only where a server implements `selectionRange`. Every language lattice
   highlights already has a tree-sitter parse, so they work everywhere, server
-  or not. (The `lsp-selection-range-mode` help page says expand-selection
-  "falls back to the syntactic implementation". There is none today; §3 is
-  it, and the page is corrected when it lands.)
+  or not. (The `lsp-selection-range-mode` help page used to say
+  expand-selection "falls back to the syntactic implementation". There was
+  none; §3 is the syntactic one, and it is separate, not a fallback. RF.2f
+  corrected the page.)
 
 ## 2. One mode owns all of it: `refactor-mode`, in the bundled `refactor` plugin
 
@@ -164,8 +165,9 @@ attaches or restarts.
 
 - **UX (higher court):** an operation that cannot apply leaves text and
   selection exactly as they were. One edit batch, one reparse, no flicker.
-- **#1:** depth-bounded walk per call. A plugin-host bench records swap, raise
-  and expand on a large file, joining the typed-call rows in `benchmarks.md`.
+- **#1:** depth-bounded walk per call. `crates/lattice-plugin-host/benches/refactor.rs`
+  records expand, swap, raise, split and native extract / inline on a
+  2000-function file (RF.2f, `benchmarks.md`).
 - **#2:** built on the public seam only; WIT stays the API, nothing private.
 - **#3:** the vim grammar is untouched; these sit beside it.
 - **#4:** synchronous by design — a few node walks, no I/O.
@@ -536,9 +538,16 @@ A name the value reads must also mean the same at every use as at the
 declaration, and must not be written after it. Otherwise `let y = x;
 x += 1; f(y)` would become `f(x)`, reading the new `x`.
 
-Inline reads the whole file once (resolution needs every scope a use, or a
-name the value reads, could be in). It is a one-off command on the plugin's
-thread, never per keystroke.
+Inline reads the variable's scope, not the file (RF.2f). Every use of a
+variable lies inside the scope that defines it, so that scope's facts decide
+everything the plan checks. It starts at the innermost scope around the
+cursor and steps out one scope at a time while the name's definition is not
+among what it gathered: a use nested below its declaration. Only a name with
+no definition at all reaches the whole file, and refuses there. RF.4f read
+the whole file on the grounds that inline is a one-off command, never per
+keystroke. The bench disproved that: on 2000 functions the guest ran out of
+fuel before answering, so `cri` failed outright in a large file. Bounded,
+the same case takes 64 µs.
 
 **What stays out of reach natively**, by design: types and ownership. A
 native extract that compiles in Rust may still move a value the next line

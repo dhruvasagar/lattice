@@ -1117,6 +1117,21 @@ mod tests {
         Some((body(&app), echoed(&app)))
     }
 
+    /// RF.2f: inline gathers its facts over the variable's scope, starting
+    /// from the innermost scope around the cursor. From a use nested below
+    /// the declaration (here, inside an `if`), the definition is not in that
+    /// scope, so it steps out until it is, and inlines as from anywhere else.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn inline_from_a_use_in_a_nested_block_finds_the_declaration() {
+        let src = "fn main() {\n    let q = 1;\n    if c {\n        g(q);\n    }\n}\n";
+        let want = "fn main() {\n    if c {\n        g(1);\n    }\n}\n";
+        let Some((after, echo)) = inline_q("main.rs", src, lattice_syntax::Lang::Rust, 3).await
+        else {
+            return;
+        };
+        assert_eq!(after, want, "echo {echo:?}");
+    }
+
     /// RF.4f: with no server, `cri` inlines natively. From the declaration
     /// or from a use (Visual `<leader>ri`), it is the same edit, and one
     /// undo step.
@@ -1410,6 +1425,12 @@ mod tests {
                 "end": { "line": 1, "character": 28 }
             }),
             "`baz + 1`, exactly"
+        );
+        // Wait for the answer's picker before closing it: an `esc` that
+        // lands first leaves the picker to open over the next `:` line.
+        assert!(
+            settle_woken(&mut app, |a| a.editor.picker.is_some()).await,
+            "the server's extraction opens as a picker"
         );
         assert_eq!(body(&app), RUST, "the server answered: native did not run");
         esc(&mut app);

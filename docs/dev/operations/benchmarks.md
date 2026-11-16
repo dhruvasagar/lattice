@@ -4262,6 +4262,39 @@ pins that.
 
 ---
 
+## Refactor edits on a large file (`crates/lattice-plugin-host/benches/refactor.rs`, RF.2f)
+
+⚠️ **AMD Ryzen 7 9700X, WSL2 (Linux 6.18), rustc 1.94.0, 2026-11-16.**
+
+Each row is the whole cost of one `refactor-mode` edit: the sync trampoline,
+the guest, and every tree walk and query it makes back into the host, ending
+in the effect the host would apply. The file is 2000 Rust functions; the
+cursor is in the middle one. Extract and inline are timed through their
+native fallback actions, the work `cre` / `cri` do when no server answers.
+Exchange (`cx`) is text only and has no tree to be slow in.
+
+| Case | Median |
+|---|---|
+| expand (`<M-o>` from an argument) | 4.6 µs |
+| raise (`crr`, out of `q * 2`) | 7.2 µs |
+| swap next argument | 13.9 µs |
+| split call arguments | 19.6 µs |
+| extract, native | 36.7 µs |
+| inline, native | 63.9 µs |
+
+**Bounded by the code around the cursor, not by the file.** Every edit asks
+for nodes, and for query matches over a range, never over the whole tree.
+Native inline was the exception when the bench was first run. It gathered
+`locals.scm` and `refactor.scm` over the whole file and filtered references
+with a linear scan, so on this file it ran out of fuel and never answered:
+`cri` failed in any large file. It now reads the variable's scope, stepping
+out only while the definition is not in it ([`refactor.md`](../architecture/refactor.md)
+§9.1). The slowest row is 1/130 of an 8.3 ms frame, on the plugin's thread.
+A second run on the same machine came in about 20% lower; treat the rows as
+an order of magnitude and a ranking, not exact figures.
+
+---
+
 ## What's NOT here
 
 Benches we'd want before claiming §8.2 coverage but haven't built

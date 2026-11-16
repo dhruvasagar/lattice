@@ -9,14 +9,14 @@
 
 use crate::lattice::plugin_host::buffer::Document;
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct Pos {
     pub line: u32,
     pub byte: u32,
 }
 
 /// `[start, end)`.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct Span {
     pub start: Pos,
     pub end: Pos,

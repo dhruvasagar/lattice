@@ -144,9 +144,9 @@ pub mod plan {
     }
 
     /// Plan inlining the variable `target` names.
-    pub fn plan(target: Span, f: &Facts) -> Result<Plan, String> {
-        let named = f
-            .definitions
+    /// The definition or reference `target` names: the smallest covering it.
+    fn named(target: Span, f: &Facts) -> Option<&(Span, String)> {
+        f.definitions
             .iter()
             .chain(&f.references)
             .filter(|(s, _)| s.covers(target))
@@ -155,8 +155,21 @@ pub mod plan {
                     s.end.line - s.start.line,
                     s.end.byte.wrapping_sub(s.start.byte),
                 )
-            });
-        let Some((at, name)) = named else {
+            })
+    }
+
+    /// Whether the facts were gathered over too little to plan `target`:
+    /// it is a use whose definition is not among them. Gathering over the
+    /// next scope out may find it; a use of a global never will, and the
+    /// whole file says so.
+    pub fn needs_wider(target: Span, f: &Facts) -> bool {
+        named(target, f).is_some_and(|(at, name)| {
+            !f.definitions.iter().any(|(d, _)| d == at) && f.resolve(name, *at).is_none()
+        })
+    }
+
+    pub fn plan(target: Span, f: &Facts) -> Result<Plan, String> {
+        let Some((at, name)) = named(target, f) else {
             return Err("not a variable's name".into());
         };
         let def = if f.definitions.iter().any(|(d, _)| d == at) {
@@ -469,8 +482,9 @@ pub fn inline(
 ) -> Result<(Span, String, Pos), String> {
     let language = tree.language();
     let query = crate::extract::refactor_query(tree, &language)?;
-    let facts = gather(tree, doc, &query)?;
-    let p = plan::plan(trim_list_edges(doc, range), &facts)?;
+    let target = trim_list_edges(doc, range);
+    let facts = facts_for(tree, doc, &query, target)?;
+    let p = plan::plan(target, &facts)?;
 
     let value = text(doc, p.binding.value);
     let removal = removal(doc, p.binding.whole);
@@ -518,7 +532,47 @@ pub fn inline(
 /// What the two queries say about the file. Inline is a one-off command, so
 /// it reads the whole file once: resolving a name needs every scope a use,
 /// or a name the value reads, could be in.
-fn gather(tree: &TreeSnapshot, doc: &Document, query: &Query) -> Result<plan::Facts, String> {
+/// The facts for inlining `target`, gathered over as little of the file as
+/// answers it (RF.2f). A variable's uses all lie inside the scope that
+/// defines it, so the facts of that scope decide everything a plan checks.
+/// Start at the innermost scope around `target` and step out a scope at a
+/// time only while the name's definition is not in what was gathered (a
+/// use, inside a block nested below its declaration).
+///
+/// Whole-file facts made `cri` in a 2000-function file run the guest out
+/// of fuel; the work is now bounded by the variable's scope.
+fn facts_for(
+    tree: &TreeSnapshot,
+    doc: &Document,
+    query: &Query,
+    target: Span,
+) -> Result<plan::Facts, String> {
+    // Scopes intersecting `target` are the ones around it.
+    let mut around: Vec<Span> = gather(tree, doc, query, Some(target))?
+        .scopes
+        .into_iter()
+        .filter(|s| s.covers(target))
+        .collect();
+    // Innermost first: the latest start, then the earliest end.
+    around.sort_by_key(|s| (std::cmp::Reverse(s.start), s.end));
+    around.dedup();
+    for region in around {
+        let facts = gather(tree, doc, query, Some(region))?;
+        if !plan::needs_wider(target, &facts) {
+            return Ok(facts);
+        }
+    }
+    gather(tree, doc, query, None)
+}
+
+/// The query facts over `region` (every match that touches it), or over
+/// the whole file.
+fn gather(
+    tree: &TreeSnapshot,
+    doc: &Document,
+    query: &Query,
+    region: Option<Span>,
+) -> Result<plan::Facts, String> {
     let Some(locals) = tree.language_query("locals") else {
         return Err(format!(
             "no locals.scm for {} — a language server can do this",
@@ -526,17 +580,20 @@ fn gather(tree: &TreeSnapshot, doc: &Document, query: &Query) -> Result<plan::Fa
         ));
     };
     let mut f = plan::Facts::default();
-    let mut not_reads = Vec::new();
+    let mut not_reads = std::collections::HashSet::new();
     let mut refs = Vec::new();
-    for cap in tree.run_query_ranges(&locals, None) {
+    let region = region.map(Into::into);
+    for cap in tree.run_query_ranges(&locals, region) {
         let span = Span::from(cap.range);
         match cap.name.as_str() {
             "local.scope" => f.scopes.push(span),
             "local.definition" => {
-                not_reads.push(span);
+                not_reads.insert(span);
                 f.definitions.push((span, text(doc, span)));
             }
-            "local.member" => not_reads.push(span),
+            "local.member" => {
+                not_reads.insert(span);
+            }
             "local.reference" => refs.push(span),
             _ => {}
         }
@@ -555,7 +612,7 @@ fn gather(tree: &TreeSnapshot, doc: &Document, query: &Query) -> Result<plan::Fa
         }
     }
     let mut parts: Option<Parts> = None;
-    for cap in tree.run_query_ranges(query, None) {
+    for cap in tree.run_query_ranges(query, region) {
         let span = Span::from(cap.range);
         if let Some(part) = cap.name.strip_prefix("refactor.binding") {
             if parts.as_ref().is_some_and(|(m, _)| *m != cap.match_index) {

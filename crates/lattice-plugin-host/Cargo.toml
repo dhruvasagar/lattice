@@ -251,6 +251,12 @@ harness = false
 name = "tree_enclosing"
 harness = false
 
+# RF.2f: the `refactor` plugin's edits (expand, swap, raise, split, native
+# extract / inline) on a 2000-function file, through the sync trampoline.
+[[bench]]
+name = "refactor"
+harness = false
+
 # OA.0a: a full guest-shaped tree WALK, swept across fan-out. `tree_enclosing`
 # pins the one sync ancestor walk; this pins the other shape — visiting every
 # child of a node — which was quadratic and made an org agenda scan of a 34 KB

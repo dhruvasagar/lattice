@@ -1360,22 +1360,23 @@ See the slice plan (L7) for sequencing.
 
 `:lsp-code-action` predated §16 and kept its own `Effect::LspCodeAction`,
 which each renderer applied. It is now `LspRequest::CodeActions { only,
-on_selection }`, host-applied like the nav requests, and the
-kind-filtered refactor commands (`:lsp-refactor` / `:lsp-extract` /
-`:lsp-inline`) are three more values of the same arm, not three
-Effects. That is the grain this section argues for, paying off: a new
+on_selection, range, otherwise }`, host-applied like the nav requests,
+and the kind-filtered refactor commands (the `refactor` plugin's
+`:lsp-refactor`, `:refactor-extract`, `:refactor-inline`, and `cre` /
+`cri`) are more values of the same arm, not more Effects. That is the grain this section argues for, paying off: a new
 code-action surface is a data value.
 
 `only` is sent as `context.only` **and** applied to what comes back,
 because the spec makes the filter the client's job and servers return
-other kinds anyway. `on_selection` exists because vim leaves Visual on
-`:` -- by the time `:'<,'>lsp-extract` runs, the live selection is gone
-and only `'<` / `'>` remain, so the command, which sees its range, says
-so in the data.
+other kinds anyway. Vim leaves Visual on `:`, so by the time
+`:'<,'>lsp-code-action` runs the live selection is gone. The host resolves
+`'<,'>` to whole lines, and hands the command what was selected beside
+them (`ExCommandContext::selection`, RF.3c), which it sends as `range`.
+`on_selection` remains for a caller that dispatches `'<,'>` unresolved.
 
-The plugin wire is unchanged: WIT's `lsp-code-action` is the unfiltered
-form, and the filtered forms refuse to cross until the WIT grows a
-mirror. `:lsp-format`, `:lsp-rename`, `:lsp-complete` and
+The plugin wire carries the whole request (`code-action-request { only,
+range, otherwise }`, RF.3b), and a plugin's `:` command sees its range
+resolved (`ex-command-context.range`, RF.3c). `:lsp-format`, `:lsp-rename`, `:lsp-complete` and
 `:lsp-signature-help` still carry their own Effects; they are the same
 migration, not yet done.
 

@@ -15,8 +15,8 @@
 Refactoring comes from two sources, and a user should not have to know which.
 
 - **The language server's refactorings** — extract, inline, rewrite — through
-  the code-action request, by name: `:lsp-refactor`, `:lsp-extract`,
-  `:lsp-inline` (RF.1). Precise where a server offers them, absent where none
+  the code-action request, by name: `:lsp-refactor`, and first in line for
+  `:refactor-extract` / `:refactor-inline` and `cre` / `cri` (RF.1, §9.1). Precise where a server offers them, absent where none
   is attached, and only what that server implements.
 - **Edits by syntax node** — grow and shrink a selection a node at a time, swap
   two arguments, raise an expression out of the call around it, split and join
@@ -175,11 +175,12 @@ attaches or restarts.
 
 ## 8. The server's refactorings join the mode
 
-**What moves.** The registration and the per-command shape of
-`:lsp-refactor`, `:lsp-extract` and `:lsp-inline` — today `code_actions_spec`
-and three entries in lattice-grammar's `ex_commands.rs` — become ex-commands
-the `refactor` plugin registers, each returning one
-`lsp(code-actions { only, on-selection })` effect.
+**What moved (RF.3c).** `:lsp-refactor`, `:lsp-extract` and `:lsp-inline`
+were three entries in lattice-grammar's `ex_commands.rs`. They are now
+ex-commands the `refactor` plugin registers. `:lsp-refactor` returns one
+`lsp-code-action { only: refactor, range }` effect. Extract and inline,
+renamed below, take the operators' path: server first, natively when it
+has nothing (§9.1).
 
 **What stays, and why that is not a half-migration.** The request, the
 `context.only` filter, the row filter and the picker stay host-side behind

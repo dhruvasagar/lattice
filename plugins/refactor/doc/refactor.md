@@ -129,6 +129,18 @@ A call used once moves to its use: if code between the two depends on
 when it runs, check it. Native inline knows the same languages as native
 extract.
 
+**From the command line.** The same, by name, for a selection or at the
+cursor:
+
+| Command | |
+|---|---|
+| `:'<,'>refactor-extract` | extract what is selected, as `cre` does: the server's extractions, else natively into a variable |
+| `:refactor-inline` | inline the variable under the cursor, as `cri` does |
+| `:lsp-refactor` | every refactoring the server offers at the cursor, or over the range; needs a server |
+
+Visual `:` fills in the `'<,'>`. With any other range (`:3,5`), they act
+on its whole lines.
+
 Split and join act on the nearest comma list around the range, so
 `cr<CR>i(` and `cr<CR>iw` on an argument both split the call's
 arguments; they change only whitespace. `:refactor-split` / `:refactor-join`

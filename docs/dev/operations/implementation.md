@@ -7533,9 +7533,9 @@ Slice plan: [`slice-plans/archive/workspace-edits.md`](slice-plans/archive/works
 ## Refactoring (RF, 2026-11-14 — ✅ RF.1, 🚧 RF.2)
 
 One `refactor-mode`, in the bundled `refactor` plugin, owns every refactor
-command: the server's refactorings by name (`:lsp-refactor` /
-`:lsp-extract` / `:lsp-inline`, on the code-action request, which joins
-§16's `LspRequest` split), and structural edits — expand / shrink, swap,
+command: the server's refactorings by name (`:lsp-refactor`, and
+`:refactor-extract` / `:refactor-inline` server first, on the code-action
+request, which joins §16's `LspRequest` split), and structural edits — expand / shrink, swap,
 raise, split / join — on `tree-sitter.wit`, needing no server. RF.1 landed
 the server's three as global ex-commands; RF.3 moves them into the mode.
 RF.4 makes every refactor an operator over a range (Visual, motion, text

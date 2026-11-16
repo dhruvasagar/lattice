@@ -1375,6 +1375,98 @@ mod tests {
             .collect()
     }
 
+    /// RF.3c: the `:` forms moved into the plugin. With a server,
+    /// `:'<,'>refactor-extract` asks for extractions over exactly what was
+    /// selected, and `:lsp-refactor` for every refactoring at the cursor.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn ex_commands_ask_the_server_with_their_kind_and_range() {
+        let Some(mut app) =
+            app_with_refactor("main.rs", RUST, Some(lattice_syntax::Lang::Rust)).await
+        else {
+            return;
+        };
+        let (_server, log) = with_server(
+            &mut app,
+            serde_json::json!(["refactor", "refactor.extract"]),
+            serde_json::json!([{ "title": "Extract", "kind": "refactor.extract" }]),
+        )
+        .await;
+        press_chars(&mut app, "jfzhhvf1:refactor-extract");
+        enter(&mut app);
+        assert!(
+            settle_woken(&mut app, |_| !code_action_requests(&log).is_empty()).await,
+            "a request went out; echo {:?}",
+            echoed(&app)
+        );
+        let first = code_action_requests(&log)[0].clone();
+        assert_eq!(
+            first["context"]["only"],
+            serde_json::json!(["refactor.extract"])
+        );
+        assert_eq!(
+            first["range"],
+            serde_json::json!({
+                "start": { "line": 1, "character": 21 },
+                "end": { "line": 1, "character": 28 }
+            }),
+            "`baz + 1`, exactly"
+        );
+        assert_eq!(body(&app), RUST, "the server answered: native did not run");
+        esc(&mut app);
+        press_chars(&mut app, ":lsp-refactor");
+        enter(&mut app);
+        assert!(
+            settle_woken(&mut app, |_| code_action_requests(&log).len() == 2).await,
+            "a second request; echo {:?}",
+            echoed(&app)
+        );
+        assert_eq!(
+            code_action_requests(&log)[1]["context"]["only"],
+            serde_json::json!(["refactor"])
+        );
+    }
+
+    /// RF.3c: without a server, `:'<,'>refactor-extract` extracts what was
+    /// selected natively, as `cre` does.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn ex_extract_over_the_selection_runs_natively_without_a_server() {
+        let Some(mut app) =
+            app_with_refactor("main.rs", RUST, Some(lattice_syntax::Lang::Rust)).await
+        else {
+            return;
+        };
+        press_chars(&mut app, "jfzhhvf1:refactor-extract");
+        enter(&mut app);
+        let want = "fn main() {\n    let value = baz + 1;\n    let x = foo(bar, value);\n}\n";
+        assert!(
+            settle_woken(&mut app, |a| body(a) == want).await,
+            "got {:?}; echo {:?}",
+            body(&app),
+            echoed(&app)
+        );
+    }
+
+    /// RF.3c: without a server, `:refactor-inline` inlines the variable at
+    /// the cursor natively, as `cri` does.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn ex_inline_at_the_cursor_runs_natively_without_a_server() {
+        let src = "fn main() {\n    let q = 1;\n    let b = q + 2;\n    g(q);\n}\n";
+        let want = "fn main() {\n    let b = 1 + 2;\n    g(1);\n}\n";
+        let Some(mut app) =
+            app_with_refactor("main.rs", src, Some(lattice_syntax::Lang::Rust)).await
+        else {
+            return;
+        };
+        press_chars(&mut app, "jjfq:refactor-inline");
+        enter(&mut app);
+        assert!(
+            settle_woken(&mut app, |a| body(a) == want).await,
+            "got {:?}; echo {:?}",
+            body(&app),
+            echoed(&app)
+        );
+    }
+
     /// RF.3c: `:'<,'>lsp-code-action` asks about what was selected, not
     /// the lines around it. `execute_ex_line` makes `'<,'>` whole lines
     /// before dispatch, which left the command unable to tell it had been

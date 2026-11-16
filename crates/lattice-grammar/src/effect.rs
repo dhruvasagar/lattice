@@ -234,8 +234,9 @@ pub enum LspRequest {
     /// diagnostics there is no standing "current references" state to
     /// pull from, so the command must run the query.
     ReferencesToErrorList,
-    /// `:lsp-code-action` and its kind-filtered peers (`:lsp-refactor`,
-    /// `:lsp-extract`, `:lsp-inline`) -- `textDocument/codeAction`, the
+    /// `:lsp-code-action` and its kind-filtered peers (the `refactor`
+    /// plugin's `:lsp-refactor`, `:refactor-extract`, `:refactor-inline`,
+    /// and `cre` / `cri`) -- `textDocument/codeAction`, the
     /// result opening as a picker.
     ///
     /// `only` narrows the request to one kind family; `None` is every

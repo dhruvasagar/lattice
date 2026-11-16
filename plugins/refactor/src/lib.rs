@@ -85,6 +85,10 @@ const CB_RAISE: u32 = 5;
 const CB_SPLIT: u32 = 6;
 const CB_JOIN: u32 = 7;
 const CB_EXCHANGE_CLEAR: u32 = 8;
+/// RF.3c: the server's refactorings, and extract and inline, as `:` commands.
+const CB_LSP_REFACTOR: u32 = 9;
+const CB_EXTRACT_EX: u32 = 10;
+const CB_INLINE_EX: u32 = 11;
 /// Operators (RF.4): their own callback space, read by `apply-operator`.
 const CB_RAISE_OP: u32 = 50;
 const CB_SPLIT_OP: u32 = 51;
@@ -510,17 +514,17 @@ fn sources(value: Option<&str>) -> Sources {
 /// RF.4g: an extract or inline over `range`, server first when
 /// `refactor.source` says so. The server's answer decides: actions open as
 /// a picker; nothing runs the native command `native` names, over the same
-/// range, on the text as it was (the host checks).
+/// range, on the text as it was (the host checks). The operators and the
+/// `:` commands (RF.3c) both come through here, so the two cannot differ.
 fn server_or_native(
-    ctx: &OperatorContext,
+    buffer_id: u32,
+    range: Span,
     kind: CodeActionKind,
     native: &str,
     run_native: impl FnOnce(Span) -> Vec<Effect>,
 ) -> Vec<Effect> {
-    let range = Span::from(ctx.range);
-    let source = sources(
-        config::get_option_in_buffer(u64::from(ctx.buffer_id), "refactor.source").as_deref(),
-    );
+    let source =
+        sources(config::get_option_in_buffer(u64::from(buffer_id), "refactor.source").as_deref());
     if source.native && !(source.lsp && source.lsp_first) {
         return run_native(range);
     }
@@ -532,6 +536,14 @@ fn server_or_native(
             args: Args::Bytes(range.to_bytes()),
         }),
     })]
+}
+
+/// RF.3c: what a `:` command acts on: the range its `:` line named
+/// (resolved by the host), else the cursor, as an empty span. Native inline
+/// finds the name the cursor is on; native extract needs an expression and
+/// says so.
+fn ex_range(ctx: &ExCommandContext) -> Span {
+    ctx.range.map(Span::from).unwrap_or_else(|| at_cursor(ctx))
 }
 
 /// The range a fallback command was handed, or why it has none.
@@ -571,9 +583,13 @@ fn inline_native(
 /// `cre{motion}`: extract the expression the range covers into a variable
 /// declared before its statement, the name typed once at both sites.
 fn extract_op(ctx: &OperatorContext, doc: &Document, tree: Option<&TreeSnapshot>) -> Vec<Effect> {
-    server_or_native(ctx, CodeActionKind::Extract, EXTRACT_NATIVE, |range| {
-        extract_native(ctx.buffer_id, doc, tree, range)
-    })
+    server_or_native(
+        ctx.buffer_id,
+        Span::from(ctx.range),
+        CodeActionKind::Extract,
+        EXTRACT_NATIVE,
+        |range| extract_native(ctx.buffer_id, doc, tree, range),
+    )
 }
 
 /// The native extract over `range`, from the operator or from the host's
@@ -783,6 +799,36 @@ impl Guest for Component {
             CB_PARSE_NO_ARGS,
             CB_JOIN,
         );
+        // RF.3c: the `:` forms of the server's refactorings and of extract
+        // and inline. They take a range — `:'<,'>` is exactly what was
+        // selected, any other range its whole lines — and without one, the
+        // cursor. Extract and inline take the operators' path: server first,
+        // natively when it has nothing (`refactor.source`).
+        let ranged = || ExCommandSpec {
+            accepts_range: true,
+            ..no_args()
+        };
+        grammar::register_ex_command(
+            "lsp-refactor",
+            "Open a picker over the language server's refactorings at the cursor, or over the range (`:'<,'>lsp-refactor`): extract, inline, rewrite, whatever it offers. Needs a server.",
+            &ranged(),
+            CB_PARSE_NO_ARGS,
+            CB_LSP_REFACTOR,
+        );
+        grammar::register_ex_command(
+            "refactor-extract",
+            "Extract the selection (`:'<,'>refactor-extract`) into a variable, or what the language server offers (a function, a constant); without a server, natively, as `cre` does.",
+            &ranged(),
+            CB_PARSE_NO_ARGS,
+            CB_EXTRACT_EX,
+        );
+        grammar::register_ex_command(
+            "refactor-inline",
+            "Inline the variable under the cursor (or the range): its value replaces each use and the declaration goes. Asks the language server first; without one, natively, as `cri` does.",
+            &ranged(),
+            CB_PARSE_NO_ARGS,
+            CB_INLINE_EX,
+        );
     }
 
     /// `refactor-mode` owns the chords, at its own minor-mode layer, never
@@ -922,7 +968,8 @@ impl GrammarCallbacks for Component {
         }
         if callback == CB_INLINE_OP {
             return Ok(server_or_native(
-                &ctx,
+                ctx.buffer_id,
+                Span::from(ctx.range),
                 CodeActionKind::Inline,
                 INLINE_NATIVE,
                 |range| inline_native(ctx.buffer_id, doc, tree, range),
@@ -984,6 +1031,25 @@ impl GrammarCallbacks for Component {
             CB_JOIN => with_tree(&ctx, tree, |t| {
                 split::reshape(t, doc, at_cursor(&ctx), split::Layout::Join, "")
             }),
+            CB_LSP_REFACTOR => vec![Effect::LspCodeAction(CodeActionRequest {
+                only: Some(CodeActionKind::Refactor),
+                range: ctx.range,
+                otherwise: None,
+            })],
+            CB_EXTRACT_EX => server_or_native(
+                ctx.buffer_id,
+                ex_range(&ctx),
+                CodeActionKind::Extract,
+                EXTRACT_NATIVE,
+                |range| extract_native(ctx.buffer_id, doc, tree, range),
+            ),
+            CB_INLINE_EX => server_or_native(
+                ctx.buffer_id,
+                ex_range(&ctx),
+                CodeActionKind::Inline,
+                INLINE_NATIVE,
+                |range| inline_native(ctx.buffer_id, doc, tree, range),
+            ),
             other => return Err(format!("refactor: unknown ex-command callback {other}")),
         })
     }

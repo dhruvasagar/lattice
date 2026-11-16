@@ -200,9 +200,7 @@ references-picker rows, diagnostics jumps, etc.).
 | `:lsp-signature-help`  | `textDocument/signatureHelp` -- popup with the active signature + parameter highlight. Auto-fires in Insert mode on server-advertised trigger characters (typically `(` and `,`). |
 | `:lsp-rename <name>`   | `textDocument/rename` after `textDocument/prepareRename`. Replaces the symbol under cursor across the workspace. Empty `<name>` uses the server's prepareRename placeholder. Every file's edits apply as one undo unit in that file, without moving the cursor: open files are edited where they are, others in the background. Every file touched is then saved (`:set lsp.save-workspace-edits=false` leaves them unsaved and open for review). |
 | `:lsp-code-action`     | `textDocument/codeAction` -- vertico picker over quick-fixes, refactors, and source actions at the cursor / Visual selection. Accept resolves lazy actions via `codeAction/resolve`, applies inline `WorkspaceEdit`s via the rename apply path, and routes `Command` payloads through `workspace/executeCommand`. |
-| `:lsp-refactor`        | The `:lsp-code-action` picker narrowed to the server's refactorings (`refactor.*`): extract, inline, rewrite, whatever it offers. Over a selection, use `:'<,'>lsp-refactor` (Visual `:` fills in the `'<,'>`). |
-| `:lsp-extract`         | Only the extract refactorings (`refactor.extract`) -- extract function / variable / constant. Select the expression or lines first: `v` / `V`, then `:lsp-extract`. |
-| `:lsp-inline`          | Only the inline refactorings (`refactor.inline`) -- inline the function or variable under the cursor. |
+| `:lsp-refactor`        | The `:lsp-code-action` picker narrowed to the server's refactorings (`refactor.*`): extract, inline, rewrite, whatever it offers. Over a selection, use `:'<,'>lsp-refactor` (Visual `:` fills in the `'<,'>`). It belongs to `refactor-mode`, as do `:refactor-extract` and `:refactor-inline`, which ask the server first and work without one (`:help refactor`). |
 
 Each picker entry encodes `path:line:col` in its candidate
 text; accept dispatch parses through `jump_to_file_line_col`

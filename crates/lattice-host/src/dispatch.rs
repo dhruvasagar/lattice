@@ -20548,7 +20548,22 @@ impl Editor {
     ///
     /// Anything else keeps the old routing — back onto the tail, in case a
     /// peer is in a position to drain it.
+    ///
+    /// The deferred ACTIONS are run here too, as a keystroke's dispatch runs
+    /// them. `ApplyEdit` is applied as an `Action::ApplyEdit` queued on
+    /// `out.next_actions`, so an off-keystroke drain that does not run them
+    /// drops the edit: a code-action fallback that edits (`cri`'s native
+    /// inline) ran, echoed nothing and changed nothing.
     fn absorb_off_keystroke_effects(&mut self, out: &mut DispatchOutcome) {
+        loop {
+            let pending = std::mem::take(&mut out.next_actions);
+            if pending.is_empty() {
+                break;
+            }
+            for next in pending {
+                handle_action(self, next, out);
+            }
+        }
         let deferred = std::mem::take(&mut out.effects);
         for effect in deferred {
             match effect {

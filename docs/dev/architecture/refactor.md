@@ -3,7 +3,7 @@
 > **Design fragment — agreed 2026-11-14, re-scoped 2026-11-15** (one mode owns
 > every refactor command: §2; the structural v1 set and keys: §11; the operators: §9). Contracts,
 > rationale, rejected alternatives. Sequencing:
-> [`../operations/slice-plans/refactor.md`](../operations/slice-plans/refactor.md)
+> [`../operations/slice-plans/archive/refactor.md`](../operations/slice-plans/archive/refactor.md)
 > (RF). Builds on [`plugin-treesitter-seam.md`](plugin-treesitter-seam.md)
 > (the WASM tree API) and on [`lsp-architecture.md`](lsp-architecture.md) §16
 > (the `LspRequest` split the server's refactorings go through); sits beside

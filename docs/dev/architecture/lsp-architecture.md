@@ -1380,7 +1380,7 @@ resolved (`ex-command-context.range`, RF.3c). `:lsp-format`, `:lsp-rename`, `:ls
 `:lsp-signature-help` still carry their own Effects; they are the same
 migration, not yet done.
 
-Sequencing: [`../operations/slice-plans/refactor.md`](../operations/slice-plans/refactor.md).
+Sequencing: [`../operations/slice-plans/archive/refactor.md`](../operations/slice-plans/archive/refactor.md).
 The three named commands' owner moves to `refactor-mode` in RF.3
 ([`refactor.md`](refactor.md) §8); the request below stays the substrate they use.
 

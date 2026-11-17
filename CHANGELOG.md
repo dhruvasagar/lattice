@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.10.2 — 2026-11-18
+
+0.10.1 was tagged but never published: its release stopped on a Windows-only test failure. 0.10.2 ships everything listed under 0.10.1 below, with no change to the editor itself.
+
+### Fixed
+- The refactor plugin's tests no longer race the background reparse. After an edit the syntax tree is reparsed off the UI thread, and a plugin is handed no tree until that parse catches up; tests that ran a second tree command straight after an edit could reach it first on a slow runner and see no tree. They now wait for the parse, as a person typing the next command always does.
+
 ## 0.10.1 — 2026-11-17
 
 ### Added

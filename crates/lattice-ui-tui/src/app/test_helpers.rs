@@ -328,6 +328,25 @@ pub(super) async fn settle_mode(app: &mut App, mode: &str) -> bool {
     .await
 }
 
+/// [`settle`] until the published syntax snapshot is a completed parse of
+/// the document's current text.
+///
+/// Reparsing runs on the syntax worker, and a plugin is handed the tree
+/// only when it `tree_reflects` the text version (OT.7): a stale one reaches
+/// it as `none`. So a test that edits through the tree and then asks the
+/// tree again — split then join, raise then raise — races the worker, and
+/// loses on a loaded runner: the second command sees no tree and changes
+/// nothing. A user is never that fast; a test is, so it waits here.
+pub(super) async fn settle_tree(app: &mut App) -> bool {
+    settle(app, |a| {
+        a.editor
+            .syntax
+            .as_ref()
+            .is_some_and(|h| h.snapshot().tree_reflects(a.editor.document.text_version()))
+    })
+    .await
+}
+
 pub(super) fn press_chars(app: &mut App, keys: &str) {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     for c in keys.chars() {

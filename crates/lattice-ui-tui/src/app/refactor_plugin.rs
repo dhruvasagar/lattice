@@ -294,6 +294,7 @@ mod tests {
             "on the moved item"
         );
 
+        assert!(settle_tree(&mut app).await, "the edit's reparse lands");
         submit_ex(&mut app, "refactor-swap-next");
         assert_eq!(body(&app), RUST, "and back");
         assert_eq!((app.editor.cursor.line, app.editor.cursor.byte), (1, 21));
@@ -376,6 +377,7 @@ mod tests {
         assert_eq!(body(&app), "fn main() {\n    let x = foo(bar, baz);\n}\n");
         assert_eq!((app.editor.cursor.line, app.editor.cursor.byte), (1, 21));
 
+        assert!(settle_tree(&mut app).await, "the edit's reparse lands");
         submit_ex(&mut app, "refactor-raise");
         assert_eq!(body(&app), "fn main() {\n    let x = baz;\n}\n");
         assert_eq!((app.editor.cursor.line, app.editor.cursor.byte), (1, 12));
@@ -444,6 +446,7 @@ mod tests {
         submit_ex(&mut app, "refactor-split");
         assert_eq!(body(&app), split);
 
+        assert!(settle_tree(&mut app).await, "the edit's reparse lands");
         submit_ex(&mut app, "refactor-join");
         assert_eq!(body(&app), RUST);
 
@@ -467,6 +470,7 @@ mod tests {
             body(&app),
             "fn main() {\n    let v = [\n        1,\n        2,\n    ];\n}\n"
         );
+        assert!(settle_tree(&mut app).await, "the edit's reparse lands");
         submit_ex(&mut app, "refactor-join");
         assert_eq!(body(&app), src);
     }

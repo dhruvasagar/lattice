@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.10.1 — 2026-11-17
 
 ### Added
 - **The refactor operators are the `c` family**: `cx` exchanges, and `cr` starts the rest (`crr` raise, `cre` extract, `crj` join, `cr<CR>` split), free in vim because `r` is not a motion. Visual uses `<leader>r` with the same letter, since Visual `c` changes the selection at once. vim-abolish's case letters after `cr` are left free. The keys belong to `refactor-mode` and go with `refactor.enabled=false`.

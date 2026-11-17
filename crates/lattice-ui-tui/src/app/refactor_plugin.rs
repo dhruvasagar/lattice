@@ -622,6 +622,7 @@ mod tests {
         press_chars(&mut app, "i(");
         assert_eq!(body(&app), split, "echo: {:?}", echoed(&app));
 
+        assert!(settle_tree(&mut app).await, "the edit's reparse lands");
         press_chars(&mut app, "j^crjiw");
         assert_eq!(body(&app), RUST, "echo: {:?}", echoed(&app));
 
@@ -1102,6 +1103,7 @@ mod tests {
         esc(&mut app);
         press_chars(&mut app, "u:setlocal refactor.declaration&");
         enter(&mut app);
+        assert!(settle_tree(&mut app).await, "the edit's reparse lands");
         press_chars(&mut app, "ggjfbcreiw");
         assert_eq!(
             body(&app),
@@ -1733,6 +1735,7 @@ mod tests {
         enter(&mut app);
         assert_eq!(body(&app), split, "echo: {:?}", echoed(&app));
         assert!(matches!(app.editor.modal, ModalState::Normal));
+        assert!(settle_tree(&mut app).await, "the edit's reparse lands");
         press_chars(&mut app, "jwviw rj");
         assert_eq!(body(&app), RUST, "echo: {:?}", echoed(&app));
     }
@@ -1785,7 +1788,9 @@ mod tests {
             "extract ran with the mode off: {:?}",
             body(&app)
         );
-        press_chars(&mut app, "u0fbviw re");
+        press_chars(&mut app, "u");
+        assert!(settle_tree(&mut app).await, "the edit's reparse lands");
+        press_chars(&mut app, "0fbviw re");
         esc(&mut app);
         assert!(
             !body(&app).contains("let value"),

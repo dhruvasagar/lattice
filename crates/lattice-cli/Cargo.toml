@@ -143,6 +143,8 @@ assets = [
     ["../../runtime/plugins/comment/.source", "usr/share/lattice/plugins/comment/.source", "644"],
     ["../../runtime/plugins/lighthouse/lighthouse.wasm", "usr/share/lattice/plugins/lighthouse/lighthouse.wasm", "644"],
     ["../../runtime/plugins/lighthouse/.source", "usr/share/lattice/plugins/lighthouse/.source", "644"],
+    ["../../runtime/plugins/refactor/refactor.wasm", "usr/share/lattice/plugins/refactor/refactor.wasm", "644"],
+    ["../../runtime/plugins/refactor/.source", "usr/share/lattice/plugins/refactor/.source", "644"],
 ]
 
 [dev-dependencies]

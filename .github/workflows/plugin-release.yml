@@ -16,6 +16,7 @@
 #       uses: dhruvasagar/lattice/.github/workflows/plugin-release.yml@main
 #       permissions:
 #         contents: write
+#       secrets: inherit                   # optional: DISCORD_ANNOUNCE_WEBHOOK
 #
 # `needs: ci` is what makes a release go out green or not at all. This
 # workflow cannot see the plugin's CI — it is the plugin's, not lattice's —
@@ -45,6 +46,13 @@ on:
         description: The lattice revision whose build script is used.
         type: string
         default: main
+    secrets:
+      DISCORD_ANNOUNCE_WEBHOOK:
+        description: >-
+          Webhook for the lattice Discord's announcement channel. Optional:
+          without it the release is not announced. Pass it with
+          `secrets: inherit` on the calling job.
+        required: false
 
 permissions:
   contents: write
@@ -104,3 +112,15 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --title "$tag" \
             --notes-file notes.md
+
+      # A caller that passes no `DISCORD_ANNOUNCE_WEBHOOK` (any plugin but
+      # lattice's own) is skipped by the script, not failed.
+      - name: Announce on Discord
+        shell: bash
+        env:
+          DISCORD_ANNOUNCE_WEBHOOK: ${{ secrets.DISCORD_ANNOUNCE_WEBHOOK }}
+        run: |
+          lattice/scripts/announce-release.sh \
+            "${GITHUB_REPOSITORY#*/} $GITHUB_REF_NAME" \
+            "https://github.com/$GITHUB_REPOSITORY/releases/tag/$GITHUB_REF_NAME" \
+            notes.md

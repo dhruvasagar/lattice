@@ -508,6 +508,19 @@ jobs:
           body_path: release-notes.md
           fail_on_unmatched_files: true
 
+      # Only now, with the release published, is there anything to announce.
+      # The script warns rather than fails on a post error: the release is out.
+      - name: Announce on Discord
+        if: needs.prepare.outputs.preview == 'false'
+        shell: bash
+        env:
+          DISCORD_ANNOUNCE_WEBHOOK: ${{ secrets.DISCORD_ANNOUNCE_WEBHOOK }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          scripts/announce-release.sh "lattice $VERSION" \
+            "https://github.com/$GITHUB_REPOSITORY/releases/tag/$GITHUB_REF_NAME" \
+            release-notes.md
+
       - name: Upload preview bundle
         if: needs.prepare.outputs.preview == 'true'
         uses: actions/upload-artifact@v4

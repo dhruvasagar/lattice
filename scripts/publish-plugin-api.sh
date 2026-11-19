@@ -189,3 +189,24 @@ cat <<DONE
   and rebuild. Until then they do not load in an editor built from this tree.
 
 DONE
+
+# Announce it, now that it is on crates.io (see scripts/announce-release.sh;
+# skipped without DISCORD_ANNOUNCE_WEBHOOK). The notes are CHANGELOG.md's
+# `- **Plugin API X.Y.Z.**` entry, which states what changed for plugin
+# authors; without one the announcement is the pin line alone.
+notes="$(mktemp)"
+trap 'rm -f "$notes"' EXIT
+{
+    printf '`lattice-wit`, `lattice-plugin-sdk` and `lattice-plugin-sdk-derive` %s are on crates.io. Plugins pinned to the previous generation move with `lattice-wit = "%s"` and a rebuild.\n\n' \
+        "$version" "$minor"
+    # The entry is hard-wrapped; join it into one paragraph for Discord.
+    awk -v ver="$version" '
+        BEGIN { head = "- **Plugin API " ver ".**" }
+        !inside && index($0, head) == 1 { inside = 1; printf "%s", $0; next }
+        inside && ($0 ~ /^- / || $0 ~ /^#/ || $0 ~ /^[[:space:]]*$/) { exit }
+        inside { sub(/^[[:space:]]+/, ""); printf " %s", $0 }
+        END { if (inside) print "" }
+    ' CHANGELOG.md
+} > "$notes"
+scripts/announce-release.sh "lattice plugin API $version" \
+    "https://crates.io/crates/lattice-wit/$version" "$notes"

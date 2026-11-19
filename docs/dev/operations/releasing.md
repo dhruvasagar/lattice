@@ -64,6 +64,35 @@ for users. Both ends refuse to ship an empty body: the script will not tag
 without a written section, and the workflow step fails the release if the
 section is missing at publish time.
 
+## The Discord announcement
+
+Every release is announced in the Discord server's announcement channel by
+`scripts/announce-release.sh`, through the webhook in
+`DISCORD_ANNOUNCE_WEBHOOK`. This is a different webhook from `DISCORD_WEBHOOK`,
+which carries CI status. Each path posts only once its release exists:
+
+| Release | Posts from | Notes |
+|---|---|---|
+| lattice | `release.yml`, after the GitHub Release is created | the CHANGELOG section |
+| a plugin (org) | `plugin-release.yml`, after `gh release create` | the tag's message |
+| plugin API | `publish-plugin-api.sh --publish`, after the last upload | CHANGELOG's `Plugin API X.Y.Z` entry |
+
+Posting after the release is the point: v0.10.1 was tagged and never
+published, so an announcement at tag time would have announced nothing.
+
+The secret is set on the `lattice` and `lattice-org-plugin` repositories. A
+plugin's release job passes it with `secrets: inherit`. For the plugin API,
+export the variable in the shell that runs the script. Without the webhook
+the script says it skipped and exits 0, so a third-party plugin calling
+`plugin-release.yml` is unaffected. A failed post only warns, since the
+release is already out. To post again by hand:
+
+	DISCORD_ANNOUNCE_WEBHOOK=… scripts/announce-release.sh "lattice 0.10.2" \
+		https://github.com/dhruvasagar/lattice/releases/tag/v0.10.2 notes.md
+
+A webhook posts into an announcement channel but does not publish to the
+servers following it. That is the channel's **Publish** button, or a bot.
+
 ## Testing without releasing (preview mode)
 
 Run the workflow from the Actions tab (**Run workflow** / `workflow_dispatch`),

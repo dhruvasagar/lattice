@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- **`o` / `O` on an org headline or list item no longer folds the new line shut.** While any other buffer that folds was open (the agenda, search results, an LLM chat), the new line landed inside a closed fold and everything typed into it stayed hidden. The keystroke itself had been fixed before; a refresh that runs between keystrokes still applied org's collapsed-overview folding to the fold the edit had just created. Folds an edit creates now stay open there too.
+
 ## 0.10.2 — 2026-11-18
 
 0.10.1 was tagged but never published: its release stopped on a Windows-only test failure. 0.10.2 ships everything listed under 0.10.1 below, with no change to the editor itself.

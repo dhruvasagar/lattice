@@ -23022,7 +23022,26 @@ impl Editor {
             }
         }
         for (buffer_id, version) in to_refresh {
-            self.recompute_folds_for_buffer(buffer_id);
+            // The active document's own edit path already refolded THIS
+            // text, as an `Edit`: `maybe_reparse_syntax` runs before the
+            // tick and stamps `last_folded_text_version`. Recomputing it here
+            // is not just redundant, it is the bug 0c2183a1 fixed coming back
+            // by another door — `recompute_folds_for_buffer` delegates to
+            // `recompute_folds`, a `Populate`, so `foldlevel=0` closed the
+            // fold `o` had just opened under a bare org headline, with the
+            // cursor inside it. It only fired while some overlay was
+            // registered (an open agenda, search results, an LLM transcript,
+            // which is what lets this loop run at all), so the regression
+            // tests, which register none, never reached it.
+            //
+            // Out-of-band text — magit's `=` splicing through the document
+            // handle, the case this pass exists for — never goes through the
+            // edit path, so its stamp is behind and it still refolds.
+            let folded_by_the_edit = buffer_id == self.document_buffer_id
+                && self.last_folded_text_version == Some((buffer_id, self.document.text_version()));
+            if !folded_by_the_edit {
+                self.recompute_folds_for_buffer(buffer_id);
+            }
             self.overlay_fold_seen_versions.insert(buffer_id, version);
         }
     }

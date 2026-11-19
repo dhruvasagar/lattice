@@ -1613,6 +1613,48 @@ mod tests {
             );
         }
 
+        /// Some OTHER buffer's fold overlay: what an open agenda, a search
+        /// results buffer or an LLM transcript registers. It folds nothing
+        /// here; its only effect is that the per-tick overlay refresh runs.
+        struct ElsewhereOverlay;
+        impl lattice_core::FoldSource for ElsewhereOverlay {
+            fn id(&self) -> lattice_core::ProviderId {
+                lattice_core::ProviderId(0xF01D)
+            }
+            fn compute_folds(&self) -> Vec<Fold> {
+                Vec::new()
+            }
+        }
+
+        /// **The bug, back.** The test above passed while `o` on an org
+        /// headline still folded shut in real use: the overlay refresh on the
+        /// tick recomputed the edited buffer as a `Populate`, and it runs only
+        /// while an overlay is registered — which this harness never had and
+        /// a session with the agenda open always does.
+        #[test]
+        fn open_line_under_a_bare_heading_stays_open_with_an_overlay_registered() {
+            let mut a = org_shaped("# H1\n");
+            let service = lattice_host::fold_provider::FoldOverlayServiceImpl::new(
+                a.editor.fold_registry.clone(),
+            );
+            lattice_core::FoldOverlayService::add_source(
+                &service,
+                std::sync::Arc::new(ElsewhereOverlay),
+                lattice_core::BufferId::next(),
+            );
+
+            a.editor.cursor = Position::new(0, 0);
+            press(&mut a, KeyEvent::from(KeyCode::Char('o')));
+            press(&mut a, KeyEvent::from(KeyCode::Char('x')));
+            // The tick, as the actor runs it when anything lands off-keystroke.
+            let _ = a.editor.run_tick_pending();
+
+            assert!(
+                !fold_at(&a, 0).closed,
+                "an overlay elsewhere must not let the tick re-fold the line being typed"
+            );
+        }
+
         /// The same mechanism one level down — the "especially in lists" half
         /// of the report. A nested heading created by an edit is new structure
         /// at depth 2, so `foldlevel=0` closed it even harder than the parent.

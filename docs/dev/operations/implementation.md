@@ -6941,6 +6941,14 @@ No host slice: it is guest-side throughout. Design:
 slice plan:
 [`slice-plans/org-capture-templates.md`](slice-plans/org-capture-templates.md).
 
+**Org babel — designed, not built (OB.1–OB.15 📝).** Running src blocks,
+tangling, `:var` / noweb, and `:session`, all inside one `org-babel-mode`
+minor in the plugin. Reverses the original babel cut: the host lends five
+generic mechanisms (list-valued and process option-bound grants,
+`post-effects`, a `whole` write anchor, job stdin) and nothing babel-shaped.
+Design: [`../architecture/org-babel.md`](../architecture/org-babel.md); slice
+plan: [`slice-plans/org-babel.md`](slice-plans/org-babel.md).
+
 **Captures are draft files (CD.1–CD.8 ✅; CD.9 ⛔ deferred).** Any number at
 once, saved with `:w`, resumed from `<leader>oC`, filed back to where they were
 started. A roam note created inside a capture links into it (`C-c n i`) or back

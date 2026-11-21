@@ -427,7 +427,8 @@ binding.
 omission: `#+` keyword lines (org's setup comes from lattice's typed
 config, not from in-file keywords — there is nothing to re-read), dynamic
 blocks (no clocktable *writer*; the agenda's clock report is a virtual
-row, OA.16), source blocks (no babel), footnotes (no footnote support).
+row, OA.16), source blocks (babel — now designed, as its own mode, in
+[`org-babel.md`](org-babel.md)), footnotes (no footnote support).
 Each becomes an arm when its feature lands, on the mode that lands it.
 
 ### 5.5 Properties are a drawer, and writing one is not `set_property`
@@ -1313,8 +1314,10 @@ checkboxes with statistics cookies, timestamps, links, refile, capture,
 agenda, tables (alignment, cell/row motion, row and column insert and
 move).
 
-**Out, as cuts rather than omissions:** export backends, babel / source
-execution, table formulas, column view, org-roam.
+**Out, as cuts rather than omissions:** export backends, table formulas,
+column view, org-roam. (Babel / source execution was cut here too; it is
+now designed in [`org-babel.md`](org-babel.md), once a host primitive let a
+user-installed plugin run a program.)
 
 **Was blocked on a host primitive, now built:** archive, refile and
 capture all move text into a file other than the buffer's own, and no

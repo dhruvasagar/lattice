@@ -195,7 +195,7 @@ cannot run anything.
    names a `list<string>` option; each entry becomes one `FsGrant`. The
    existing scalar form is the one-element case. This is what lets tangling
    write outside `org.directory` without granting the plugin the whole disk.
-2. **`proc:spawn:{option}` — an option-bound process grant.** The option is a
+2. **`proc:spawn:{option:field}` — an option-bound process grant.** The option is a
    list of records (the config seam's structured `schema-node`s already carry
    lists and records; `[[org.babel.languages]]` is that shape in TOML); the
    host reads each record's `command` field and grants spawning **exactly
@@ -204,6 +204,18 @@ cannot run anything.
    so it holds on the synchronous grammar seam too), and refuses anything else
    with an error naming the option. A user-installed plugin may declare it;
    the tier rule becomes "unbound `proc:spawn` is bundled-only".
+   **It follows only a value the user wrote** — a config file, `init.rs`, or
+   `:set` — never the default the plugin registered for the option. A
+   directory grant may follow its default because the manifest states it in
+   its own template (`{org.directory|~/org}`), visible before load; a process
+   grant has no template default, and a plugin whose registered default listed
+   `sh` would otherwise grant itself a shell. An option still at its registered
+   default therefore grants no program, and is not remembered across a reload.
+   A remembered value carries whether the user wrote it, so a directory grant
+   bound to the same option cannot launder the default into a program either.
+   (Both found by a security review during OB.2; pinned by
+   `a_plugins_own_default_never_grants_a_program` and
+   `a_default_remembered_for_a_directory_grant_is_no_program`.)
 3. **Effects from the events seam.** `on-event` returns nothing, and the
    events world imports no effect sink — so a job that finishes on the events
    actor has no way to write `#+RESULTS:`. It can *read* (`source-line`), not
@@ -224,7 +236,7 @@ capabilities = [
 	"fs:write:{org.directory|~/org}",
 	"fs:write:{org.roam-directory|~/org-roam}",
 	"fs:write:{org.babel.tangle-directories}",
-	"proc:spawn:{org.babel.languages.command}",
+	"proc:spawn:{org.babel.languages:command}",
 	"state:write",
 ]
 ```

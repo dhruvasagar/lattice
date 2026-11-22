@@ -13,8 +13,8 @@ of them inside `org-babel-mode` (design §0).
 | Slice | Description | Status |
 |---|---|---|
 | **Phase 1 — execute** | | |
-| OB.1 | Option-bound grants may read a list **(lattice)** | 📝 |
-| OB.2 | `proc:spawn:{option.field}` — the option-bound process grant **(lattice)** | 📝 |
+| OB.1 | Option-bound grants may read a list **(lattice)** | ✅ |
+| OB.2 | `proc:spawn:{option:field}` — the option-bound process grant **(lattice)** | ✅ |
 | OB.3 | `post-effects` — effects from the events seam **(lattice)** | 📝 |
 | OB.R1 | lattice release carrying OB.1–OB.3 **(lattice)** | 📝 |
 | OB.4 | `org-babel-mode`: the mode, its layer, its options **(plugin)** | 📝 |
@@ -89,7 +89,7 @@ test in the slice that owns it.
 
 ## Phase 1 — execute
 
-### OB.1 — option-bound grants may read a list 📝 *(lattice)*
+### OB.1 — option-bound grants may read a list ✅ *(lattice)*
 
 `fs:write:{opt}` binds one path. Let the option be a `list<string>`, each
 entry one `FsGrant`; the scalar form is the one-element case.
@@ -113,11 +113,13 @@ values it resolved, so PMF.4's "grant changed ⇒ reload" compares lists.
 - `changing_a_list_entry_reloads_the_plugin` — PMF.4 over a list.
 - `a_plugin_cannot_set_its_own_list_grant_option` — PMF.5 refuses `set-option`.
 
-### OB.2 — `proc:spawn:{option.field}` 📝 *(lattice)*
+### OB.2 — `proc:spawn:{option:field}` ✅ *(lattice)*
 
-**Manifest form:** `proc:spawn:{org.babel.languages.command}` — an option name
-followed by a field name, resolving to the `command` field of each record in a
-list-of-records option. Parsed into a new `Capability::ProcSpawnOption {
+**Manifest form:** `proc:spawn:{org.babel.languages:command}` — an option name,
+a colon, and a field name, resolving to the `command` field of each record in a
+list-of-records option. A colon, not a dot, because option names already
+contain dots (`org.babel.languages.command` could be an option of its own).
+`proc:spawn:{opt}` with no field reads a list of strings. Parsed into a new `Capability::ProcSpawnOption {
 option, field }` in `manifest.rs`; the option must be in the plugin's own
 namespace (the same check as `FsWriteOption`).
 
@@ -132,6 +134,19 @@ resolution. The refusal is
 `err("'<command>' is not in <option>; add it there to allow it")`.
 `register-server` keeps requiring unbound `proc_spawn` — a language-server
 registration is not what this grant was given for.
+
+**Only user-authored values (security, found in review).** The grant ignores
+the default the plugin registered: an option still at it grants no program and
+is not remembered across a reload (`capability::Authorship::UserOnly`). A value
+the user sets equal to that default is therefore ignored too — the price of
+having no provenance on option values; set any other value, or hold it in
+`lattice.toml`, where it counts.
+
+**As built, beyond the plan:** the grammar-seam test is covered by the shared
+check in `process_host::prepare` (unit-tested), not a grammar fixture;
+`register-server` needs unbound `proc_spawn`, pinned by
+`a_user_plugin_is_granted_exactly_the_configured_commands`; job cancel on
+reload is the existing `PluginState`-owned-job teardown, not re-tested here.
 
 **Reading a record list:** extend OB.1's closure so a `field` projection
 over a list-of-records option yields that field's string from each record.
@@ -193,7 +208,7 @@ modify `src/lib.rs` only to call `babel::register_*` from the existing
 registration functions and to extend the `manifest!` (`provides` unchanged;
 `default_modes` gains `"org-babel-mode"`; `capabilities` gains
 `"fs:write:{org.babel.tangle-directories}"` and
-`"proc:spawn:{org.babel.languages.command}"`; `min_lattice` to OB.R1).
+`"proc:spawn:{org.babel.languages:command}"`; `min_lattice` to OB.R1).
 
 **Mode:** a minor, `ActivationPolicy` naming org's major, keymap at its own
 `MinorMode` layer, modelled on `org-table-mode` (lib.rs ~l.3131). Bindings

@@ -482,7 +482,8 @@ are explicit and prefix-scoped:
 | `fs:read:<path>` / `fs:write:<path>` | Read/write access under a specific path prefix only. `fs:write` also authorises a plugin to **file text into another buffer** — see below. |
 | `fs:read:{<option>\|<default>}` / `fs:write:{…}` | The same, under the path one of the plugin's options is set to — see [Capabilities and your configuration](#capabilities-and-your-configuration). |
 | `net:http:<host>` | HTTP to a named host (serviced through a gated host-service, not raw sockets). |
-| `proc:spawn` | Spawn a subprocess — **bundled plugins only**. |
+| `proc:spawn` | Spawn any subprocess — **bundled plugins only**. |
+| `proc:spawn:{<option>:<field>}` / `proc:spawn:{<option>}` | Spawn **only the programs one of the plugin's options lists** — any plugin, see below. |
 | editor caps (`lsp`, `tree-sitter`, `folds`, `diagnostics`, `writable`, `buffer-uri`) | Access to specific editor subsystems, for plugin-declared modes. |
 
 ### Capabilities and your configuration
@@ -495,6 +496,7 @@ one of the plugin's own options:
 | The plugin asks for | It may write under |
 |---|---|
 | `fs:write:{org.directory\|~/org}` | whatever `org.directory` is set to — or `~/org` until you set it |
+| `fs:write:{org.babel.tangle-directories}` | each directory in that list — nothing until you set it |
 
 What that means for you:
 
@@ -519,6 +521,17 @@ What that means for you:
 - **A refused write names the option.** *"org: write denied — ~/elsewhere/x.org
   is outside org.directory (~/work/notes) — set org.directory to change where
   org may write."*
+
+**What a plugin may run works the same way.** `proc:spawn:{org.babel.languages:command}`
+lets a plugin run exactly the `command` of each entry you put in
+`org.babel.languages` — `sh` permits `sh`, not `/bin/sh` and not `bash`. It has
+no default — not even one the plugin ships for the option: until you add an
+entry yourself, the plugin can run nothing. Changing the
+list reloads the plugin, the plugin cannot change it, and a refused run names
+the option: *"spawn denied: 'python3' is not in org.babel.languages; add it
+there to allow it."* Listing a program trusts it with whatever it can do —
+listing `sh` lets the plugin run any shell script — so list only what you mean
+the plugin to use.
 
 A plugin's own help page names the options that carry its grants.
 

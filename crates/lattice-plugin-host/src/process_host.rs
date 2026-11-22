@@ -73,16 +73,24 @@ pub(crate) fn prepare(
     args: Vec<String>,
     cwd: &str,
 ) -> Result<PendingJob, String> {
-    if !grant.proc_spawn {
+    if !grant.may_spawn(command) {
         // info!: user-actionable (a plugin was denied a capability).
         tracing::info!(
             command,
-            "host-services spawn-process denied: plugin has no proc:spawn grant"
+            "host-services spawn-process denied: not covered by the plugin's proc:spawn grant"
         );
-        return Err(format!(
-            "spawn denied: '{command}' — the plugin has no `proc:spawn` grant \
-             (bundled plugins only)"
-        ));
+        return Err(if grant.spawn_options.is_empty() {
+            format!(
+                "spawn denied: '{command}' — the plugin has no `proc:spawn` grant \
+                 (bundled plugins only)"
+            )
+        } else {
+            // OB.2: the user decides what runs; say where.
+            format!(
+                "spawn denied: '{command}' is not in {}; add it there to allow it",
+                grant.spawn_options.join(" or ")
+            )
+        });
     }
     if command.is_empty() {
         return Err("spawn failed: no command given".to_string());
@@ -263,6 +271,46 @@ mod tests {
             proc_spawn: true,
             ..Default::default()
         }
+    }
+
+    /// OB.2: a grant that follows an option of commands.
+    fn option_bound(commands: &[&str]) -> CapabilityGrant {
+        CapabilityGrant {
+            spawn_commands: commands.iter().map(|c| c.to_string()).collect(),
+            spawn_options: vec!["org.babel.languages".to_string()],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn an_option_bound_grant_permits_a_listed_command() {
+        let bus = Arc::new(EventBus::new());
+        let mut rx = job_bus(&bus);
+        let pending = prepare(
+            &option_bound(&["sh"]),
+            bus,
+            7,
+            "sh",
+            vec!["-c".to_string(), "echo ok".to_string()],
+            "",
+        )
+        .expect("a listed command may spawn");
+        let id = pending.id();
+        let _guard = pending.start();
+        assert_eq!(outcome_of(&mut rx, id).output, vec!["ok"]);
+    }
+
+    #[test]
+    fn an_option_bound_grant_refuses_an_unlisted_command_naming_the_option() {
+        let bus = Arc::new(EventBus::new());
+        let Err(err) = prepare(&option_bound(&["python3"]), bus, 7, "sh", vec![], "") else {
+            panic!("sh is not listed");
+        };
+        assert!(err.contains("'sh'"), "{err}");
+        assert!(
+            err.contains("org.babel.languages"),
+            "names the option: {err}"
+        );
     }
 
     /// One process from request to outcome.

@@ -214,6 +214,8 @@ struct LoadedRecord {
     /// against a fresh resolution when such an option changes, and shown in
     /// `:plugins` (PMF.6).
     option_bound: Vec<lattice_plugin_host::capability::OptionBoundGrant>,
+    /// OB.2: the same for its option-bound process grants.
+    spawn_bound: Vec<lattice_plugin_host::capability::SpawnBoundGrant>,
 }
 
 /// PM.8b: what a build for one plugin is doing right now.
@@ -1301,6 +1303,7 @@ impl PluginLoader {
             source: plugin.source.clone(),
             manifest: manifest.clone(),
             option_bound: outcome.option_bound.clone(),
+            spawn_bound: outcome.spawn_bound.clone(),
         };
         // EVERY host id this load issued, in DRAIN order (see the sort below —
         // no longer the order `provides` lists them in).
@@ -1583,7 +1586,7 @@ impl PluginLoader {
         // moved is announced through `OptionChanged`, which
         // `subscribe_grant_options` turns into a reload — rather than
         // reloading from inside this load.
-        self.announce_moved_grants(manifest, tier, &outcome.option_bound);
+        self.announce_moved_grants(manifest, tier, &outcome.option_bound, &outcome.spawn_bound);
         // LA.1: the mode/language CATALOG changed. Separate from `PluginLoaded`
         // above because the subscriber is different and much more expensive —
         // it re-resolves the major mode of every open buffer
@@ -1965,13 +1968,24 @@ impl PluginLoader {
         manifest: &lattice_plugin_host::PluginManifest,
         tier: TrustTier,
         at_load: &[lattice_plugin_host::capability::OptionBoundGrant],
+        spawn_at_load: &[lattice_plugin_host::capability::SpawnBoundGrant],
     ) {
         let Some(bus) = self.env.bus.as_ref() else {
             return;
         };
-        let now = self.host.grant_for(manifest, tier).option_bound;
-        for (name, old, new) in moved_grant_options(at_load, &now) {
+        let now = self.host.grant_for(manifest, tier);
+        for (name, old, new) in moved_grant_options(at_load, &now.option_bound) {
             bus.publish(Event::OptionChanged { name, old, new });
+        }
+        // OB.2: a process grant that moved is a reason to reload as well.
+        for (then, now) in spawn_at_load.iter().zip(&now.spawn_bound) {
+            if then.commands != now.commands {
+                bus.publish(Event::OptionChanged {
+                    name: now.option.clone(),
+                    old: (!then.commands.is_empty()).then(|| then.commands.join(",")),
+                    new: now.commands.join(","),
+                });
+            }
         }
     }
 
@@ -2004,12 +2018,16 @@ impl PluginLoader {
                         .expect("plugin-loader loaded-set mutex poisoned");
                     loaded
                         .iter()
-                        .filter(|r| r.option_bound.iter().any(|g| g.option == name))
+                        .filter(|r| {
+                            r.option_bound.iter().any(|g| g.option == name)
+                                || r.spawn_bound.iter().any(|g| g.option == name)
+                        })
                         .map(|r| (r.name.clone(), r.tier, r.manifest.clone()))
                         .collect()
                 };
                 for (plugin, tier, manifest) in affected {
-                    let fresh = loader.host.grant_for(&manifest, tier).option_bound;
+                    let fresh_outcome = loader.host.grant_for(&manifest, tier);
+                    let (fresh, fresh_spawn) = (fresh_outcome.option_bound, fresh_outcome.spawn_bound);
                     let changed = {
                         let mut loaded = loader
                             .loaded
@@ -2023,9 +2041,11 @@ impl PluginLoader {
                                 .map(|g| (g.option.clone(), g.path.clone(), g.write))
                                 .collect::<Vec<_>>()
                         };
-                        let changed = paths(&record.option_bound) != paths(&fresh);
+                        let changed = paths(&record.option_bound) != paths(&fresh)
+                            || record.spawn_bound != fresh_spawn;
                         if !changed {
                             record.option_bound = fresh;
+                            record.spawn_bound = fresh_spawn;
                         }
                         changed
                     };

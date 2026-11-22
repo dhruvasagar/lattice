@@ -94,6 +94,11 @@ pub enum Capability {
     /// PMF.3: read + write access to the path one of the plugin's own options
     /// names (`fs:write:{org.directory|~/org}`). See [`OptionPath`].
     FsWriteOption(OptionPath),
+    /// OB.2: spawn exactly the programs an option of the plugin's own names
+    /// (`proc:spawn:{org.babel.languages:command}`). Unlike the unbound
+    /// [`Capability::ProcSpawn`] it is granted at either tier: what it permits
+    /// is what the user wrote, and the plugin cannot write it (PMF.5).
+    ProcSpawnOption(SpawnOption),
 }
 
 /// PMF.3: a filesystem grant that follows a configuration option rather than
@@ -140,6 +145,49 @@ impl OptionPath {
     }
 }
 
+/// OB.2: the option a `proc:spawn:{…}` grant follows, and the record field
+/// that names a program in each of its entries.
+///
+/// `{opt:field}` reads `field` from each record of a list-of-records option;
+/// `{opt}` reads a list of strings (or one string). A colon, not a dot,
+/// separates the field because option names already contain dots. There is no
+/// `|default`: a process grant the user never configured permits nothing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpawnOption {
+    /// The fully-qualified option name (`org.babel.languages`).
+    pub option: String,
+    /// The record field naming a program (`command`), if the option is a list
+    /// of records.
+    pub field: Option<String>,
+}
+
+impl SpawnOption {
+    fn parse(p: &str) -> Option<Self> {
+        let inner = p.strip_prefix('{')?.strip_suffix('}')?;
+        let word = |w: &str| !w.is_empty() && !w.contains(char::is_whitespace) && !w.contains('|');
+        let (option, field) = match inner.split_once(':') {
+            Some((o, f)) => (o.trim(), Some(f.trim())),
+            None => (inner.trim(), None),
+        };
+        if !word(option) || field.is_some_and(|f| !word(f) || f.contains(':')) {
+            return None;
+        }
+        Some(Self {
+            option: option.to_string(),
+            field: field.map(str::to_string),
+        })
+    }
+}
+
+impl std::fmt::Display for SpawnOption {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.field {
+            Some(field) => write!(f, "{{{}:{field}}}", self.option),
+            None => write!(f, "{{{}}}", self.option),
+        }
+    }
+}
+
 impl std::fmt::Display for OptionPath {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self.default {
@@ -152,7 +200,7 @@ impl std::fmt::Display for OptionPath {
 /// The string `s` was not a recognised capability form.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error(
-    "unrecognised capability `{0}` (expected `fs:read:<p>` / `fs:write:<p>` (a path, or `{{<option>|<default>}}`) / `net:http:<host>` / `proc:spawn` / `state:write` / `grammar:chord`)"
+    "unrecognised capability `{0}` (expected `fs:read:<p>` / `fs:write:<p>` (a path, or `{{<option>|<default>}}`) / `net:http:<host>` / `proc:spawn` (or `proc:spawn:{{<option>[:<field>]}}`) / `state:write` / `grammar:chord`)"
 )]
 pub struct CapabilityParseError(pub String);
 
@@ -191,6 +239,9 @@ impl FromStr for Capability {
                 Ok(Capability::NetHttp(h.to_string()))
             }
             (Some("proc"), Some("spawn"), None) => Ok(Capability::ProcSpawn),
+            (Some("proc"), Some("spawn"), Some(p)) => SpawnOption::parse(p)
+                .map(Capability::ProcSpawnOption)
+                .ok_or_else(|| CapabilityParseError(s.to_string())),
             (Some("state"), Some("write"), None) => Ok(Capability::StateWrite),
             (Some("grammar"), Some("chord"), None) => Ok(Capability::GrammarChord),
             _ => Err(CapabilityParseError(s.to_string())),
@@ -209,6 +260,7 @@ impl std::fmt::Display for Capability {
             Capability::GrammarChord => f.write_str("grammar:chord"),
             Capability::FsReadOption(op) => write!(f, "fs:read:{op}"),
             Capability::FsWriteOption(op) => write!(f, "fs:write:{op}"),
+            Capability::ProcSpawnOption(op) => write!(f, "proc:spawn:{op}"),
         }
     }
 }
@@ -671,12 +723,17 @@ impl PluginManifest {
         // PMF.3: an option-bound grant follows the plugin's own configuration.
         let own = format!("{}.", raw.id);
         for cap in &requested {
-            if let Capability::FsReadOption(op) | Capability::FsWriteOption(op) = cap
-                && !op.option.starts_with(&own)
+            let option = match cap {
+                Capability::FsReadOption(op) | Capability::FsWriteOption(op) => Some(&op.option),
+                Capability::ProcSpawnOption(op) => Some(&op.option),
+                _ => None,
+            };
+            if let Some(option) = option
+                && !option.starts_with(&own)
             {
                 return Err(ManifestError::ForeignOption {
                     id: raw.id.clone(),
-                    option: op.option.clone(),
+                    option: option.clone(),
                     capability: cap.to_string(),
                 });
             }

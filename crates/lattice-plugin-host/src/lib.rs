@@ -156,6 +156,7 @@ pub use download_host::{Hosts, Limits as DownloadLimits, download_to_file, fetch
 pub use llm_tools_task::{LlmToolsActor, LlmToolsClient};
 pub use manifest::{
     Capability, CapabilityParseError, ManifestError, OptionPath, PluginManifest, PluginSeam,
+    SpawnOption,
 };
 pub use picker_source::WasmPickerSource;
 pub use picker_task::{PickerActor, PickerClient};
@@ -1041,7 +1042,13 @@ pub struct GrantGuard {
     /// grant moved again, and the plugin reloaded forever (seen with org on
     /// every boot, 2026-10-19). Resolving an unregistered option to the value
     /// it last had ends that after one reload.
-    remembered: std::collections::HashMap<String, lattice_config::ConfigValue>,
+    ///
+    /// OB.2: each value carries whether the USER wrote it (`true`) or it was
+    /// still the default the plugin registered (`false`). A process grant
+    /// follows only the first — otherwise a directory grant bound to the same
+    /// option would remember the plugin's default and launder it into a
+    /// program the plugin may run.
+    remembered: std::collections::HashMap<String, (lattice_config::ConfigValue, bool)>,
 }
 
 /// Shared between the host and every plugin instance it creates.
@@ -3321,7 +3328,7 @@ impl crate::config_host::bindings::lattice::plugin_host::config::Host for Plugin
             tracing::warn!(
                 option = %target,
                 plugin = ?self.plugin_name,
-                "set-option-value refused: `{target}` decides which files a plugin may access, \
+                "set-option-value refused: `{target}` decides what a plugin may access or run, \
                  so only your configuration (`:set`, lattice.toml, init.rs) can change it"
             );
             return false;
@@ -3455,7 +3462,7 @@ impl crate::config_host::bindings::lattice::plugin_host::config::Host for Plugin
             tracing::warn!(
                 option = %target,
                 plugin = ?self.plugin_name,
-                "set-option refused: `{target}` decides which files a plugin may access, \
+                "set-option refused: `{target}` decides what a plugin may access or run, \
                  so only your configuration (`lattice.toml`, `init.rs`, `:set`) can change it"
             );
             return false;
@@ -4938,8 +4945,15 @@ impl PluginHost {
                 .write()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             for cap in &manifest.requested {
-                if let Capability::FsReadOption(op) | Capability::FsWriteOption(op) = cap {
-                    guard.options.insert(op.option.clone());
+                match cap {
+                    Capability::FsReadOption(op) | Capability::FsWriteOption(op) => {
+                        guard.options.insert(op.option.clone());
+                    }
+                    // OB.2: what a plugin may RUN is the user's to set, too.
+                    Capability::ProcSpawnOption(op) => {
+                        guard.options.insert(op.option.clone());
+                    }
+                    _ => {}
                 }
             }
         }
@@ -4951,12 +4965,20 @@ impl PluginHost {
             .remembered
             .clone();
         let live = std::cell::RefCell::new(Vec::new());
-        let outcome = crate::capability::grant_with(manifest, tier, &|name| {
+        let outcome = crate::capability::grant_with(manifest, tier, &|name, authorship| {
             match registry.as_ref().and_then(|r| r.lookup(name)) {
+                // OB.2: a value still at the default the PLUGIN registered is
+                // not the user's, so a process grant does not follow it. The
+                // plugin cannot set the option (PMF.5), so any other value is
+                // one the user wrote. Remembered with that bit, so a reload
+                // cannot resurrect the default for a process grant either.
                 Some(opt) => {
+                    let user_authored = opt.get_formatted() != opt.default_formatted();
                     let value = opt.get_value();
-                    live.borrow_mut().push((name.to_string(), value.clone()));
-                    Some(value)
+                    live.borrow_mut()
+                        .push((name.to_string(), (value.clone(), user_authored)));
+                    (user_authored || authorship == crate::capability::Authorship::Any)
+                        .then_some(value)
                 }
                 // Not registered yet: what the user's configuration says it
                 // will be (PMF.15/16), else what it was while the plugin was last loaded
@@ -4964,7 +4986,14 @@ impl PluginHost {
                 None => registry
                     .as_ref()
                     .and_then(|r| r.held_config_value(name))
-                    .or_else(|| remembered.get(name).cloned()),
+                    .or_else(|| {
+                        remembered
+                            .get(name)
+                            .filter(|(_, user_authored)| {
+                                *user_authored || authorship == crate::capability::Authorship::Any
+                            })
+                            .map(|(value, _)| value.clone())
+                    }),
             }
         });
         let mut guard = self
@@ -5347,6 +5376,157 @@ mod held_options_tests {
             !org.data_mut()
                 .set_option("org.babel.tangle-directories".into(), "/".into()),
             "the plugin may not widen its own reach"
+        );
+    }
+
+    fn languages_schema() -> lattice_config::ConfigSchema {
+        lattice_config::ConfigSchema::List(Box::new(lattice_config::ConfigSchema::Record(vec![
+            lattice_config::SchemaField {
+                name: "command".into(),
+                schema: lattice_config::ConfigSchema::Scalar(lattice_config::ScalarKind::Str),
+                required: true,
+                doc: String::new(),
+            },
+        ])))
+    }
+
+    fn languages(commands: &[&str]) -> lattice_config::ConfigValue {
+        lattice_config::ConfigValue::List(
+            commands
+                .iter()
+                .map(|c| {
+                    lattice_config::ConfigValue::record([(
+                        "command".to_string(),
+                        lattice_config::ConfigValue::Str((*c).into()),
+                    )])
+                })
+                .collect(),
+        )
+    }
+
+    /// OB.2, the security property: what a plugin may RUN comes from the user,
+    /// never from the default the plugin itself registered for the option. A
+    /// plugin registering `org.babel.languages` with `sh` in its default would
+    /// otherwise grant itself a shell.
+    #[test]
+    fn a_plugins_own_default_never_grants_a_program() {
+        let rig = rig();
+        let manifest = PluginManifest::from_toml_str(
+            "id = \"org\"\ncapabilities = [\"proc:spawn:{org.babel.languages:command}\"]\n",
+        )
+        .unwrap();
+        crate::config_host::register_structured_option(
+            &rig.config,
+            "org.babel.languages",
+            languages_schema(),
+            languages(&["sh"]),
+            "doc",
+        )
+        .unwrap();
+        let granted = |rig: &Rig| {
+            rig.host
+                .grant_for(&manifest, TrustTier::UserInstalled)
+                .grant
+                .spawn_commands
+        };
+        assert!(
+            granted(&rig).is_empty(),
+            "the registered default grants nothing"
+        );
+
+        // The user writes the list: now it decides.
+        rig.config
+            .lookup("org.babel.languages")
+            .unwrap()
+            .set_value(&languages(&["python3"]))
+            .unwrap();
+        assert_eq!(granted(&rig), ["python3".to_string()].into_iter().collect());
+
+        // Across a reload (options dropped), the user's value is what is
+        // remembered — and the default never was.
+        assert!(rig.config.unregister("org.babel.languages"));
+        assert_eq!(granted(&rig), ["python3".to_string()].into_iter().collect());
+    }
+
+    /// OB.2: and a default that is never overridden is not remembered into a
+    /// grant across a reload either.
+    #[test]
+    fn a_default_is_not_remembered_into_a_spawn_grant() {
+        let rig = rig();
+        let manifest = PluginManifest::from_toml_str(
+            "id = \"org\"\ncapabilities = [\"proc:spawn:{org.babel.languages:command}\"]\n",
+        )
+        .unwrap();
+        crate::config_host::register_structured_option(
+            &rig.config,
+            "org.babel.languages",
+            languages_schema(),
+            languages(&["sh"]),
+            "doc",
+        )
+        .unwrap();
+        let _ = rig.host.grant_for(&manifest, TrustTier::UserInstalled);
+        assert!(rig.config.unregister("org.babel.languages"));
+        assert!(
+            rig.host
+                .grant_for(&manifest, TrustTier::UserInstalled)
+                .grant
+                .spawn_commands
+                .is_empty()
+        );
+    }
+
+    /// OB.2, laundering: one option bound to BOTH a directory grant (which
+    /// follows any value, default included, and remembers it across a reload)
+    /// and a process grant. The directory grant's remembered default must not
+    /// become a program the process grant permits once the option is gone.
+    #[test]
+    fn a_default_remembered_for_a_directory_grant_is_no_program() {
+        let rig = rig();
+        let manifest = PluginManifest::from_toml_str(
+            "id = \"org\"\ncapabilities = [\"fs:read:{org.tool}\", \"proc:spawn:{org.tool}\"]\n",
+        )
+        .unwrap();
+        let mut org = store(&rig, "org");
+        assert!(org.data_mut().register_option(
+            "tool".into(),
+            OptionType::String,
+            "sh".into(),
+            "doc".into()
+        ));
+        let first = rig.host.grant_for(&manifest, TrustTier::UserInstalled);
+        assert!(
+            first.grant.spawn_commands.is_empty(),
+            "the default is no program"
+        );
+        assert!(rig.config.unregister("org.tool"));
+        let after = rig.host.grant_for(&manifest, TrustTier::UserInstalled);
+        assert!(
+            after.grant.spawn_commands.is_empty(),
+            "nor once remembered: {:?}",
+            after.grant.spawn_commands
+        );
+    }
+
+    /// OB.2: a value the user's configuration holds is user-authored.
+    #[test]
+    fn a_held_languages_list_grants_its_programs() {
+        let rig = rig();
+        rig.config.hold_tree(
+            "org.babel.languages",
+            languages(&["sh", "ruby"]),
+            lattice_config::HeldSource::ConfigFile,
+        );
+        let manifest = PluginManifest::from_toml_str(
+            "id = \"org\"\ncapabilities = [\"proc:spawn:{org.babel.languages:command}\"]\n",
+        )
+        .unwrap();
+        assert_eq!(
+            rig.host
+                .grant_for(&manifest, TrustTier::UserInstalled)
+                .grant
+                .spawn_commands,
+            ["ruby".to_string(), "sh".to_string()].into_iter().collect()
         );
     }
 

@@ -153,6 +153,88 @@ async fn the_plugin_reloads_when_its_grant_bearing_option_moves() {
     );
 }
 
+/// OB.2: the same for a PROCESS grant. `proc:spawn:{config-fixture.label}`
+/// permits exactly the program the USER set the option to, so moving it moves
+/// what the plugin may run — a reload, as for a directory. The plugin's own
+/// default never counts.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_plugin_reloads_when_its_spawn_option_moves() {
+    let Some(wasm) = config_guest_wasm() else {
+        eprintln!("skipping: config-guest wasm not built (no wasm32-wasip2 target)");
+        return;
+    };
+    let base = tempfile::tempdir().unwrap();
+    let plugins = base.path().join("plugins");
+    let dir = plugins.join("config-fixture");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("plugin.toml"),
+        "id = \"config-fixture\"\nprovides = [\"config\"]\n\
+         capabilities = ['proc:spawn:{config-fixture.label}']\n",
+    )
+    .unwrap();
+    std::fs::write(dir.join("component.wasm"), &wasm).unwrap();
+
+    let bus = Arc::new(EventBus::new());
+    let config = Arc::new(ConfigRegistry::default());
+    let publish_to = bus.clone();
+    config.set_event_publisher(Arc::new(move |event| publish_to.publish(event)));
+    let (tx, mut loads) = tokio::sync::mpsc::unbounded_channel::<Event>();
+    bus.subscribe(
+        EventFilter::kind(EventKind::PluginLoaded),
+        SubscriptionTarget::Channel(tx),
+    );
+    let host = Arc::new(
+        PluginHost::with_dirs(base.path().join("cache"), base.path().join("data")).unwrap(),
+    );
+    let loader = Arc::new(PluginLoader::with_services(
+        host.clone(),
+        LoaderServices {
+            runtime: Some(tokio::runtime::Handle::current()),
+            bus: Some(bus.clone()),
+            config_registry: Some(config.clone()),
+            ..Default::default()
+        },
+    ));
+    loader.subscribe_grant_options();
+    assert_eq!(
+        loader
+            .discover_and_load(&plugins, TrustTier::UserInstalled)
+            .await,
+        1
+    );
+    let wait = Duration::from_secs(5);
+    assert_eq!(
+        next_load(&mut loads, wait).await.as_deref(),
+        Some("config-fixture")
+    );
+    // Registration gives the option the PLUGIN's default (`hello`). Unlike a
+    // directory grant, a process grant does not follow a plugin-chosen value:
+    // the grant stays empty, so nothing moved and nothing reloads.
+    assert_eq!(
+        next_load(&mut loads, Duration::from_millis(800)).await,
+        None,
+        "a plugin's own default is not a program it may run"
+    );
+
+    config
+        .parse_and_set_command("config-fixture.label=make")
+        .unwrap();
+    assert_eq!(
+        next_load(&mut loads, wait).await.as_deref(),
+        Some("config-fixture"),
+        "`:set` on a spawn-bearing option reloads the plugin"
+    );
+    config
+        .parse_and_set_command("config-fixture.label=make")
+        .unwrap();
+    assert_eq!(
+        next_load(&mut loads, Duration::from_millis(800)).await,
+        None,
+        "the same value is not a reason to reload"
+    );
+}
+
 /// Boot's two paths into one plugin directory. `require` loads the plugin
 /// (`load_path`); the user's `init.rs` sets a grant-bearing option during that
 /// load, so the grant moves and a reload is scheduled; then the user-root scan

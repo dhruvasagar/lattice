@@ -923,8 +923,12 @@ is enough to check — and decline otherwise.
   writes outside it require an explicit broader grant (§5.5.6 prerequisite 2).
 - **Trust tiers.** *Bundled* plugins inherit the editor's trust (capabilities pre-granted at
   build time, no prompt). *User-installed* plugins prompt for consent on first install
-  (§5.5.6). `proc:spawn` is bundled-only in v1; user plugins ship pre-built binary recipes,
-  not source-build spawn paths (§5.5.6 prerequisite 4).
+  (§5.5.6). Unbound `proc:spawn` is bundled-only in v1; user plugins ship pre-built binary recipes,
+  not source-build spawn paths (§5.5.6 prerequisite 4). The option-bound form
+  `proc:spawn:{<option>[:<field>]}` (OB.2, [`org-babel.md`](org-babel.md) §4) is granted at
+  either tier: it permits exactly the programs the user listed in the plugin's own option,
+  compared as written, re-read on every grant computation, reloading the plugin when it moves
+  (PMF.4) and closed to the plugin's own `set-option` (PMF.5).
 - **Keymap write-gate.** Already enforced: `KeymapCapability::MinorMode` permits writes only
   to `KeymapLayer::MinorMode(_)`/`Buffer`, denies `Builtin`/`MajorMode`/`User`
   (`registry.rs:132`). A plugin cannot shadow universal vim grammar.

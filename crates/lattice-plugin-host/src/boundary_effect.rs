@@ -1128,6 +1128,7 @@ fn anchor_to_wit(a: lattice_grammar::FileAnchor) -> WitFileAnchor {
         lattice_grammar::FileAnchor::End => WitFileAnchor::End,
         lattice_grammar::FileAnchor::Start => WitFileAnchor::Start,
         lattice_grammar::FileAnchor::Line(n) => WitFileAnchor::Line(n),
+        lattice_grammar::FileAnchor::Whole => WitFileAnchor::Whole,
     }
 }
 
@@ -1136,6 +1137,7 @@ fn anchor_from_wit(a: WitFileAnchor) -> lattice_grammar::FileAnchor {
         WitFileAnchor::End => lattice_grammar::FileAnchor::End,
         WitFileAnchor::Start => lattice_grammar::FileAnchor::Start,
         WitFileAnchor::Line(n) => lattice_grammar::FileAnchor::Line(n),
+        WitFileAnchor::Whole => lattice_grammar::FileAnchor::Whole,
     }
 }
 
@@ -1656,6 +1658,7 @@ mod tests {
             lattice_grammar::FileAnchor::Start,
             lattice_grammar::FileAnchor::Line(0),
             lattice_grammar::FileAnchor::Line(42),
+            lattice_grammar::FileAnchor::Whole,
         ] {
             let native = NativeEffect::WriteToFile {
                 path: std::path::PathBuf::from("/tmp/a.org"),

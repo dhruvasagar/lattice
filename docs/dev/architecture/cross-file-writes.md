@@ -79,6 +79,8 @@ variant file-anchor {
     start,
     /// Before this 0-based line. Out of range clamps to `end`.
     line(u32),
+    /// Replace the whole text, as one edit (OB.9, plugin API 0.6.0) — see §4.1.
+    whole,
 }
 
 record write-to-file-payload {
@@ -123,6 +125,28 @@ file you cannot read", not an inconsistency to be tidied away.
 It also bounds the blast radius. An insert-only primitive cannot silently
 destroy content in a file the user was not looking at. A range-carrying one
 could, on an off-by-one, and the user would find out later.
+
+### 4.1 `whole`, the one anchor that replaces (OB.9)
+
+Babel's `:tangle` writes files it generates whole: the target's previous
+contents are its own earlier output, not the user's, and the right edit is
+"replace everything". That is still a write the guest can name without
+reading. It needs no position, because it covers the file, so it keeps the
+asymmetry above. What it gives up is the blast-radius bound, deliberately: a
+`whole` write CAN destroy a file's content. Three things hold it in:
+
+- **The grant.** It is checked by path against `fs:write` exactly as an insert
+  is. Babel's targets fall under `org.directory` or the user's
+  `org.babel.tangle-directories`, both of them the user's own options.
+- **One edit, one undo.** The applier sends a single replace over the full
+  range, so `u` in the target brings back what was there. A delete and an
+  insert would need two `u`s, and the first leaves an empty file.
+- **Unlisted when unopened.** A target the editor did not have open is
+  opened `nobuflisted`. Tangling ten files does not put ten buffers in `:ls`,
+  and the buffer still exists for `:b` and `:w`.
+
+A new arm in a variant that crosses the boundary is an ABI break
+(`wit-ownership.md` §5), so this moved the package to `@0.6.0`.
 
 **Rejected: hand the guest a read handle for the target first.** A
 `borrow<document>` minted for a path would let it compute a real range. That

@@ -949,6 +949,7 @@ variant file-anchor {
     end,
     start,
     line(u32),
+    whole,
 }
 ```
 
@@ -957,9 +958,11 @@ XF.4: where in a target file a `write-to-file` lands.
 A *position*, not a range, and the asymmetry with `apply-edit` is
 deliberate: for its own buffer a guest holds `borrow<document>` and can
 compute a range that means something; for a file it has never read, a
-range would be a guess. These are the three positions namable without
-reading. Insert-only also means a guest cannot silently destroy content
-in a file the user was not looking at.
+range would be a guess. `end`, `start` and `line` are the positions
+namable without reading, and they only insert, so a guest cannot
+silently destroy content in a file the user was not looking at.
+`whole` is the one exception, and it is just as namable: it needs no
+position because it replaces everything.
 
 **Cases**
 
@@ -970,6 +973,13 @@ in a file the user was not looking at.
   failing: a guest computing a line from a file it has not read can
   legitimately be off, and refusing to file the text at all is worse
   than filing it at the end.
+- `whole` — OB.9: replace the target's entire text, as ONE edit, so one `u` in
+  that buffer brings back what was there. For a file the producer
+  generates whole, whose previous contents it has no claim to keep:
+  babel's `:tangle` target. A missing file is created. A target the
+  editor did not have open is opened unlisted (`nobuflisted`), so
+  writing ten files does not put ten buffers in `:ls`. The `fs:write`
+  check is the same as for the other anchors: a path, not a position.
 
 ### record `write-to-file-payload`
 

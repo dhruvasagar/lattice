@@ -16,7 +16,7 @@ compile against its API.
 
 ```toml
 [build-dependencies]
-lattice-wit = "0.5"
+lattice-wit = "0.6"
 ```
 
 ```rust
@@ -39,7 +39,7 @@ drifts behind the editor.
 This crate's `major.minor` is always the WIT package's `major.minor`:
 
 ```
-lattice-wit = "0.5"   ⟺   package lattice:plugin-host@0.5.x
+lattice-wit = "0.6"   ⟺   package lattice:plugin-host@0.6.x
 ```
 
 So the dependency line above says which generation of the API you target.

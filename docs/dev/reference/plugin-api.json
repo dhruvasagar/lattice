@@ -1,5 +1,5 @@
 {
-  "package": "lattice:plugin-host@0.5.0",
+  "package": "lattice:plugin-host@0.6.0",
   "interfaces": [
     {
       "name": "buffer",
@@ -6780,8 +6780,8 @@
         {
           "name": "file-anchor",
           "kind": "variant",
-          "doc": "XF.4: where in a target file a `write-to-file` lands.\n\nA *position*, not a range, and the asymmetry with `apply-edit` is\ndeliberate: for its own buffer a guest holds `borrow<document>` and can\ncompute a range that means something; for a file it has never read, a\nrange would be a guess. These are the three positions namable without\nreading. Insert-only also means a guest cannot silently destroy content\nin a file the user was not looking at.",
-          "definition": "variant file-anchor {\n    end,\n    start,\n    line(u32),\n}",
+          "doc": "XF.4: where in a target file a `write-to-file` lands.\n\nA *position*, not a range, and the asymmetry with `apply-edit` is\ndeliberate: for its own buffer a guest holds `borrow<document>` and can\ncompute a range that means something; for a file it has never read, a\nrange would be a guess. `end`, `start` and `line` are the positions\nnamable without reading, and they only insert, so a guest cannot\nsilently destroy content in a file the user was not looking at.\n`whole` is the one exception, and it is just as namable: it needs no\nposition because it replaces everything.",
+          "definition": "variant file-anchor {\n    end,\n    start,\n    line(u32),\n    whole,\n}",
           "members": [
             {
               "name": "end",
@@ -6797,6 +6797,11 @@
               "name": "line",
               "type": "u32",
               "doc": "Before this 0-based line. Past the end clamps to `end` rather than\nfailing: a guest computing a line from a file it has not read can\nlegitimately be off, and refusing to file the text at all is worse\nthan filing it at the end."
+            },
+            {
+              "name": "whole",
+              "type": null,
+              "doc": "OB.9: replace the target's entire text, as ONE edit, so one `u` in\nthat buffer brings back what was there. For a file the producer\ngenerates whole, whose previous contents it has no claim to keep:\nbabel's `:tangle` target. A missing file is created. A target the\neditor did not have open is opened unlisted (`nobuflisted`), so\nwriting ten files does not put ten buffers in `:ls`. The `fs:write`\ncheck is the same as for the other anchors: a path, not a position."
             }
           ],
           "examples": []

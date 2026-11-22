@@ -26806,6 +26806,15 @@ impl Editor {
         // (XF.2), but reading the source id first means this is correct even
         // if that ever changes.
         let source = self.active_pane_buffer_id();
+        // OB.9: whether the target was already open, read BEFORE resolving
+        // opens it. A `whole` write into a file the user had not opened
+        // leaves it unlisted.
+        let was_open = self
+            .find_document_by_real_path(&normalize_user_path_with_cwd(
+                &path,
+                self.current_dir.as_deref(),
+            ))
+            .is_some();
 
         let target = match self.resolve_path_to_buffer_creating(&path, create_parents) {
             Ok(id) => id,
@@ -26814,6 +26823,21 @@ impl Editor {
                 return false;
             }
         };
+        if anchor == lattice_grammar::FileAnchor::Whole
+            && !was_open
+            && let Some(flags) = self.buffers.flags_of(target)
+        {
+            // `nobuflisted`, as vim calls it: a tangle writing ten files did
+            // not ask for ten buffers in `:ls`. Still a buffer (`:b name`
+            // reaches it, `:w` saves it), so the write stays visible.
+            self.buffers.set_flags(
+                target,
+                lattice_core::BufferFlags {
+                    listed: false,
+                    ..flags
+                },
+            );
+        }
 
         let Some(handle) = self.buffers.document_handle(target) else {
             self.set_message(
@@ -26825,6 +26849,10 @@ impl Editor {
         let snap = handle.snapshot();
         let line_count = snap.buffer.content_line_count();
         let line = anchor.resolve_line(line_count);
+        let end_of_text = {
+            let last = snap.buffer.rope_line_count().saturating_sub(1);
+            lattice_protocol::position::Position::new(last, snap.buffer.line_byte_len(last))
+        };
 
         // `resolve_line` answers in LINES, which is all a producer can name
         // about a file it never read. Turning that into a position needs the
@@ -26834,10 +26862,10 @@ impl Editor {
         // NOT for `""` or `"a"` — where the insert would fail and, with a
         // `cut`, silently take the "insert failed, keep the source" branch on
         // a perfectly writable file.
-        let (at, text) = if line >= line_count {
-            let last = snap.buffer.rope_line_count().saturating_sub(1);
-            let end =
-                lattice_protocol::position::Position::new(last, snap.buffer.line_byte_len(last));
+        // `whole` takes the text as given: there is no line it is appended
+        // after, so no separator to supply.
+        let (at, text) = if anchor != lattice_grammar::FileAnchor::Whole && line >= line_count {
+            let end = end_of_text;
             // Appending to a file whose last line has no newline would splice
             // onto that line — `"notes"` + `"* Archived\n"` becomes
             // `"notes* Archived"`. "After the last line" means starting a new
@@ -26854,9 +26882,20 @@ impl Editor {
             (lattice_protocol::position::Position::new(line, 0), text)
         };
 
-        if let Err(err) =
-            self.apply_targeted_edit(target, lattice_protocol::edit::Edit::insert(at, text))
-        {
+        let edit = if anchor == lattice_grammar::FileAnchor::Whole {
+            // ONE replace over everything, so it is one undo step in the
+            // target — not a delete and an insert the user undoes twice.
+            lattice_protocol::edit::Edit::replace(
+                lattice_protocol::position::Range::new(
+                    lattice_protocol::position::Position::new(0, 0),
+                    end_of_text,
+                ),
+                text,
+            )
+        } else {
+            lattice_protocol::edit::Edit::insert(at, text)
+        };
+        if let Err(err) = self.apply_targeted_edit(target, edit) {
             // The cut deliberately does NOT run. This is the branch that
             // keeps the user's text where it was.
             tracing::debug!(

@@ -378,6 +378,10 @@ pub enum FileAnchor {
     /// not read can legitimately be off, and refusing to file the text at all
     /// is worse than filing it at the end.
     Line(u32),
+    /// OB.9: replace the target's entire text, as one edit (one undo step in
+    /// the target). For a file the producer generates whole — babel's
+    /// `:tangle`. An unopened target is opened unlisted.
+    Whole,
 }
 
 impl FileAnchor {
@@ -394,6 +398,8 @@ impl FileAnchor {
             // Clamp, per the variant's doc. `>=` and not `>`: a `Line` equal
             // to the count already means "past the last line", which is End.
             FileAnchor::Line(n) => n.min(line_count),
+            // Where the replacement starts; the applier replaces to the end.
+            FileAnchor::Whole => 0,
         }
     }
 }

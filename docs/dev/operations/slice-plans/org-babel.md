@@ -19,14 +19,14 @@ of them inside `org-babel-mode` (design §0).
 | OB.3a                     | Security follow-ups to OB.2/OB.3 — **blocks OB.R1** **(lattice)**          | ✅     |
 | OB.3b                     | Per-mode switch `mode_gates` for `org.babel.enabled` **(lattice)**         | ✅     |
 | OB.3c                     | `buffer-text`, gated on the plugin's own modes **(lattice)**               | ✅     |
-| OB.R1                     | lattice release carrying OB.1–OB.3c **(lattice)**                          | 🚧     |
+| OB.R1                     | lattice release carrying OB.1–OB.3c, OB.9 **(lattice)**                    | 🚧     |
 | OB.4                      | `org-babel-mode`: the mode, its layer, its options **(plugin)**            | ✅     |
 | OB.5                      | Src blocks and header arguments, parsed and merged **(plugin)**            | ✅     |
 | OB.6                      | `C-c C-c` runs a block; output lands in `#+RESULTS:` **(plugin)**          | ✅     |
 | OB.7                      | Confirm, cancel, execute-buffer / -subtree, remove-result **(plugin)**     | ✅     |
 | OB.8                      | `:results` — insertion, format, `value` wrappers, `:dir` **(plugin)**      | ✅     |
 | **Phase 2 — tangle**      |                                                                            |        |
-| OB.9                      | `write-to-file` gains a `whole` anchor **(lattice)**                       | 📝     |
+| OB.9                      | `write-to-file` gains a `whole` anchor **(lattice)**                       | ✅     |
 | OB.10                     | `:tangle` **(plugin)**                                                     | 📝     |
 | **Phase 3 — cross-block** |                                                                            |        |
 | OB.11                     | `:var` — literals, named results, named tables **(plugin)**                | 📝     |
@@ -113,6 +113,7 @@ costs if it turns out wrong. Design-level decisions are also in
 | OB.7 | A confirm's keys ride in ONE argument, one key per line | a confirm's args are cut to the yes-action's arity; a key cannot hold a newline | `org-babel-run-confirmed` has one `blocks` slot |
 | OB.7 | `execute-buffer` refuses the whole run on one unconfigured language or running block; a FAILED block does not stop the batch, one that cannot START does | emacs's order of refusal; a later block may depend on an earlier one having started | checked before the confirm |
 | OB.7 | `*org-babel*` opens only on `:org-babel-output`; the fallback echo names the command (Dhruva, 2026-11-23) | a background run finishing must not change the layout of the file being typed in — UX outranks emacs's display-buffer convention | `output-append` creates no buffer, which the OB.6 echo had assumed; rejected: a WIT mirror of `display-synthetic-buffer` |
+| OB.9 | The breaking `whole` anchor ships in OB.R1, the release already queued, as plugin API 0.6.0 (Dhruva, 2026-11-23) | one release cycle instead of two; org ships execute and tangle together | the recommendation was Phase 3 first and one later 0.6.0 bump with OB.14; 0.5.1's "plugins keep loading" is withdrawn |
 | OB.6 | The running marker is a gutter sign, chosen by Dhruva | The decorations seam is gutter-only; virtual text would be a new host mechanism for a status marker | not the `⧗ running` text the design first described |
 | OB.3 | "Both linkers" is structural — one bindgen `host-services` interface, one `PluginState` impl | Adding a function to the interface adds it to both | none |
 
@@ -477,17 +478,30 @@ crates OB.R1 has not yet published.
 
 ### OB.R1 — lattice release 🚧 *(lattice)*
 
-**Prepared on the branch (2026-11-22):** the plugin API crates are 0.5.1 (the
-WIT package stays `@0.5.0` — `post-effects` is an added function, which
-`releasing.md` says needs no package bump), the workspace is 0.10.3 ahead of
-the release so org's `min_lattice` can name it (the 0.9.11 precedent), the
-bundled plugins' lockfiles follow, and `## Unreleased` carries the Added,
-Security and `Plugin API 0.5.1.` entries. **Left for Dhruva**, because each
+**Prepared on the branch (2026-11-22, re-cut 2026-11-23):** the plugin API
+is **0.6.0, WIT package `@0.6.0`**. It was 0.5.1 / `@0.5.0` (all additive)
+until Dhruva folded OB.9's breaking `whole` anchor into this release rather
+than spending a second bump later (decision log, OB.9), so OB.R1 now carries
+OB.1–OB.3c **and OB.9**. The workspace is 0.10.3 ahead of the release so
+org's `min_lattice` can name it (the 0.9.11 precedent), the bundled plugins'
+and fixtures' lockfiles follow, and `## Unreleased` carries the Added,
+Security and `Plugin API 0.6.0 — breaking` entries.
+
+**Release blocker — the user's `init.wit`.** `refresh_wit_package`
+(`lattice-plugin-loader/src/build.rs`) rewrites only the canonical files. It
+never moves the package line of the user-owned worlds (`wit/init.wit`,
+`user-plugin.wit`), and never prunes files the package no longer has. After
+this bump every scaffolded `init.rs` fails with "package identifier … does
+not match", as at 0.5.0, when it was fixed by hand. Either fix that first
+(rewrite a stale `package lattice:plugin-host@X;` line in non-canonical
+files; pruning needs a decision about what counts as ours) or ship with the
+CHANGELOG's manual step, which it now states. **Left for Dhruva**, because each
 needs `main`, a push or crates.io credentials: the owed gates below, merge,
 `scripts/publish-plugin-api.sh --publish`, `scripts/release.sh patch`, push
 the tag. The plugin slices are built meanwhile against the local crates (an
 uncommitted `[patch.crates-io]` in the plugin's `.cargo/config.toml`); its
-commits name `0.5.1` and so build for others only once that is published.
+commits name `0.6.0` (from OB.9 on; `0.5.1` before) and so build for others
+only once that is published.
 
 A release carrying OB.1–OB.3, via `docs/dev/operations/releasing.md`. What it
 must take care of, beyond the usual:
@@ -733,7 +747,7 @@ run programs"; `:help org.babel` is `doc/babel.md`.
 
 ## Phase 2 — tangle
 
-### OB.9 — `write-to-file` gains a `whole` anchor 📝 *(lattice)*
+### OB.9 — `write-to-file` gains a `whole` anchor ✅ *(lattice)*
 
 `file-anchor` (`types.wit` ~l.504) gains `whole`: replace the target buffer's
 entire text as one edit, creating the file if absent. Same `fs:write` check;
@@ -746,6 +760,13 @@ in the commit.
 `whole_creates_an_absent_file`; `whole_with_save_reaches_disk`;
 `whole_outside_the_grant_is_refused`; `an_unopened_target_is_not_listed`.
 Then a lattice release (OB.R2).
+
+**As built:** as planned, plus `whole_writes_exactly_the_text_over_a_file_with_no_final_newline`.
+An append supplies a line break, and `whole` must not. The ABI moved to
+**0.6.0 / `@0.6.0`** (`cargo xtask bump-plugin-api 0.6.0`, plus the hand-kept
+pins: READMEs, authoring guide, distribution doc, `version-mode.md`, and the
+guests' and bundled plugins' locks). It ships in **OB.R1**, not OB.R2: Dhruva
+folded it in (decision log). Design: `cross-file-writes.md` §4.1.
 
 ### OB.10 — `:tangle` 📝 *(plugin)*
 

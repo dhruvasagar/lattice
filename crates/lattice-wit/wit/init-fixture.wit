@@ -1,4 +1,4 @@
-package lattice:plugin-host@0.5.0;
+package lattice:plugin-host@0.6.0;
 
 /// CI.5 fixture world — the shape a real `init.rs` uses for DEFERRED plugin
 /// config (`with-eval-after-load`; config-and-init.md). It `provides` the

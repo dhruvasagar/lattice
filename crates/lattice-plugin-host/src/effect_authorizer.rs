@@ -848,6 +848,38 @@ mod tests {
         }
     }
 
+    /// OB.9: `whole` replaces a file's entire text, the most destructive
+    /// anchor, and it is checked exactly as an insert is: by the path. Inside
+    /// the grant it passes unchanged; outside it is refused.
+    #[test]
+    fn whole_outside_the_grant_is_refused() {
+        let granted = tmp("whole-granted");
+        let other = tmp("whole-other");
+        let auth = EffectAuthorizer::new(&grant(&granted, true), "org");
+        let whole = |path: PathBuf| NativeEffect::WriteToFile {
+            path,
+            anchor: lattice_grammar::FileAnchor::Whole,
+            text: "x\n".to_string(),
+            cut: None,
+            create_parents: false,
+            save: true,
+        };
+        assert!(matches!(
+            auth.authorize(whole(other.join("out.sh"))),
+            NativeEffect::Echo {
+                level: EchoLevel::Warn,
+                ..
+            }
+        ));
+        assert!(matches!(
+            auth.authorize(whole(granted.join("out.sh"))),
+            NativeEffect::WriteToFile {
+                anchor: lattice_grammar::FileAnchor::Whole,
+                ..
+            }
+        ));
+    }
+
     /// A write buried inside a `Many` is checked too. Missing this would be
     /// the entire gate, bypassed by wrapping the effect in a list.
     #[test]

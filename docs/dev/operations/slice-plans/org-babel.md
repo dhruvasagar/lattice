@@ -16,6 +16,7 @@ of them inside `org-babel-mode` (design §0).
 | OB.1                      | Option-bound grants may read a list **(lattice)**                          | ✅     |
 | OB.2                      | `proc:spawn:{option:field}` — the option-bound process grant **(lattice)** | ✅     |
 | OB.3                      | `post-effects` — effects from the events seam **(lattice)**                | ✅     |
+| OB.3a                     | Security follow-ups to OB.2/OB.3 — **blocks OB.R1** **(lattice)**          | 📝     |
 | OB.R1                     | lattice release carrying OB.1–OB.3 **(lattice)**                           | 📝     |
 | OB.4                      | `org-babel-mode`: the mode, its layer, its options **(plugin)**            | 📝     |
 | OB.5                      | Src blocks and header arguments, parsed and merged **(plugin)**            | 📝     |
@@ -58,8 +59,10 @@ commands and counts are in each slice's *As built* block below.
 2. A fresh whole-branch code review of `7601db92..1cd970e5`, with the Review
    focus list above and the decision log below as its brief.
 
-**Next:** OB.R1 (the release — see its section for what it must bump), then
-the plugin slices from OB.4 in `lattice-org-plugin`.
+**Next: OB.3a**, three security findings from a review of the committed
+OB.2/OB.3 code (see its section). They block OB.R1. Then OB.R1 (the release —
+see its section for what it must bump), then the plugin slices from OB.4 in
+`lattice-org-plugin`.
 
 **Toolchain note:** `scripts/docs-check.sh` runs rustdoc on `stable`; on the
 machine this was built on that was rustc 1.93, which some dependencies refuse.
@@ -89,6 +92,7 @@ costs if it turns out wrong. Design-level decisions are also in
 | OB.3 | The sink is wired in `lattice-plugin-loader::install` from `boot.inbound`; no `LoaderServices` field; `lattice-host` untouched | The loader already owns plugin seam wiring; `WiredSeams.effect_sink` is the boot pin | none |
 | OB.3 | "Without a keypress" proven by composition, not a new full-editor plugin test | Each link already had a test: the post (`post_effects_seam.rs`), the inbound wake (`lattice-mode`), a drained `ApplyEdit` (`off_keystroke_applies_edits.rs`), the wire (boot pin) | a break where the links meet is caught only by the boot pin |
 | OB.3 | No WIT package version bump | Additive; the ABI fingerprint already marks built plugins stale | OB.R1 must bump the published crates before org can use it |
+| OB.3a | Three security findings recorded, not fixed (phase 1 had been stopped) | See OB.3a | until fixed, a plugin can grant itself programs via a set-option effect |
 | OB.3 | "Both linkers" is structural — one bindgen `host-services` interface, one `PluginState` impl | Adding a function to the interface adds it to both | none |
 
 ## Global constraints
@@ -293,6 +297,42 @@ Also: `PluginHost::set_effect_sink` / `effect_sink_wired`,
 fixture gained a `post-request` trigger and the `@example` for
 `host-services.post-effects`; the plugin-API reference was regenerated
 (`UPDATE_SITE_REFERENCE=1 cargo test -p lattice-plugin-api`).
+
+### OB.3a — security follow-ups to OB.2 / OB.3 📝 *(lattice)* — blocks OB.R1
+
+Found by an automated security review of the committed `f21e2d5a` / `1cd970e5`,
+after phase 1 stopped. All three verified against source; none fixed yet.
+
+1. **HIGH — effects can set a grant-bearing option, bypassing PMF.5.** The WIT
+   `effect` has `set-option(string)` / `set-global-option(string)` arms (and
+   native `SetOption` / `SetLocalOption` / `SetGlobalOption`), and
+   `EffectAuthorizer` does not check them — PMF.5 guards only the config
+   seam's `set-option` call (`GrantGuard::refuses`). So a plugin can return,
+   or now post, an effect setting `org.babel.languages`; and since OB.2 treats
+   any non-default value as user-authored, that grants it programs. The hole
+   predates this branch for returned effects (it could move `org.directory`),
+   but OB.2 makes it an escalation to code execution. **Fix in the shared
+   `EffectAuthorizer`**, so returned and posted effects get one gate: a
+   set-option effect naming an option `GrantGuard::refuses` for that plugin
+   becomes the usual warning `Echo`. Test both a returned and a posted one,
+   for a directory grant and a process grant.
+2. **HIGH — posted effects are unsolicited.** A returned effect answers a
+   keystroke; a posted one can arrive at any time, so `post-effects` currently
+   lets a plugin's events seam quit the editor, open an external URI, invoke a
+   command, set global options or spawn a terminal unprompted. **Fix:** an
+   allowlist for the posted path — the effects OB.6+ need (`apply-edit`,
+   `echo`, decoration / tracked-range effects, `write-to-file` under the grant,
+   `open-synthetic-buffer` for `*org-babel*`) — with everything else replaced
+   by a warning naming the effect. Widen it only when a consumer needs it, with
+   the reason recorded here.
+3. **MEDIUM — tracked ranges on the events seam share one id space.**
+   `spawn_event_plugin` never sets `PluginState::range_space`, so every events
+   instance posts with `UNASSIGNED_RANGE_SPACE` and two plugins' tracked-range
+   ids can collide. **Fix:** stamp `range_space` with the plugin's allocated id
+   in `spawn_event_plugin`, as the grammar path does (`grammar_trampoline.rs`
+   ~l.890) — or refuse `track-range` / `untrack-range` from `post-effects`
+   while unassigned. Note OB.6 locates results by block key, not by tracked
+   range, so babel itself does not need ranges from this seam.
 
 ### OB.R1 — lattice release 📝 *(lattice)*
 

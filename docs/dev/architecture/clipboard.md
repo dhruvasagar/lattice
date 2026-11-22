@@ -51,7 +51,7 @@ every buffer kind, terminals included. Vim-pure register behavior stays one opti
 
 | Goal | This feature |
 |---|---|
-| #1 perf | **Load-bearing.** Clipboard read/write is an OS round-trip (X11/Wayland can be slow); it MUST run off the UI/keystroke thread via `spawn_blocking`. Yank enqueues a clipboard write and returns; paste that needs the clipboard resolves it without blocking the render/keystroke path. A slow clipboard can never stall a keystroke. |
+| #1 perf | **Load-bearing.** Clipboard read/write is an OS round-trip (X11/Wayland can be slow, a Windows helper under WSL slower). Yank enqueues a clipboard write and returns. A paste reads **synchronously, on the editor actor** (never the render thread), so the text lands before the next key runs; each backend bounds its wait (`arboard` 500 ms, the WSL helper 1 s) as a guard against a hang, not as a latency budget, and a read that outlasts it is reported to the user rather than replaced by the register (CW.2). The cost is the backend's own read time on an explicit paste: sub-5 ms natively, ≈40–150 ms through win32yank. An asynchronous paste — the text arriving after keys typed later — was rejected as confusing (CW.2), and it could not land sooner than the read anyway. |
 | #2 extensibility | The register layer stays the single seam; the clipboard is a backend behind it, so a future WIT/plugin register source composes the same way. |
 | #3 grammar | Neutral — `"+` / `"*` already parse (`register.rs`); this only gives them real backing. |
 | #4 async | Clipboard I/O is async by construction (host clipboard service on the runtime), matching the three-layer model. |
@@ -86,7 +86,7 @@ pub trait Clipboard: Send + Sync {
   (`$SSH_TTY` set / `arboard` init fails / Linux build without the `clipboard` feature).
   OSC52 read is unreliable across terminals, so read falls back to the in-memory register
   there (documented degradation).
-- **WSL (both peers, CW.1):** inside WSL, writes go to the *Windows* clipboard through a
+- **WSL (both peers, CW.1 / CW.2):** inside WSL, reads and writes go to the *Windows* clipboard through a
   Windows helper run over WSL interop: `win32yank.exe` when it is on `PATH` (≈40–150 ms),
   else `powershell.exe Set-Clipboard` (≈350 ms, every Windows has it). `clip.exe` is not
   used: it decodes in the console code page and garbles non-ASCII text. It takes
@@ -96,10 +96,12 @@ pub trait Clipboard: Send + Sync {
   terminal directly. `arboard` reaches Windows only through WSLg's X11 bridge, which
   older Windows lacks. The backend is `std::process` only, so it is not feature-gated
   and the Linux TUI release build has it too. Writes run on one worker thread, in order,
-  coalescing a burst to its newest text. Reads go to `arboard` when it is compiled in
-  (WSLg bridges Windows → X11), else return `None`. A helper read is far slower than the
-  30 ms synchronous bound, so reading through one waits on CW.2 (the asynchronous paste
-  of §3). SSH still wins: a WSL box reached over SSH has its user's clipboard on the far
+  coalescing a burst to its newest text. Reads run the same helper (`win32yank -o --lf`
+  or `Get-Clipboard -Raw`), bounded at 1 s. While a write of ours is still on its way, a
+  read returns that text instead of asking Windows, which would answer with the text it
+  replaces (`yy` then `p` pasting the old clipboard). Reading through `arboard` and WSLg
+  was rejected for the same reason: the X11 copy lags a helper's write by up to ≈0.3 s.
+  SSH still wins: a WSL box reached over SSH has its user's clipboard on the far
   end. See `docs/dev/operations/slice-plans/clipboard-wsl.md`.
 - **GPUI peer:** gpui's own `read_from_clipboard` / `write_to_clipboard` (gpui 0.2.2),
   wrapped in the same trait so the host stays renderer-neutral.

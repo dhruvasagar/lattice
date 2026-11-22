@@ -8,10 +8,14 @@
 //! PTY — CB.3) can reach it without depending on `lattice-host`.
 //!
 //! **Threading contract (paramount #1).** Clipboard I/O is an OS round-trip
-//! (X11 / Wayland can be slow); it must never sit on the UI / keystroke path.
-//! [`Clipboard::read`] is only ever called from a `spawn_blocking` context (the
-//! paste path); [`Clipboard::write`] is fire-and-forget — a backend that would
-//! block spawns its own blocking task internally and returns immediately.
+//! (X11 / Wayland can be slow, a Windows helper under WSL slower still).
+//! [`Clipboard::try_read`] is called synchronously on the editor actor by an
+//! explicit paste, because the paste must land before the next key runs
+//! (`.` repeat, macros and typed-ahead keys all depend on that order); each
+//! backend bounds its own wait and reports a read that ran out of time as
+//! [`ClipboardRead::Failed`]. [`Clipboard::write`] is fire-and-forget — a
+//! backend that would block hands the write to its own task or thread and
+//! returns immediately.
 //!
 //! See `docs/dev/architecture/clipboard.md`.
 
@@ -24,15 +28,46 @@ use std::sync::Arc;
 /// All reads/writes are text-only for v1 (images / other MIME are out of
 /// scope).
 pub trait Clipboard: Send + Sync {
-    /// Read the clipboard's current text. `None` when the clipboard is empty,
-    /// holds non-text content, or the backend can't read (e.g. OSC52 over SSH,
-    /// where read-back is unsupported — the register layer falls back to its
-    /// in-memory entry). Only called from a `spawn_blocking` context.
-    fn read(&self) -> Option<String>;
+    /// Read the clipboard's current text, saying why when there is none:
+    /// [`ClipboardRead::NoText`] lets the register layer fall back to its
+    /// in-memory entry, while [`ClipboardRead::Failed`] is reported to the
+    /// user (a paste of the *wrong* text is worse than a paste that says it
+    /// could not read). Bounded by the backend; see the module doc.
+    fn try_read(&self) -> ClipboardRead;
+
+    /// [`Self::try_read`]'s text, for a caller that treats "nothing" and
+    /// "could not read" alike.
+    fn read(&self) -> Option<String> {
+        self.try_read().into_text()
+    }
 
     /// Write `text` to the clipboard. Fire-and-forget: never blocks the
     /// caller. A backend whose write would block spawns its own blocking task.
     fn write(&self, text: String);
+}
+
+/// What a [`Clipboard::try_read`] found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClipboardRead {
+    /// The clipboard holds this text.
+    Text(String),
+    /// Nothing to paste: the clipboard is empty or holds something other than
+    /// text, or the backend cannot read at all (OSC52, whose query half
+    /// terminals refuse). The register layer uses its in-memory entry.
+    NoText,
+    /// The read was tried and did not succeed — the backend did not answer in
+    /// time, or its helper failed. The reason is written for the user.
+    Failed(String),
+}
+
+impl ClipboardRead {
+    /// The text, if the read found some.
+    pub fn into_text(self) -> Option<String> {
+        match self {
+            Self::Text(text) => Some(text),
+            Self::NoText | Self::Failed(_) => None,
+        }
+    }
 }
 
 /// Cheap-clone handle for the clipboard service, stored in the
@@ -70,8 +105,11 @@ impl FakeClipboard {
 }
 
 impl Clipboard for FakeClipboard {
-    fn read(&self) -> Option<String> {
-        self.inner.lock().expect("clipboard mutex poisoned").clone()
+    fn try_read(&self) -> ClipboardRead {
+        match self.inner.lock().expect("clipboard mutex poisoned").clone() {
+            Some(text) => ClipboardRead::Text(text),
+            None => ClipboardRead::NoText,
+        }
     }
 
     fn write(&self, text: String) {

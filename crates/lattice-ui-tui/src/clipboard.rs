@@ -16,10 +16,11 @@
 //!   `lattice-ui-tui/system-clipboard` forwards to
 //!   `lattice-host/system-clipboard`.
 //!
-//! - [`lattice_host::clipboard::WslClipboard`] (CW.1, always compiled) —
-//!   inside WSL, the Windows clipboard through a Windows helper. Chosen over
-//!   both of the above there: OSC52 rarely survives the terminal and
-//!   multiplexer between lattice and Windows.
+//! - [`lattice_host::clipboard::WslClipboard`] (CW.1 / CW.2, always
+//!   compiled) — inside WSL, the Windows clipboard through a Windows helper,
+//!   for reads and writes. Chosen over both of the above there: OSC52 rarely
+//!   survives the terminal and multiplexer between lattice and Windows, and
+//!   the helper gives the Linux build, which has no `arboard`, a paste.
 //!
 //! `TuiClipboard::detect()` prefers OSC52 under SSH even when `arboard`
 //! would technically succeed: over `ssh -X`, `arboard` can connect to the
@@ -28,7 +29,7 @@
 //! the terminal escape codes to the local terminal emulator directly, which
 //! is the semantically correct backend for SSH sessions.
 
-use lattice_core::Clipboard;
+use lattice_core::{Clipboard, ClipboardRead};
 #[cfg(feature = "system-clipboard")]
 use lattice_host::clipboard::ArboardClipboard;
 use lattice_host::clipboard::WslClipboard;
@@ -63,12 +64,12 @@ pub(crate) fn boot_backend() -> lattice_core::ClipboardHandle {
 pub struct Osc52Clipboard;
 
 impl Clipboard for Osc52Clipboard {
-    fn read(&self) -> Option<String> {
+    fn try_read(&self) -> ClipboardRead {
         // Read-back is unsupported: most terminal emulators refuse the
         // OSC52 query half for security reasons (a program could otherwise
         // read whatever the user last copied in another app/window). The
         // register layer falls back to its in-memory entry.
-        None
+        ClipboardRead::NoText
     }
 
     fn write(&self, text: String) {
@@ -90,7 +91,8 @@ impl Clipboard for Osc52Clipboard {
 pub enum TuiClipboard {
     #[cfg(feature = "system-clipboard")]
     Native(ArboardClipboard),
-    /// CW.1: inside WSL, the Windows clipboard through a Windows helper.
+    /// CW.1 / CW.2: inside WSL, the Windows clipboard through a Windows
+    /// helper, for reads and writes.
     /// Preferred over OSC52 there: whether OSC52 arrives depends on the
     /// terminal and on every multiplexer in between, and in a Windows
     /// Terminal + tmux session it was measured not to.
@@ -118,12 +120,6 @@ impl TuiClipboard {
     /// Windows clipboard, then the native clipboard, then OSC52.
     fn detect_with(under_ssh: bool, wsl: impl FnOnce() -> Option<WslClipboard>) -> Self {
         if !under_ssh && let Some(wsl) = wsl() {
-            // Reads go through arboard when it is compiled in: through
-            // WSLg it sees the Windows clipboard.
-            #[cfg(feature = "system-clipboard")]
-            if let Some(native) = ArboardClipboard::new() {
-                return Self::Wsl(wsl.with_reader(std::sync::Arc::new(native)));
-            }
             return Self::Wsl(wsl);
         }
         #[cfg(feature = "system-clipboard")]
@@ -152,12 +148,12 @@ impl TuiClipboard {
 }
 
 impl Clipboard for TuiClipboard {
-    fn read(&self) -> Option<String> {
+    fn try_read(&self) -> ClipboardRead {
         match self {
             #[cfg(feature = "system-clipboard")]
-            Self::Native(c) => c.read(),
-            Self::Wsl(c) => c.read(),
-            Self::Fallback(c) => c.read(),
+            Self::Native(c) => c.try_read(),
+            Self::Wsl(c) => c.try_read(),
+            Self::Fallback(c) => c.try_read(),
         }
     }
 

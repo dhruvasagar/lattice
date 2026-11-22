@@ -10467,12 +10467,13 @@ impl Editor {
             self.set_message(EchoLevel::Warn, format!("`{name}` is not a register"));
             return;
         };
-        match self.read_register(Some(register)) {
-            Some(entry) if !entry.content.is_empty() => {
+        match self.read_register_checked(Some(register)) {
+            Ok(Some(entry)) if !entry.content.is_empty() => {
                 let text = entry.content.clone();
                 self.insert_at_cursor(&text);
             }
-            _ => self.set_message(EchoLevel::Info, format!("register `{name}` is empty")),
+            Ok(_) => self.set_message(EchoLevel::Info, format!("register `{name}` is empty")),
+            Err(reason) => self.set_message(EchoLevel::Error, clipboard_failure_message(&reason)),
         }
     }
 
@@ -24993,6 +24994,12 @@ impl Editor {
 /// canonical `is_valid_mark_name` lives App-side (`Action::SetMark`
 /// path); the host-side macro path duplicates the one-line check
 /// rather than introducing a cross-crate dep just for it.
+/// The echo for a paste whose clipboard read failed (CW.2). `reason` names
+/// what failed ("win32yank.exe did not answer within 1000 ms").
+fn clipboard_failure_message(reason: &str) -> String {
+    format!("nothing pasted: the clipboard could not be read ({reason})")
+}
+
 fn is_valid_macro_register(c: char) -> bool {
     c.is_ascii_alphabetic() || c.is_ascii_digit()
 }
@@ -30193,14 +30200,16 @@ impl Editor {
     /// refusing an explicit gesture because an implicit-behaviour toggle
     /// is off would read as the key being broken.
     pub fn do_paste_from_clipboard(&mut self) {
-        let Some(text) = self
-            .services
-            .get::<lattice_core::ClipboardHandle>()
-            .and_then(|cb| cb.read())
-        else {
+        let Some(cb) = self.services.get::<lattice_core::ClipboardHandle>() else {
             return;
         };
-        self.do_paste_text(&text);
+        match cb.try_read() {
+            lattice_core::ClipboardRead::Text(text) => self.do_paste_text(&text),
+            lattice_core::ClipboardRead::NoText => {}
+            lattice_core::ClipboardRead::Failed(reason) => {
+                self.set_message(EchoLevel::Error, clipboard_failure_message(&reason));
+            }
+        }
     }
 
     /// Vim's `p` / `P` -- paste from the chosen register
@@ -30220,8 +30229,7 @@ impl Editor {
         let count = self.pending_count.max(1) as usize;
         self.pending_count = 0;
         let chosen = self.pending_register.take();
-        let Some(reg) = self.read_register(chosen) else {
-            self.set_message(EchoLevel::Error, "register empty".to_string());
+        let Some(reg) = self.register_for_put(chosen) else {
             return;
         };
         // One undo step: a put at the buffer's end is two edits (the
@@ -30374,8 +30382,7 @@ impl Editor {
             },
             None => None,
         };
-        let Some(mut reg) = self.read_register(chosen) else {
-            self.set_message(EchoLevel::Error, "register empty".to_string());
+        let Some(mut reg) = self.register_for_put(chosen) else {
             return;
         };
         reg.kind = lattice_grammar::YankKind::Linewise;
@@ -30423,8 +30430,7 @@ impl Editor {
         let count = self.pending_count.max(1) as usize;
         self.pending_count = 0;
         let chosen = self.pending_register.take();
-        let Some(reg) = self.read_register(chosen) else {
-            self.set_message(EchoLevel::Error, "register empty".to_string());
+        let Some(reg) = self.register_for_put(chosen) else {
             return;
         };
         let Some(sel) = self.visual_selection_range() else {
@@ -30564,53 +30570,92 @@ impl Editor {
     }
 
     /// Read the register slot for paste / inspection. Falls back
-    /// to `unnamed_register`.
-    ///
-    /// CB.1 (`clipboard.md` §5): for the unnamed register under
-    /// `clipboard=true`, and always for [`Register::System`] (`+`/`*`),
-    /// prefers a live clipboard read over the in-memory entry, falling back
-    /// to it when the clipboard is empty or unavailable — so paste picks up
-    /// text copied in another app.
-    ///
-    /// **CB.2 obligation:** `read` is called synchronously here, and dispatch
-    /// (including `do_paste`) is a *blocking RPC from the render thread into
-    /// the actor* (`input-pipeline.md`), so a slow backend read would sit on
-    /// that path and violate paramount #1. This is correct today because the
-    /// registered backend is [`lattice_core::FakeClipboard`] (in-memory,
-    /// instant). CB.2, when it installs the real `arboard`/OSC52 backend,
-    /// MUST either guarantee this call stays sub-frame (e.g. a bounded-wait
-    /// cached read) or move it off the synchronous path — do not carry a
-    /// blocking OS round-trip into this call site unexamined.
+    /// to `unnamed_register`. A clipboard read that fails reads as `None`;
+    /// a paste uses [`Self::read_register_checked`] instead, which reports
+    /// it.
     pub fn read_register(
         &self,
         register: Option<lattice_grammar::register::Register>,
     ) -> Option<UnnamedRegister> {
+        self.read_register_checked(register).unwrap_or(None)
+    }
+
+    /// [`Self::read_register`], with a clipboard read that failed as `Err`
+    /// (the reason, for the user) instead of a fallback.
+    ///
+    /// CB.1 (`clipboard.md` §5): for the unnamed register under
+    /// `clipboard=true`, and always for [`Register::System`] (`+`/`*`),
+    /// prefers a live clipboard read over the in-memory entry, falling back
+    /// to it when the clipboard holds no text — so paste picks up text
+    /// copied in another app.
+    ///
+    /// CW.2: the read is synchronous, on the actor, so the paste lands
+    /// before the next key runs (`.` repeat, macros and typed-ahead keys
+    /// depend on that order). Each backend bounds its own wait. A read that
+    /// fails is `Err`, never the register: pasting the in-memory entry in
+    /// place of the clipboard the user asked for is a wrong paste that looks
+    /// like a right one — which is what a WSL read timing out used to do.
+    pub fn read_register_checked(
+        &self,
+        register: Option<lattice_grammar::register::Register>,
+    ) -> Result<Option<UnnamedRegister>, String> {
         use lattice_grammar::register::Register;
-        // Charwise/Linewise/Blockwise isn't representable in plain clipboard
-        // text; best-effort infer from the last in-memory unnamed entry (a
-        // charwise external copy is the common case), defaulting Charwise.
-        let inferred_kind = self
-            .unnamed_register
-            .as_ref()
-            .map(|r| r.kind)
-            .unwrap_or(YankKind::Charwise);
-        let read_clipboard = || -> Option<UnnamedRegister> {
-            self.services
-                .get::<lattice_core::ClipboardHandle>()
-                .and_then(|cb| cb.read())
-                .map(|content| UnnamedRegister {
-                    content,
-                    kind: inferred_kind,
-                })
-        };
-        match register {
-            Some(Register::System) => read_clipboard().or_else(|| self.unnamed_register.clone()),
+        let wants_clipboard = match register {
+            Some(Register::System) => true,
             None | Some(Register::Unnamed) => {
-                let clipboard_on = *self
-                    .resolved_option::<lattice_config::ClipboardEnabled>(self.document_buffer_id);
-                if clipboard_on && let Some(reg) = read_clipboard() {
-                    return Some(reg);
+                *self.resolved_option::<lattice_config::ClipboardEnabled>(self.document_buffer_id)
+            }
+            _ => false,
+        };
+        if wants_clipboard && let Some(cb) = self.services.get::<lattice_core::ClipboardHandle>() {
+            match cb.try_read() {
+                lattice_core::ClipboardRead::Text(content) => {
+                    // Charwise/Linewise/Blockwise isn't representable in
+                    // plain clipboard text; best-effort infer from the last
+                    // in-memory unnamed entry (a charwise external copy is
+                    // the common case), defaulting Charwise.
+                    let kind = self
+                        .unnamed_register
+                        .as_ref()
+                        .map(|r| r.kind)
+                        .unwrap_or(YankKind::Charwise);
+                    return Ok(Some(UnnamedRegister { content, kind }));
                 }
+                lattice_core::ClipboardRead::NoText => {}
+                lattice_core::ClipboardRead::Failed(reason) => return Err(reason),
+            }
+        }
+        Ok(self.stored_register(register))
+    }
+
+    /// A paste's register entry: [`Self::read_register_checked`], with
+    /// "nothing to paste" and "the clipboard could not be read" each echoed
+    /// to the user. `None` means the caller pastes nothing.
+    fn register_for_put(
+        &mut self,
+        register: Option<lattice_grammar::register::Register>,
+    ) -> Option<UnnamedRegister> {
+        match self.read_register_checked(register) {
+            Ok(Some(entry)) => Some(entry),
+            Ok(None) => {
+                self.set_message(EchoLevel::Error, "register empty".to_string());
+                None
+            }
+            Err(reason) => {
+                self.set_message(EchoLevel::Error, clipboard_failure_message(&reason));
+                None
+            }
+        }
+    }
+
+    /// The in-memory side of [`Self::read_register_checked`].
+    fn stored_register(
+        &self,
+        register: Option<lattice_grammar::register::Register>,
+    ) -> Option<UnnamedRegister> {
+        use lattice_grammar::register::Register;
+        match register {
+            Some(Register::System) | None | Some(Register::Unnamed) => {
                 self.unnamed_register.clone()
             }
             Some(Register::BlackHole) => None,
@@ -48394,8 +48439,7 @@ impl Editor {
             self.pending_count = 0;
             self.op_count = 0;
             let chosen = self.pending_register.take();
-            let Some(reg) = self.read_register(chosen) else {
-                self.set_message(EchoLevel::Error, "register empty".to_string());
+            let Some(reg) = self.register_for_put(chosen) else {
                 return true;
             };
             let bracketed = self
@@ -58314,6 +58358,47 @@ mod tests {
         assert_eq!(
             editor.unnamed_register.as_ref().map(|r| r.content.as_str()),
             Some("hello ")
+        );
+    }
+
+    /// CW.2: a clipboard that cannot be read is reported, and nothing is
+    /// pasted. Before, the read's timeout pasted the register in its place:
+    /// a wrong paste that looked like a right one.
+    #[test]
+    fn a_clipboard_that_cannot_be_read_pastes_nothing_and_says_why() {
+        struct Unreadable;
+        impl lattice_core::Clipboard for Unreadable {
+            fn try_read(&self) -> lattice_core::ClipboardRead {
+                lattice_core::ClipboardRead::Failed(
+                    "win32yank.exe did not answer within 1000 ms".into(),
+                )
+            }
+            fn write(&self, _text: String) {}
+        }
+        let document = lattice_core::Document::from_text("hello world\n");
+        let mut editor = Editor::boot(document);
+        let unreadable: lattice_core::ClipboardHandle = std::sync::Arc::new(Unreadable);
+        std::sync::Arc::get_mut(&mut editor.services)
+            .expect("the registry is uniquely owned right after boot, as the peers' seams rely on")
+            .register(unreadable);
+        let mut out = DispatchOutcome::default();
+        editor.execute_ex_line("operator:yank motion:word-forward", &mut out);
+        assert!(
+            editor.unnamed_register.is_some(),
+            "precondition: the register holds the yank a fallback would paste"
+        );
+
+        editor.do_paste(false);
+
+        assert_eq!(editor.document.text(), "hello world\n", "nothing is pasted");
+        let echo = editor
+            .last_message
+            .as_ref()
+            .map(|m| m.text.clone())
+            .unwrap_or_default();
+        assert!(
+            echo.contains("nothing pasted") && echo.contains("win32yank.exe"),
+            "the echo says what failed, got {echo:?}"
         );
     }
 

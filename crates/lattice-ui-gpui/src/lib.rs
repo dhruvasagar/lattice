@@ -450,22 +450,18 @@ impl GpuiApp {
         // changes: leaving the fake in place is already this seam's
         // no-display path below.
         //
-        // CW.1: inside WSL, writes go to the Windows clipboard through a
-        // Windows helper (`WslClipboard`), which works whether or not WSLg
-        // bridges the X11 clipboard; reads still go through arboard, which
-        // sees the Windows clipboard through WSLg.
+        // CW.1 / CW.2: inside WSL, reads and writes go to the Windows
+        // clipboard through a Windows helper (`WslClipboard`), which works
+        // whether or not WSLg bridges the X11 clipboard. Reads go through the
+        // same helper as writes, not arboard: WSLg's copy lags a helper's
+        // write, so `yy` then `p` would paste the old clipboard.
         #[cfg(all(feature = "system-clipboard", not(test)))]
-        let clipboard: Option<lattice_core::ClipboardHandle> = match (
-            lattice_host::clipboard::WslClipboard::detect(),
-            lattice_host::clipboard::ArboardClipboard::new(),
-        ) {
-            (Some(wsl), Some(native)) => Some(std::sync::Arc::new(
-                wsl.with_reader(std::sync::Arc::new(native)),
-            )),
-            (Some(wsl), None) => Some(std::sync::Arc::new(wsl)),
-            (None, Some(native)) => Some(std::sync::Arc::new(native)),
-            (None, None) => None,
-        };
+        let clipboard: Option<lattice_core::ClipboardHandle> =
+            match lattice_host::clipboard::WslClipboard::detect() {
+                Some(wsl) => Some(std::sync::Arc::new(wsl)),
+                None => lattice_host::clipboard::ArboardClipboard::new()
+                    .map(|native| std::sync::Arc::new(native) as lattice_core::ClipboardHandle),
+            };
         #[cfg(all(feature = "system-clipboard", not(test)))]
         match clipboard {
             Some(clipboard) => {

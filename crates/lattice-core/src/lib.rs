@@ -135,7 +135,7 @@ pub mod wrap;
 
 pub use crate::buffer::Buffer;
 pub use crate::buffers::{BufferFlags, BufferId, BufferKind};
-pub use crate::clipboard::{Clipboard, ClipboardHandle, FakeClipboard};
+pub use crate::clipboard::{Clipboard, ClipboardHandle, ClipboardRead, FakeClipboard};
 pub use crate::document::{Document, DocumentBuilder};
 pub use crate::error::{CoreError, CoreResult};
 pub use crate::folding::{

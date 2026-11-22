@@ -1,7 +1,7 @@
 # Clipboard on WSL (CW) — slice plan
 
 Design: [`docs/dev/architecture/clipboard.md`](../../architecture/clipboard.md) §4
-(the WSL backend) and §3 (the asynchronous paste). The CB plan this builds on
+(the WSL backend) and §3 (why a paste reads synchronously). The CB plan this builds on
 is finished and archived: [`archive/clipboard.md`](archive/clipboard.md).
 
 ## Why
@@ -27,8 +27,8 @@ read and pasted the register instead.
 
 | Slice | Status | What |
 |---|---|---|
-| CW.1 | ✅ | `WslClipboard` (lattice-host, not feature-gated): writes through `win32yank.exe`, else `powershell.exe`, on one ordered worker thread; reads through `arboard` when compiled in. Both peers prefer it inside WSL; SSH still wins in the TUI. |
-| CW.2 | 📝 | Asynchronous paste: a paste that needs the clipboard reads it off-thread and applies when the text lands (`InboundBus`), so a backend slower than 30 ms (a Windows helper, a cold WSLg bridge) pastes the right text instead of timing out to the register. Then `WslClipboard` reads through its helper. |
+| CW.1 | ✅ | `WslClipboard` (lattice-host, not feature-gated): writes through `win32yank.exe`, else `powershell.exe`, on one ordered worker thread; reads through `arboard` when compiled in (replaced in CW.2). Both peers prefer it inside WSL; SSH still wins in the TUI. |
+| CW.2 | ✅ | Reads: `Clipboard::try_read` tells a failed read from an empty clipboard; a paste that cannot read says so instead of pasting the register; `arboard`'s bound 30 ms → 500 ms; `WslClipboard` reads through its helper (1 s bound), and a read while our write is in flight returns that write. |
 
 ### CW.1 — Windows clipboard writes ✅
 
@@ -46,13 +46,34 @@ read and pasted the register instead.
 - Not covered: paste from Windows in a TUI build without `system-clipboard`
   (the Linux release build). That is CW.2.
 
-### CW.2 — asynchronous paste 📝
+### CW.2 — synchronous, bounded, reported reads ✅
 
-- `Editor::read_register` stops calling `Clipboard::read` on the actor thread
-  for a paste. The paste reads on a blocking task and delivers the text through
-  the inbound primitive, which applies the paste where the cursor was.
-- Open: what a paste does if the user types before the text lands (apply at
-  the recorded position, or drop it), and how `.` repeat and macros, which
-  record the invocation and not the text, see an asynchronous paste.
-- Then `WslClipboard::read` reads through the helper, and the TUI release build
-  pastes from Windows.
+The plan was an asynchronous paste: read off the actor, apply when the text
+lands. Dropped on review (2026-11-22): text arriving after keys typed later is
+a confusing paste, and keeping `.`, macros and typed-ahead keys in order would
+mean holding input until the read returned — the same wait, with more
+machinery. The paste stays synchronous; what was wrong was the 30 ms bound
+quietly pasting the register when it ran out.
+
+- `crates/lattice-core/src/clipboard.rs`: `ClipboardRead { Text, NoText,
+  Failed }` and `Clipboard::try_read` (required); `read` is a provided
+  shorthand.
+- `crates/lattice-host/src/dispatch.rs`: `read_register_checked` returns the
+  failure; `register_for_put` echoes it for `p`/`P`/`gp`/`]p`, Visual `p`,
+  `:put` and terminal-buffer paste; `<C-r>` and `do_paste_from_clipboard`
+  (Cmd+V) echo it too. A snippet's `$CLIPBOARD` still falls back to the `+`
+  register.
+- `crates/lattice-host/src/clipboard.rs`: `ArboardClipboard` bound 500 ms,
+  `ContentNotAvailable` → `NoText`; `WslClipboard` reads with
+  `win32yank -o --lf` / `Get-Clipboard -Raw`, CRLF → LF, and returns a pending
+  write while it is in flight. The `with_reader` composition from CW.1 is gone:
+  WSLg's copy lags a helper's write, so it pasted the old clipboard after `yy`.
+- Tests (stand-in helper, never the real clipboard): a read returns Windows'
+  text with LF line ends; an empty clipboard is `NoText`; a read during an
+  in-flight write returns the write, then Windows again once it lands; a hung
+  helper fails within the bound; a missing helper fails rather than reading
+  empty.
+- Not done: a clipboard cache refreshed on focus, which would make a paste
+  instant on every backend. Not planned; it would need focus events in both
+  peers and can paste stale text when the clipboard changes while lattice keeps
+  focus.

@@ -1502,6 +1502,7 @@ impl CommandRegistry {
                 args_schema,
                 source,
                 latency_class: crate::command::LatencyClass::Reflex,
+                plugin_invokable: false,
             },
             registration: CommandRegistration::Motion(spec),
         });
@@ -1534,6 +1535,7 @@ impl CommandRegistry {
                 args_schema,
                 source,
                 latency_class: crate::command::LatencyClass::Reflex,
+                plugin_invokable: false,
             },
             registration: CommandRegistration::Operator(spec),
         });
@@ -1571,6 +1573,7 @@ impl CommandRegistry {
                 args_schema,
                 source,
                 latency_class: crate::command::LatencyClass::Reflex,
+                plugin_invokable: false,
             },
             registration: CommandRegistration::TextObject(spec),
         });
@@ -1609,6 +1612,7 @@ impl CommandRegistry {
                 args_schema,
                 source,
                 latency_class: spec.latency_class,
+                plugin_invokable: false,
             },
             registration: CommandRegistration::ExCommand(spec),
         });
@@ -1645,6 +1649,7 @@ impl CommandRegistry {
                 args_schema,
                 source,
                 latency_class: crate::command::LatencyClass::Reflex,
+                plugin_invokable: false,
             },
             registration: CommandRegistration::Action(spec),
         });
@@ -1791,6 +1796,30 @@ impl CommandRegistry {
         self.completion_values
             .get(source)
             .map(|list| list.values.clone())
+    }
+
+    /// OB.3a: let plugins name the native command `name` — in an
+    /// `invoke-command` effect, a picker row, a prompt's submit action, a
+    /// transient row.
+    ///
+    /// Plugins may otherwise name only commands a plugin registered. A native
+    /// command is closed to them until its owner opens it here, because the
+    /// host's commands carry the user's whole authority — `shell-command` runs
+    /// a program, `set` moves an option a plugin's grant follows — and a
+    /// plugin's capability grant cannot be checked where they run. Default
+    /// closed means a new command that forgets this is refused, visibly, rather
+    /// than reachable by every plugin. Open only a command whose every effect a
+    /// plugin could already produce, or that asks the user first.
+    ///
+    /// `false` when no command is registered under `name`.
+    pub fn allow_plugin_invocation(&mut self, name: &str) -> bool {
+        let Some(id) = self.by_name.get(name).copied() else {
+            return false;
+        };
+        self.by_id
+            .get_mut(&id)
+            .map(|entry| entry.spec.plugin_invokable = true)
+            .is_some()
     }
 
     /// Metadata for a registered id, or `None` if the id is unknown here
@@ -1998,6 +2027,46 @@ pub(crate) fn require_action(entry: &CommandEntry) -> GrammarResult<&ActionSpec>
 mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
     use super::*;
+
+    fn noop_action() -> ActionSpec {
+        ActionSpec {
+            args_schema: Vec::new(),
+            apply: Arc::new(|_| Ok(crate::Effect::None)),
+        }
+    }
+
+    /// OB.3a: native commands are closed to plugins until their owner opens
+    /// them; a plugin's own are open from registration.
+    #[test]
+    fn plugins_may_invoke_their_own_and_opened_natives_only() {
+        let mut reg = CommandRegistry::new();
+        let native = reg.register_action("shell-command", "", noop_action());
+        let opened = reg.register_action("llm", "", noop_action());
+        let plugin = reg.register_plugin_action(3, "org-capture", "", noop_action());
+
+        assert!(
+            !reg.lookup(native).unwrap().plugin_may_invoke(),
+            "closed by default"
+        );
+        assert!(
+            reg.lookup(plugin).unwrap().plugin_may_invoke(),
+            "a plugin's own"
+        );
+        assert!(!reg.lookup(opened).unwrap().plugin_may_invoke());
+        assert!(reg.allow_plugin_invocation("llm"));
+        assert!(
+            reg.lookup(opened).unwrap().plugin_may_invoke(),
+            "opened by its owner"
+        );
+        assert!(
+            !reg.allow_plugin_invocation("no-such-command"),
+            "nothing to open"
+        );
+        assert!(
+            !reg.lookup(native).unwrap().plugin_may_invoke(),
+            "still closed"
+        );
+    }
 
     fn dummy_motion() -> MotionSpec {
         MotionSpec {

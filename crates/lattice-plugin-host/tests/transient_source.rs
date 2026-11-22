@@ -39,10 +39,13 @@ fn guest_wasm() -> Option<&'static str> {
 }
 
 /// A command registry holding the one command the fixture's good rows name.
-/// The ghost row's command is deliberately absent.
+/// The ghost row's command is deliberately absent. Registered as a plugin's
+/// own, which is what a menu's rows name (OB.3a: a native command would need
+/// opening to plugins).
 fn commands() -> lattice_grammar::CommandRegistryHandle {
     let mut reg = lattice_grammar::CommandRegistry::new();
-    reg.register_action(
+    reg.register_plugin_action(
+        1,
         COMMAND,
         "fixture capture (test)",
         lattice_grammar::registry::ActionSpec {
@@ -94,7 +97,12 @@ async fn build(
         .build(project_transient_context(ctx).expect("the context projects"))
         .await
         .expect("no host-side trap")?;
-    Ok(spec_from_wit(wit, registry, "transient-fixture"))
+    Ok(spec_from_wit(
+        wit,
+        registry,
+        "transient-fixture",
+        &lattice_plugin_host::effect_authorizer::CommandGate::default(),
+    ))
 }
 
 fn in_org() -> TransientContext {

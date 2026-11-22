@@ -5959,7 +5959,7 @@
         {
           "name": "command-ref",
           "kind": "record",
-          "doc": null,
+          "doc": "A command for the host to run, by name, with its arguments.\n\nOB.3a: `id` must be a command's registered name, exactly — no alias, no\nex-line syntax — and one a plugin may run: a command a plugin\nregistered, or an editor command opened to plugins. Anything else is\nrefused with a warning to the user. The same holds wherever a plugin\nnames a command: `confirm`'s `yes-action`, `open-prompt`'s\n`on-submit-action`, `open-picker`'s `fill-action`, a picker row's\nrouting or `delete-command`, a transient row. The user's `init.rs` is\nexempt.",
           "definition": "record command-ref {\n    id: string,\n    args: args,\n}",
           "members": [
             {
@@ -8367,7 +8367,7 @@
             {
               "name": "spawn-terminal",
               "type": "spawn-terminal-payload",
-              "doc": null
+              "doc": "OB.3a: a `cmd-line` is a process, so it needs the unbound\n`proc:spawn`; without one, the user's own shell opens."
             },
             {
               "name": "terminal-input",
@@ -8377,7 +8377,7 @@
             {
               "name": "set-option",
               "type": "string",
-              "doc": null
+              "doc": "OB.3a: refused (with a warning) for an option a plugin's grant\nfollows (`fs:write:{opt}`, `proc:spawn:{opt}`) — those are the\nuser's to set. So are `set-local-option` / `set-global-option`."
             },
             {
               "name": "set-local-option",

@@ -284,6 +284,35 @@ fn parse_invocation(
     }
 }
 
+/// OB.3a: parse `rest` as the arguments of the command registered under
+/// exactly `name` — never as a line of its own.
+///
+/// `None` when no command is registered under `name`; the caller then decides
+/// whether a full ex line is acceptable. What this guarantees is that the
+/// command that runs is the one `name` names. [`parse`] gives no such
+/// guarantee: it reads the line's front-end syntax first, so a line starting
+/// with a registered `g` is `:global`, and `!` or a range is something else
+/// again. A plugin's command is checked by name at the boundary
+/// (`lattice-plugin-host`'s command gate), and running anything other than the
+/// name checked would make that check decorative.
+pub fn parse_named(
+    name: &str,
+    rest: &str,
+    registry: &CommandRegistry,
+) -> Option<Result<CommandInvocation, ExCommandError>> {
+    let id = registry.id_by_name(name)?;
+    let entry = registry.lookup(id)?;
+    Some(match entry.kind {
+        CommandKind::ExCommand => parse_ex_command(registry, id, entry, name, rest, false),
+        CommandKind::Motion => parse_naked_motion(id, name, rest, false),
+        CommandKind::Operator => parse_operator_with_target(registry, id, name, rest, false),
+        CommandKind::TextObject => Err(ExCommandError::BadArgs(format!(
+            "`{name}` is a text-object; pair it with an operator"
+        ))),
+        CommandKind::Action => parse_naked_action(id, name, rest, false),
+    })
+}
+
 /// Match a bare command word against the reserved kind-prefix set
 /// (`motion`, `operator`, `text-object`). Returns the matching
 /// [`CommandKind`] or `None` for any other word -- which falls

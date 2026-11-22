@@ -16,7 +16,7 @@ of them inside `org-babel-mode` (design §0).
 | OB.1                      | Option-bound grants may read a list **(lattice)**                          | ✅     |
 | OB.2                      | `proc:spawn:{option:field}` — the option-bound process grant **(lattice)** | ✅     |
 | OB.3                      | `post-effects` — effects from the events seam **(lattice)**                | ✅     |
-| OB.3a                     | Security follow-ups to OB.2/OB.3 — **blocks OB.R1** **(lattice)**          | 🚧     |
+| OB.3a                     | Security follow-ups to OB.2/OB.3 — **blocks OB.R1** **(lattice)**          | ✅     |
 | OB.R1                     | lattice release carrying OB.1–OB.3 **(lattice)**                           | 📝     |
 | OB.4                      | `org-babel-mode`: the mode, its layer, its options **(plugin)**            | 📝     |
 | OB.5                      | Src blocks and header arguments, parsed and merged **(plugin)**            | 📝     |
@@ -53,16 +53,20 @@ commands and counts are in each slice's *As built* block below.
 
 1. The whole-crate suites for the crates touched — `lattice-config`,
    `lattice-plugin-host`, `lattice-plugin-loader`, `lattice-wit`,
-   `lattice-plugin-api` — and `lattice-host` (only its boot pin was run). One
+   `lattice-plugin-api`, `lattice-grammar`, `lattice-ai` (OB.3a.2) — and
+   `lattice-host` (targeted runs only). OB.3a.2 changed what every plugin may
+   invoke, so these suites matter more than usual: a harness that wires no
+   command registry now refuses every command its guest names. One
    crate at a time, throttled (`CARGO_BUILD_JOBS=3 nice`), when the machine is
    free.
-2. A fresh whole-branch code review of `7601db92..1cd970e5`, with the Review
+2. A fresh whole-branch code review of `7601db92..HEAD`, with the Review
    focus list above and the decision log below as its brief.
 
-**Next: OB.3a**, three security findings from a review of the committed
-OB.2/OB.3 code (see its section). They block OB.R1. Then OB.R1 (the release —
-see its section for what it must bump), then the plugin slices from OB.4 in
-`lattice-org-plugin`.
+**OB.3a ✅** (2026-11-22, `OB.3a.1` + `OB.3a.2`): the three review findings
+plus a fourth, critical one it turned up — any plugin could run any ex
+command, `shell-command` included. **Next: OB.R1** (the release — see its
+section for what it must bump; the whole-crate gates below are owed first),
+then the plugin slices from OB.4 in `lattice-org-plugin`.
 
 **Toolchain note:** `scripts/docs-check.sh` runs rustdoc on `stable`; on the
 machine this was built on that was rustc 1.93, which some dependencies refuse.
@@ -95,6 +99,12 @@ costs if it turns out wrong. Design-level decisions are also in
 | OB.3a | Three security findings recorded, not fixed (phase 1 had been stopped) | See OB.3a | until fixed, a plugin can grant itself programs via a set-option effect |
 | OB.3a | Posted path is an allowlist; a refusal ends the batch and names the variant, not the payload | A post is unsolicited; what follows a refused effect may presume it (CD.3c); the payload is the plugin's to fill | a babel need outside the list is refused until widened here |
 | OB.3a | Events-seam range space is stamped, not refused | One line, same as the grammar path, keeps `track-range` usable | none |
+| OB.3a | **Default-deny command gate** (finding 4), chosen by Dhruva over declared authority and a denylist | Fails closed: a native command that forgets to opt in is refused visibly, not reachable silently | a plugin using another native command breaks until its owner opens it |
+| OB.3a | Exact registered names; the host runs a registered name as that command, never re-parsed | A name checked and a line parsed can be different commands (`g/x/d` was `:global`) | a plugin calling a native by alias is refused |
+| OB.3a | `llm` opened | Org's workflows need it; its tool calls ask the user unless the user's own `llm.allow` spares them | a user `llm.allow` rule also spares a plugin-prompted chat |
+| OB.3a | A picker's `delete-command` checked at registration; an UNREGISTERED name is kept | The host reads it from the registered spec; natives register at boot, so an unknown name can only become a plugin's own | a native command registered after a plugin's picker would be reachable as its delete verb |
+| OB.3a | Mode keymap bindings not gated | No args, fired by the user's key — cannot carry a command line | revisit if bindings gain args |
+| OB.3a | Picker rows naming a refused command are dropped, not the batch | One bad row must not blank the picker | a plugin author sees only a `warn!` |
 | OB.3 | "Both linkers" is structural — one bindgen `host-services` interface, one `PluginState` impl | Adding a function to the interface adds it to both | none |
 
 ## Global constraints
@@ -343,7 +353,9 @@ after phase 1 stopped. All three verified against source; none fixed yet.
    `!` filter) and run a program; `set …` moves a grant-bearing option the
    same way. `spawn-terminal { cmd-line }` is unchecked too. Predates this
    branch and affects every plugin; the posted path is closed by 2, the
-   returned path is not. Design choice pending — see the decision log.
+   returned path is not. Dhruva chose (2026-11-22) **default-deny** over
+   per-command declared authority (fails open when a command forgets to
+   declare) and a name denylist (drifts), and to land it here, in OB.R1.
 
 **As built (2 and 3), `OB.3a.1`:**
 
@@ -365,6 +377,48 @@ after phase 1 stopped. All three verified against source; none fixed yet.
 - Gates: fmt; clippy `--lib --bins` and `--all-targets` clean in touched
   files; `docs-check.sh lattice-plugin-host` clean
   (`DOCS_CHECK_TOOLCHAIN=1.94.0`).
+
+**As built (1 and 4), `OB.3a.2`** — design in
+[`plugin-host.md`](../../architecture/plugin-host.md) §6:
+
+- `CommandGate` (`effect_authorizer.rs`), on every `EffectAuthorizer` and on
+  the picker and transient clients, built per instance from its grant, the
+  editor's `CommandRegistry` (newly handed to the host:
+  `PluginHost::set_command_registry`, wired in `PluginLoader::with_services`)
+  and the `GrantGuard`. A plugin may name a command a plugin registered, or a
+  native one opened with `CommandRegistry::allow_plugin_invocation`
+  (`CommandSpec::plugin_invokable`); exact registered names only; `init.rs`
+  exempt. Gated: `invoke-command`, `confirm`, `open-prompt`, `open-picker`'s
+  `fill-action`, a code action's `otherwise`, picker accept outcomes, picker
+  row routing (the row is dropped), a picker's `delete-command` (dropped when
+  it names a closed native), transient rows (dropped).
+- 1: `set-option` / `-local-` / `-global-` effects naming a guarded option —
+  directly, as `no<name>`, or by an alias resolved through the
+  `ConfigRegistry` — are refused. `spawn-terminal` with a `cmd-line` needs
+  unbound `proc:spawn`.
+- Host half: `Editor::invoke_command_named` runs a registered name as that
+  command (`excommand::parse_named`); only an unregistered name (a native
+  caller's alias) still goes through the line parser.
+- Opened: `llm` only (org's planning workflows).
+- Tests: 8 gate unit tests in `effect_authorizer` (closed native, plugin's own
+  + opened, unregistered and syntax names, unwired registry, every
+  command-naming effect, set-option incl. alias / reset, `init.rs` exempt,
+  terminal); `lattice-grammar` `plugins_may_invoke_their_own_and_opened_natives_only`;
+  transient `a_row_naming_a_closed_native_command_is_dropped`;
+  `lattice-host/tests/invoke_command_runs_the_named_command.rs` (3 — two fail
+  on the old host: a command named `g/drop/d` ran `:global`, one named `%d`
+  emptied the buffer). Harnesses that had wired no command registry or had
+  registered a plugin's command as native were corrected
+  (`project_plugin_picker.rs`, `transient_drain.rs`, `transient_source.rs`).
+- Targeted runs green: plugin-host `picker_actor`, `project_plugin_picker`,
+  `download_seam`, `tree_seam`, `utc_offset_seam`, `scanned_excerpt_source`,
+  `transient_source`, `post_effects_seam`, `grammar_source`; loader
+  `grammar_drain`, `picker_drain`, `transient_drain`, `project_plugin_modes`,
+  `project_picker_help`, `init_config`, `grant_follows_option`,
+  `ex_command_surface`; host — 12 picker / prompt / invoke / llm targets.
+- Gates: fmt; clippy `--lib --bins` zero over the five touched crates;
+  `--all-targets` adds nothing in touched files; docs-check clean after
+  regenerating the plugin-API reference (the WIT gained doc comments).
 
 ### OB.R1 — lattice release 📝 *(lattice)*
 

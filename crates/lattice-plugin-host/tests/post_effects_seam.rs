@@ -245,6 +245,9 @@ async fn posted_ranges_from_two_plugins_do_not_collide() {
 /// OB.3a: a post is unsolicited, so the effects a background job has no
 /// business sending arrive as a warning naming them — never as the effect.
 /// Each is posted from the events seam for real, through the WIT conversion.
+/// Two are stopped a step earlier, by the command gate every effect passes
+/// (a closed command, a terminal command without `proc:spawn`); the warning
+/// then names what was refused rather than the variant.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_posted_effect_outside_the_background_set_is_refused() {
     let Some(wasm) = guest_wasm() else {
@@ -255,8 +258,8 @@ async fn a_posted_effect_outside_the_background_set_is_refused() {
         ("quit", "QuitEditor"),
         ("set-option org.babel.languages=sh", "SetOption"),
         ("set-global-option org.directory=/", "SetGlobalOption"),
-        ("invoke shell-command touch /tmp/pwned", "InvokeCommand"),
-        ("terminal sh -c id", "SpawnTerminal"),
+        ("invoke shell-command touch /tmp/pwned", "`shell-command`"),
+        ("terminal sh -c id", "proc:spawn"),
     ] {
         let h = start(wasm, request, true, "").await;
         let line = wait_for(&h.data_dir, |l| l.starts_with("post:")).await;

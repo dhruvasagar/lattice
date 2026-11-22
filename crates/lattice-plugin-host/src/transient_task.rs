@@ -67,9 +67,16 @@ enum TransientCall {
 pub struct TransientClient {
     tx: mpsc::UnboundedSender<TransientCall>,
     id: PluginId,
+    /// OB.3a: what this plugin's menu rows may run.
+    gate: crate::effect_authorizer::CommandGate,
 }
 
 impl TransientClient {
+    /// OB.3a: the gate for the commands this plugin's rows name.
+    pub fn gate(&self) -> &crate::effect_authorizer::CommandGate {
+        &self.gate
+    }
+
     /// The host-issued identity of the plugin behind this client.
     pub fn id(&self) -> PluginId {
         self.id
@@ -251,7 +258,8 @@ impl PluginHost {
             store.data_mut().config_registry = Some(Arc::clone(registry));
         }
         let (tx, rx) = mpsc::unbounded();
-        let client = TransientClient { tx, id };
+        let gate = store.data().command_gate();
+        let client = TransientClient { tx, id, gate };
         let actor = TransientActor {
             store,
             bindings,

@@ -44206,11 +44206,25 @@ impl Editor {
                 .is_some_and(|m| matches!(m.kind, lattice_grammar::CommandKind::Action))
         });
         let mut inner = DispatchOutcome::default();
-        match action {
-            Some(cid) => self.dispatch_invocation(
+        if let Some(cid) = action {
+            self.dispatch_invocation(
                 lattice_grammar::CommandInvocation::of(cid).with_args(args),
                 &mut inner,
-            ),
+            );
+            return inner;
+        }
+        // OB.3a: a registered name runs THAT command, its args parsed as its
+        // args. Rendering `id args` as a line and parsing that let the line's
+        // own syntax choose the command — a plugin's `g` became `:global`,
+        // and a plugin's command is checked by name before it gets here.
+        let registry = self.registry.load_full();
+        let rest = ex_line_with_args("", &args);
+        match crate::excommand::parse_named(id, rest.trim(), &registry) {
+            Some(Ok(inv)) => self.dispatch_invocation(inv, &mut inner),
+            Some(Err(err)) => self.set_message(EchoLevel::Error, err.to_string()),
+            // Not a registered name: an alias (`w`) from a native caller, which
+            // the full line parser resolves. A plugin's never arrives here —
+            // the boundary refuses a name that is not registered.
             None => self.execute_ex_line(&ex_line_with_args(id, &args), &mut inner),
         }
         inner

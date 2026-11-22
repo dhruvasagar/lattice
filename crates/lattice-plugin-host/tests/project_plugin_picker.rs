@@ -243,6 +243,7 @@ async fn remembered_projects_become_picker_rows() {
     let (beta, beta_file) = marker_repo(&workspace, "beta");
 
     let host = PluginHost::with_dirs(tmp.path().join("cache"), tmp.path().join("data")).unwrap();
+    wire_project_commands(&host);
     remember_through_events(&host, &[alpha_file, beta_file]).await;
 
     let source = connect_picker(&host).await;
@@ -306,6 +307,7 @@ async fn accepting_a_row_routes_to_the_switch_menu_with_the_root() {
     let (alpha, alpha_file) = marker_repo(&workspace, "alpha");
 
     let host = PluginHost::with_dirs(tmp.path().join("cache"), tmp.path().join("data")).unwrap();
+    wire_project_commands(&host);
     remember_through_events(&host, &[alpha_file]).await;
     let source = connect_picker(&host).await;
 
@@ -363,6 +365,7 @@ async fn an_empty_list_opens_on_the_row_that_fixes_it() {
     };
     let tmp = TempDir::new().unwrap();
     let host = PluginHost::with_dirs(tmp.path().join("cache"), tmp.path().join("data")).unwrap();
+    wire_project_commands(&host);
     let source = connect_picker(&host).await;
 
     let init = with_ctx(|ctx| source.init(ctx, &[])).expect("init result");
@@ -396,6 +399,32 @@ async fn an_empty_list_opens_on_the_row_that_fixes_it() {
 /// events and picker seams above — which is the point: `remember_root` writes
 /// through the HOST store, so a value written here is visible to the picker
 /// seam. A helper that reached into guest memory would prove nothing.
+/// OB.3a: give `host` the editor's command registry, holding the project
+/// plugin's own commands, as the loader does in production.
+///
+/// The picker's rows route into those commands, and the command gate lets a
+/// plugin name only a command that is registered and open to plugins. Without
+/// a registry every row would be dropped — correctly: an unwired editor has
+/// nothing for a row to run.
+fn wire_project_commands(host: &PluginHost) {
+    let component = host
+        .compile(&std::fs::read(plugin_wasm().unwrap()).unwrap())
+        .unwrap();
+    let set = host
+        .instantiate_grammar_plugin(
+            &component,
+            &manifest(),
+            TrustTier::Bundled,
+            &Arc::new(EventBus::new()),
+            None,
+            None,
+        )
+        .expect("instantiate + register-grammar");
+    let mut registry = lattice_grammar::CommandRegistry::new();
+    set.register_all(&mut registry);
+    host.set_command_registry(Arc::new(arc_swap::ArcSwap::from_pointee(registry)));
+}
+
 fn apply_ex(host: &PluginHost, name: &str, arg: &str) -> lattice_grammar::Effect {
     let component = host
         .compile(&std::fs::read(plugin_wasm().unwrap()).unwrap())
@@ -519,6 +548,7 @@ async fn choose_dir_opens_the_directory_picker_naming_where_the_answer_goes() {
     };
     let tmp = TempDir::new().unwrap();
     let host = PluginHost::with_dirs(tmp.path().join("cache"), tmp.path().join("data")).unwrap();
+    wire_project_commands(&host);
 
     let effects = apply_ex(&host, "project-choose-dir", "");
 

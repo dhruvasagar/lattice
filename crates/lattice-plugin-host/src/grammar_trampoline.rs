@@ -900,7 +900,8 @@ impl PluginHost {
         let authorizer = Arc::new(
             crate::EffectAuthorizer::new(&store.data().grant, manifest.id.clone())
                 .with_option_bound(option_bound)
-                .with_range_space(id.0),
+                .with_range_space(id.0)
+                .with_command_gate(store.data().command_gate()),
         );
         let guest = Arc::new(Mutex::new(GrammarGuest {
             store,

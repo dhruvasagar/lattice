@@ -1064,6 +1064,12 @@ impl PluginLoader {
         if let Some(registry) = &services.config_registry {
             host.set_config_registry(Arc::clone(registry));
         }
+        // OB.3a: and the command registry, for the command gate — the same
+        // constructor for the same reason. Unwired, a plugin can name no
+        // command at all.
+        if let Some(commands) = &services.command_registry {
+            host.set_command_registry(Arc::clone(commands));
+        }
         // RF.2e: the same reasoning for buffer-local reads — every store, and
         // the test harnesses that build through this constructor too.
         if let Some(bus) = &services.bus {

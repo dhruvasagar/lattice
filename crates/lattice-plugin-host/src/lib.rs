@@ -1060,6 +1060,19 @@ pub type GrantGuardHandle = Arc<std::sync::RwLock<GrantGuard>>;
 pub type PluginEffectSinkHandle = Arc<dyn Fn(lattice_grammar::Effect) + Send + Sync>;
 
 impl PluginState {
+    /// OB.3a: the gate for what this plugin names — commands, options,
+    /// programs — built from the instance's own grant and the editor's
+    /// registries.
+    fn command_gate(&self) -> effect_authorizer::CommandGate {
+        effect_authorizer::CommandGate::new(
+            self.plugin_name.clone().unwrap_or_default(),
+            &self.grant,
+            self.command_registry.clone(),
+            self.grant_guard.clone(),
+            self.config_registry.clone(),
+        )
+    }
+
     /// PMF.15: is this instance the user's `init.rs`?
     fn is_config_authority(&self) -> bool {
         let guard = self
@@ -1203,6 +1216,11 @@ struct PluginState {
     /// inbound path. `None` in a harness that wired no editor, where the call
     /// refuses so the plugin knows its effects went nowhere.
     effect_sink: Option<PluginEffectSinkHandle>,
+    /// OB.3a: the editor's commands, for the command gate
+    /// ([`effect_authorizer::CommandGate`]) — a plugin may name only one a
+    /// plugin registered or one opened to plugins. `None` in a harness that
+    /// wired no editor, where every command a plugin names is refused.
+    command_registry: Option<lattice_grammar::CommandRegistryHandle>,
     /// CD.6b: the buffers `clamp-position` measures. `None` in a harness that
     /// wired no editor, where every buffer reads as absent.
     buffers: Option<lattice_mode::BufferStoreHandle>,
@@ -1580,7 +1598,8 @@ impl crate::lattice::plugin_host::host_services::Host for PluginState {
         let authorizer = std::sync::Arc::new(
             EffectAuthorizer::new(&self.grant, plugin.clone())
                 .with_option_bound(bound)
-                .with_range_space(self.range_space),
+                .with_range_space(self.range_space)
+                .with_command_gate(self.command_gate()),
         );
         let native = grammar_trampoline::effect_from_guest(&authorizer, effects).map_err(|e| {
             tracing::warn!(plugin = %plugin, error = %e, "post-effects: unreadable effect");
@@ -3944,6 +3963,8 @@ pub struct PluginHost {
     decoration_epoch: std::sync::OnceLock<lattice_mode::DecorationEpochHandle>,
     /// OB.3: see [`PluginHost::set_effect_sink`].
     effect_sink: std::sync::OnceLock<PluginEffectSinkHandle>,
+    /// OB.3a: see [`PluginHost::set_command_registry`].
+    commands: std::sync::OnceLock<lattice_grammar::CommandRegistryHandle>,
     /// CD.6b: the buffer store, for `clamp-position`.
     buffers: std::sync::OnceLock<lattice_mode::BufferStoreHandle>,
     // LH.0.4: the editor's language-server registrar, when it has one. Set-once
@@ -4430,6 +4451,7 @@ impl PluginHost {
             view_args: std::sync::OnceLock::new(),
             decoration_epoch: std::sync::OnceLock::new(),
             effect_sink: std::sync::OnceLock::new(),
+            commands: std::sync::OnceLock::new(),
             buffers: std::sync::OnceLock::new(),
             language_servers: std::sync::OnceLock::new(),
             output: std::sync::OnceLock::new(),
@@ -4676,6 +4698,15 @@ impl PluginHost {
     /// Idempotent — a second call is ignored, like [`set_tracer`](Self::set_tracer).
     pub fn set_effect_sink(&self, sink: PluginEffectSinkHandle) {
         let _ = self.effect_sink.set(sink);
+    }
+
+    /// OB.3a: hand the host the editor's command registry, so the command
+    /// gate can tell which commands a plugin may name. Unwired, every one is
+    /// refused.
+    ///
+    /// Idempotent — a second call is ignored, like [`set_tracer`](Self::set_tracer).
+    pub fn set_command_registry(&self, registry: lattice_grammar::CommandRegistryHandle) {
+        let _ = self.commands.set(registry);
     }
 
     /// OB.3: whether a sink was ever wired. Pinned at boot for
@@ -4938,6 +4969,9 @@ impl PluginHost {
             // needs it — `on-event` returns nothing — but a grammar store
             // posting is harmless and refusing it there would be a trap.
             effect_sink: self.effect_sink.get().cloned(),
+            // OB.3a: every store, since every seam that hands the host a
+            // command name is checked against it.
+            command_registry: self.commands.get().cloned(),
             // CD.6b: stamped for every store on `view_args`' reasoning. The
             // GRAMMAR store is the one that needs it: a capture commits from a
             // chord, and that is where the caller's extent is asked.

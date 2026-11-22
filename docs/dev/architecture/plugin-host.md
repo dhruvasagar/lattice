@@ -935,6 +935,37 @@ is enough to check — and decline otherwise.
 - **Provenance is host-issued.** No public API accepts a `SourceLocation`; the host stamps
   `SourceLayer::Plugin(id)` for every plugin contribution (`source.rs:38`). A plugin cannot
   forge a builtin/user provenance.
+- **What a plugin names for the host to run is gated (OB.3a).** An effect loses its
+  provenance at the boundary — by design, §4.4 — so a command it names runs with the
+  user's whole authority. Until OB.3a that made every grant decorative:
+  `invoke-command { id: "shell-command", … }` ran a program with no `proc:spawn`, `set …`
+  moved an option a grant follows past PMF.5, and a command whose *name* was ex syntax
+  (`g/x/d`, `%d`) ran as the line it spelled. The check therefore lives where the plugin is
+  still known — `EffectAuthorizer`'s `CommandGate`, built from the instance's grant, the
+  editor's `CommandRegistry` and the `GrantGuard` — and covers every place a plugin names a
+  command: `invoke-command`, `confirm`'s `yes-action`, `open-prompt`'s `on-submit-action`,
+  `open-picker`'s `fill-action`, a code action's `otherwise`, a picker row's routing and
+  accept outcome, a picker's `delete-command`, a transient row. The rules:
+  - **Default closed.** A plugin may name a command a plugin registered, or a native one
+    its owner opened (`CommandRegistry::allow_plugin_invocation` — today only `llm`,
+    whose tool calls ask the user first). A native command that forgets to say is refused
+    with a warning, never silently reachable: the failure of omission is visible.
+  - **Exact names only.** No alias, no `ex:` guess, no line syntax. And the host keeps its
+    side: `Editor::invoke_command_named` runs a registered name as *that* command, its
+    args parsed as its args (`excommand::parse_named`), never as a line. The check and the
+    run see the same command.
+  - **Options and programs.** `set-option` / `set-local-option` / `set-global-option`
+    naming an option the `GrantGuard` holds — by name, by `no`-form, or by an alias the
+    plugin registered — is refused, as the config seam's `set-option` is. A
+    `spawn-terminal` with a `cmd-line` needs the unbound `proc:spawn`.
+  - **`init.rs` is exempt** — it is the user's own code (PMF.15's authority).
+  - **Not gated: a mode's keymap bindings.** They name a command with no arguments and
+    fire on the user's key, so they cannot hand `shell-command` a command line. Revisit if
+    bindings ever carry args.
+- **Posted effects are an allowlist (OB.3a).** `post-effects` arrives unprompted, so it
+  carries only what a background result needs — `apply-edit`, `write-to-file` (still under
+  `fs:write`), `track-range` / `untrack-range`, `open-synthetic-buffer`, `echo` — after the
+  command gate above. Anything else is a warning naming the variant, and ends the batch.
 
 > **UX (higher court):** capability prompts are the one place plugins touch consent UX; they
 > must be legible ("git-gutter wants: read files under this repo") and never block boot —

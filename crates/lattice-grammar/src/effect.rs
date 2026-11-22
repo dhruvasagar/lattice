@@ -269,7 +269,10 @@ pub enum LspRequest {
 #[derive(Debug, Clone, PartialEq)]
 pub struct CommandRef {
     /// A registered command name; an action is dispatched with `args`, any
-    /// other command runs as an ex line.
+    /// other registered command with `args` parsed as its arguments. A name
+    /// that is not registered (an alias, `w`) runs as an ex line — for native
+    /// callers only: a plugin's name must be registered, and open to plugins
+    /// (OB.3a).
     pub id: String,
     /// The command's arguments.
     pub args: crate::Args,
@@ -1079,8 +1082,12 @@ pub enum Effect {
     /// does not land stops the batch, so this does not run.
     InvokeCommand {
         /// A registered command name. If it names a `CommandKind::Action`
-        /// it is dispatched with `args`; otherwise `id` plus `args` is run
-        /// as an ex line.
+        /// it is dispatched with `args`; any other registered command runs
+        /// with `args` parsed as its arguments — never as a line of its own,
+        /// so the command that runs is the one named (OB.3a). A name that is
+        /// not registered (an alias, `w`) runs as an ex line; only native
+        /// callers reach that, since a plugin's name must be registered and
+        /// open to plugins.
         id: String,
         /// Arguments for the command (rendered onto the ex line in the
         /// ex-line case).

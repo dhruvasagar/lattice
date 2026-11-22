@@ -339,6 +339,19 @@ pub struct CommandSpec {
     /// machinery reads this to set per-call budgets. v1 is purely
     /// declarative -- no runtime enforcement yet.
     pub latency_class: LatencyClass,
+    /// OB.3a: may a plugin name this command for the host to run? Always
+    /// `true` in effect for a command a plugin registered; for a native one,
+    /// `false` until its owner calls
+    /// [`CommandRegistry::allow_plugin_invocation`](crate::CommandRegistry::allow_plugin_invocation).
+    pub plugin_invokable: bool,
+}
+
+impl CommandSpec {
+    /// OB.3a: may a plugin name this command? A plugin's own, or a native
+    /// one its owner opened.
+    pub fn plugin_may_invoke(&self) -> bool {
+        self.plugin_invokable || matches!(self.source.layer, crate::source::SourceLayer::Plugin(_))
+    }
 }
 
 impl crate::introspect::Introspectable for CommandSpec {

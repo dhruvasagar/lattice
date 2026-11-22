@@ -440,6 +440,17 @@ record command-ref {
 }
 ```
 
+A command for the host to run, by name, with its arguments.
+
+OB.3a: `id` must be a command's registered name, exactly — no alias, no
+ex-line syntax — and one a plugin may run: a command a plugin
+registered, or an editor command opened to plugins. Anything else is
+refused with a warning to the user. The same holds wherever a plugin
+names a command: `confirm`'s `yes-action`, `open-prompt`'s
+`on-submit-action`, `open-picker`'s `fill-action`, a picker row's
+routing or `delete-command`, a transient row. The user's `init.rs` is
+exempt.
+
 **Fields**
 
 - `id`: `string`
@@ -2107,9 +2118,12 @@ Mirrors `lattice_grammar::effect::Effect` (§4.4). Every arm is pure data;
 - `open-buffer-at`: [`open-buffer-at-payload`](#record-open-buffer-at-payload)
 - `open-external-uri`: `string`
 - `open-buffer-at-column`: [`open-buffer-at-column-payload`](#record-open-buffer-at-column-payload)
-- `spawn-terminal`: [`spawn-terminal-payload`](#record-spawn-terminal-payload)
+- `spawn-terminal`: [`spawn-terminal-payload`](#record-spawn-terminal-payload) — OB.3a: a `cmd-line` is a process, so it needs the unbound
+  `proc:spawn`; without one, the user's own shell opens.
 - `terminal-input`: `list<u8>`
-- `set-option`: `string`
+- `set-option`: `string` — OB.3a: refused (with a warning) for an option a plugin's grant
+  follows (`fs:write:{opt}`, `proc:spawn:{opt}`) — those are the
+  user's to set. So are `set-local-option` / `set-global-option`.
 - `set-local-option`: `string`
 - `set-global-option`: `string`
 - `clear-search-highlight`

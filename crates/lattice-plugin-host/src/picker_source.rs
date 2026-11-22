@@ -64,8 +64,21 @@ pub struct WasmPickerSource {
 
 impl WasmPickerSource {
     /// Build an adapter for one already-declared source.
-    fn new(client: PickerClient, spec: PickerSourceSpec) -> Self {
+    fn new(client: PickerClient, mut spec: PickerSourceSpec) -> Self {
         let source = spec.id.to_string();
+        // OB.3a: the delete verb is the host's to run, with the row's argument,
+        // so it is held to the command gate. Checked here because the host
+        // reads it from the registered spec. A name not registered YET is kept:
+        // every native command is registered at boot, before a plugin loads, so
+        // an unknown name can only become a plugin's own (its grammar seam may
+        // load after this one), and the host runs it by that exact name.
+        if let Some(verb) = spec.delete_command.as_deref()
+            && client.gate().names_a_closed_command(verb)
+        {
+            let refusal = client.gate().check_command(verb).err().unwrap_or_default();
+            tracing::warn!(source = %source, "{refusal}; the source keeps no delete verb");
+            spec.delete_command = None;
+        }
         Self {
             client,
             spec,
@@ -134,7 +147,7 @@ impl PickerSourceGenerator for WasmPickerSource {
         let source = self.source.clone();
         Ok(PickerInitResult::Future(Box::pin(async move {
             let pairs = flatten(client.init(source, wit_ctx, args).await)?;
-            wit_pairs_to_batch(pairs)
+            wit_pairs_to_batch(pairs, client.gate())
         })))
     }
 
@@ -165,7 +178,12 @@ impl PickerSourceGenerator for WasmPickerSource {
         Some(Box::pin(async move {
             let (wit_ctx, wit_routing) = prep?;
             let wit_outcome = flatten(client.accept(source, wit_ctx, wit_routing).await)?;
-            PickerAcceptOutcome::from_wit(wit_outcome)
+            let outcome = PickerAcceptOutcome::from_wit(wit_outcome)?;
+            // OB.3a: the host runs an `invoke-command` outcome as named.
+            if let PickerAcceptOutcome::InvokeCommand { id, .. } = &outcome {
+                client.gate().check_command(id)?;
+            }
+            Ok(outcome)
         }))
     }
 }
@@ -173,11 +191,24 @@ impl PickerSourceGenerator for WasmPickerSource {
 /// Convert the guest's `list<candidate-pair>` into the native
 /// [`CandidateBatch`]. A pair that fails to cross (malformed candidate, non-
 /// UTF-8 path) fails the whole batch as a typed error — never a silent drop.
-fn wit_pairs_to_batch(pairs: Vec<CandidatePair>) -> SourceResult<CandidateBatch> {
+///
+/// OB.3a: a row whose routing invokes a command the plugin may not name is
+/// dropped (logged), not the batch — one bad row must not blank the picker,
+/// and a row the user cannot act on is better absent than a refusal on Enter.
+fn wit_pairs_to_batch(
+    pairs: Vec<CandidatePair>,
+    gate: &crate::effect_authorizer::CommandGate,
+) -> SourceResult<CandidateBatch> {
     let mut batch = CandidateBatch::with_capacity(pairs.len());
     for pair in pairs {
         let candidate = RawCandidate::from_wit(pair.candidate)?;
         let routing = RoutingPayload::from_wit(pair.routing)?;
+        if let RoutingPayload::InvokeCommand { id, .. } = &routing
+            && let Err(refusal) = gate.check_command(id)
+        {
+            tracing::warn!("{refusal}; the row is dropped");
+            continue;
+        }
         batch.push((candidate, routing));
     }
     Ok(batch)

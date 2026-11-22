@@ -533,4 +533,10 @@ pub fn register(registry: &mut CommandRegistry, chats: LlmChatsHandle) {
             surface_form: SurfaceForm::Keyword,
         },
     );
+    // OB.3a: org's planning workflows (plan-day, review, report) hand a prompt
+    // to `:llm`, so plugins may name it.
+    // Safe to open: a chat's tool calls ask the user first (LL.18) unless the
+    // user's own `llm.allow` spares them, so a plugin gains nothing the user
+    // did not approve.
+    registry.allow_plugin_invocation("llm");
 }

@@ -1856,6 +1856,34 @@ mod tests {
         assert_eq!(r.held_value("org.directory"), None);
     }
 
+    /// OB.1: a grant can follow a list, so the held value it reads before the
+    /// option registers must keep the list whole; text stays a string.
+    #[test]
+    fn held_config_value_keeps_a_list_whole_and_a_scalar_as_a_string() {
+        use crate::ConfigValue;
+        use crate::registry::HeldSource;
+        let r = registry_with_options();
+        let list = ConfigValue::List(vec![
+            ConfigValue::Str("~/a".into()),
+            ConfigValue::Str("~/b".into()),
+        ]);
+        r.hold_tree(
+            "org.babel.tangle-directories",
+            list.clone(),
+            HeldSource::ConfigFile,
+        );
+        r.hold("org.directory", "~/notes", HeldSource::ConfigFile);
+        assert_eq!(
+            r.held_config_value("org.babel.tangle-directories"),
+            Some(list)
+        );
+        assert_eq!(
+            r.held_config_value("org.directory"),
+            Some(ConfigValue::Str("~/notes".into()))
+        );
+        assert_eq!(r.held_config_value("org.nothing"), None);
+    }
+
     #[test]
     fn held_names_no_plugin_declares_are_listed_with_their_source() {
         use crate::registry::HeldSource;

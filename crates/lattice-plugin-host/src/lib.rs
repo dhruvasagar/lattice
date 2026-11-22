@@ -1041,7 +1041,7 @@ pub struct GrantGuard {
     /// grant moved again, and the plugin reloaded forever (seen with org on
     /// every boot, 2026-10-19). Resolving an unregistered option to the value
     /// it last had ends that after one reload.
-    remembered: std::collections::HashMap<String, String>,
+    remembered: std::collections::HashMap<String, lattice_config::ConfigValue>,
 }
 
 /// Shared between the host and every plugin instance it creates.
@@ -4954,7 +4954,7 @@ impl PluginHost {
         let outcome = crate::capability::grant_with(manifest, tier, &|name| {
             match registry.as_ref().and_then(|r| r.lookup(name)) {
                 Some(opt) => {
-                    let value = opt.get_formatted();
+                    let value = opt.get_value();
                     live.borrow_mut().push((name.to_string(), value.clone()));
                     Some(value)
                 }
@@ -4963,7 +4963,7 @@ impl PluginHost {
                 // (between instances; `GrantGuard::remembered`).
                 None => registry
                     .as_ref()
-                    .and_then(|r| r.held_value(name))
+                    .and_then(|r| r.held_config_value(name))
                     .or_else(|| remembered.get(name).cloned()),
             }
         });
@@ -5257,6 +5257,97 @@ mod held_options_tests {
             base.join("from-init").display().to_string(),
         );
         assert_eq!(granted(&rig), Some(base.join("from-init")));
+    }
+
+    /// OB.1: a list written in `lattice.toml` for a grant-bearing option is in
+    /// the first grant, one directory per entry — not flattened to text and
+    /// lost, which is what a text-only held value did.
+    #[test]
+    fn a_held_list_is_in_the_first_grant_entry_by_entry() {
+        let rig = rig();
+        let base = rig._base.path();
+        let list = lattice_config::ConfigValue::List(vec![
+            lattice_config::ConfigValue::Str(base.join("a").display().to_string()),
+            lattice_config::ConfigValue::Str(base.join("b").display().to_string()),
+        ]);
+        rig.config.hold_tree(
+            "org.babel.tangle-directories",
+            list,
+            lattice_config::HeldSource::ConfigFile,
+        );
+        let manifest = PluginManifest::from_toml_str(
+            "id = \"org\"\ncapabilities = [\"fs:write:{org.babel.tangle-directories}\"]\n",
+        )
+        .unwrap();
+        let paths: Vec<_> = rig
+            .host
+            .grant_for(&manifest, TrustTier::UserInstalled)
+            .option_bound
+            .into_iter()
+            .map(|g| g.path)
+            .collect();
+        assert_eq!(paths, vec![Some(base.join("a")), Some(base.join("b"))]);
+    }
+
+    /// OB.1: a registered list option's live value decides the grant, and
+    /// changing one entry changes what the loader compares to decide a reload.
+    #[test]
+    fn a_registered_list_option_grants_its_entries_and_tracks_changes() {
+        let rig = rig();
+        let base = rig._base.path();
+        let item = |p: &str| lattice_config::ConfigValue::Str(base.join(p).display().to_string());
+        crate::config_host::register_structured_option(
+            &rig.config,
+            "org.babel.tangle-directories",
+            lattice_config::ConfigSchema::List(Box::new(lattice_config::ConfigSchema::Scalar(
+                lattice_config::ScalarKind::Str,
+            ))),
+            lattice_config::ConfigValue::List(vec![item("a")]),
+            "doc",
+        )
+        .unwrap();
+        let manifest = PluginManifest::from_toml_str(
+            "id = \"org\"\ncapabilities = [\"fs:write:{org.babel.tangle-directories}\"]\n",
+        )
+        .unwrap();
+        let before = rig
+            .host
+            .grant_for(&manifest, TrustTier::UserInstalled)
+            .option_bound;
+        assert_eq!(before.len(), 1);
+        assert_eq!(before[0].path, Some(base.join("a")));
+
+        rig.config
+            .lookup("org.babel.tangle-directories")
+            .unwrap()
+            .set_value(&lattice_config::ConfigValue::List(vec![
+                item("a"),
+                item("c"),
+            ]))
+            .unwrap();
+        let after = rig
+            .host
+            .grant_for(&manifest, TrustTier::UserInstalled)
+            .option_bound;
+        assert_ne!(before, after, "a moved entry is a moved grant (PMF.4)");
+        assert_eq!(after[1].path, Some(base.join("c")));
+    }
+
+    /// OB.1: PMF.5 covers a list-valued grant option like a scalar one.
+    #[test]
+    fn a_plugin_cannot_set_its_own_list_grant_option() {
+        let rig = rig();
+        let manifest = PluginManifest::from_toml_str(
+            "id = \"org\"\ncapabilities = [\"fs:write:{org.babel.tangle-directories}\"]\n",
+        )
+        .unwrap();
+        let _ = rig.host.grant_for(&manifest, TrustTier::UserInstalled);
+        let mut org = store(&rig, "org");
+        assert!(
+            !org.data_mut()
+                .set_option("org.babel.tangle-directories".into(), "/".into()),
+            "the plugin may not widen its own reach"
+        );
     }
 
     #[test]

@@ -146,7 +146,7 @@ pub fn grant(manifest: &PluginManifest, tier: TrustTier) -> GrantOutcome {
 pub fn grant_with(
     manifest: &PluginManifest,
     tier: TrustTier,
-    option_value: &dyn Fn(&str) -> Option<String>,
+    option_value: &dyn Fn(&str) -> Option<lattice_config::ConfigValue>,
 ) -> GrantOutcome {
     let mut option_bound = Vec::new();
     let mut g = CapabilityGrant {
@@ -167,26 +167,30 @@ pub fn grant_with(
             }),
             Capability::FsReadOption(op) | Capability::FsWriteOption(op) => {
                 let write = matches!(cap, Capability::FsWriteOption(_));
-                let (path, from_default) = match option_value(&op.option) {
-                    Some(v) if v.trim().is_empty() => (None, false),
-                    Some(v) => (
-                        Some(PathBuf::from(lattice_core::home::expand_tilde(v.trim()))),
-                        false,
-                    ),
-                    None => (op.default.clone(), true),
+                let (paths, from_default) = match option_value(&op.option) {
+                    Some(v) => (option_paths(&op.option, &v), false),
+                    None => (op.default.iter().cloned().collect(), true),
                 };
-                if let Some(prefix) = &path {
+                for prefix in &paths {
                     g.fs.push(FsGrant {
                         prefix: prefix.clone(),
                         write,
                     });
                 }
-                option_bound.push(OptionBoundGrant {
+                // One resolved grant per path, each naming the option, so
+                // `:plugins` and a refusal list them all. An option that
+                // grants nothing is still reported, as granting nothing.
+                let resolved: Vec<Option<PathBuf>> = if paths.is_empty() {
+                    vec![None]
+                } else {
+                    paths.into_iter().map(Some).collect()
+                };
+                option_bound.extend(resolved.into_iter().map(|path| OptionBoundGrant {
                     option: op.option.clone(),
                     path,
                     from_default,
                     write,
-                });
+                }));
             }
             Capability::NetHttp(h) => g.net_http.push(h.clone()),
             // OR.1: granted at either tier. The store reaches only the
@@ -213,6 +217,43 @@ pub fn grant_with(
         grant: g,
         denied,
         option_bound,
+    }
+}
+
+/// OB.1: the directories an option-bound grant's value names. A string is one
+/// path (blank = none); a list is one per non-blank string entry. Anything
+/// else names no directory, and says so — a grant must never widen on a
+/// value it could not read.
+fn option_paths(option: &str, value: &lattice_config::ConfigValue) -> Vec<PathBuf> {
+    use lattice_config::ConfigValue;
+    let path = |s: &str| {
+        let s = s.trim();
+        (!s.is_empty()).then(|| PathBuf::from(lattice_core::home::expand_tilde(s)))
+    };
+    match value {
+        ConfigValue::Str(s) => path(s).into_iter().collect(),
+        ConfigValue::List(items) => items
+            .iter()
+            .filter_map(|item| match item {
+                ConfigValue::Str(s) => path(s),
+                other => {
+                    tracing::warn!(
+                        option,
+                        kind = other.kind_label(),
+                        "option-bound grant: a non-string entry names no directory"
+                    );
+                    None
+                }
+            })
+            .collect(),
+        other => {
+            tracing::warn!(
+                option,
+                kind = other.kind_label(),
+                "option-bound grant: this value names no directory"
+            );
+            Vec::new()
+        }
     }
 }
 
@@ -453,6 +494,8 @@ mod tests {
 
     // ── PMF.3: option-bound grants ───────────────────────────────────────
 
+    use lattice_config::ConfigValue;
+
     fn org_manifest() -> PluginManifest {
         PluginManifest::from_toml_str(
             "id = \"org\"\ncapabilities = [\"fs:write:{org.directory|~/org}\", \"state:write\"]\n",
@@ -524,7 +567,7 @@ mod tests {
     #[test]
     fn the_users_value_replaces_the_default() {
         let out = grant_with(&org_manifest(), TrustTier::UserInstalled, &|name| {
-            (name == "org.directory").then(|| "~/notes".to_string())
+            (name == "org.directory").then(|| ConfigValue::Str("~/notes".into()))
         });
         assert_eq!(out.grant.fs[0].prefix, home().join("notes"));
         assert!(!out.option_bound[0].from_default);
@@ -533,7 +576,7 @@ mod tests {
     #[test]
     fn an_empty_value_grants_nothing() {
         let out = grant_with(&org_manifest(), TrustTier::UserInstalled, &|_| {
-            Some("  ".to_string())
+            Some(ConfigValue::Str("  ".into()))
         });
         assert!(out.grant.fs.is_empty(), "explicit empty = no access");
         assert_eq!(out.option_bound[0].path, None);
@@ -552,5 +595,102 @@ mod tests {
         let out = grant_with(&m, TrustTier::UserInstalled, &|_| None);
         assert!(out.grant.fs.is_empty());
         assert_eq!(out.option_bound[0].path, None);
+    }
+
+    fn tangle_manifest() -> PluginManifest {
+        PluginManifest::from_toml_str(
+            "id = \"org\"\ncapabilities = [\"fs:write:{org.babel.tangle-directories}\"]\n",
+        )
+        .unwrap()
+    }
+
+    fn strs(items: &[&str]) -> ConfigValue {
+        ConfigValue::List(
+            items
+                .iter()
+                .map(|s| ConfigValue::Str((*s).into()))
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn a_list_option_grants_each_entry() {
+        let out = grant_with(&tangle_manifest(), TrustTier::UserInstalled, &|_| {
+            Some(strs(&["~/dotfiles", "/etc/lattice"]))
+        });
+        assert_eq!(
+            out.grant.fs,
+            vec![
+                FsGrant {
+                    prefix: home().join("dotfiles"),
+                    write: true
+                },
+                FsGrant {
+                    prefix: PathBuf::from("/etc/lattice"),
+                    write: true
+                },
+            ]
+        );
+        let paths: Vec<_> = out.option_bound.iter().map(|g| g.path.clone()).collect();
+        assert_eq!(
+            paths,
+            vec![
+                Some(home().join("dotfiles")),
+                Some(PathBuf::from("/etc/lattice"))
+            ],
+            "one resolved grant per entry, each naming the option"
+        );
+        assert!(
+            out.option_bound
+                .iter()
+                .all(|g| g.option == "org.babel.tangle-directories" && !g.from_default)
+        );
+    }
+
+    #[test]
+    fn an_empty_list_grants_nothing_and_does_not_fall_back() {
+        let m = PluginManifest::from_toml_str(
+            "id = \"org\"\ncapabilities = [\"fs:write:{org.babel.tangle-directories|~/x}\"]\n",
+        )
+        .unwrap();
+        let out = grant_with(&m, TrustTier::UserInstalled, &|_| Some(strs(&[])));
+        assert!(out.grant.fs.is_empty(), "an empty list is an explicit no");
+        assert_eq!(
+            out.option_bound.len(),
+            1,
+            "still reported, as granting nothing"
+        );
+        assert_eq!(out.option_bound[0].path, None);
+        assert!(!out.option_bound[0].from_default);
+    }
+
+    #[test]
+    fn blank_and_non_string_list_entries_grant_nothing() {
+        let value = ConfigValue::List(vec![
+            ConfigValue::Str("  ".into()),
+            ConfigValue::Int(3),
+            ConfigValue::Str("/ok".into()),
+        ]);
+        let out = grant_with(&tangle_manifest(), TrustTier::UserInstalled, &|_| {
+            Some(value.clone())
+        });
+        assert_eq!(
+            out.grant.fs,
+            vec![FsGrant {
+                prefix: PathBuf::from("/ok"),
+                write: true
+            }]
+        );
+    }
+
+    #[test]
+    fn a_record_value_grants_no_path() {
+        let out = grant_with(&org_manifest(), TrustTier::UserInstalled, &|_| {
+            Some(ConfigValue::record([(
+                "a".to_string(),
+                ConfigValue::Str("/x".into()),
+            )]))
+        });
+        assert!(out.grant.fs.is_empty(), "a table names no directory");
     }
 }

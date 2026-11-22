@@ -488,6 +488,23 @@ impl ConfigRegistry {
             })
     }
 
+    /// OB.1: [`Self::held_value`] in the option's own shape — a held list or
+    /// table whole, text as a string. For a grant that follows a list option
+    /// (`fs:write:{org.babel.tangle-directories}`), where flattening the list
+    /// to text before the option registers would lose every entry.
+    pub fn held_config_value(&self, name: &str) -> std::option::Option<crate::ConfigValue> {
+        self.inner
+            .lock()
+            .expect("ConfigRegistry poisoned")
+            .held
+            .get(name)
+            .and_then(|by_source| by_source.values().next_back())
+            .map(|value| match value {
+                HeldValue::Text(text) => crate::ConfigValue::Str(text.clone()),
+                HeldValue::Tree(tree) => tree.clone(),
+            })
+    }
+
     /// PMF.16: forget what `source` holds, before it is read again — a line the
     /// user deleted must not keep applying. Other sources are untouched.
     pub fn clear_held(&self, source: HeldSource) {

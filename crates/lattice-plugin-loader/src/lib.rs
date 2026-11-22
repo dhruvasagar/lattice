@@ -1970,19 +1970,8 @@ impl PluginLoader {
             return;
         };
         let now = self.host.grant_for(manifest, tier).option_bound;
-        for (then, now) in at_load.iter().zip(now.iter()) {
-            if then.path != now.path {
-                let new = now
-                    .path
-                    .as_ref()
-                    .map(|p| p.display().to_string())
-                    .unwrap_or_default();
-                bus.publish(Event::OptionChanged {
-                    name: now.option.clone(),
-                    old: then.path.as_ref().map(|p| p.display().to_string()),
-                    new,
-                });
-            }
+        for (name, old, new) in moved_grant_options(at_load, &now) {
+            bus.publish(Event::OptionChanged { name, old, new });
         }
     }
 
@@ -5556,6 +5545,94 @@ mod keyed_builds {
         assert_eq!(
             report.summary(BulkOp::Rebuild.past()),
             "a bulk plugin operation is already running"
+        );
+    }
+}
+
+/// PMF.4 / OB.1: the options whose resolved grant differs between `then` and
+/// `now`, as `(option, old, new)` with each side's paths comma-joined (`None`
+/// when the option granted nothing before).
+///
+/// Compared per OPTION, over all of its entries: a list-valued grant resolves
+/// to one entry per path, so pairing entries one-for-one would miss a list
+/// that gained an entry while keeping every entry it had.
+fn moved_grant_options(
+    then: &[lattice_plugin_host::capability::OptionBoundGrant],
+    now: &[lattice_plugin_host::capability::OptionBoundGrant],
+) -> Vec<(String, Option<String>, String)> {
+    let paths = |grants: &[lattice_plugin_host::capability::OptionBoundGrant], option: &str| {
+        grants
+            .iter()
+            .filter(|g| g.option == option)
+            .filter_map(|g| g.path.as_ref().map(|p| p.display().to_string()))
+            .collect::<Vec<_>>()
+    };
+    let mut options: Vec<&str> = Vec::new();
+    for g in then.iter().chain(now) {
+        if !options.contains(&g.option.as_str()) {
+            options.push(&g.option);
+        }
+    }
+    options
+        .into_iter()
+        .filter_map(|option| {
+            let (old, new) = (paths(then, option), paths(now, option));
+            (old != new).then(|| {
+                let old = (!old.is_empty()).then(|| old.join(","));
+                (option.to_string(), old, new.join(","))
+            })
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod moved_grant_tests {
+    #![allow(clippy::unwrap_used)]
+    use super::moved_grant_options;
+    use lattice_plugin_host::capability::OptionBoundGrant;
+    use std::path::PathBuf;
+
+    fn g(option: &str, path: Option<&str>) -> OptionBoundGrant {
+        OptionBoundGrant {
+            option: option.to_string(),
+            path: path.map(PathBuf::from),
+            from_default: false,
+            write: true,
+        }
+    }
+
+    /// OB.1: a list-valued grant that gains an entry has moved, though every
+    /// entry it had before is unchanged — pairing entries one-for-one missed it.
+    #[test]
+    fn a_list_that_gains_an_entry_has_moved() {
+        let then = [g("org.t", Some("/a"))];
+        let now = [g("org.t", Some("/a")), g("org.t", Some("/c"))];
+        let moved = moved_grant_options(&then, &now);
+        assert_eq!(moved.len(), 1, "{moved:?}");
+        assert_eq!(moved[0].0, "org.t");
+        assert_eq!(moved[0].1.as_deref(), Some("/a"));
+        assert_eq!(moved[0].2, "/a,/c");
+    }
+
+    #[test]
+    fn a_list_that_loses_an_entry_has_moved_and_an_unchanged_one_has_not() {
+        let then = [
+            g("org.t", Some("/a")),
+            g("org.t", Some("/b")),
+            g("org.d", Some("/o")),
+        ];
+        let now = [g("org.t", Some("/a")), g("org.d", Some("/o"))];
+        let moved = moved_grant_options(&then, &now);
+        assert_eq!(moved.len(), 1, "org.d did not move: {moved:?}");
+        assert_eq!(moved[0].0, "org.t");
+    }
+
+    #[test]
+    fn a_scalar_that_becomes_empty_has_moved_to_nothing() {
+        let moved = moved_grant_options(&[g("org.d", Some("/o"))], &[g("org.d", None)]);
+        assert_eq!(
+            moved,
+            vec![("org.d".to_string(), Some("/o".to_string()), String::new())]
         );
     }
 }

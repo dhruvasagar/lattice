@@ -138,6 +138,13 @@ const EXTRACT_REQUEST: &str = "/data/extract-request";
 /// program, each further line one argument.
 const SPAWN_REQUEST: &str = "/data/spawn-request";
 
+/// OB.3. Present ⇒ post effects from `on-event`. One line: `edit <buffer-id>`
+/// posts an `apply-edit` inserting `posted` at the start of that buffer;
+/// `write <host-path>` posts a `write-to-file` there. The trigger is the
+/// plugin's own event, emitted from `register-events`, so the post happens on
+/// the events seam proper — the seam that returns nothing.
+const POST_REQUEST: &str = "/data/post-request";
+
 /// LH.0.4. Present ⇒ register a language server from `register-events`. Three
 /// lines: the server id, the command, and one file pattern.
 const SERVER_REQUEST: &str = "/data/server-request";
@@ -194,6 +201,10 @@ impl Guest for Component {
         if std::fs::metadata(EMIT_AT_REGISTER).is_ok() {
             events::subscribe(&kind_filter(EventKind::Plugin), 7);
             host_services::emit_event("fixture/registered", b"1");
+        }
+        if std::fs::metadata(POST_REQUEST).is_ok() {
+            events::subscribe(&kind_filter(EventKind::Plugin), 11);
+            host_services::emit_event("fixture/post", b"1");
         }
         // @example events.wake-every: Arm a periodic wake at registration and keep its id for `cancel-wake`
         // OC.2: arm a periodic wake from registration. 50 ms is the seam's
@@ -451,6 +462,15 @@ impl Guest for Component {
             }
             return;
         }
+        // OB.3: post effects from the seam that returns nothing.
+        if handler == 11 {
+            if let Event::Plugin(p) = &ev {
+                if p.name == "fixture/post" {
+                    post_requested();
+                }
+            }
+            return;
+        }
         // LH.0.3: a process wrote something, or exited.
         if handler == 10 {
             match &ev {
@@ -566,3 +586,42 @@ impl Guest for Component {
 }
 
 export!(Component);
+
+/// OB.3: the effect `POST_REQUEST` asks for, posted with `post-effects`.
+fn post_requested() {
+    use lattice::plugin_host::types::{
+        ApplyEditPayload, Edit, EditKind, Effect, FileAnchor, Position, Range,
+        WriteToFilePayload,
+    };
+    let request = std::fs::read_to_string(POST_REQUEST).unwrap_or_default();
+    let (kind, arg) = request.trim().split_once(' ').unwrap_or(("", ""));
+    let origin = Position { line: 0, byte: 0 };
+    let effect = match kind {
+        "edit" => Effect::ApplyEdit(ApplyEditPayload {
+            target: arg.parse().unwrap_or(0),
+            edit: Edit {
+                range: Range {
+                    start: origin,
+                    end: origin,
+                },
+                kind: EditKind::Replace("posted".to_string()),
+            },
+            cursor: None,
+        }),
+        _ => Effect::WriteToFile(WriteToFilePayload {
+            path: arg.to_string(),
+            anchor: FileAnchor::End,
+            text: "posted\n".to_string(),
+            cut: None,
+            create_parents: false,
+            save: false,
+        }),
+    };
+    // @example host-services.post-effects: Turn a job's result into an edit from `on-event`, which returns nothing
+    let outcome = match host_services::post_effects(&[effect]) {
+        Ok(()) => "post:ok".to_string(),
+        Err(e) => format!("post:err({e})"),
+    };
+    record(&outcome);
+    // @end-example
+}

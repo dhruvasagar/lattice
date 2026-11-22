@@ -223,6 +223,17 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     } else {
         tracing::debug!("view-args seam unwired: no scan-view service");
     }
+    // OB.3: where `post-effects` lands. An inbound bus: its send wakes the
+    // editor's actor (`async_landed`), and the drain hands the posted batch to
+    // the host to apply — so a result a plugin's events seam posts reaches the
+    // screen without a keypress. A bare tick callback would sit until the next
+    // key (CLAUDE.md, "Async results must reach the screen WITHOUT a keypress").
+    let posted = boot.inbound::<lattice_grammar::Effect, _>(|effect| vec![effect]);
+    host.set_effect_sink(std::sync::Arc::new(move |effect| {
+        if posted.send(effect).is_err() {
+            tracing::warn!("post-effects: the editor's inbound path is closed; effects dropped");
+        }
+    }));
     // OA.30: the counter `refresh-decorations` bumps. Without it a guest
     // decoration producer is asked once and cached forever — its answer never
     // repaints, with no error anywhere, which reads as a broken feature rather

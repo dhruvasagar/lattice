@@ -762,6 +762,8 @@ pub struct WiredSeams {
     /// LH.0.5: `output-*` refuses every call on a host with no output store,
     /// and a plugin's progress buffer then never gains a line.
     pub plugin_output: bool,
+    /// OB.3: [`PluginHost::effect_sink_wired`].
+    pub effect_sink: bool,
 }
 
 impl WiredSeams {
@@ -794,6 +796,7 @@ impl WiredSeams {
             && self.buffer_store
             && self.language_servers
             && self.plugin_output
+            && self.effect_sink
     }
 }
 
@@ -1124,6 +1127,7 @@ impl PluginLoader {
             buffer_store: self.host.buffer_store_wired(),
             language_servers: self.host.language_server_registrar_wired(),
             plugin_output: self.host.plugin_output_wired(),
+            effect_sink: self.host.effect_sink_wired(),
         }
     }
 

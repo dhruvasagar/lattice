@@ -227,7 +227,9 @@ cannot run anything.
    importing it against an unwired linker fails instantiation outright). It is
    chosen over making `on-event` return `list<effect>` because that is an ABI
    break for every events guest for a capability most do not use. Effects
-   posted this way pass the same capability checks as returned ones.
+   posted this way pass the same capability checks as returned ones — a
+   refused write is shown as a warning, as from a command — and `err` means
+   only that no sink was wired.
 
 Org's manifest gains:
 

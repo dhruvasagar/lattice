@@ -27,8 +27,9 @@ does — a bounded `walk` covers the fuzzy-finder.
 ## Uses
 
 - [`position`](types.md#record-position) from [`types`](types.md)
+- [`effect`](types.md#variant-effect) from [`types`](types.md)
 
-## Functions (32)
+## Functions (33)
 
 ### `can-write-file`
 
@@ -561,6 +562,41 @@ let status = host_services::output_status(
     host_services::OutputState::Running,
     "downloading\u{2026} 43%",
 );
+```
+
+### `post-effects`
+
+```wit
+post-effects: func(effects: list<effect>) -> result<_, string>
+```
+
+OB.3: hand the editor `effects` from a seam that cannot return them —
+the events seam's `on-event` and `on-wake`, which return nothing. The
+result of a job a plugin started (`spawn-process`, `http-download`)
+arrives there, and this is how that result becomes an edit, an echo or
+a buffer the user sees.
+
+The effects go through the editor's inbound path, which wakes it: they
+are applied **without a keypress**, in the order given, as one batch.
+They pass the same checks returned effects do — a `write-to-file`
+outside the plugin's `fs:write` grant is replaced by a warning naming
+the grant, exactly as it would be from a command. An `apply-edit`
+addresses its buffer by id and is dropped if that buffer has closed.
+
+Prefer returning effects where a seam can: an effect posted here lands
+after the current keystroke's, not inside it.
+
+`err` only when this seam has nowhere to post to (an editor that wired
+none) — the effects are then dropped, and the plugin is told.
+
+**Example — Turn a job's result into an edit from `on-event`, which returns nothing** · [`crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs`](../../../../crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs)
+
+```rust
+let outcome = match host_services::post_effects(&[effect]) {
+    Ok(()) => "post:ok".to_string(),
+    Err(e) => format!("post:err({e})"),
+};
+record(&outcome);
 ```
 
 ### `read-file`

@@ -346,7 +346,7 @@ fn build_motion_spec(
 /// The one place both halves happen, so a new effect-returning contribution
 /// cannot get the conversion and forget the gate — which would be an
 /// unchecked cross-file write reachable from any plugin.
-fn effect_from_guest(
+pub(crate) fn effect_from_guest(
     authorizer: &Arc<crate::EffectAuthorizer>,
     wit: Vec<crate::lattice::plugin_host::types::Effect>,
 ) -> GrammarResult<NativeEffect> {

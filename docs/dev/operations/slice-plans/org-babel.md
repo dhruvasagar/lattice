@@ -10,28 +10,28 @@ release before any **(plugin)** slice may use them. **(plugin)** slices land in
 [`lattice-org-plugin`](https://github.com/dhruvasagar/lattice-org-plugin), all
 of them inside `org-babel-mode` (design §0).
 
-| Slice | Description | Status |
-|---|---|---|
-| **Phase 1 — execute** | | |
-| OB.1 | Option-bound grants may read a list **(lattice)** | ✅ |
-| OB.2 | `proc:spawn:{option:field}` — the option-bound process grant **(lattice)** | ✅ |
-| OB.3 | `post-effects` — effects from the events seam **(lattice)** | 📝 |
-| OB.R1 | lattice release carrying OB.1–OB.3 **(lattice)** | 📝 |
-| OB.4 | `org-babel-mode`: the mode, its layer, its options **(plugin)** | 📝 |
-| OB.5 | Src blocks and header arguments, parsed and merged **(plugin)** | 📝 |
-| OB.6 | `C-c C-c` runs a block; output lands in `#+RESULTS:` **(plugin)** | 📝 |
-| OB.7 | Confirm, cancel, execute-buffer / -subtree, remove-result **(plugin)** | 📝 |
-| OB.8 | `:results` — insertion, format, `value` wrappers, `:dir` **(plugin)** | 📝 |
-| **Phase 2 — tangle** | | |
-| OB.9 | `write-to-file` gains a `whole` anchor **(lattice)** | 📝 |
-| OB.10 | `:tangle` **(plugin)** | 📝 |
-| **Phase 3 — cross-block** | | |
-| OB.11 | `:var` — literals, named results, named tables **(plugin)** | 📝 |
-| OB.12 | Dependency chains — a missing result is run first **(plugin)** | 📝 |
-| OB.13 | noweb **(plugin)** | 📝 |
-| **Phase 4 — sessions** | | |
-| OB.14 | `spawn-interactive` + job stdin **(lattice)** | 📝 |
-| OB.15 | `:session` **(plugin)** | 📝 |
+| Slice                     | Description                                                                | Status |
+|---------------------------|----------------------------------------------------------------------------|--------|
+| **Phase 1 — execute**     |                                                                            |        |
+| OB.1                      | Option-bound grants may read a list **(lattice)**                          | ✅     |
+| OB.2                      | `proc:spawn:{option:field}` — the option-bound process grant **(lattice)** | ✅     |
+| OB.3                      | `post-effects` — effects from the events seam **(lattice)**                | ✅     |
+| OB.R1                     | lattice release carrying OB.1–OB.3 **(lattice)**                           | 📝     |
+| OB.4                      | `org-babel-mode`: the mode, its layer, its options **(plugin)**            | 📝     |
+| OB.5                      | Src blocks and header arguments, parsed and merged **(plugin)**            | 📝     |
+| OB.6                      | `C-c C-c` runs a block; output lands in `#+RESULTS:` **(plugin)**          | 📝     |
+| OB.7                      | Confirm, cancel, execute-buffer / -subtree, remove-result **(plugin)**     | 📝     |
+| OB.8                      | `:results` — insertion, format, `value` wrappers, `:dir` **(plugin)**      | 📝     |
+| **Phase 2 — tangle**      |                                                                            |        |
+| OB.9                      | `write-to-file` gains a `whole` anchor **(lattice)**                       | 📝     |
+| OB.10                     | `:tangle` **(plugin)**                                                     | 📝     |
+| **Phase 3 — cross-block** |                                                                            |        |
+| OB.11                     | `:var` — literals, named results, named tables **(plugin)**                | 📝     |
+| OB.12                     | Dependency chains — a missing result is run first **(plugin)**             | 📝     |
+| OB.13                     | noweb **(plugin)**                                                         | 📝     |
+| **Phase 4 — sessions**    |                                                                            |        |
+| OB.14                     | `spawn-interactive` + job stdin **(lattice)**                              | 📝     |
+| OB.15                     | `:session` **(plugin)**                                                    | 📝     |
 
 ## Global constraints
 
@@ -167,7 +167,7 @@ PMF.4 and PMF.5 cover the option exactly as in OB.1.
 **Docs:** `docs/dev/architecture/plugin-host.md`'s capability table and the
 generated plugin-API reference (`scripts/docs-check.sh` regenerates both).
 
-### OB.3 — `post-effects` 📝 *(lattice)*
+### OB.3 — `post-effects` ✅ *(lattice)*
 
 **WIT** (`crates/lattice-wit/wit/host-services.wit`):
 
@@ -195,6 +195,14 @@ fixture):
 - `posting_to_a_closed_buffer_is_an_err_not_a_panic`.
 - `a_guest_importing_post_effects_instantiates_on_both_linkers` — guards the
   unwired-import failure.
+
+**As built:** refused effects become a warning echo (as returned ones do) and
+the call still answers `ok`; `err` means no sink was wired. The sink is set in
+`lattice-plugin-loader::install` from `boot.inbound`, and `WiredSeams.effect_sink`
+is the boot pin. "Without a keypress" is proven by composition — the post
+reaching the sink (`post_effects_seam.rs`), the inbound wake (`lattice-mode`),
+a drained `ApplyEdit` applying (`off_keystroke_applies_edits.rs`) — not by a new
+full-editor plugin test. No WIT version bump here; OB.R1 decides crate versions.
 
 ### OB.R1 — lattice release 📝 *(lattice)*
 

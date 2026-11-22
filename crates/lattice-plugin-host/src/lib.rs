@@ -1054,6 +1054,11 @@ pub struct GrantGuard {
 /// Shared between the host and every plugin instance it creates.
 pub type GrantGuardHandle = Arc<std::sync::RwLock<GrantGuard>>;
 
+/// OB.3: where `post-effects` delivers. One call per post, carrying the
+/// already-authorised batch (an [`lattice_grammar::Effect::Many`] for more
+/// than one). The editor wires an inbound bus here; a test, a collector.
+pub type PluginEffectSinkHandle = Arc<dyn Fn(lattice_grammar::Effect) + Send + Sync>;
+
 impl PluginState {
     /// PMF.15: is this instance the user's `init.rs`?
     fn is_config_authority(&self) -> bool {
@@ -1194,6 +1199,10 @@ struct PluginState {
     /// OA.30: the counter `refresh-decorations` bumps. `None` in a harness that
     /// wired no editor, where the call is a no-op.
     decoration_epoch: Option<lattice_mode::DecorationEpochHandle>,
+    /// OB.3: where `post-effects` sends what a plugin posts — the editor's
+    /// inbound path. `None` in a harness that wired no editor, where the call
+    /// refuses so the plugin knows its effects went nowhere.
+    effect_sink: Option<PluginEffectSinkHandle>,
     /// CD.6b: the buffers `clamp-position` measures. `None` in a harness that
     /// wired no editor, where every buffer reads as absent.
     buffers: Option<lattice_mode::BufferStoreHandle>,
@@ -1545,6 +1554,40 @@ impl crate::lattice::plugin_host::host_services::Host for PluginState {
                 );
             }
         }
+    }
+
+    /// OB.3 `post-effects`: effects from a seam that cannot return them,
+    /// converted and authorised exactly as returned ones are
+    /// ([`grammar_trampoline::effect_from_guest`]), then handed to the
+    /// editor's sink as one batch.
+    fn post_effects(
+        &mut self,
+        effects: Vec<crate::lattice::plugin_host::types::Effect>,
+    ) -> Result<(), String> {
+        let Some(sink) = self.effect_sink.clone() else {
+            tracing::warn!(
+                plugin = ?self.plugin_name,
+                "post-effects refused: no effect sink wired on this seam"
+            );
+            return Err("post-effects: this editor wired nowhere to post effects to".to_string());
+        };
+        let plugin = self.plugin_name.clone().unwrap_or_default();
+        let bound = self
+            .grant_guard
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .bound_for(&plugin);
+        let authorizer = std::sync::Arc::new(
+            EffectAuthorizer::new(&self.grant, plugin.clone())
+                .with_option_bound(bound)
+                .with_range_space(self.range_space),
+        );
+        let native = grammar_trampoline::effect_from_guest(&authorizer, effects).map_err(|e| {
+            tracing::warn!(plugin = %plugin, error = %e, "post-effects: unreadable effect");
+            format!("post-effects: {e}")
+        })?;
+        sink(native);
+        Ok(())
     }
 
     /// OC.4 `local-utc-offset-seconds`: the host's current offset from UTC.
@@ -3898,6 +3941,8 @@ pub struct PluginHost {
     view_args: std::sync::OnceLock<lattice_core::ViewArgsResolverHandle>,
     /// OA.30: the decoration-refresh counter, for `refresh-decorations`.
     decoration_epoch: std::sync::OnceLock<lattice_mode::DecorationEpochHandle>,
+    /// OB.3: see [`PluginHost::set_effect_sink`].
+    effect_sink: std::sync::OnceLock<PluginEffectSinkHandle>,
     /// CD.6b: the buffer store, for `clamp-position`.
     buffers: std::sync::OnceLock<lattice_mode::BufferStoreHandle>,
     // LH.0.4: the editor's language-server registrar, when it has one. Set-once
@@ -4383,6 +4428,7 @@ impl PluginHost {
             excerpt_source: std::sync::OnceLock::new(),
             view_args: std::sync::OnceLock::new(),
             decoration_epoch: std::sync::OnceLock::new(),
+            effect_sink: std::sync::OnceLock::new(),
             buffers: std::sync::OnceLock::new(),
             language_servers: std::sync::OnceLock::new(),
             output: std::sync::OnceLock::new(),
@@ -4620,6 +4666,22 @@ impl PluginHost {
     /// blaming a buffer that is still open.
     pub fn buffer_store_wired(&self) -> bool {
         self.buffers.get().is_some()
+    }
+
+    /// OB.3: hand the host the editor's sink for `post-effects` — normally an
+    /// inbound bus, whose send wakes the editor so posted effects are applied
+    /// without a keypress.
+    ///
+    /// Idempotent — a second call is ignored, like [`set_tracer`](Self::set_tracer).
+    pub fn set_effect_sink(&self, sink: PluginEffectSinkHandle) {
+        let _ = self.effect_sink.set(sink);
+    }
+
+    /// OB.3: whether a sink was ever wired. Pinned at boot for
+    /// `view_args_wired`'s reason: unwired, every `post-effects` refuses and a
+    /// job's result never reaches the screen.
+    pub fn effect_sink_wired(&self) -> bool {
+        self.effect_sink.get().is_some()
     }
 
     /// OA.30: hand the host the counter `refresh-decorations` bumps.
@@ -4871,6 +4933,10 @@ impl PluginHost {
             // to reach the GRAMMAR store above all — a mark is toggled by a
             // chord, and the chord is what has to say the gutter changed.
             decoration_epoch: self.decoration_epoch.get().cloned(),
+            // OB.3: stamped for every store. The EVENTS store is the one that
+            // needs it — `on-event` returns nothing — but a grammar store
+            // posting is harmless and refusing it there would be a trap.
+            effect_sink: self.effect_sink.get().cloned(),
             // CD.6b: stamped for every store on `view_args`' reasoning. The
             // GRAMMAR store is the one that needs it: a capture commits from a
             // chord, and that is where the caller's extent is asked.

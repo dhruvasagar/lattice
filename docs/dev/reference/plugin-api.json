@@ -2233,6 +2233,31 @@
           ]
         },
         {
+          "name": "post-effects",
+          "display_name": "post-effects",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [
+            {
+              "name": "effects",
+              "type": "list<effect>"
+            }
+          ],
+          "result": "result<_, string>",
+          "signature": "post-effects: func(effects: list<effect>) -> result<_, string>",
+          "doc": "OB.3: hand the editor `effects` from a seam that cannot return them —\nthe events seam's `on-event` and `on-wake`, which return nothing. The\nresult of a job a plugin started (`spawn-process`, `http-download`)\narrives there, and this is how that result becomes an edit, an echo or\na buffer the user sees.\n\nThe effects go through the editor's inbound path, which wakes it: they\nare applied **without a keypress**, in the order given, as one batch.\nThey pass the same checks returned effects do — a `write-to-file`\noutside the plugin's `fs:write` grant is replaced by a warning naming\nthe grant, exactly as it would be from a command. An `apply-edit`\naddresses its buffer by id and is dropped if that buffer has closed.\n\nPrefer returning effects where a seam can: an effect posted here lands\nafter the current keystroke's, not inside it.\n\n`err` only when this seam has nowhere to post to (an editor that wired\nnone) — the effects are then dropped, and the plugin is told.",
+          "examples": [
+            {
+              "id": "events-guest:host-services.post-effects",
+              "caption": "Turn a job's result into an edit from `on-event`, which returns nothing",
+              "source": "crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs",
+              "language": "rust",
+              "code": "let outcome = match host_services::post_effects(&[effect]) {\n    Ok(()) => \"post:ok\".to_string(),\n    Err(e) => format!(\"post:err({e})\"),\n};\nrecord(&outcome);"
+            }
+          ]
+        },
+        {
           "name": "read-file",
           "display_name": "read-file",
           "kind": "freestanding",
@@ -2778,6 +2803,11 @@
           "name": "position",
           "from": "types",
           "original": "position"
+        },
+        {
+          "name": "effect",
+          "from": "types",
+          "original": "effect"
         }
       ]
     },

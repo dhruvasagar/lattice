@@ -19,7 +19,7 @@ package lattice:plugin-host@0.5.0;
 /// streaming-result question) lands when a real streaming consumer (live-grep)
 /// does — a bounded `walk` covers the fuzzy-finder.
 interface host-services {
-    use types.{position};
+    use types.{position, effect};
 
     /// LH.0.4: one language server, as `register-server` takes it.
     record server-config {
@@ -677,4 +677,24 @@ interface host-services {
     ///
     /// `err` as `output-append`.
     output-reset: func(name: string) -> result<_, string>;
+
+    /// OB.3: hand the editor `effects` from a seam that cannot return them —
+    /// the events seam's `on-event` and `on-wake`, which return nothing. The
+    /// result of a job a plugin started (`spawn-process`, `http-download`)
+    /// arrives there, and this is how that result becomes an edit, an echo or
+    /// a buffer the user sees.
+    ///
+    /// The effects go through the editor's inbound path, which wakes it: they
+    /// are applied **without a keypress**, in the order given, as one batch.
+    /// They pass the same checks returned effects do — a `write-to-file`
+    /// outside the plugin's `fs:write` grant is replaced by a warning naming
+    /// the grant, exactly as it would be from a command. An `apply-edit`
+    /// addresses its buffer by id and is dropped if that buffer has closed.
+    ///
+    /// Prefer returning effects where a seam can: an effect posted here lands
+    /// after the current keystroke's, not inside it.
+    ///
+    /// `err` only when this seam has nowhere to post to (an editor that wired
+    /// none) — the effects are then dropped, and the plugin is told.
+    post-effects: func(effects: list<effect>) -> result<_, string>;
 }

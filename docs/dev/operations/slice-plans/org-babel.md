@@ -20,9 +20,9 @@ of them inside `org-babel-mode` (design §0).
 | OB.3b                     | Per-mode switch `mode_gates` for `org.babel.enabled` **(lattice)**         | ✅     |
 | OB.3c                     | `buffer-text`, gated on the plugin's own modes **(lattice)**               | ✅     |
 | OB.R1                     | lattice release carrying OB.1–OB.3c **(lattice)**                          | 🚧     |
-| OB.4                      | `org-babel-mode`: the mode, its layer, its options **(plugin)**            | 📝     |
-| OB.5                      | Src blocks and header arguments, parsed and merged **(plugin)**            | 📝     |
-| OB.6                      | `C-c C-c` runs a block; output lands in `#+RESULTS:` **(plugin)**          | 📝     |
+| OB.4                      | `org-babel-mode`: the mode, its layer, its options **(plugin)**            | ✅     |
+| OB.5                      | Src blocks and header arguments, parsed and merged **(plugin)**            | ✅     |
+| OB.6                      | `C-c C-c` runs a block; output lands in `#+RESULTS:` **(plugin)**          | ✅     |
 | OB.7                      | Confirm, cancel, execute-buffer / -subtree, remove-result **(plugin)**     | 📝     |
 | OB.8                      | `:results` — insertion, format, `value` wrappers, `:dir` **(plugin)**      | 📝     |
 | **Phase 2 — tangle**      |                                                                            |        |
@@ -506,7 +506,7 @@ must take care of, beyond the usual:
 
 The plugin's `min_lattice` moves to this release in OB.4.
 
-### OB.4 — `org-babel-mode` 📝 *(plugin)*
+### OB.4 — `org-babel-mode` ✅ *(plugin)*
 
 **Files:** create `src/babel/mod.rs` (mode registration, keymap, options);
 modify `src/lib.rs` only to call `babel::register_*` from the existing
@@ -543,7 +543,15 @@ In this slice the run action only echoes
 **Docs:** `:help org-babel` page stub through the help seam; `doc/org.md`
 gains a Babel section listing the options.
 
-### OB.5 — src blocks and header arguments 📝 *(plugin)*
+**As built (org `b7a7528`, 2026-11-22):** as planned, plus `mode_gates` in
+the manifest (OB.3b) and `min_lattice = "0.10.3"`. `C-c C-c` outside a block
+declines (org's checkbox still toggles); every `:org-babel-*` command echoes
+"babel is off" while `org.babel.enabled = false`. The integration harness
+must HOLD the `PluginLoader` — `subscribe_mode_gates` keeps a `Weak` — or the
+gate test never settles. Found here and fixed in lattice `74cac5c4`: a list
+option's registered default was compared as its TOML text.
+
+### OB.5 — src blocks and header arguments ✅ *(plugin)*
 
 **Files:** `src/babel/block.rs`, `src/babel/header_args.rs`.
 
@@ -578,7 +586,21 @@ elsewhere; its extent is the following `: ` lines, table, drawer or
 the drawer six levels up; record in the plugin's bench notes and lattice's
 `benchmarks.md` org section.
 
-### OB.6 — `C-c C-c` runs a block 📝 *(plugin)*
+**As built (org `01d3abb`, with OB.6 — alone it was dead code, so not
+warning-clean):** the parser takes the buffer's lines, read in ONE
+`get-text-range` / `buffer-text` crossing rather than per-line calls. A
+plain `header-args` property REPLACES what was inherited and `header-args+`
+appends — org's property rule, which the plan's flat list did not say. An
+unnamed block's key is lang + body hash + its ordinal among identical twins
+(falling back to the nearest line when the twin count changed): the plan's
+"line as tie-breaker" alone sent a result to the wrong twin after an edit
+above both. The named accessors (`:dir`, `:var` …) were cut until a slice
+reads them. **Bench deviation:** the crate is a cdylib, which `benches/`
+cannot link, so the measurement is an ignored timing test
+(`block_merge_timing`): 5 000 lines, drawer six levels up, split + find +
+merge = **202 µs native** per `C-c C-c` (`benchmarks.md`, OB.5).
+
+### OB.6 — `C-c C-c` runs a block ✅ *(plugin)*
 
 **Files:** `src/babel/run.rs` (grammar-seam start), `src/babel/jobs.rs`
 (events-seam accumulation and finish), `src/babel/results.rs` (formatting +
@@ -620,6 +642,25 @@ lines starting `*` or `#+` inside it.
 - `the_result_is_one_undo_step` — `u` restores the previous results exactly.
 - `the_script_file_is_removed_after_the_run`.
 
+**As built (org `01d3abb`):**
+- **The start moved to the events seam.** `C-c C-c` claims the block
+  (`babel/run/<buffer>/<key>` in the store) and `emit-event`s a MessagePack
+  `RunRequest` to org's own `on-event`, which writes the script and spawns.
+  A grammar action's WASI fs call panics on the sync linker (decision log).
+- **The finish reads with `buffer-text`** (OB.3c), not `source-line`.
+- The job table is the events instance's memory; the store holds only the
+  claim, which the refusal check and the sign producer read (re-finding the
+  block by key, so the sign follows edits).
+- **Running sign:** `org.babel-running`, `▶` in both palettes.
+- Error texts: `org: the sh block failed: <err>`, `org: the sh block is
+  already running — :org-babel-cancel stops it`, `org: the block changed
+  while it ran — the sh block's output is in *org-babel*`.
+
+Tests: all on the plan's list except `closing_the_buffer…` (deferred to
+OB.7's cancel work, which owns buffer-close), plus
+`a_running_block_carries_a_sign_until_it_finishes`. The harness wires the
+effect sink as an inbound bus and settles on `async_landed`.
+
 ### OB.7 — confirm, cancel, buffer and subtree 📝 *(plugin)*
 
 **Files:** `src/babel/run.rs`, `src/babel/mod.rs`.
@@ -638,7 +679,10 @@ lines starting `*` or `#+` inside it.
 `confirm_off_runs_at_once`; `execute_buffer_asks_once_and_runs_in_order`;
 `execute_subtree_runs_only_its_blocks`; `cancel_kills_a_never_ending_block` —
 `sleep 1000`, one finish, sign gone (Review focus #4);
-`remove_result_deletes_exactly_the_results`.
+`remove_result_deletes_exactly_the_results`;
+`closing_the_buffer_while_it_runs_sends_output_to_org_babel` (carried from
+OB.6 — the finish already handles a `none` from `buffer-text`; the test
+needs a buffer close in the harness).
 
 ### OB.8 — `:results`, `value`, `:dir` 📝 *(plugin)*
 

@@ -274,6 +274,35 @@ pub fn grant_with(
     }
 }
 
+/// The directories an option's REGISTERED default names, read the way a grant
+/// reads its value ([`option_paths`]).
+///
+/// For the loader's check that a grant's template default agrees with the
+/// plugin's own (PMF.4). A list option's default is formatted as a TOML
+/// document (`value = ["~/a"]`), and treating that text as one path made every
+/// list-bound grant disagree — `value = []` is not a directory (OB.4 found it
+/// on `org.babel.tangle-directories`). A default that cannot be read names no
+/// directory.
+pub fn registered_default_paths(option: &dyn lattice_config::ErasedOption) -> Vec<PathBuf> {
+    let formatted = option.default_formatted();
+    let value = match option.schema() {
+        lattice_config::ConfigSchema::List(_) => {
+            let Ok(doc) = formatted.parse::<toml::Table>() else {
+                return Vec::new();
+            };
+            let Some(Ok(value)) = doc
+                .get("value")
+                .map(lattice_config::schema::toml_to_config_value)
+            else {
+                return Vec::new();
+            };
+            value
+        }
+        _ => lattice_config::ConfigValue::Str(formatted.to_string()),
+    };
+    option_paths(option.name(), &value)
+}
+
 /// OB.1: the directories an option-bound grant's value names. A string is one
 /// path (blank = none); a list is one per non-blank string entry. Anything
 /// else names no directory, and says so — a grant must never widen on a
@@ -472,6 +501,36 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
 
     use super::*;
+
+    /// A list option's default is a TOML document; read as one path it named
+    /// a directory called `value = []`, and the loader warned about every
+    /// list-bound grant (OB.4, `org.babel.tangle-directories`).
+    #[test]
+    fn a_list_options_default_names_its_entries_not_its_toml() {
+        use lattice_config::{ConfigSchema, ConfigValue};
+        let registry = lattice_config::ConfigRegistry::new();
+        let list = |name: &str, items: Vec<ConfigValue>| {
+            crate::config_host::register_structured_option(
+                &registry,
+                name,
+                ConfigSchema::List(Box::new(ConfigSchema::Scalar(
+                    lattice_config::ScalarKind::Str,
+                ))),
+                ConfigValue::List(items),
+                "test",
+            )
+            .unwrap();
+            registered_default_paths(registry.lookup(name).unwrap().as_ref())
+        };
+        assert!(list("p.empty", vec![]).is_empty());
+        assert_eq!(
+            list(
+                "p.two",
+                vec![ConfigValue::Str("/a".into()), ConfigValue::Str("/b".into())]
+            ),
+            [PathBuf::from("/a"), PathBuf::from("/b")]
+        );
+    }
     use crate::manifest::{Capability, OptionPath};
 
     fn manifest(caps: Vec<Capability>) -> PluginManifest {

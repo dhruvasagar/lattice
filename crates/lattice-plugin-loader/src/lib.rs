@@ -1944,11 +1944,6 @@ impl PluginLoader {
         });
     }
 
-    /// PM.3: react to `<id>.enabled` changes — the config gate for a plugin's
-    /// default mode. On a `:set <id>.enabled=<bool>` (an `OptionChanged`), map the
-    /// option back to the loaded plugin's `default_mode` and request the mode's
-    /// enablement to match, so the toggle activates / deactivates it live. Mirrors
-    /// [`Self::subscribe_health`]; a no-op when no bus/runtime was wired.
     /// PMF.4: warn when an option-bound grant's default (`{org.directory|~/org}`)
     /// disagrees with the default the plugin registered for that option.
     ///
@@ -1974,15 +1969,19 @@ impl PluginLoader {
                 );
                 continue;
             };
-            let registered = std::path::PathBuf::from(lattice_core::home::expand_tilde(
-                registered.default_formatted(),
-            ));
-            if op.default.as_ref() != Some(&registered) && !registered.as_os_str().is_empty() {
+            // An option with no default leaves the template's in force, which
+            // is the template's purpose; only a default that NAMES directories
+            // can disagree with it.
+            let registered =
+                lattice_plugin_host::capability::registered_default_paths(registered.as_ref());
+            if !registered.is_empty()
+                && op.default.iter().cloned().collect::<Vec<_>>() != registered
+            {
                 tracing::warn!(
                     plugin = %manifest.id,
                     option = %op.option,
                     grant_default = ?op.default,
-                    option_default = %registered.display(),
+                    option_default = ?registered,
                     "the manifest grants a different default directory than the option uses"
                 );
             }
@@ -2104,6 +2103,14 @@ impl PluginLoader {
         });
     }
 
+    /// PM.3: react to `<id>.enabled` changes — the config gate for a plugin's
+    /// default mode. On a `:set <id>.enabled=<bool>` (an `OptionChanged`), map the
+    /// option back to the loaded plugin's default modes and request the mode's
+    /// enablement to match, so the toggle activates / deactivates it live. Mirrors
+    /// [`Self::subscribe_health`]; a no-op when no bus/runtime was wired.
+    ///
+    /// OB.3b: a `mode_gates` option is followed the same way, and every request
+    /// is computed from both switches.
     pub fn subscribe_mode_gates(self: &Arc<Self>) {
         let (Some(bus), Some(runtime)) = (self.env.bus.as_ref(), self.env.runtime.as_ref()) else {
             return;

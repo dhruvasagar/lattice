@@ -86,6 +86,21 @@ pub trait Clipboard: Send + Sync {
   (`$SSH_TTY` set / `arboard` init fails / Linux build without the `clipboard` feature).
   OSC52 read is unreliable across terminals, so read falls back to the in-memory register
   there (documented degradation).
+- **WSL (both peers, CW.1):** inside WSL, writes go to the *Windows* clipboard through a
+  Windows helper run over WSL interop: `win32yank.exe` when it is on `PATH` (≈40–150 ms),
+  else `powershell.exe Set-Clipboard` (≈350 ms, every Windows has it). `clip.exe` is not
+  used: it decodes in the console code page and garbles non-ASCII text. It takes
+  precedence over OSC52 and `arboard` because neither reliably reaches Windows. OSC52
+  needs the terminal and every multiplexer in between to pass it on; in a Windows
+  Terminal + tmux session it reached Windows neither through tmux nor written to the
+  terminal directly. `arboard` reaches Windows only through WSLg's X11 bridge, which
+  older Windows lacks. The backend is `std::process` only, so it is not feature-gated
+  and the Linux TUI release build has it too. Writes run on one worker thread, in order,
+  coalescing a burst to its newest text. Reads go to `arboard` when it is compiled in
+  (WSLg bridges Windows → X11), else return `None`. A helper read is far slower than the
+  30 ms synchronous bound, so reading through one waits on CW.2 (the asynchronous paste
+  of §3). SSH still wins: a WSL box reached over SSH has its user's clipboard on the far
+  end. See `docs/dev/operations/slice-plans/clipboard-wsl.md`.
 - **GPUI peer:** gpui's own `read_from_clipboard` / `write_to_clipboard` (gpui 0.2.2),
   wrapped in the same trait so the host stays renderer-neutral.
 - **Test/CI:** an in-memory `FakeClipboard` so headless CI exercises the roundtrip

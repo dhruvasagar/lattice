@@ -4,6 +4,7 @@
 
 ### Fixed
 - **`o` / `O` on an org headline or list item no longer folds the new line shut.** While any other buffer that folds was open (the agenda, search results, an LLM chat), the new line landed inside a closed fold and everything typed into it stayed hidden. The keystroke itself had been fixed before; a refresh that runs between keystrokes still applied org's collapsed-overview folding to the fold the edit had just created. Folds an edit creates now stay open there too.
+- **Yanking reaches the Windows clipboard under WSL, in the terminal and the GUI.** The terminal copied through an OSC52 escape sequence, which a Windows Terminal + tmux session never passed on, so nothing arrived in Windows. Inside WSL, lattice now copies through `win32yank.exe` when it is on your `PATH`, else PowerShell, whatever the terminal or multiplexer. Pasting from Windows into the terminal build is not fixed yet; use your terminal's paste (`Ctrl+Shift+V`) until it is.
 
 ## 0.10.2 — 2026-11-18
 

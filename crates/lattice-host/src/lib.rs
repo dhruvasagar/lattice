@@ -50,10 +50,10 @@ pub mod command_line_expand_mode;
 pub mod command_line_mode;
 pub mod prompt_line_mode;
 pub mod search_line_mode;
-// CB.4: native `arboard` clipboard backend shared by both renderer peers.
-// Only compiled with the `system-clipboard` feature (pulls X11/Wayland
-// libs); host's default build stays headless-friendly.
-#[cfg(feature = "system-clipboard")]
+// CB.4 / CW.1: clipboard backends shared by both renderer peers. The
+// native `arboard` one is compiled only with the `system-clipboard` feature
+// (pulls X11/Wayland libs); the WSL one needs only `std::process` and is
+// always there.
 pub mod clipboard;
 pub mod cmdline_row;
 pub mod cursor_shape;

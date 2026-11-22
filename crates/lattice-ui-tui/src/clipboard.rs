@@ -16,6 +16,11 @@
 //!   `lattice-ui-tui/system-clipboard` forwards to
 //!   `lattice-host/system-clipboard`.
 //!
+//! - [`lattice_host::clipboard::WslClipboard`] (CW.1, always compiled) —
+//!   inside WSL, the Windows clipboard through a Windows helper. Chosen over
+//!   both of the above there: OSC52 rarely survives the terminal and
+//!   multiplexer between lattice and Windows.
+//!
 //! `TuiClipboard::detect()` prefers OSC52 under SSH even when `arboard`
 //! would technically succeed: over `ssh -X`, `arboard` can connect to the
 //! *forwarded* X server, but writes there land in the remote X server's
@@ -26,6 +31,7 @@
 use lattice_core::Clipboard;
 #[cfg(feature = "system-clipboard")]
 use lattice_host::clipboard::ArboardClipboard;
+use lattice_host::clipboard::WslClipboard;
 
 /// The clipboard backend [`crate::app::App::new`] registers over CB.0's
 /// default, as a ready-made [`lattice_core::ClipboardHandle`].
@@ -84,6 +90,11 @@ impl Clipboard for Osc52Clipboard {
 pub enum TuiClipboard {
     #[cfg(feature = "system-clipboard")]
     Native(ArboardClipboard),
+    /// CW.1: inside WSL, the Windows clipboard through a Windows helper.
+    /// Preferred over OSC52 there: whether OSC52 arrives depends on the
+    /// terminal and on every multiplexer in between, and in a Windows
+    /// Terminal + tmux session it was measured not to.
+    Wsl(WslClipboard),
     Fallback(Osc52Clipboard),
 }
 
@@ -94,14 +105,27 @@ impl TuiClipboard {
     pub fn detect() -> Self {
         let under_ssh =
             std::env::var_os("SSH_TTY").is_some() || std::env::var_os("SSH_CONNECTION").is_some();
-        Self::detect_with(under_ssh)
+        Self::detect_with(under_ssh, WslClipboard::detect)
     }
 
     /// The pure selection logic behind [`Self::detect`], taking the
-    /// SSH-session determination as a parameter so it's testable without
-    /// mutating process-global env vars (which would race other tests
-    /// running in parallel in this binary).
-    fn detect_with(under_ssh: bool) -> Self {
+    /// SSH-session determination and the WSL probe as parameters so it's
+    /// testable without mutating process-global env vars (which would race
+    /// other tests running in parallel in this binary).
+    ///
+    /// Order: SSH → OSC52 (the user's clipboard is on the far end of the
+    /// connection, even when the far end is a WSL box), then WSL → the
+    /// Windows clipboard, then the native clipboard, then OSC52.
+    fn detect_with(under_ssh: bool, wsl: impl FnOnce() -> Option<WslClipboard>) -> Self {
+        if !under_ssh && let Some(wsl) = wsl() {
+            // Reads go through arboard when it is compiled in: through
+            // WSLg it sees the Windows clipboard.
+            #[cfg(feature = "system-clipboard")]
+            if let Some(native) = ArboardClipboard::new() {
+                return Self::Wsl(wsl.with_reader(std::sync::Arc::new(native)));
+            }
+            return Self::Wsl(wsl);
+        }
         #[cfg(feature = "system-clipboard")]
         {
             if !under_ssh {
@@ -132,6 +156,7 @@ impl Clipboard for TuiClipboard {
         match self {
             #[cfg(feature = "system-clipboard")]
             Self::Native(c) => c.read(),
+            Self::Wsl(c) => c.read(),
             Self::Fallback(c) => c.read(),
         }
     }
@@ -140,6 +165,7 @@ impl Clipboard for TuiClipboard {
         match self {
             #[cfg(feature = "system-clipboard")]
             Self::Native(c) => c.write(text),
+            Self::Wsl(c) => c.write(text),
             Self::Fallback(c) => c.write(text),
         }
     }
@@ -169,15 +195,29 @@ mod tests {
         // forwarding), OSC52 is the semantically correct backend under
         // SSH -- arboard would write to the *forwarded* server's
         // clipboard, not the user's local machine clipboard.
-        let cb = TuiClipboard::detect_with(true);
+        let cb = TuiClipboard::detect_with(true, || panic!("SSH wins before WSL is probed"));
         assert!(matches!(cb, TuiClipboard::Fallback(_)));
     }
 
     #[cfg(not(feature = "system-clipboard"))]
     #[test]
     fn detect_without_ssh_falls_back_when_feature_off() {
-        let cb = TuiClipboard::detect_with(false);
+        let cb = TuiClipboard::detect_with(false, || None);
         assert!(matches!(cb, TuiClipboard::Fallback(_)));
+    }
+
+    /// CW.1: in WSL the Windows clipboard wins over OSC52 and the native
+    /// one. The helper path is a stand-in that is never run: nothing here
+    /// writes.
+    #[test]
+    fn detect_in_wsl_picks_the_windows_clipboard() {
+        let wsl = || {
+            lattice_host::clipboard::WslClipboard::with_tool(
+                lattice_host::clipboard::WslTool::Win32Yank("/nonexistent/win32yank.exe".into()),
+            )
+        };
+        let cb = TuiClipboard::detect_with(false, wsl);
+        assert!(matches!(cb, TuiClipboard::Wsl(_)));
     }
 
     /// Hermeticity guard for the whole TUI suite: no test may reach the

@@ -449,11 +449,27 @@ impl GpuiApp {
         // `lattice-ui-tui/src/clipboard.rs`'s `boot_backend`. Nothing else
         // changes: leaving the fake in place is already this seam's
         // no-display path below.
+        //
+        // CW.1: inside WSL, writes go to the Windows clipboard through a
+        // Windows helper (`WslClipboard`), which works whether or not WSLg
+        // bridges the X11 clipboard; reads still go through arboard, which
+        // sees the Windows clipboard through WSLg.
         #[cfg(all(feature = "system-clipboard", not(test)))]
-        match lattice_host::clipboard::ArboardClipboard::new() {
-            Some(native) => {
+        let clipboard: Option<lattice_core::ClipboardHandle> = match (
+            lattice_host::clipboard::WslClipboard::detect(),
+            lattice_host::clipboard::ArboardClipboard::new(),
+        ) {
+            (Some(wsl), Some(native)) => Some(std::sync::Arc::new(
+                wsl.with_reader(std::sync::Arc::new(native)),
+            )),
+            (Some(wsl), None) => Some(std::sync::Arc::new(wsl)),
+            (None, Some(native)) => Some(std::sync::Arc::new(native)),
+            (None, None) => None,
+        };
+        #[cfg(all(feature = "system-clipboard", not(test)))]
+        match clipboard {
+            Some(clipboard) => {
                 if let Some(services) = std::sync::Arc::get_mut(&mut editor.services) {
-                    let clipboard: lattice_core::ClipboardHandle = std::sync::Arc::new(native);
                     services.register(clipboard);
                 }
             }

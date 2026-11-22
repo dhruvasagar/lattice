@@ -420,7 +420,19 @@ after phase 1 stopped. All three verified against source; none fixed yet.
   `--all-targets` adds nothing in touched files; docs-check clean after
   regenerating the plugin-API reference (the WIT gained doc comments).
 
-### OB.R1 — lattice release 📝 *(lattice)*
+### OB.R1 — lattice release 🚧 *(lattice)*
+
+**Prepared on the branch (2026-11-22):** the plugin API crates are 0.5.1 (the
+WIT package stays `@0.5.0` — `post-effects` is an added function, which
+`releasing.md` says needs no package bump), the workspace is 0.10.3 ahead of
+the release so org's `min_lattice` can name it (the 0.9.11 precedent), the
+bundled plugins' lockfiles follow, and `## Unreleased` carries the Added,
+Security and `Plugin API 0.5.1.` entries. **Left for Dhruva**, because each
+needs `main`, a push or crates.io credentials: the owed gates below, merge,
+`scripts/publish-plugin-api.sh --publish`, `scripts/release.sh patch`, push
+the tag. The plugin slices are built meanwhile against the local crates (an
+uncommitted `[patch.crates-io]` in the plugin's `.cargo/config.toml`); its
+commits name `0.5.1` and so build for others only once that is published.
 
 A release carrying OB.1–OB.3, via `docs/dev/operations/releasing.md`. What it
 must take care of, beyond the usual:

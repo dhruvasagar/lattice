@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Added
+- **A plugin's options can say which programs it may run.** A plugin asking for `proc:spawn:{org.babel.languages:command}` may run exactly the `command` of each entry you put in that option, and nothing until you add one: not even a default the plugin ships counts. Changing the list restarts that plugin, the plugin cannot change it itself, and a refused run names the option. User-installed plugins could not run programs at all before; bundled ones still may hold the unbound `proc:spawn`. See "What a plugin may run" in `docs/user/plugins.md`.
+- **A directory grant can follow a list**: `fs:write:{org.babel.tangle-directories}` lets a plugin write under each directory in that option, and `:plugins` lists each one.
+- **Plugins can apply edits from the background.** `host-services.post-effects` lets a plugin's event handler, which runs off the keystroke, hand the editor effects, such as writing a finished job's output into a buffer. They show without a keypress and pass the same checks as an action's. Only what a background result needs is accepted: edits, file writes, tracked ranges, a result buffer and echoes.
+- **Plugin API 0.5.1.** The crates (`lattice-wit`, `lattice-plugin-sdk`, `lattice-plugin-sdk-derive`) carry `post-effects` and the command rules under Security below. The WIT package stays `@0.5.0`, so plugins built for it keep loading; any plugin is rebuilt once, as after every change to the API, because its build stamp no longer matches.
+
 ### Security
 - **A plugin can no longer run an editor command it was not given.** Any plugin could name a command for the editor to run — from an action, a picker row, a prompt, a confirm or a menu row — and the editor ran it with your full authority: `shell-command` or `!` ran a program without the plugin having `proc:spawn`, and `set` changed the options that decide which directories and programs a plugin may use. A plugin may now name only commands a plugin registered, plus the editor commands opened to plugins (today `:llm`, whose tool calls already ask you first). Anything else is refused with a warning naming the command. Setting an option that a plugin's grant follows is refused the same way, and a plugin terminal that runs a command now needs `proc:spawn`. Your `init.rs` is not affected. A plugin that ran any other editor command this way now gets that warning; the matching effect (`save-buffer`, `open-buffer`, …) is the way to do the same thing.
 

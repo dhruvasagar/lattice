@@ -27,7 +27,7 @@ of them inside `org-babel-mode` (design §0).
 | OB.8                      | `:results` — insertion, format, `value` wrappers, `:dir` **(plugin)**      | ✅     |
 | **Phase 2 — tangle**      |                                                                            |        |
 | OB.9                      | `write-to-file` gains a `whole` anchor **(lattice)**                       | ✅     |
-| OB.10                     | `:tangle` **(plugin)**                                                     | 📝     |
+| OB.10                     | `:tangle` **(plugin)**                                                     | ✅     |
 | **Phase 3 — cross-block** |                                                                            |        |
 | OB.11                     | `:var` — literals, named results, named tables **(plugin)**                | 📝     |
 | OB.12                     | Dependency chains — a missing result is run first **(plugin)**             | 📝     |
@@ -768,7 +768,7 @@ pins: READMEs, authoring guide, distribution doc, `version-mode.md`, and the
 guests' and bundled plugins' locks). It ships in **OB.R1**, not OB.R2: Dhruva
 folded it in (decision log). Design: `cross-file-writes.md` §4.1.
 
-### OB.10 — `:tangle` 📝 *(plugin)*
+### OB.10 — `:tangle` ✅ *(plugin)*
 
 **Files:** `src/babel/tangle.rs`.
 
@@ -786,6 +786,22 @@ target first; one refusal writes nothing and names the target and
 `one_disallowed_target_writes_nothing`;
 `tangle_into_an_open_buffer_is_undoable`;
 `file_wide_property_tangle_applies`.
+
+**As built** (org `851c68c` re-pin to 0.6.0, `22c7ea7` the slice): as
+planned, with two decisions the plan left open.
+- **The executable bit is set on the target's `document-saved`,** not from
+  the action. The action's write has not been applied when it returns, so
+  the file may not exist yet. Design §7 has the reasoning.
+- **No `:mkdirp`.** `create_parents` is false, so a missing directory fails
+  the all-or-nothing check like a refused one.
+
+`yes` uses the language record's `ext`, then babel's
+`org-babel-tangle-lang-exts` names, then the language itself. Tests: the
+plan's seven, run from the chord and from `:`, plus four unit tests on the
+planner. org_babel: 53. The shebang test polls the file's mode with a
+deadline. Setting the bit changes only the disk, so the editor has no wake
+to settle on: an exception to settling on `async_landed` that this test
+states and does not hide.
 
 ## Phase 3 — cross-block
 

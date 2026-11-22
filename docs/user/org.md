@@ -92,7 +92,9 @@ command = "sh"
 ```
 
 As with the directories, your list is the grant: org cannot add a program to
-it, and it reloads when the list changes.
+it, and it reloads when the list changes. Tangling (`C-c C-v t`) writes
+files, so it may write only under `org.directory` and the directories you
+list in `org.babel.tangle-directories`.
 
 Confirm it loaded with `:plugins`, and reach for `:plugin-trace` if it did not.
 
@@ -108,7 +110,7 @@ Confirm it loaded with `:plugins`, and reach for `:plugin-trace` if it did not.
 | **Habits** | repeating tasks with a consistency graph under their agenda row |
 | **Roam** | a Zettelkasten layer: id links, backlinks, dailies, and notes that nest. A note created while you write another links into it, or back to it |
 | **Clocking** | clock in and out, with the running clock in your modeline |
-| **Babel** | run source blocks in the background and keep their output under them as `#+RESULTS:`, byte-for-byte as emacs writes it — tables, drawers, values, append or replace |
+| **Babel** | run source blocks in the background and keep their output under them as `#+RESULTS:`, byte-for-byte as emacs writes it — tables, drawers, values, append or replace — and tangle them out to files (`C-c C-v t`) |
 
 The agenda is a **multibuffer**: its rows are real excerpts of your files, so
 editing a row edits the file and `:w` saves it. That is why it behaves like the
@@ -138,7 +140,7 @@ the habit rules. It versions with the code.
 - **`doc/roam.md`** — roam has its own page: nodes, the index, backlinks,
   the journal, note templates, and nesting notes inside captures.
 - **`doc/babel.md`** — babel: the languages table, running and cancelling,
-  `:results`, value wrappers and `:dir`.
+  `:results`, value wrappers, `:dir` and tangling.
 - **`:help`** inside lattice — the plugin contributes its own help topics at
   load (`:help org`, `:help org.roam`, `:help org.babel`), so they describe the version you have
   installed.

@@ -439,6 +439,15 @@ Every target is checked *before* any file is written, with the existing
 nothing and names the target and the option to extend
 (`org.babel.tangle-directories`).
 
+**The executable bit follows the save, not the action.** The action runs on
+the grammar seam and hands back effects. Until the editor applies them, the
+target may not exist, so `set-executable` from the action would race its own
+write. The target is recorded in the plugin store instead. The events seam
+calls `set-executable` when it sees that path's `document-saved`, the event
+vim calls `BufWritePost`, which is the first moment the file is there with
+its new text. A record a crash leaves behind is swept at load, as a run's
+claim is.
+
 Detangling (`org-babel-detangle`, writing edits back from the tangled file)
 is out.
 

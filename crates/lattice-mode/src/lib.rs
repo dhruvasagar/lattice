@@ -218,7 +218,7 @@ pub use crate::action_handler_registry::{
     ActionHandlerRegistry, ActionHandlerRegistryHandle,
 };
 pub use crate::activator::{ModeActivator, VirtualRowRegistrar};
-pub use crate::active::ActiveModes;
+pub use crate::active::{ActiveModes, ActiveModesQuery, ActiveModesQueryHandle};
 pub use crate::binding_mode::BindingMode;
 pub use crate::buffer_store::{BufferStore, BufferStoreHandle};
 pub use crate::capability::CapabilitySet;

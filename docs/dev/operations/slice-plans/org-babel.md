@@ -18,7 +18,8 @@ of them inside `org-babel-mode` (design §0).
 | OB.3                      | `post-effects` — effects from the events seam **(lattice)**                | ✅     |
 | OB.3a                     | Security follow-ups to OB.2/OB.3 — **blocks OB.R1** **(lattice)**          | ✅     |
 | OB.3b                     | Per-mode switch `mode_gates` for `org.babel.enabled` **(lattice)**         | ✅     |
-| OB.R1                     | lattice release carrying OB.1–OB.3b **(lattice)**                          | 🚧     |
+| OB.3c                     | `buffer-text`, gated on the plugin's own modes **(lattice)**               | ✅     |
+| OB.R1                     | lattice release carrying OB.1–OB.3c **(lattice)**                          | 🚧     |
 | OB.4                      | `org-babel-mode`: the mode, its layer, its options **(plugin)**            | 📝     |
 | OB.5                      | Src blocks and header arguments, parsed and merged **(plugin)**            | 📝     |
 | OB.6                      | `C-c C-c` runs a block; output lands in `#+RESULTS:` **(plugin)**          | 📝     |
@@ -107,6 +108,8 @@ costs if it turns out wrong. Design-level decisions are also in
 | OB.3a | Mode keymap bindings not gated | No args, fired by the user's key — cannot carry a command line | revisit if bindings gain args |
 | OB.3a | Picker rows naming a refused command are dropped, not the batch | One bad row must not blank the picker | a plugin author sees only a `warn!` |
 | OB.3b | `org.babel.enabled` is a host `mode_gates` entry, chosen by Dhruva | The guest cannot disable its own default mode without racing `org.enabled`'s gate | a manifest key, and `min_lattice` 0.10.3 |
+| OB.3c | The finish reads the buffer with a new `buffer-text`, gated on the caller's own active modes, chosen by Dhruva | `source-line` answers only for multibuffer sources, so the plan's finish path could not read an org buffer | a WIT function, an active-modes query service, mode provenance in the plugin host |
+| OB.6 | The script write and the spawn run in org's events seam, reached by `emit-event` from `C-c C-c` | WASI fs panics on the grammar seam's sync linker, and the write would be keystroke-path I/O | the run request crosses as one plugin event |
 | OB.6 | The running marker is a gutter sign, chosen by Dhruva | The decorations seam is gutter-only; virtual text would be a new host mechanism for a status marker | not the `⧗ running` text the design first described |
 | OB.3 | "Both linkers" is structural — one bindgen `host-services` interface, one `PluginState` impl | Adding a function to the interface adds it to both | none |
 
@@ -445,6 +448,30 @@ auto-pair component — re-enabling the plugin does not re-enable a feature
 switched off). Docs: `plugin-manager.md`, `plugin-authoring.md` manifest
 table, design §0. No WIT change.
 
+### OB.3c — reading a buffer back: `buffer-text` ✅ *(lattice)*
+
+Found while starting OB.6: the finish path reads the buffer "with
+`source-line`", and `source-line` answers only for documents a multibuffer
+view owns — an org buffer reads as `none`. Dhruva chose (2026-11-22) a
+generic, ownership-gated read over finishing on the grammar seam (lands only
+in the focused buffer) and over a tracked-range edit effect (org-shaped).
+
+**As built:** `host-services.buffer-text(buffer) -> option<string>`, the
+whole text in one call. Readable while a mode the CALLER registered is active
+on the buffer: `lattice_mode::ActiveModesQuery` (ids active on a buffer) is
+implemented host-side over the published render state
+(`HostActiveModesQuery`, a boot service), and the plugin host records each
+mode's owner in `spawn_mode_plugin` for modes the registry accepted
+(`ModeOwnersHandle`, `owns_an_active_mode`). Loader `install` wires the query;
+`WiredSeams::active_modes` pins it. Tests:
+`only_a_mode_the_caller_registered_opens_the_buffer` (unit);
+`buffer_text_gate.rs` (multiseam fixture, real component: readable, other
+plugins' modes, closed buffer, unwired host);
+`active_modes_query_answers_from_the_published_state` (boot pin — the query
+sees a mode only after a publish). Docs: `plugin-host.md` §6, design §0/§3/§4,
+the generated reference. WIT function added within `@0.5.0`, in the 0.5.1
+crates OB.R1 has not yet published.
+
 ### OB.R1 — lattice release 🚧 *(lattice)*
 
 **Prepared on the branch (2026-11-22):** the plugin API crates are 0.5.1 (the
@@ -567,7 +594,7 @@ already has a live job, with an echo naming `:org-babel-cancel`.
 **Finish (events seam):** subscribe to `job-output` and `job-finished` in
 `register-events`. Accumulate lines per id, capped at `max-output-lines` with
 `… N lines truncated`. On finish: read the store entry, re-read the buffer
-with `source-line`, re-find the block by key, format, `post-effects([apply-edit])`
+with `buffer-text` (OB.3c), re-find the block by key, format, `post-effects([apply-edit])`
 replacing the results extent (or inserting after `#+end_src`), clear the
 sign, delete the script and the store entry. Echo the `err` text
 verbatim for a non-`ok` outcome. No key match ⇒ `output-append("*org-babel*",

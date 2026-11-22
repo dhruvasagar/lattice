@@ -292,6 +292,12 @@ impl Editor {
         // (the `SubsystemBoot` surface can't name the lattice-lsp type). Read by
         // claude-code's read tools; registered once here, not in the late block.
         boot.register_service::<lattice_lsp::modes::DiagnosticsQueryHandle>(diag_query.clone());
+        // OB.3c: which modes are active on a buffer, over the same published
+        // render state. Phase A, so the plugin loader's `install` finds it and
+        // gates `buffer-text` on it; unregistered, every such read is refused.
+        boot.register_service::<lattice_mode::ActiveModesQueryHandle>(Arc::new(
+            crate::active_modes_query::HostActiveModesQuery::new(render_state_arc.clone()),
+        ));
         // CG.2/CG.7/CG.8: the foreground-cancellation slot, registered in
         // Phase A — before ANY subsystem install. Installs capture it (magit
         // and compilation key their tasks on it, `cancellation.md` §9), and

@@ -20,7 +20,7 @@ the answer to that, and it is the reason the feature is now buildable.
 ## 0. Ownership — the host lends mechanisms, `org-babel-mode` owns babel
 
 **Everything that is babel lives in `lattice-org-plugin`, inside one minor
-mode, `org-babel-mode`.** The host's share is exactly the five generic
+mode, `org-babel-mode`.** The host's share is exactly the six generic
 mechanisms in §4, §6.3 and §7, and each must be justifiable without the word
 "org" (a REPL plugin, a test runner or a dotfiles manager would use the same
 one). Nothing else crosses into lattice.
@@ -161,7 +161,13 @@ the job's outcome, with the spawn error in `#+RESULTS:` (§5.3).
 `{file}` is the only placeholder in v1. The body is written to the plugin's
 private data directory — the guest writes `/data/babel/<uuid>.<ext>` over
 WASI, and `data-dir()` returns the matching host path that is substituted;
-neither needs an `fs:` grant. A `new-uuid` name keeps concurrent jobs apart.
+neither needs an `fs:` grant. **The write and the spawn happen in org's
+events seam, not in the `C-c C-c` action:** a grammar action runs on the
+host's synchronous linker, where a WASI filesystem call panics inside
+wasmtime-wasi, and doing file I/O there would put it on the keystroke path
+anyway. The action claims the block and hands org's own `on-event` the run
+request (`emit-event`, the clock's route); the events seam writes the script
+and calls `spawn-process`. A `new-uuid` name keeps concurrent jobs apart.
 A script file and not `-c BODY` because it has no argument-length ceiling,
 keeps the body out of `ps`, and is what babel itself does for most languages.
 The file is deleted on `job-finished`, and `/data/babel/` is swept in
@@ -226,8 +232,8 @@ cannot run anything.
    `a_default_remembered_for_a_directory_grant_is_no_program`.)
 3. **Effects from the events seam.** `on-event` returns nothing, and the
    events world imports no effect sink — so a job that finishes on the events
-   actor has no way to write `#+RESULTS:`. It can *read* (`source-line`), not
-   edit. The addition is a `host-services` import,
+   actor has no way to write `#+RESULTS:` (nor to read the buffer — item 4).
+   The addition is a `host-services` import,
    `post-effects(effects: list<effect>)`, which hands the effects to the
    host's inbound path — the same one that wakes the actor off-keystroke, so
    the result paints without a keypress. Additive: no existing guest changes,
@@ -238,6 +244,24 @@ cannot run anything.
    posted this way pass the same capability checks as returned ones — a
    refused write is shown as a warning, as from a command — and `err` means
    only that no sink was wired.
+4. **Reading the buffer back (OB.3c).** The same actor has to see the
+   buffer as it is *now* to find the block and its `#+RESULTS:` — and it has
+   no `document`. This fragment first said `source-line` would serve; it
+   does not, because `source-line` answers only for a document a multibuffer
+   view owns, and an org buffer is nobody's excerpt. The addition is
+   `host-services.buffer-text(buffer) -> option<string>`: the whole text, one
+   crossing, **readable only while one of the calling plugin's own modes is
+   active on that buffer**. The gate is the reach the user already gave by
+   turning the mode on, and it is generic — a REPL, a test runner or a
+   formatter that finishes asynchronously needs the same read of the buffer
+   it runs in, and none of them should read what the user has open
+   elsewhere by guessing ids. The host learns which modes are active from its
+   published render state (a frame stale at worst) and which plugin owns a
+   mode from the modes it accepted at load. Rejected: finishing on the
+   grammar seam through `invoke-command` (it runs against the *focused*
+   buffer, so a result could not land once the user moved on), and a
+   track-range-relative edit effect (org-shaped, and still blind to the
+   existing `#+RESULTS:` extent).
 
 Org's manifest gains:
 
@@ -311,7 +335,7 @@ another block above this one. So the result is never written at a remembered
 line. Each run records a **block key**: the `#+NAME:` when there is one,
 otherwise the language plus a hash of the body as it was when the run
 started, plus the line it was on as a tie-breaker between identical blocks.
-At finish the events seam re-reads the buffer (`source-line`), finds the
+At finish the events seam re-reads the buffer (`buffer-text`, §4), finds the
 block by key, computes the current `#+RESULTS:` range, and edits exactly
 that. If the block is gone or its body changed (no key match), the output
 goes to `*org-babel*` (an output buffer, `output-append`) and the echo area

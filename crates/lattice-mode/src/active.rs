@@ -129,7 +129,31 @@ impl ActiveModes {
             false
         }
     }
+
+    /// The major (if any) and every minor, major first.
+    pub fn ids(&self) -> impl Iterator<Item = ModeId> + '_ {
+        self.major.into_iter().chain(self.minors.iter().copied())
+    }
 }
+
+/// OB.3c: which modes are active on a buffer, asked from off the editor's
+/// thread.
+///
+/// The per-buffer mode sets live on the editor, behind `&mut`, and a plugin
+/// call runs elsewhere. The host implements this over its published render
+/// state, so an answer is the set as of the last publish — a frame stale at
+/// worst, which is fine for its one use: deciding whether a plugin may read a
+/// buffer one of its own modes is running in (`host-services.buffer-text`).
+pub trait ActiveModesQuery: Send + Sync + std::fmt::Debug {
+    /// The ids of the modes active on `buffer` — major first, as
+    /// [`ActiveModes::ids`] — empty for a buffer with none recorded (closed,
+    /// or never activated). Ids rather than an [`ActiveModes`], whose
+    /// mutators are this crate's: a caller asks, it never builds one.
+    fn active_on(&self, buffer: lattice_core::BufferId) -> Vec<ModeId>;
+}
+
+/// The shared form [`ActiveModesQuery`] is registered and looked up under.
+pub type ActiveModesQueryHandle = std::sync::Arc<dyn ActiveModesQuery>;
 
 #[cfg(test)]
 mod tests {
@@ -205,6 +229,16 @@ mod tests {
         a.push_minor(three);
         assert!(a.remove_minor(two));
         assert_eq!(a.minors(), &[one, three]);
+    }
+
+    #[test]
+    fn ids_lists_the_major_first_then_each_minor() {
+        let mut a = ActiveModes::new();
+        assert_eq!(a.ids().count(), 0);
+        a.set_major(Some(ModeId::new("ids-major-mode")));
+        a.push_minor(ModeId::new("ids-minor-mode"));
+        let ids: Vec<String> = a.ids().map(|m| m.as_str().to_string()).collect();
+        assert_eq!(ids, ["ids-major-mode", "ids-minor-mode"]);
     }
 
     #[test]

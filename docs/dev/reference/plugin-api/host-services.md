@@ -29,7 +29,45 @@ does — a bounded `walk` covers the fuzzy-finder.
 - [`position`](types.md#record-position) from [`types`](types.md)
 - [`effect`](types.md#variant-effect) from [`types`](types.md)
 
-## Functions (33)
+## Functions (34)
+
+### `buffer-text`
+
+```wit
+buffer-text: func(buffer: u32) -> option<string>
+```
+
+OB.3c: the whole text of an open buffer **one of this plugin's own
+modes is active in** — as it is in the editor, unsaved edits included.
+
+For finishing work a mode started on its buffer from a seam with no
+`document` to read: a job's result arrives in `on-event`, possibly
+after the user has edited the buffer or moved to another one, and the
+plugin has to see the buffer as it is NOW to put the result in the
+right place. `buffer` is the `buffer-id` a `document` or
+`buffer-snapshot` reported when the work began.
+
+**Gated on the plugin's modes, not on a capability.** A buffer is
+readable while a mode this plugin registered is active on it — the
+buffer the plugin is already running in, which is the reach the user
+gave it by turning that mode on. Any other buffer is `none`, so a
+plugin cannot read what the user has open elsewhere by guessing ids.
+The mode set is the editor's as of its last publish: a buffer whose
+mode was turned off a moment ago may still read for that moment.
+
+`none` for a buffer that is closed, not this plugin's, or a host that
+wired no buffer store. One call, the whole text: a guest that wants
+lines splits it.
+
+**Example — Read back a buffer one of this plugin's modes runs in; `none` for any other** · [`crates/lattice-plugin-host/tests/fixtures/multiseam-guest/src/lib.rs`](../../../../crates/lattice-plugin-host/tests/fixtures/multiseam-guest/src/lib.rs)
+
+```rust
+let text = host_services::buffer_text(buffer).unwrap_or_else(|| "none".to_string());
+Ok(vec![Effect::Echo(EchoPayload {
+    level: EchoLevel::Info,
+    text,
+})])
+```
 
 ### `can-write-file`
 

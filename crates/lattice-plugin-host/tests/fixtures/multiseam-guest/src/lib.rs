@@ -218,6 +218,14 @@ impl Guest for Component {
             &spec(),
             52,
         );
+        // OB.3c: read a buffer back, by id. Args `"<buffer>"`; echoes the text
+        // or `none`.
+        grammar::register_action(
+            "multiseam-buffer-text",
+            "read a buffer's text, gated on this plugin's modes (OB.3c)",
+            &spec(),
+            53,
+        );
         // HB.2b: what `excerpt-source` answers a guest standing on a multibuffer
         // row. Every other test of that seam supplies the resolver's arguments
         // itself; this one takes them from the context the HOST handed the
@@ -597,6 +605,24 @@ impl GrammarCallbacks for Component {
                     Some(p) => format!("{}:{}", p.line, p.byte),
                     None => "none".to_string(),
                 };
+                Ok(vec![Effect::Echo(EchoPayload {
+                    level: EchoLevel::Info,
+                    text,
+                })])
+                // @end-example
+            }
+            53 => {
+                let buffer: u32 = match &ctx.args {
+                    Args::String(s) => s
+                        .trim()
+                        .parse()
+                        .map_err(|_| format!("multiseam: buffer-text wants a buffer id, got {s:?}"))?,
+                    other => {
+                        return Err(format!("multiseam: buffer-text wants a buffer id, got {other:?}"));
+                    }
+                };
+                // @example host-services.buffer-text: Read back a buffer one of this plugin's modes runs in; `none` for any other
+                let text = host_services::buffer_text(buffer).unwrap_or_else(|| "none".to_string());
                 Ok(vec![Effect::Echo(EchoPayload {
                     level: EchoLevel::Info,
                     text,

@@ -195,6 +195,14 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     } else {
         tracing::debug!("clamp-position unwired: no buffer store at plugin install");
     }
+    // OB.3c: which modes are active where, for `buffer-text`'s gate — a
+    // plugin reads back only a buffer one of its own modes runs in. Unwired,
+    // every read is `none`, and a babel result never finds its block.
+    if let Some(query) = boot.service::<lattice_mode::ActiveModesQueryHandle>() {
+        host.set_active_modes_query((*query).clone());
+    } else {
+        tracing::debug!("buffer-text unwired: no active-modes query at plugin install");
+    }
     // OA.23: what answers "which file did this composed line come from".
     //
     // The registry alone: it maps a view's composed line to a source document,

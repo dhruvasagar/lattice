@@ -966,6 +966,13 @@ is enough to check — and decline otherwise.
   carries only what a background result needs — `apply-edit`, `write-to-file` (still under
   `fs:write`), `track-range` / `untrack-range`, `open-synthetic-buffer`, `echo` — after the
   command gate above. Anything else is a warning naming the variant, and ends the batch.
+- **Reading a buffer back is gated on the plugin's own modes (OB.3c).** `buffer-text` hands
+  over a whole buffer's text — the read a job's result needs from `on-event`, which has no
+  `document` — but only while a mode that plugin registered is active on that buffer. The
+  host keeps which plugin registered each mode (recorded only for a mode the registry
+  accepted, so declaring another plugin's id buys nothing) and reads which modes are active
+  from the published render state. Any other buffer, a closed one, or a host with no
+  active-modes query wired is `none`.
 
 > **UX (higher court):** capability prompts are the one place plugins touch consent UX; they
 > must be legible ("git-gutter wants: read files under this repo") and never block boot —

@@ -1059,6 +1059,26 @@ pub type GrantGuardHandle = Arc<std::sync::RwLock<GrantGuard>>;
 /// than one). The editor wires an inbound bus here; a test, a collector.
 pub type PluginEffectSinkHandle = Arc<dyn Fn(lattice_grammar::Effect) + Send + Sync>;
 
+/// OB.3c: mode id → the id of the plugin that registered it.
+///
+/// The mode registry keeps no provenance, and `buffer-text` needs exactly one
+/// fact it would have held: whether a mode active on a buffer is the
+/// caller's. Recorded only for a mode the registry ACCEPTED, so a plugin that
+/// declares another's id gains nothing — the registry refused the duplicate.
+pub type ModeOwnersHandle = Arc<std::sync::Mutex<std::collections::HashMap<String, String>>>;
+
+/// OB.3c: whether any of `active` was registered by `plugin` — the
+/// `buffer-text` gate, as a pure function so the rule is tested on its own.
+pub fn owns_an_active_mode(
+    owners: &std::collections::HashMap<String, String>,
+    plugin: &str,
+    active: &[lattice_mode::ModeId],
+) -> bool {
+    active
+        .iter()
+        .any(|m| owners.get(m.as_str()).is_some_and(|p| p == plugin))
+}
+
 impl PluginState {
     /// OB.3a: the gate for what this plugin names — commands, options,
     /// programs — built from the instance's own grant and the editor's
@@ -1224,6 +1244,12 @@ struct PluginState {
     /// CD.6b: the buffers `clamp-position` measures. `None` in a harness that
     /// wired no editor, where every buffer reads as absent.
     buffers: Option<lattice_mode::BufferStoreHandle>,
+    /// OB.3c: which modes are active on a buffer, for `buffer-text`'s gate.
+    /// `None` in a harness that wired no editor, where every read is refused.
+    active_modes: Option<lattice_mode::ActiveModesQueryHandle>,
+    /// OB.3c: which plugin registered each mode, shared by every store of
+    /// every plugin ([`PluginHost::mode_owners`]).
+    mode_owners: ModeOwnersHandle,
     /// PH7.8c: events emitted while `register-events` is still running, held
     /// until this plugin's subscriptions are on the bus.
     ///
@@ -1463,6 +1489,32 @@ impl crate::lattice::plugin_host::host_services::Host for PluginState {
         self.excerpt_source
             .as_ref()?
             .source_line(lattice_core::BufferId(buffer), line)
+    }
+
+    /// OB.3c `buffer-text`: the buffer's text, if one of this plugin's modes is
+    /// active on it. Every refusal is `none` — the WIT's contract — and logged
+    /// at debug, since a plugin asking about a buffer it has left is ordinary.
+    fn buffer_text(&mut self, buffer: u32) -> Option<String> {
+        let id = lattice_core::BufferId(buffer);
+        let plugin = self.plugin_name.as_deref()?;
+        let active = self.active_modes.as_ref()?.active_on(id);
+        let owned = match self.mode_owners.lock() {
+            Ok(owners) => owns_an_active_mode(&owners, plugin, &active),
+            Err(_) => {
+                tracing::warn!("buffer-text: mode-owner table poisoned; refusing");
+                false
+            }
+        };
+        if !owned {
+            tracing::debug!(
+                plugin,
+                buffer,
+                "buffer-text refused: none of this plugin's modes is active there"
+            );
+            return None;
+        }
+        let handle = self.buffers.as_ref()?.handle_for(id)?;
+        Some(handle.snapshot().buffer.as_string())
     }
 
     /// OA.27 `view-args`: forwards to the wired resolver.
@@ -3967,6 +4019,11 @@ pub struct PluginHost {
     commands: std::sync::OnceLock<lattice_grammar::CommandRegistryHandle>,
     /// CD.6b: the buffer store, for `clamp-position`.
     buffers: std::sync::OnceLock<lattice_mode::BufferStoreHandle>,
+    /// OB.3c: see [`PluginHost::set_active_modes_query`].
+    active_modes: std::sync::OnceLock<lattice_mode::ActiveModesQueryHandle>,
+    /// OB.3c: mode id → the plugin that registered it, recorded by
+    /// `spawn_mode_plugin` for each mode the registry accepted.
+    mode_owners: ModeOwnersHandle,
     // LH.0.4: the editor's language-server registrar, when it has one. Set-once
     // through the shared `Arc`, like its neighbours.
     language_servers: std::sync::OnceLock<lattice_mode::LanguageServerRegistrarHandle>,
@@ -4453,6 +4510,8 @@ impl PluginHost {
             effect_sink: std::sync::OnceLock::new(),
             commands: std::sync::OnceLock::new(),
             buffers: std::sync::OnceLock::new(),
+            active_modes: std::sync::OnceLock::new(),
+            mode_owners: ModeOwnersHandle::default(),
             language_servers: std::sync::OnceLock::new(),
             output: std::sync::OnceLock::new(),
             ui: std::sync::OnceLock::new(),
@@ -4689,6 +4748,23 @@ impl PluginHost {
     /// blaming a buffer that is still open.
     pub fn buffer_store_wired(&self) -> bool {
         self.buffers.get().is_some()
+    }
+
+    /// OB.3c: hand the host the editor's active-modes query, which gates
+    /// `buffer-text`. Unset, every `buffer-text` is `none`.
+    pub fn set_active_modes_query(&self, query: lattice_mode::ActiveModesQueryHandle) {
+        let _ = self.active_modes.set(query);
+    }
+
+    /// OB.3c: whether [`Self::set_active_modes_query`] ran.
+    pub fn active_modes_query_wired(&self) -> bool {
+        self.active_modes.get().is_some()
+    }
+
+    /// OB.3c: which plugin registered each mode — shared, so a caller can see
+    /// what `buffer-text` will check.
+    pub fn mode_owners(&self) -> ModeOwnersHandle {
+        self.mode_owners.clone()
     }
 
     /// OB.3: hand the host the editor's sink for `post-effects` — normally an
@@ -4976,6 +5052,11 @@ impl PluginHost {
             // GRAMMAR store is the one that needs it: a capture commits from a
             // chord, and that is where the caller's extent is asked.
             buffers: self.buffers.get().cloned(),
+            // OB.3c: every store. The EVENTS store is the one that reads a
+            // buffer back — a job's result lands there — but the gate is the
+            // same wherever the call comes from.
+            active_modes: self.active_modes.get().cloned(),
+            mode_owners: self.mode_owners.clone(),
             language_servers: self.language_servers.get().cloned(),
             output: self.output.get().cloned(),
             server_registrations: Vec::new(),
@@ -5915,5 +5996,30 @@ mod grant_guard_tests {
                 .unwrap()
                 .refuses("org.directory", Some("init"))
         );
+    }
+}
+
+#[cfg(test)]
+mod buffer_text_gate_tests {
+    use super::owns_an_active_mode;
+    use lattice_mode::ModeId;
+    use std::collections::HashMap;
+
+    #[test]
+    fn only_a_mode_the_caller_registered_opens_the_buffer() {
+        let owners: HashMap<String, String> = [
+            ("org-babel-mode".to_string(), "org".to_string()),
+            ("magit-mode".to_string(), "magit".to_string()),
+        ]
+        .into();
+        let on = |ids: &[&str]| ids.iter().map(|m| ModeId::new(m)).collect::<Vec<_>>();
+        assert!(owns_an_active_mode(
+            &owners,
+            "org",
+            &on(&["text-mode", "org-babel-mode"])
+        ));
+        assert!(!owns_an_active_mode(&owners, "org", &on(&["magit-mode"])));
+        assert!(!owns_an_active_mode(&owners, "org", &on(&["unowned-mode"])));
+        assert!(!owns_an_active_mode(&owners, "org", &[]));
     }
 }

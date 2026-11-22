@@ -1838,6 +1838,31 @@
       "examples": [],
       "functions": [
         {
+          "name": "buffer-text",
+          "display_name": "buffer-text",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [
+            {
+              "name": "buffer",
+              "type": "u32"
+            }
+          ],
+          "result": "option<string>",
+          "signature": "buffer-text: func(buffer: u32) -> option<string>",
+          "doc": "OB.3c: the whole text of an open buffer **one of this plugin's own\nmodes is active in** — as it is in the editor, unsaved edits included.\n\nFor finishing work a mode started on its buffer from a seam with no\n`document` to read: a job's result arrives in `on-event`, possibly\nafter the user has edited the buffer or moved to another one, and the\nplugin has to see the buffer as it is NOW to put the result in the\nright place. `buffer` is the `buffer-id` a `document` or\n`buffer-snapshot` reported when the work began.\n\n**Gated on the plugin's modes, not on a capability.** A buffer is\nreadable while a mode this plugin registered is active on it — the\nbuffer the plugin is already running in, which is the reach the user\ngave it by turning that mode on. Any other buffer is `none`, so a\nplugin cannot read what the user has open elsewhere by guessing ids.\nThe mode set is the editor's as of its last publish: a buffer whose\nmode was turned off a moment ago may still read for that moment.\n\n`none` for a buffer that is closed, not this plugin's, or a host that\nwired no buffer store. One call, the whole text: a guest that wants\nlines splits it.",
+          "examples": [
+            {
+              "id": "multiseam-guest:host-services.buffer-text",
+              "caption": "Read back a buffer one of this plugin's modes runs in; `none` for any other",
+              "source": "crates/lattice-plugin-host/tests/fixtures/multiseam-guest/src/lib.rs",
+              "language": "rust",
+              "code": "let text = host_services::buffer_text(buffer).unwrap_or_else(|| \"none\".to_string());\nOk(vec![Effect::Echo(EchoPayload {\n    level: EchoLevel::Info,\n    text,\n})])"
+            }
+          ]
+        },
+        {
           "name": "can-write-file",
           "display_name": "can-write-file",
           "kind": "freestanding",

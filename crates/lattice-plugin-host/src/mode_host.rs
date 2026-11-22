@@ -452,6 +452,11 @@ impl PluginHost {
         let mut ids = Vec::with_capacity(recorded.len());
         for decl in recorded {
             if let Some(id) = register_plugin_mode(registry, config, &decl) {
+                // OB.3c: provenance for `buffer-text`'s gate — recorded only
+                // once the registry has accepted the mode.
+                if let Ok(mut owners) = self.mode_owners().lock() {
+                    owners.insert(id.as_str().to_string(), manifest.id.clone());
+                }
                 let kind = match decl.kind {
                     PluginModeKind::Major => ModeKind::Major,
                     PluginModeKind::Minor => ModeKind::Minor,

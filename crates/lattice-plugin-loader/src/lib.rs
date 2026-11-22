@@ -761,6 +761,9 @@ pub struct WiredSeams {
     pub plugin_output: bool,
     /// OB.3: [`PluginHost::effect_sink_wired`].
     pub effect_sink: bool,
+    /// OB.3c: [`PluginHost::active_modes_query_wired`]. Unwired, every
+    /// `buffer-text` is `none`, and a babel result never finds its block.
+    pub active_modes: bool,
 }
 
 impl WiredSeams {
@@ -794,6 +797,7 @@ impl WiredSeams {
             && self.language_servers
             && self.plugin_output
             && self.effect_sink
+            && self.active_modes
     }
 }
 
@@ -1131,6 +1135,7 @@ impl PluginLoader {
             language_servers: self.host.language_server_registrar_wired(),
             plugin_output: self.host.plugin_output_wired(),
             effect_sink: self.host.effect_sink_wired(),
+            active_modes: self.host.active_modes_query_wired(),
         }
     }
 

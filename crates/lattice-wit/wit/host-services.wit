@@ -143,6 +143,29 @@ interface host-services {
     /// the view does not compose.
     source-line: func(buffer: u32, line: u32) -> option<string>;
 
+    /// OB.3c: the whole text of an open buffer **one of this plugin's own
+    /// modes is active in** — as it is in the editor, unsaved edits included.
+    ///
+    /// For finishing work a mode started on its buffer from a seam with no
+    /// `document` to read: a job's result arrives in `on-event`, possibly
+    /// after the user has edited the buffer or moved to another one, and the
+    /// plugin has to see the buffer as it is NOW to put the result in the
+    /// right place. `buffer` is the `buffer-id` a `document` or
+    /// `buffer-snapshot` reported when the work began.
+    ///
+    /// **Gated on the plugin's modes, not on a capability.** A buffer is
+    /// readable while a mode this plugin registered is active on it — the
+    /// buffer the plugin is already running in, which is the reach the user
+    /// gave it by turning that mode on. Any other buffer is `none`, so a
+    /// plugin cannot read what the user has open elsewhere by guessing ids.
+    /// The mode set is the editor's as of its last publish: a buffer whose
+    /// mode was turned off a moment ago may still read for that moment.
+    ///
+    /// `none` for a buffer that is closed, not this plugin's, or a host that
+    /// wired no buffer store. One call, the whole text: a guest that wants
+    /// lines splits it.
+    buffer-text: func(buffer: u32) -> option<string>;
+
     /// OA.27: the scan arguments the provider view in `buffer` is showing.
     ///
     /// **A view's arguments are HOST state, and this is the only way a guest

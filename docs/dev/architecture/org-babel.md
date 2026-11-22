@@ -339,7 +339,9 @@ At finish the events seam re-reads the buffer (`buffer-text`, §4), finds the
 block by key, computes the current `#+RESULTS:` range, and edits exactly
 that. If the block is gone or its body changed (no key match), the output
 goes to `*org-babel*` (an output buffer, `output-append`) and the echo area
-says so; nothing is written to the org buffer. Never an edit at a stale
+says so, naming `:org-babel-output`; nothing is written to the org buffer.
+The output buffer is never opened unprompted — a run finishing in the
+background does not rearrange the window being typed in. Never an edit at a stale
 offset.
 
 **The outcome string is shown, not parsed.** `job-finished` is `ok` or an

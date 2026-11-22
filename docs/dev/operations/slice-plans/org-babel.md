@@ -23,7 +23,7 @@ of them inside `org-babel-mode` (design §0).
 | OB.4                      | `org-babel-mode`: the mode, its layer, its options **(plugin)**            | ✅     |
 | OB.5                      | Src blocks and header arguments, parsed and merged **(plugin)**            | ✅     |
 | OB.6                      | `C-c C-c` runs a block; output lands in `#+RESULTS:` **(plugin)**          | ✅     |
-| OB.7                      | Confirm, cancel, execute-buffer / -subtree, remove-result **(plugin)**     | 📝     |
+| OB.7                      | Confirm, cancel, execute-buffer / -subtree, remove-result **(plugin)**     | ✅     |
 | OB.8                      | `:results` — insertion, format, `value` wrappers, `:dir` **(plugin)**      | 📝     |
 | **Phase 2 — tangle**      |                                                                            |        |
 | OB.9                      | `write-to-file` gains a `whole` anchor **(lattice)**                       | 📝     |
@@ -110,6 +110,9 @@ costs if it turns out wrong. Design-level decisions are also in
 | OB.3b | `org.babel.enabled` is a host `mode_gates` entry, chosen by Dhruva | The guest cannot disable its own default mode without racing `org.enabled`'s gate | a manifest key, and `min_lattice` 0.10.3 |
 | OB.3c | The finish reads the buffer with a new `buffer-text`, gated on the caller's own active modes, chosen by Dhruva | `source-line` answers only for multibuffer sources, so the plan's finish path could not read an org buffer | a WIT function, an active-modes query service, mode provenance in the plugin host |
 | OB.6 | The script write and the spawn run in org's events seam, reached by `emit-event` from `C-c C-c` | WASI fs panics on the grammar seam's sync linker, and the write would be keystroke-path I/O | the run request crosses as one plugin event |
+| OB.7 | A confirm's keys ride in ONE argument, one key per line | a confirm's args are cut to the yes-action's arity; a key cannot hold a newline | `org-babel-run-confirmed` has one `blocks` slot |
+| OB.7 | `execute-buffer` refuses the whole run on one unconfigured language or running block; a FAILED block does not stop the batch, one that cannot START does | emacs's order of refusal; a later block may depend on an earlier one having started | checked before the confirm |
+| OB.7 | `*org-babel*` opens only on `:org-babel-output`; the fallback echo names the command (Dhruva, 2026-11-23) | a background run finishing must not change the layout of the file being typed in — UX outranks emacs's display-buffer convention | `output-append` creates no buffer, which the OB.6 echo had assumed; rejected: a WIT mirror of `display-synthetic-buffer` |
 | OB.6 | The running marker is a gutter sign, chosen by Dhruva | The decorations seam is gutter-only; virtual text would be a new host mechanism for a status marker | not the `⧗ running` text the design first described |
 | OB.3 | "Both linkers" is structural — one bindgen `host-services` interface, one `PluginState` impl | Adding a function to the interface adds it to both | none |
 
@@ -661,7 +664,7 @@ OB.7's cancel work, which owns buffer-close), plus
 `a_running_block_carries_a_sign_until_it_finishes`. The harness wires the
 effect sink as an inbound bus and settles on `async_landed`.
 
-### OB.7 — confirm, cancel, buffer and subtree 📝 *(plugin)*
+### OB.7 — confirm, cancel, buffer and subtree ✅ *(plugin)*
 
 **Files:** `src/babel/run.rs`, `src/babel/mod.rs`.
 
@@ -683,6 +686,15 @@ effect sink as an inbound bus and settles on `async_landed`.
 `closing_the_buffer_while_it_runs_sends_output_to_org_babel` (carried from
 OB.6 — the finish already handles a `none` from `buffer-text`; the test
 needs a buffer close in the harness).
+
+**As built (org `e19a77e`, `f69c560`):** as planned. `:org-babel-cancel`
+reaches the jobs by `emit-event` (`org/babel-cancel`), as the run does; a
+cancelled finish writes nothing and echoes `org: the sh block was
+cancelled`. A confirmed run whose block changed while the prompt was open runs
+nothing and says so. **Found here, fixed in `f69c560`:** OB.6's fallback named
+a `*org-babel*` that `output-append` never creates — now
+`:org-babel-output` opens it, and a failed append says the output was lost
+instead of pointing at an empty buffer.
 
 ### OB.8 — `:results`, `value`, `:dir` 📝 *(plugin)*
 

@@ -793,10 +793,13 @@ Run the program `command` with `args`, in `cwd` (`""` for the editor's
 own). **A job** (see `cancel-job`): returns its id; what the process
 writes arrives as `job-output`, and its exit as `job-finished`.
 
-**Gated on `proc:spawn`, which only a bundled plugin is ever granted.**
-The process is not sandboxed — it runs as the user, with the user's
-environment and reach — so this is full trust, and a user-installed
-plugin is refused here whatever its manifest asks for.
+**Gated on `proc:spawn`.** The process is not sandboxed — it runs as the
+user, with the user's environment and reach. The unbound form, any
+program, is granted only to a bundled plugin. The option-bound form,
+`proc:spawn:{<option>:<field>}` (OB.2), is granted at either tier and
+permits exactly the programs the user listed in that option, compared
+as written (`sh` is not `/bin/sh`); a program not listed is refused
+with an `err` naming the option to add it to.
 
 `command` is a program, found on `PATH` or named by path; `args` are
 passed to it as given. **No shell is involved**: nothing is split,

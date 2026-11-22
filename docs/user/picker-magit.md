@@ -72,7 +72,7 @@ their own branches.
 | Source | Reached by | Then |
 |---|---|---|
 | `magit-branch-checkout-pick` | branch menu `l` | checks the branch out |
-| `magit-branch-pick-base` | branch menu `c` | asks the **new** branch's name, from that base |
+| `magit-branch-pick-base` | branch menu `c` | asks the **new** branch's name, from that base — local or remote-tracking; a remote base pre-fills its name on the remote |
 | `magit-branch-create-no-checkout-pick` | branch menu `n` | the same, without checking it out |
 | `magit-branch-rename-pick` | branch menu `m` | asks the new name, pre-filled with the old one |
 | `magit-branch-delete-pick` | branch menu `k` | asks "Delete branch …?", then deletes |

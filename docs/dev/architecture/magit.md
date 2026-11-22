@@ -2288,8 +2288,16 @@ wizard is its first real consumer:
    prompt yet, just a normal picker.
 2. `BranchPickBaseSource` (`crates/lattice-magit/src/picker_sources.rs`,
    registered as `:picker magit-branch-pick-base`) lists `Branch::list`
-   as candidates, routed through `RoutingPayload::BranchBase { name }`
-   (picker.md §6.1 — branch names get MRU identity like theme names).
+   and then the remote-tracking branches (less `<remote>/HEAD`, an
+   alias) as candidates, routed through
+   `RoutingPayload::BranchBase { name, local_name }` (picker.md §6.1 —
+   branch names get MRU identity like theme names). `local_name` is the
+   branch's name on its remote, set only for a remote base; the prompt
+   pre-fills it, because a local branch from `origin/feature` is
+   nearly always meant to be `feature`. `n` lists the same; checkout,
+   rename and delete list local branches only — checking out
+   `origin/feature` would detach HEAD, and the other two act on local
+   refs.
 3. Accepting a candidate returns `PickerAcceptOutcome::OpenPrompt` — the
    picker-accept peer of `Effect::OpenPrompt`, same fields — asking
    "New branch name (from `<base>`):" and stashing `base` in the

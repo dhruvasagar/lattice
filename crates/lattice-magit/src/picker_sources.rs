@@ -1,9 +1,9 @@
 //! `:picker magit-branch-pick-base` source generator.
 //!
-//! Lists existing local branches so magit's branch-create wizard
-//! (`c` in `magit-branch-mode`) can let the user pick a base branch
-//! before typing the new branch's name — mirrors Emacs magit's own
-//! two-step "pick base, then type name" flow. Accept emits
+//! Lists local and remote-tracking branches so magit's branch-create
+//! wizard (`c` in `magit-branch-mode`) can let the user pick a base
+//! branch before typing the new branch's name — mirrors Emacs magit's
+//! own two-step "pick base, then type name" flow. Accept emits
 //! `PickerAcceptOutcome::OpenPrompt`, stashing the picked base in the
 //! prompt buffer's synthetic name for
 //! `action:magit-branch-create-finish` (registered in
@@ -109,23 +109,11 @@ impl PickerSourceGenerator for BranchPickBaseSource {
     fn init(&self, ctx: &PickerContext<'_>, _args: &[String]) -> SourceResult<PickerInitResult> {
         // MR.6: the rows belong to the repository the picker was
         // opened over, resolved BEFORE the listing goes off-thread.
-        let workdir = self.repo.workdir(ctx);
-        Ok(PickerInitResult::Future(Box::pin(async move {
-            let branches = tokio::task::spawn_blocking(move || {
-                let repo = Repository::discover(&workdir)
-                    .map_err(|e| format!("magit-branch-pick-base: repo discover failed: {e}"))?;
-                Branch::list(&repo).map_err(|e| format!("magit-branch-pick-base: {e}"))
-            })
-            .await
-            .map_err(|e| format!("magit-branch-pick-base: join error: {e}"))??;
-            Ok(branches
-                .into_iter()
-                .map(|name| {
-                    let cand = RawCandidate::plain(name.clone(), CandidateKind::Plain);
-                    (cand, RoutingPayload::BranchBase { name })
-                })
-                .collect())
-        })))
+        branch_rows(
+            &self.spec.id,
+            self.repo.workdir(ctx),
+            BranchRows::LocalAndRemote,
+        )
     }
 
     fn accept(
@@ -134,7 +122,10 @@ impl PickerSourceGenerator for BranchPickBaseSource {
         routing: &RoutingPayload,
     ) -> SourceResult<PickerAcceptOutcome> {
         match routing {
-            RoutingPayload::BranchBase { name } => Ok(branch_create_prompt_outcome(name)),
+            RoutingPayload::BranchBase { name, local_name } => Ok(branch_create_prompt_outcome(
+                name,
+                local_name.as_deref().unwrap_or_default(),
+            )),
             other => Err(format!(
                 "magit-branch-pick-base: unexpected routing payload {other:?}"
             )),
@@ -180,11 +171,12 @@ impl PickerSourceGenerator for BranchCheckoutSource {
         &self.spec
     }
 
-    fn init(&self, ctx: &PickerContext<'_>, args: &[String]) -> SourceResult<PickerInitResult> {
-        // One listing, one place. A second copy of "enumerate the
-        // branches" would drift from this one the first time either
-        // grows a filter.
-        BranchPickBaseSource::new(self.repo.clone()).init(ctx, args)
+    fn init(&self, ctx: &PickerContext<'_>, _args: &[String]) -> SourceResult<PickerInitResult> {
+        // One listing, one place ([`branch_rows`]). A second copy of
+        // "enumerate the branches" would drift from this one the first
+        // time either grows a filter. Local only: checking out
+        // `origin/x` would detach HEAD, which this row does not mean.
+        branch_rows(&self.spec.id, self.repo.workdir(ctx), BranchRows::LocalOnly)
     }
 
     fn accept(
@@ -193,7 +185,7 @@ impl PickerSourceGenerator for BranchCheckoutSource {
         routing: &RoutingPayload,
     ) -> SourceResult<PickerAcceptOutcome> {
         match routing {
-            RoutingPayload::BranchBase { name } => Ok(branch_checkout_outcome(name)),
+            RoutingPayload::BranchBase { name, .. } => Ok(branch_checkout_outcome(name)),
             other => Err(format!(
                 "{BRANCH_CHECKOUT_SOURCE}: unexpected routing payload {other:?}"
             )),
@@ -213,14 +205,99 @@ fn branch_checkout_outcome(name: &str) -> PickerAcceptOutcome {
     }
 }
 
+/// Which branches a branch picker lists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BranchRows {
+    /// `refs/heads/*` — what checkout, rename and delete act on.
+    LocalOnly,
+    /// Local branches, then remote-tracking ones — what a new branch
+    /// can start from. Starting a local branch from `origin/feature` is
+    /// the usual way to begin work on a branch someone else pushed, and
+    /// a list without it sends the user to the command line for it.
+    LocalAndRemote,
+}
+
+/// The rows every branch picker shows, listed off-thread.
+///
+/// Local branches come first: they are what is reached for most, and a
+/// remote twin (`main` / `origin/main`) should not outrank its local
+/// branch on an equal match. `<remote>/HEAD` is left out — it is an
+/// alias for one of the rows already listed, not a branch of its own.
+fn branch_rows(id: &str, workdir: PathBuf, which: BranchRows) -> SourceResult<PickerInitResult> {
+    let id = id.to_string();
+    Ok(PickerInitResult::Future(Box::pin(async move {
+        let err_id = id.clone();
+        let rows = tokio::task::spawn_blocking(move || {
+            let repo = Repository::discover(&workdir)
+                .map_err(|e| format!("{id}: repo discover failed: {e}"))?;
+            let mut rows: Vec<(String, Option<String>)> = Branch::list(&repo)
+                .map_err(|e| format!("{id}: {e}"))?
+                .into_iter()
+                .map(|name| (name, None))
+                .collect();
+            if which == BranchRows::LocalAndRemote {
+                let remotes: Vec<String> = Remote::list(&repo)
+                    .map_err(|e| format!("{id}: {e}"))?
+                    .into_iter()
+                    .map(|r| r.name)
+                    .collect();
+                rows.extend(
+                    Reference::list(&repo)
+                        .map_err(|e| format!("{id}: {e}"))?
+                        .into_iter()
+                        .filter(|r| r.kind == RefKind::Remote)
+                        .filter_map(|r| {
+                            let local = name_on_remote(&r.name, &remotes)?;
+                            (local != "HEAD").then(|| (r.name.clone(), Some(local.to_string())))
+                        }),
+                );
+            }
+            Ok::<_, String>(rows)
+        })
+        .await
+        .map_err(|e| format!("{err_id}: join error: {e}"))??;
+        Ok(rows
+            .into_iter()
+            .map(|(name, local_name)| {
+                let cand = RawCandidate::plain(name.clone(), CandidateKind::Plain);
+                (cand, RoutingPayload::BranchBase { name, local_name })
+            })
+            .collect())
+    })))
+}
+
+/// The branch part of a remote-tracking ref's short name:
+/// `origin/feature/x` → `feature/x`.
+///
+/// Matched against the configured remotes, longest first, rather than
+/// split at the first `/`: a remote may itself be named `team/origin`,
+/// and splitting there would offer `origin/feature/x` as the local name.
+/// A ref under no configured remote (one left behind by a removed
+/// remote) falls back to the first `/`, which is right for every remote
+/// name without one.
+fn name_on_remote<'a>(short: &'a str, remotes: &[String]) -> Option<&'a str> {
+    let mut by_length: Vec<&String> = remotes.iter().collect();
+    by_length.sort_by_key(|r| std::cmp::Reverse(r.len()));
+    by_length
+        .into_iter()
+        .find_map(|r| short.strip_prefix(r.as_str())?.strip_prefix('/'))
+        .or_else(|| short.split_once('/').map(|(_, rest)| rest))
+        .filter(|rest| !rest.is_empty())
+}
+
 /// Build the `OpenPrompt` outcome for a picked base branch. Pulled
 /// out of `accept` so it's testable without a full `PickerContext`
 /// fixture (which `accept`'s trait signature requires but this
 /// translation never actually reads).
-fn branch_create_prompt_outcome(base: &str) -> PickerAcceptOutcome {
+///
+/// `suggested` pre-fills the name: for a remote base it is the
+/// branch's name on the remote, because "a local `feature` from
+/// `origin/feature`" is what picking a remote base nearly always means.
+/// Empty for a local base — a second local branch needs a new name.
+fn branch_create_prompt_outcome(base: &str, suggested: &str) -> PickerAcceptOutcome {
     PickerAcceptOutcome::OpenPrompt {
         prompt: format!("New branch name (from {base}):"),
-        initial: String::new(),
+        initial: suggested.to_string(),
         on_submit_action: "action:magit-branch-create-finish".to_string(),
         buffer_name: Some(format!(
             "{}{base}*",
@@ -231,11 +308,11 @@ fn branch_create_prompt_outcome(base: &str) -> PickerAcceptOutcome {
 
 // ── MG.32: the rest of magit's branch transient ──────────────────
 //
-// Three more sources, all listing the same branches. Each reuses
-// `BranchPickBaseSource::init` rather than re-enumerating: a second
-// copy of "list the branches" drifts the moment either grows a filter,
-// which is the reason `BranchCheckoutSource` was built this way in
-// MG.29 and the reason these follow it.
+// Three more sources, all listing branches through [`branch_rows`]
+// rather than re-enumerating: a second copy of "list the branches"
+// drifts the moment either grows a filter, which is the reason
+// `BranchCheckoutSource` was built this way in MG.29 and the reason
+// these follow it.
 
 /// MG.32: `n` — magit's "new branch" *without* checking it out.
 ///
@@ -277,8 +354,12 @@ impl PickerSourceGenerator for BranchCreateNoCheckoutSource {
         &self.spec
     }
 
-    fn init(&self, ctx: &PickerContext<'_>, args: &[String]) -> SourceResult<PickerInitResult> {
-        BranchPickBaseSource::new(self.repo.clone()).init(ctx, args)
+    fn init(&self, ctx: &PickerContext<'_>, _args: &[String]) -> SourceResult<PickerInitResult> {
+        branch_rows(
+            &self.spec.id,
+            self.repo.workdir(ctx),
+            BranchRows::LocalAndRemote,
+        )
     }
 
     fn accept(
@@ -287,7 +368,9 @@ impl PickerSourceGenerator for BranchCreateNoCheckoutSource {
         routing: &RoutingPayload,
     ) -> SourceResult<PickerAcceptOutcome> {
         match routing {
-            RoutingPayload::BranchBase { name } => Ok(branch_create_no_checkout_outcome(name)),
+            RoutingPayload::BranchBase { name, local_name } => Ok(
+                branch_create_no_checkout_outcome(name, local_name.as_deref().unwrap_or_default()),
+            ),
             other => Err(format!(
                 "{BRANCH_CREATE_NO_CHECKOUT_SOURCE}: unexpected routing payload {other:?}"
             )),
@@ -295,10 +378,10 @@ impl PickerSourceGenerator for BranchCreateNoCheckoutSource {
     }
 }
 
-fn branch_create_no_checkout_outcome(base: &str) -> PickerAcceptOutcome {
+fn branch_create_no_checkout_outcome(base: &str, suggested: &str) -> PickerAcceptOutcome {
     PickerAcceptOutcome::OpenPrompt {
         prompt: format!("New branch name (from {base}, no checkout):"),
-        initial: String::new(),
+        initial: suggested.to_string(),
         on_submit_action: "action:magit-branch-create-no-checkout-finish".to_string(),
         buffer_name: Some(format!(
             "{}{base}*",
@@ -344,8 +427,8 @@ impl PickerSourceGenerator for BranchRenameSource {
         &self.spec
     }
 
-    fn init(&self, ctx: &PickerContext<'_>, args: &[String]) -> SourceResult<PickerInitResult> {
-        BranchPickBaseSource::new(self.repo.clone()).init(ctx, args)
+    fn init(&self, ctx: &PickerContext<'_>, _args: &[String]) -> SourceResult<PickerInitResult> {
+        branch_rows(&self.spec.id, self.repo.workdir(ctx), BranchRows::LocalOnly)
     }
 
     fn accept(
@@ -354,7 +437,7 @@ impl PickerSourceGenerator for BranchRenameSource {
         routing: &RoutingPayload,
     ) -> SourceResult<PickerAcceptOutcome> {
         match routing {
-            RoutingPayload::BranchBase { name } => Ok(branch_rename_outcome(name)),
+            RoutingPayload::BranchBase { name, .. } => Ok(branch_rename_outcome(name)),
             other => Err(format!(
                 "{BRANCH_RENAME_SOURCE}: unexpected routing payload {other:?}"
             )),
@@ -416,8 +499,8 @@ impl PickerSourceGenerator for BranchDeleteSource {
         &self.spec
     }
 
-    fn init(&self, ctx: &PickerContext<'_>, args: &[String]) -> SourceResult<PickerInitResult> {
-        BranchPickBaseSource::new(self.repo.clone()).init(ctx, args)
+    fn init(&self, ctx: &PickerContext<'_>, _args: &[String]) -> SourceResult<PickerInitResult> {
+        branch_rows(&self.spec.id, self.repo.workdir(ctx), BranchRows::LocalOnly)
     }
 
     fn accept(
@@ -426,7 +509,7 @@ impl PickerSourceGenerator for BranchDeleteSource {
         routing: &RoutingPayload,
     ) -> SourceResult<PickerAcceptOutcome> {
         match routing {
-            RoutingPayload::BranchBase { name } => Ok(branch_delete_outcome(name)),
+            RoutingPayload::BranchBase { name, .. } => Ok(branch_delete_outcome(name)),
             other => Err(format!(
                 "{BRANCH_DELETE_SOURCE}: unexpected routing payload {other:?}"
             )),
@@ -1211,12 +1294,12 @@ mod tests {
             let cases: Vec<(&str, PickerAcceptOutcome, &str)> = vec![
                 (
                     "create",
-                    branch_create_prompt_outcome(branch),
+                    branch_create_prompt_outcome(branch, ""),
                     crate::magit_global_mode::BRANCH_CREATE_PROMPT_PREFIX,
                 ),
                 (
                     "create-no-checkout",
-                    branch_create_no_checkout_outcome(branch),
+                    branch_create_no_checkout_outcome(branch, ""),
                     crate::magit_global_mode::BRANCH_CREATE_NO_CHECKOUT_PROMPT_PREFIX,
                 ),
                 (
@@ -1307,7 +1390,7 @@ mod tests {
 
     #[test]
     fn branch_create_prompt_outcome_names_the_base_in_the_label_and_buffer_name() {
-        let outcome = branch_create_prompt_outcome("feature/foo");
+        let outcome = branch_create_prompt_outcome("feature/foo", "");
         match outcome {
             PickerAcceptOutcome::OpenPrompt {
                 prompt,
@@ -1325,6 +1408,144 @@ mod tests {
             }
             other => panic!("expected OpenPrompt, got {other:?}"),
         }
+    }
+
+    /// A remote base pre-fills the name it has on its remote — in both
+    /// create flows — while the base itself still rides in the buffer
+    /// name whole, `origin/` included, so the branch starts there.
+    #[test]
+    fn a_remote_base_prefills_its_name_on_the_remote() {
+        use lattice_picker::PickerAcceptOutcome as O;
+        for (what, outcome, prefix) in [
+            (
+                "create",
+                branch_create_prompt_outcome("origin/feature/x", "feature/x"),
+                crate::magit_global_mode::BRANCH_CREATE_PROMPT_PREFIX,
+            ),
+            (
+                "create-no-checkout",
+                branch_create_no_checkout_outcome("origin/feature/x", "feature/x"),
+                crate::magit_global_mode::BRANCH_CREATE_NO_CHECKOUT_PROMPT_PREFIX,
+            ),
+        ] {
+            let O::OpenPrompt {
+                initial,
+                buffer_name,
+                ..
+            } = outcome
+            else {
+                panic!("{what} must open a prompt");
+            };
+            assert_eq!(initial, "feature/x", "{what}");
+            let name = buffer_name.unwrap_or_else(|| panic!("{what} must name its buffer"));
+            assert_eq!(
+                crate::magit_global_mode::branch_from_prompt_buffer_name_for_test(&name, prefix),
+                Some("origin/feature/x".to_string()),
+                "{what}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_name_on_the_remote_drops_the_remote_and_nothing_else() {
+        let remotes = |r: &[&str]| r.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            name_on_remote("origin/feature/x", &remotes(&["origin"])),
+            Some("feature/x")
+        );
+        // The longest configured remote wins, so a remote with a `/` in
+        // its name is not split in the middle.
+        assert_eq!(
+            name_on_remote("team/origin/main", &remotes(&["team", "team/origin"])),
+            Some("main")
+        );
+        // A ref left behind by a removed remote still gets a name.
+        assert_eq!(name_on_remote("gone/topic", &[]), Some("topic"));
+        assert_eq!(name_on_remote("origin", &remotes(&["origin"])), None);
+    }
+
+    fn git(dir: &std::path::Path, args: &[&str]) {
+        let ok = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@t")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@t")
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        assert!(ok, "git {args:?}");
+    }
+
+    fn rows(workdir: &std::path::Path, which: BranchRows) -> Vec<(String, Option<String>)> {
+        let PickerInitResult::Future(fut) =
+            branch_rows("test", workdir.to_path_buf(), which).expect("init")
+        else {
+            panic!("branch rows are listed off-thread");
+        };
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime")
+            .block_on(fut)
+            .expect("listing")
+            .into_iter()
+            .map(|(_, routing)| match routing {
+                RoutingPayload::BranchBase { name, local_name } => (name, local_name),
+                other => panic!("unexpected payload {other:?}"),
+            })
+            .collect()
+    }
+
+    /// The bug this exists for: the create pickers offered only local
+    /// branches, so a branch someone else pushed could not be started
+    /// from. They now list remote-tracking branches after the local
+    /// ones; checkout, rename and delete stay local.
+    #[test]
+    fn the_create_pickers_offer_remote_branches_and_the_others_do_not() {
+        let remote = tempfile::tempdir().expect("temp dir");
+        git(remote.path(), &["init", "-q", "-b", "main"]);
+        git(
+            remote.path(),
+            &["commit", "-q", "--allow-empty", "-m", "root"],
+        );
+        git(remote.path(), &["branch", "feature/x"]);
+        let local = tempfile::tempdir().expect("temp dir");
+        let url = remote.path().to_string_lossy().to_string();
+        git(local.path(), &["clone", "-q", &url, "."]);
+
+        let all = rows(local.path(), BranchRows::LocalAndRemote);
+        assert_eq!(
+            all,
+            vec![
+                ("main".to_string(), None),
+                (
+                    "origin/feature/x".to_string(),
+                    Some("feature/x".to_string())
+                ),
+                ("origin/main".to_string(), Some("main".to_string())),
+            ],
+            "local first, then remote-tracking; `origin/HEAD` is an alias, not a row"
+        );
+        assert_eq!(
+            rows(local.path(), BranchRows::LocalOnly),
+            vec![("main".to_string(), None)]
+        );
+
+        // And what the prompt then does with the pick: a local branch
+        // that starts at the remote one and tracks it.
+        let repo = Repository::discover(local.path()).expect("repo");
+        Branch::create(&repo, "feature/x", true, Some("origin/feature/x")).expect("create");
+        let upstream = std::process::Command::new("git")
+            .args(["rev-parse", "--abbrev-ref", "feature/x@{upstream}"])
+            .current_dir(local.path())
+            .output()
+            .expect("rev-parse");
+        assert_eq!(
+            String::from_utf8_lossy(&upstream.stdout).trim(),
+            "origin/feature/x"
+        );
     }
 }
 

@@ -401,7 +401,7 @@ pub fn routing_identity(payload: &RoutingPayload) -> Option<String> {
         RoutingPayload::Colorscheme { name } => Some(format!("colorscheme:{name}")),
         // Branch names are stable identities, like theme names above —
         // recently-used base branches float up.
-        RoutingPayload::BranchBase { name } => Some(format!("branch-base:{name}")),
+        RoutingPayload::BranchBase { name, .. } => Some(format!("branch-base:{name}")),
         // No stable identity for these -- coordinates drift,
         // indices are per-request, LSP-instance entries are
         // ephemeral, and show-message-request actions key into

@@ -30,13 +30,19 @@ The headerline carries the current branch and the total.
 
 `c` opens the Emacs-magit-style two-step flow:
 
-1. A picker lists your local branches — choose one as the **base**.
+1. A picker lists your local branches, then your remote-tracking ones
+   (`origin/feature`) — choose one as the **base**.
 2. Submitting opens a prompt, `New branch name (from <base>):` — type
-   the name and press Enter.
+   the name and press Enter. For a remote base the prompt is pre-filled
+   with the branch's name on the remote (`feature` for
+   `origin/feature`), so Enter alone gives you a local copy of it.
 
 The branch is created from that base and checked out
-(`git checkout -b <name> <base>`). `<Esc>` at either step cancels
-cleanly.
+(`git checkout -b <name> <base>`). From a remote base git also sets it
+as the new branch's upstream, unless you have turned
+`branch.autoSetupMerge` off. `<Esc>` at either step cancels cleanly.
+Run `f` (fetch) first if a branch someone just pushed is missing: the
+picker lists what your last fetch brought down.
 
 If you want the quick path instead, `:magit-branch-create <name>`
 creates from HEAD with no base choice and no prompt — the scriptable

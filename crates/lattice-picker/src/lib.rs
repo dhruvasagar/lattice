@@ -260,7 +260,15 @@ pub enum RoutingPayload {
     /// base, then accept opens a follow-up text prompt for the new
     /// branch's name (`PickerAcceptOutcome::OpenPrompt`, stashing
     /// this name in the prompt buffer's synthetic name).
-    BranchBase { name: String },
+    ///
+    /// `local_name` is set when the base is a remote-tracking branch
+    /// (`origin/feature` → `Some("feature")`): the name the branch has
+    /// on its remote, which the create prompt offers as the new local
+    /// branch's name. `None` for a local base.
+    BranchBase {
+        name: String,
+        local_name: Option<String>,
+    },
     /// MG.53.e: a plain value the picked candidate stands for, for a
     /// source that answers a question rather than performing an action.
     ///

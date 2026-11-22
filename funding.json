@@ -1,0 +1,67 @@
+{
+	"$schema": "https://fundingjson.org/schema/v1.1.0.json",
+	"version": "v1.1.0",
+	"entity": {
+		"type": "individual",
+		"role": "owner",
+		"name": "Dhruva Sagar",
+		"email": "dhruva.sagar@gmail.com",
+		"description": "Author and sole maintainer of Lattice, building it in evenings and weekends alongside a full-time job and funding it myself so far. Long-time vim user and plugin author; Lattice is the editor I want to exist: vim's grammar, emacs's extensibility, and a modern, non-blocking core.",
+		"webpageUrl": {
+			"url": "https://github.com/dhruvasagar"
+		}
+	},
+	"projects": [
+		{
+			"guid": "lattice",
+			"name": "Lattice",
+			"description": "A modal, GPU-accelerated, plugin-first text editor written in Rust. It combines vim's modal editing grammar with emacs's extensibility model on a non-blocking, multi-threaded core, so nothing a plugin or language server does can stall typing. Plugins are WebAssembly components written against an open WIT interface, so they can be written in any language with component-model support, and they run capability-gated, fuel-limited and crash-isolated. It runs in the terminal and as a native GPU window, and ships an org-mode plugin, a git client modelled on magit, LSP support and an in-editor help system. MIT licensed.",
+			"webpageUrl": {
+				"url": "https://github.com/dhruvasagar/lattice"
+			},
+			"repositoryUrl": {
+				"url": "https://github.com/dhruvasagar/lattice",
+				"wellKnown": "https://github.com/dhruvasagar/lattice/blob/main/.well-known/funding-manifest-urls"
+			},
+			"licenses": ["spdx:MIT"],
+			"tags": ["text-editor", "editor", "vim", "rust", "webassembly", "developer-tools", "terminal", "plugins"]
+		}
+	],
+	"funding": {
+		"channels": [
+			{
+				"guid": "github-sponsors",
+				"type": "payment-provider",
+				"address": "https://github.com/sponsors/dhruvasagar",
+				"description": "GitHub Sponsors, for recurring or one-time support."
+			},
+			{
+				"guid": "bank",
+				"type": "bank",
+				"description": "Direct bank transfer, for grants. Details on request."
+			}
+		],
+		"plans": [
+			{
+				"guid": "full-time",
+				"status": "active",
+				"name": "Full-time maintainer",
+				"description": "Lets me leave my job and work on Lattice full-time for a year (the amount is before tax): the plugin ecosystem (the WebAssembly plugin API, package manager and first-party plugins), org-mode with source-block execution and tangling, and a 1.0 release.",
+				"amount": 100000,
+				"currency": "USD",
+				"frequency": "yearly",
+				"channels": ["bank", "github-sponsors"]
+			},
+			{
+				"guid": "sponsor",
+				"status": "active",
+				"name": "Sponsor",
+				"description": "Any amount, once or monthly, through GitHub Sponsors.",
+				"amount": 0,
+				"currency": "USD",
+				"frequency": "monthly",
+				"channels": ["github-sponsors"]
+			}
+		]
+	}
+}

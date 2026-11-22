@@ -1586,7 +1586,8 @@ impl crate::lattice::plugin_host::host_services::Host for PluginState {
             tracing::warn!(plugin = %plugin, error = %e, "post-effects: unreadable effect");
             format!("post-effects: {e}")
         })?;
-        sink(native);
+        // OB.3a: and then held to what a background post may carry.
+        sink(authorizer.restrict_posted(native));
         Ok(())
     }
 

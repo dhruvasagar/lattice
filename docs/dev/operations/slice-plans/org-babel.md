@@ -16,7 +16,7 @@ of them inside `org-babel-mode` (design §0).
 | OB.1                      | Option-bound grants may read a list **(lattice)**                          | ✅     |
 | OB.2                      | `proc:spawn:{option:field}` — the option-bound process grant **(lattice)** | ✅     |
 | OB.3                      | `post-effects` — effects from the events seam **(lattice)**                | ✅     |
-| OB.3a                     | Security follow-ups to OB.2/OB.3 — **blocks OB.R1** **(lattice)**          | 📝     |
+| OB.3a                     | Security follow-ups to OB.2/OB.3 — **blocks OB.R1** **(lattice)**          | 🚧     |
 | OB.R1                     | lattice release carrying OB.1–OB.3 **(lattice)**                           | 📝     |
 | OB.4                      | `org-babel-mode`: the mode, its layer, its options **(plugin)**            | 📝     |
 | OB.5                      | Src blocks and header arguments, parsed and merged **(plugin)**            | 📝     |
@@ -93,6 +93,8 @@ costs if it turns out wrong. Design-level decisions are also in
 | OB.3 | "Without a keypress" proven by composition, not a new full-editor plugin test | Each link already had a test: the post (`post_effects_seam.rs`), the inbound wake (`lattice-mode`), a drained `ApplyEdit` (`off_keystroke_applies_edits.rs`), the wire (boot pin) | a break where the links meet is caught only by the boot pin |
 | OB.3 | No WIT package version bump | Additive; the ABI fingerprint already marks built plugins stale | OB.R1 must bump the published crates before org can use it |
 | OB.3a | Three security findings recorded, not fixed (phase 1 had been stopped) | See OB.3a | until fixed, a plugin can grant itself programs via a set-option effect |
+| OB.3a | Posted path is an allowlist; a refusal ends the batch and names the variant, not the payload | A post is unsolicited; what follows a refused effect may presume it (CD.3c); the payload is the plugin's to fill | a babel need outside the list is refused until widened here |
+| OB.3a | Events-seam range space is stamped, not refused | One line, same as the grammar path, keeps `track-range` usable | none |
 | OB.3 | "Both linkers" is structural — one bindgen `host-services` interface, one `PluginState` impl | Adding a function to the interface adds it to both | none |
 
 ## Global constraints
@@ -333,6 +335,36 @@ after phase 1 stopped. All three verified against source; none fixed yet.
    ~l.890) — or refuse `track-range` / `untrack-range` from `post-effects`
    while unassigned. Note OB.6 locates results by block key, not by tracked
    range, so babel itself does not need ranges from this seam.
+4. **CRITICAL — `invoke-command` runs any ex line, so any plugin has a
+   shell.** Found while fixing 1. `Editor::invoke_command_named` dispatches a
+   registered `Action` directly and renders anything else as an ex line, so
+   a plugin with no `proc:spawn` can return
+   `invoke-command { id: "shell-command", args: "…" }` (or `!…`, or a ranged
+   `!` filter) and run a program; `set …` moves a grant-bearing option the
+   same way. `spawn-terminal { cmd-line }` is unchecked too. Predates this
+   branch and affects every plugin; the posted path is closed by 2, the
+   returned path is not. Design choice pending — see the decision log.
+
+**As built (2 and 3), `OB.3a.1`:**
+
+- 3: `spawn_event_plugin` stamps `PluginState::range_space` with the
+  instance's allocated id. Stamping, not refusing: it is one line, matches
+  the grammar path, and leaves `track-range` usable by a future consumer.
+- 2: `EffectAuthorizer::restrict_posted`, run in `post_effects` after the
+  usual conversion + `authorize`. Allowed: `none`, `apply-edit`,
+  `write-to-file` (still under `fs:write`), `track-range`, `untrack-range`,
+  `open-synthetic-buffer`, `echo`. Anything else becomes a `Warn` echo naming
+  the variant — never its payload — and ends the batch (CD.3c's rule).
+- Tests: `effect_authorizer` unit tests (kept set, refusal by name and
+  truncation, payload not echoed); `tests/post_effects_seam.rs`
+  `posted_ranges_from_two_plugins_do_not_collide` and
+  `a_posted_effect_outside_the_background_set_is_refused` (quit, set-option,
+  set-global-option, invoke-command `shell-command`, spawn-terminal — each
+  posted from the events fixture through the WIT conversion). 5/5 seam, 21/21
+  authorizer.
+- Gates: fmt; clippy `--lib --bins` and `--all-targets` clean in touched
+  files; `docs-check.sh lattice-plugin-host` clean
+  (`DOCS_CHECK_TOOLCHAIN=1.94.0`).
 
 ### OB.R1 — lattice release 📝 *(lattice)*
 

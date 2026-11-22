@@ -240,6 +240,88 @@ impl EffectAuthorizer {
     }
 }
 
+impl EffectAuthorizer {
+    /// OB.3a: hold a POSTED batch to the effects a posting plugin may send.
+    ///
+    /// A returned effect answers something the user just did; a posted one
+    /// (`host-services.post-effects`, from the events seam) can arrive at any
+    /// moment, with nothing asked for. So the posted path does not get the
+    /// returned path's whole vocabulary — quitting the editor, opening an
+    /// external URI, invoking a command, setting an option or spawning a
+    /// terminal unprompted are not a background job's to do. What it may send
+    /// is what writing a job's result needs, and nothing else:
+    ///
+    /// - `apply-edit` — the result, into a buffer;
+    /// - `write-to-file` — the same into a file, still under `fs:write`
+    ///   ([`Self::authorize`] runs first);
+    /// - `track-range` / `untrack-range` — following where the result went,
+    ///   in the plugin's own range space;
+    /// - `open-synthetic-buffer` — the buffer a result goes to when there is
+    ///   nowhere else (`*org-babel*`);
+    /// - `echo` — telling the user it finished, or why it did not.
+    ///
+    /// Anything else becomes a warning naming it, and ends the batch: what
+    /// followed may presume it happened (the CD.3c rule for a denied write).
+    /// Widen this only when a consumer needs it, with the reason recorded in
+    /// the org-babel slice plan's decision log.
+    pub fn restrict_posted(&self, effect: NativeEffect) -> NativeEffect {
+        self.restrict_posted_batch(effect).0
+    }
+
+    fn restrict_posted_batch(&self, effect: NativeEffect) -> (NativeEffect, bool) {
+        match effect {
+            NativeEffect::Many(parts) => {
+                let mut kept = Vec::with_capacity(parts.len());
+                for part in parts {
+                    let (part, refused) = self.restrict_posted_batch(part);
+                    kept.push(part);
+                    if refused {
+                        return (NativeEffect::Many(kept), true);
+                    }
+                }
+                (NativeEffect::Many(kept), false)
+            }
+            allowed @ (NativeEffect::None
+            | NativeEffect::ApplyEdit { .. }
+            | NativeEffect::WriteToFile { .. }
+            | NativeEffect::TrackRange { .. }
+            | NativeEffect::UntrackRange { .. }
+            | NativeEffect::OpenSyntheticBuffer { .. }
+            | NativeEffect::Echo { .. }) => (allowed, false),
+            refused => {
+                let name = effect_name(&refused);
+                // `info!`: one-shot and user-actionable, as a denied write is.
+                tracing::info!(
+                    plugin = %self.plugin,
+                    effect = %name,
+                    "post-effects refused an effect the posted path does not carry"
+                );
+                (
+                    NativeEffect::Echo {
+                        level: EchoLevel::Warn,
+                        text: format!(
+                            "{}: refused {name} — a plugin may not post it from the background",
+                            self.plugin
+                        ),
+                    },
+                    true,
+                )
+            }
+        }
+    }
+}
+
+/// The variant name of `effect` (`QuitEditor`), for a refusal. Its `Debug`
+/// form starts with it; the payload, which may carry anything, is cut off.
+fn effect_name(effect: &NativeEffect) -> String {
+    let debug = format!("{effect:?}");
+    debug
+        .split(|c: char| !c.is_alphanumeric())
+        .next()
+        .unwrap_or_default()
+        .to_string()
+}
+
 /// The path to compare against a granted prefix.
 ///
 /// Canonicalize the target; if it does not exist, canonicalize the nearest
@@ -682,5 +764,94 @@ mod tests {
             matches!(&untracked, NativeEffect::Many(v) if matches!(v[0], NativeEffect::UntrackRange { id, .. } if id == ida)),
             "inside a batch too: {untracked:?}"
         );
+    }
+
+    fn echo(text: &str) -> NativeEffect {
+        NativeEffect::Echo {
+            level: EchoLevel::Info,
+            text: text.to_string(),
+        }
+    }
+
+    /// OB.3a: a posted batch keeps what a background result needs.
+    #[test]
+    fn a_posted_batch_keeps_what_writing_a_result_needs() {
+        let auth = EffectAuthorizer::new(&CapabilityGrant::default(), "org");
+        let batch = NativeEffect::Many(vec![
+            NativeEffect::TrackRange {
+                target: lattice_core::BufferId(1),
+                id: plugin_range_id(UNASSIGNED_RANGE_SPACE, 1),
+                range: lattice_protocol::position::Range::new(
+                    lattice_protocol::position::Position::new(0, 0),
+                    lattice_protocol::position::Position::new(0, 1),
+                ),
+                element: None,
+            },
+            NativeEffect::OpenSyntheticBuffer {
+                name: "*org-babel*".to_string(),
+                mode_id: "org-babel-output-mode".to_string(),
+                content: Some("4\n".to_string()),
+                cursor: None,
+                activate_minor: None,
+            },
+            echo("done"),
+        ]);
+        let out = auth.restrict_posted(batch);
+        assert!(
+            matches!(&out, NativeEffect::Many(v) if v.len() == 3
+                && matches!(v[0], NativeEffect::TrackRange { .. })
+                && matches!(v[1], NativeEffect::OpenSyntheticBuffer { .. })
+                && matches!(&v[2], NativeEffect::Echo { level: EchoLevel::Info, text } if text == "done")),
+            "{out:?}"
+        );
+    }
+
+    /// OB.3a: anything else is refused by name, and ends the batch.
+    #[test]
+    fn a_posted_quit_is_refused_by_name_and_ends_the_batch() {
+        let auth = EffectAuthorizer::new(&CapabilityGrant::default(), "org");
+        let out = auth.restrict_posted(NativeEffect::Many(vec![
+            echo("before"),
+            NativeEffect::QuitEditor {
+                force: true,
+                scope: lattice_grammar::QuitScope::All,
+            },
+            echo("after"),
+        ]));
+        let NativeEffect::Many(parts) = out else {
+            panic!("a batch: {out:?}");
+        };
+        assert_eq!(
+            parts.len(),
+            2,
+            "what follows a refusal is dropped: {parts:?}"
+        );
+        assert!(
+            matches!(&parts[0], NativeEffect::Echo { level: EchoLevel::Info, text } if text == "before"),
+            "what came before stays: {parts:?}"
+        );
+        let NativeEffect::Echo {
+            level: EchoLevel::Warn,
+            text,
+        } = &parts[1]
+        else {
+            panic!("a warning: {parts:?}");
+        };
+        assert!(text.starts_with("org: refused QuitEditor"), "{text}");
+    }
+
+    /// OB.3a: the refusal names the variant and nothing of its payload,
+    /// which is the plugin's to fill with anything.
+    #[test]
+    fn a_refusal_names_the_effect_without_its_payload() {
+        let auth = EffectAuthorizer::new(&CapabilityGrant::default(), "org");
+        let out = auth.restrict_posted(NativeEffect::SetOption {
+            spec: "secret=hunter2".to_string(),
+        });
+        let NativeEffect::Echo { text, .. } = out else {
+            panic!("a warning: {out:?}");
+        };
+        assert!(text.contains("SetOption"), "{text}");
+        assert!(!text.contains("hunter2"), "{text}");
     }
 }

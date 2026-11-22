@@ -63,21 +63,38 @@ impl Drop for Harness {
 async fn start(wasm: &str, request: &str, wired: bool, capabilities: &str) -> Harness {
     let dirs = TempDir::new().unwrap();
     let data_base = dirs.path().join("data");
-    let data_dir = data_base.join(PLUGIN_ID).join("data");
-    std::fs::create_dir_all(&data_dir).unwrap();
-    std::fs::write(data_dir.join("post-request"), request).unwrap();
-
     let host = PluginHost::with_dirs(dirs.path().join("cache"), &data_base).expect("host builds");
     let posted = Arc::new(Mutex::new(Vec::new()));
     if wired {
         let into = Arc::clone(&posted);
         host.set_effect_sink(Arc::new(move |effect| into.lock().unwrap().push(effect)));
     }
+    let (data_dir, actor) =
+        spawn_on(&host, &data_base, wasm, PLUGIN_ID, request, capabilities).await;
+    Harness {
+        _dirs: dirs,
+        data_dir,
+        posted,
+        actor: tokio::spawn(actor.run()),
+    }
+}
+
+/// One instance of the fixture, as plugin `id`, on `host`.
+async fn spawn_on(
+    host: &PluginHost,
+    data_base: &Path,
+    wasm: &str,
+    id: &str,
+    request: &str,
+    capabilities: &str,
+) -> (PathBuf, lattice_plugin_host::event_task::EventActor) {
+    let data_dir = data_base.join(id).join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+    std::fs::write(data_dir.join("post-request"), request).unwrap();
     let component = host.compile(&std::fs::read(wasm).unwrap()).unwrap();
-    let manifest = PluginManifest::from_toml_str(&format!(
-        "id = \"{PLUGIN_ID}\"\ncapabilities = [{capabilities}]\n"
-    ))
-    .unwrap();
+    let manifest =
+        PluginManifest::from_toml_str(&format!("id = \"{id}\"\ncapabilities = [{capabilities}]\n"))
+            .unwrap();
     let bus = Arc::new(EventBus::new());
     let (_subs, actor) = host
         .spawn_event_plugin(
@@ -90,12 +107,7 @@ async fn start(wasm: &str, request: &str, wired: bool, capabilities: &str) -> Ha
         )
         .await
         .expect("spawn events plugin");
-    Harness {
-        _dirs: dirs,
-        data_dir,
-        posted,
-        actor: tokio::spawn(actor.run()),
-    }
+    (data_dir, actor)
 }
 
 /// The posted batch, flattened.
@@ -184,4 +196,80 @@ async fn an_unwired_sink_is_an_err_to_the_guest() {
         .await
         .expect("the guest recorded the result");
     assert!(line.starts_with("post:err("), "{line}");
+}
+
+/// OB.3a: two events plugins posting the same range number name two ranges.
+/// The events seam used to leave every instance in the unassigned space, so
+/// plugin `b`'s `track-range 1` replaced plugin `a`'s.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn posted_ranges_from_two_plugins_do_not_collide() {
+    let Some(wasm) = guest_wasm() else {
+        eprintln!("SKIP: events fixture guest not built");
+        return;
+    };
+    let dirs = TempDir::new().unwrap();
+    let data_base = dirs.path().join("data");
+    let host = PluginHost::with_dirs(dirs.path().join("cache"), &data_base).expect("host builds");
+    let posted = Arc::new(Mutex::new(Vec::new()));
+    let into = Arc::clone(&posted);
+    host.set_effect_sink(Arc::new(move |effect| into.lock().unwrap().push(effect)));
+
+    let mut actors = Vec::new();
+    for id in ["fixture-a", "fixture-b"] {
+        let (data_dir, actor) = spawn_on(&host, &data_base, wasm, id, "track 7 1", "").await;
+        actors.push(tokio::spawn(actor.run()));
+        wait_for(&data_dir, |l| l == "post:ok")
+            .await
+            .unwrap_or_else(|| panic!("{id} posted: {:?}", recorded(&data_dir)));
+    }
+    let ids: Vec<_> = posted
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(|e| match e {
+            Effect::TrackRange { id, .. } => Some(*id),
+            _ => None,
+        })
+        .collect();
+    for actor in actors {
+        actor.abort();
+    }
+    assert_eq!(ids.len(), 2, "{ids:?}");
+    assert_ne!(ids[0], ids[1], "each plugin's range 1 is its own");
+    // And neither is in the unassigned space, which no plugin is given.
+    for id in ids {
+        assert_ne!((id.0 >> 32) & 0x7fff_ffff, 0x7fff_ffff, "{id:?}");
+    }
+}
+
+/// OB.3a: a post is unsolicited, so the effects a background job has no
+/// business sending arrive as a warning naming them — never as the effect.
+/// Each is posted from the events seam for real, through the WIT conversion.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_posted_effect_outside_the_background_set_is_refused() {
+    let Some(wasm) = guest_wasm() else {
+        eprintln!("SKIP: events fixture guest not built");
+        return;
+    };
+    for (request, name) in [
+        ("quit", "QuitEditor"),
+        ("set-option org.babel.languages=sh", "SetOption"),
+        ("set-global-option org.directory=/", "SetGlobalOption"),
+        ("invoke shell-command touch /tmp/pwned", "InvokeCommand"),
+        ("terminal sh -c id", "SpawnTerminal"),
+    ] {
+        let h = start(wasm, request, true, "").await;
+        let line = wait_for(&h.data_dir, |l| l.starts_with("post:")).await;
+        assert_eq!(line.as_deref(), Some("post:ok"), "{request}");
+        let effects = posted(&h);
+        assert_eq!(effects.len(), 1, "{request}: {effects:?}");
+        let Effect::Echo {
+            level: EchoLevel::Warn,
+            text,
+        } = &effects[0]
+        else {
+            panic!("{request}: a warning, not the effect: {effects:?}");
+        };
+        assert!(text.contains(name), "{request}: {text}");
+    }
 }

@@ -140,7 +140,10 @@ const SPAWN_REQUEST: &str = "/data/spawn-request";
 
 /// OB.3. Present ⇒ post effects from `on-event`. One line: `edit <buffer-id>`
 /// posts an `apply-edit` inserting `posted` at the start of that buffer;
-/// `write <host-path>` posts a `write-to-file` there. The trigger is the
+/// `write <host-path>` posts a `write-to-file` there. OB.3a adds
+/// `track <buffer-id> <range-id>`, `quit`, `set-option <spec>`,
+/// `set-global-option <spec>`, `invoke <id> [args]` and `terminal <cmd>` —
+/// the last five the effects the posted path refuses. The trigger is the
 /// plugin's own event, emitted from `register-events`, so the post happens on
 /// the events seam proper — the seam that returns nothing.
 const POST_REQUEST: &str = "/data/post-request";
@@ -590,11 +593,13 @@ export!(Component);
 /// OB.3: the effect `POST_REQUEST` asks for, posted with `post-effects`.
 fn post_requested() {
     use lattice::plugin_host::types::{
-        ApplyEditPayload, Edit, EditKind, Effect, FileAnchor, Position, Range,
+        ApplyEditPayload, Args, CommandRef, Edit, EditKind, Effect, FileAnchor, Position,
+        QuitPayload, QuitScope, Range, SpawnTerminalPayload, TrackRangePayload,
         WriteToFilePayload,
     };
     let request = std::fs::read_to_string(POST_REQUEST).unwrap_or_default();
-    let (kind, arg) = request.trim().split_once(' ').unwrap_or(("", ""));
+    let request = request.trim();
+    let (kind, arg) = request.split_once(' ').unwrap_or((request, ""));
     let origin = Position { line: 0, byte: 0 };
     let effect = match kind {
         "edit" => Effect::ApplyEdit(ApplyEditPayload {
@@ -607,6 +612,43 @@ fn post_requested() {
                 kind: EditKind::Replace("posted".to_string()),
             },
             cursor: None,
+        }),
+        // OB.3a: `track <buffer-id> <range-id>`.
+        "track" => {
+            let (target, id) = arg.split_once(' ').unwrap_or((arg, "1"));
+            Effect::TrackRange(TrackRangePayload {
+                target: target.parse().unwrap_or(0),
+                id: id.parse().unwrap_or(1),
+                range: Range {
+                    start: origin,
+                    end: origin,
+                },
+                element: None,
+            })
+        }
+        // OB.3a: effects the posted path must refuse.
+        "quit" => Effect::QuitEditor(QuitPayload {
+            force: true,
+            scope: QuitScope::All,
+        }),
+        "set-option" => Effect::SetOption(arg.to_string()),
+        "set-global-option" => Effect::SetGlobalOption(arg.to_string()),
+        "invoke" => {
+            let (id, args) = arg.split_once(' ').unwrap_or((arg, ""));
+            Effect::InvokeCommand(CommandRef {
+                id: id.to_string(),
+                args: if args.is_empty() {
+                    Args::None
+                } else {
+                    Args::String(args.to_string())
+                },
+            })
+        }
+        "terminal" => Effect::SpawnTerminal(SpawnTerminalPayload {
+            cwd: None,
+            cmd_line: Some(arg.to_string()),
+            env: Vec::new(),
+            activate_minor: None,
         }),
         _ => Effect::WriteToFile(WriteToFilePayload {
             path: arg.to_string(),

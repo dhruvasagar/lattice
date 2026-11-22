@@ -36,7 +36,10 @@ What the mode owns, all declared by the plugin:
 - **Its activation.** An `ActivationPolicy` naming org's major mode, and an
   entry in the manifest's `default_modes` (an unlisted minor registers and
   never activates). Toggled by `org.babel.enabled`; turning it off removes
-  the layer, the commands' effect and the decorations together.
+  the layer, the commands' effect and the decorations together. The switch
+  is the host's, declared in the manifest's `mode_gates` (OB.3b,
+  [`plugin-manager.md`](plugin-manager.md)): the plugin cannot disable its own
+  default mode without racing the loader's `org.enabled` gate.
 - **Every action handler body** — run, execute-buffer/-subtree, tangle,
   remove-result, cancel, the confirm's yes-action — registered as plugin
   actions bound to the mode's own `ActionId`s, and every `:org-babel-*`
@@ -44,7 +47,7 @@ What the mode owns, all declared by the plugin:
 - **Every option** under `org.babel.*` (`enabled`, `confirm`, `languages`,
   `tangle-directories`, `min-lines-for-block-output`, `max-output-lines`).
 - **Its events-seam handlers** (`job-output`, `job-finished`), its
-  decorations (the running marker), its `*org-babel*` output buffer, its
+  decorations (the running sign), its `*org-babel*` output buffer, its
   store keys, and its `:help org-babel` page.
 - **Its code**, in its own modules (`src/babel/…`), not grown into
   `lib.rs`; its tests in the plugin repo; its user documentation in the
@@ -98,11 +101,14 @@ The `C-c C-v` prefix and its letters are emacs's (`org-babel-key-prefix`).
 Ex-commands are dashed and namespaced, per the naming rule.
 
 **Running is asynchronous and visible.** `C-c C-c` returns at once; the
-block's `#+begin_src` line gets a **decoration** (`⧗ running`, virtual text
-through org's existing `decorations` seam) so the user sees *which* block is
-working, and the output lands in `#+RESULTS:` when the job finishes — without
+block's `#+begin_src` line gets a **gutter sign** (`org.babel-running`, through
+org's existing `signs` and `decorations` seams) so the user sees *which* block
+is working, and the output lands in `#+RESULTS:` when the job finishes — without
 a keypress, because job events ride the plugin's event actor (lighthouse
-§3.0). The pending marker is deliberately **not a buffer edit**: an edit would
+§3.0). A sign and not end-of-line virtual text, which this fragment first
+said: the decorations seam carries gutter signs only, and a virtual-text seam
+would be a sixth host mechanism (§0) for a status marker. The gutter column
+is already reserved, so the sign appearing shifts nothing. The pending marker is deliberately **not a buffer edit**: an edit would
 be an undo step that leaves `: running…` behind when undone, would dirty the
 file, and would be saved into what emacs reads if the user saved mid-run. The
 result is one edit and one undo step. A block that is already running is not
@@ -243,6 +249,7 @@ capabilities = [
 	"proc:spawn:{org.babel.languages:command}",
 	"state:write",
 ]
+mode_gates = { "org-babel-mode" = "org.babel.enabled" }
 ```
 
 **What this protects and what it does not — said plainly.** The allowlist

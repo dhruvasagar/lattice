@@ -17,7 +17,8 @@ of them inside `org-babel-mode` (design §0).
 | OB.2                      | `proc:spawn:{option:field}` — the option-bound process grant **(lattice)** | ✅     |
 | OB.3                      | `post-effects` — effects from the events seam **(lattice)**                | ✅     |
 | OB.3a                     | Security follow-ups to OB.2/OB.3 — **blocks OB.R1** **(lattice)**          | ✅     |
-| OB.R1                     | lattice release carrying OB.1–OB.3 **(lattice)**                           | 📝     |
+| OB.3b                     | Per-mode switch `mode_gates` for `org.babel.enabled` **(lattice)**         | ✅     |
+| OB.R1                     | lattice release carrying OB.1–OB.3b **(lattice)**                          | 🚧     |
 | OB.4                      | `org-babel-mode`: the mode, its layer, its options **(plugin)**            | 📝     |
 | OB.5                      | Src blocks and header arguments, parsed and merged **(plugin)**            | 📝     |
 | OB.6                      | `C-c C-c` runs a block; output lands in `#+RESULTS:` **(plugin)**          | 📝     |
@@ -105,6 +106,8 @@ costs if it turns out wrong. Design-level decisions are also in
 | OB.3a | A picker's `delete-command` checked at registration; an UNREGISTERED name is kept | The host reads it from the registered spec; natives register at boot, so an unknown name can only become a plugin's own | a native command registered after a plugin's picker would be reachable as its delete verb |
 | OB.3a | Mode keymap bindings not gated | No args, fired by the user's key — cannot carry a command line | revisit if bindings gain args |
 | OB.3a | Picker rows naming a refused command are dropped, not the batch | One bad row must not blank the picker | a plugin author sees only a `warn!` |
+| OB.3b | `org.babel.enabled` is a host `mode_gates` entry, chosen by Dhruva | The guest cannot disable its own default mode without racing `org.enabled`'s gate | a manifest key, and `min_lattice` 0.10.3 |
+| OB.6 | The running marker is a gutter sign, chosen by Dhruva | The decorations seam is gutter-only; virtual text would be a new host mechanism for a status marker | not the `⧗ running` text the design first described |
 | OB.3 | "Both linkers" is structural — one bindgen `host-services` interface, one `PluginState` impl | Adding a function to the interface adds it to both | none |
 
 ## Global constraints
@@ -420,6 +423,28 @@ after phase 1 stopped. All three verified against source; none fixed yet.
   `--all-targets` adds nothing in touched files; docs-check clean after
   regenerating the plugin-API reference (the WIT gained doc comments).
 
+### OB.3b — a per-mode switch: `mode_gates` ✅ *(lattice)*
+
+Found while starting OB.4: `org.babel.enabled` had no mechanism. The loader's
+PM.3 gate is per PLUGIN (`org.enabled`) and re-enables every default mode on
+load and on each change, so the plugin's own `modes.disable-mode` would be
+undone by it. Dhruva chose (2026-11-22) a host mechanism over handler-level
+checks (the layer would stay, `:describe-key` would lie) and over
+guest-side enable/disable (relies on bus ordering beating the loader).
+
+**As built:** `PluginManifest::mode_gates` (`mode_gates = { "<mode>" =
+"<id>.<opt>" }`), refused at parse unless the mode is a default mode and the
+option is the plugin's own and not `<id>.enabled`. The loader registers the
+option (boolean, default true) if the plugin did not, and every
+`ModeEnablementRequested` it publishes — at load, on `<id>.enabled`, on the
+gate option — is computed from both switches (the changed one read from the
+event). `LoadedRecord::default_modes` went: the record's manifest carries it.
+Tests: `mode_gates_parse_and_are_validated` (manifest unit);
+`a_gated_mode_follows_its_own_option_and_the_plugins` (loader, real
+auto-pair component — re-enabling the plugin does not re-enable a feature
+switched off). Docs: `plugin-manager.md`, `plugin-authoring.md` manifest
+table, design §0. No WIT change.
+
 ### OB.R1 — lattice release 🚧 *(lattice)*
 
 **Prepared on the branch (2026-11-22):** the plugin API crates are 0.5.1 (the
@@ -536,7 +561,7 @@ the edit).
 `/data/babel/<new-uuid>.<ext>`; substitute `{file}` with
 `data-dir()/babel/<uuid>.<ext>`; `spawn-process`; store
 `babel/job/<id>` → `{ buffer, block_key, header, script }` with `store-put`;
-draw the running decoration (`refresh-decorations`). Refuse a block whose key
+place the running sign (`refresh-decorations`). Refuse a block whose key
 already has a live job, with an echo naming `:org-babel-cancel`.
 
 **Finish (events seam):** subscribe to `job-output` and `job-finished` in
@@ -544,7 +569,7 @@ already has a live job, with an echo naming `:org-babel-cancel`.
 `… N lines truncated`. On finish: read the store entry, re-read the buffer
 with `source-line`, re-find the block by key, format, `post-effects([apply-edit])`
 replacing the results extent (or inserting after `#+end_src`), clear the
-decoration, delete the script and the store entry. Echo the `err` text
+sign, delete the script and the store entry. Echo the `err` text
 verbatim for a non-`ok` outcome. No key match ⇒ `output-append("*org-babel*",
 …)` and an echo. `register-events` sweeps `/data/babel/`.
 
@@ -585,7 +610,7 @@ lines starting `*` or `#+` inside it.
 `confirm_carries_the_key_across_an_edit_made_while_the_prompt_is_open`;
 `confirm_off_runs_at_once`; `execute_buffer_asks_once_and_runs_in_order`;
 `execute_subtree_runs_only_its_blocks`; `cancel_kills_a_never_ending_block` —
-`sleep 1000`, one finish, decoration gone (Review focus #4);
+`sleep 1000`, one finish, sign gone (Review focus #4);
 `remove_result_deletes_exactly_the_results`.
 
 ### OB.8 — `:results`, `value`, `:dir` 📝 *(plugin)*

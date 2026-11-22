@@ -382,6 +382,21 @@ the **host never learns a mode-id statically** — the plugin's manifest names i
 enable-mode` handler (CI.5) remains for programmatic / conditional enablement of
 modes a plugin did not declare as default.
 
+**A feature inside a plugin gets a second switch (OB.3b, 2026-11-22).** One gate
+per plugin is right while a plugin is one feature. Org is several, and one of
+them — babel — runs programs: a user must be able to keep org and turn babel
+off. The manifest says which default mode is separable and which option turns
+it off, `mode_gates = { "org-babel-mode" = "org.babel.enabled" }`; the mode is
+enabled only while `<plugin-id>.enabled` **and** its option are true, and every
+request the manager publishes is computed from both. The option must be the
+plugin's own and the mode one of its default modes (refused at parse
+otherwise). The host owns this rather than the plugin because it cannot be
+done from inside: a guest calling `modes.disable-mode` races the manager's own
+gate, which re-enables every default mode on load and on each change to
+`<plugin-id>.enabled`, so the user's "off" would be undone by an unrelated
+toggle. Rejected: per-mode `<mode-id>.enabled` for every default mode — it
+would give org five switches nobody asked for to get the one that matters.
+
 **The toolchain reality — only user `Git`/`Local` sources need it.** Build-on-boot
 needs `rustup` + `wasm32-wasip2`, but that's only for a *user* who declares a
 source build. Core plugins are prebuilt (above), so a no-Rust user still gets

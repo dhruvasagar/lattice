@@ -557,6 +557,21 @@ pub struct PluginManifest {
     /// place that would have explained it. The singular `default_mode` key is
     /// still accepted and folds in here; a manifest may use either or both.
     pub default_modes: Vec<String>,
+    /// OB.3b: a default mode that the user can turn off on its own, as
+    /// `(mode, option)`: `mode_gates = { "org-babel-mode" = "org.babel.enabled" }`.
+    /// The mode is enabled only while `<id>.enabled` AND its option are both
+    /// true, and follows both. The loader registers the option (boolean,
+    /// default true) if the plugin has not.
+    ///
+    /// This is for a plugin carrying more than one feature set. `<id>.enabled`
+    /// turns the plugin on or off; this turns off one of its features (org's
+    /// babel, which runs programs) without the others. The plugin could not do
+    /// it itself: `modes.disable-mode` from the plugin races the loader's own
+    /// `<id>.enabled` gate, which re-enables every default mode it lists.
+    ///
+    /// Validated at parse: the mode must be one of `default_modes`, and the
+    /// option one of the plugin's own (`<id>.…`) and not `<id>.enabled`.
+    pub mode_gates: Vec<(String, String)>,
     /// PMF.1: the oldest editor this plugin runs on (`min_lattice = "0.9.10"`),
     /// as `(major, minor, patch)`. A manifest-format change (an embedded
     /// manifest, an option-bound grant) is not a plugin-API change, so the WIT
@@ -592,6 +607,9 @@ struct RawManifest {
     /// on-by-default mode. Merged with `default_mode`; either key alone works.
     #[serde(default)]
     default_modes: Vec<String>,
+    /// OB.3b: mode → the option that gates it, beside `<id>.enabled`.
+    #[serde(default)]
+    mode_gates: std::collections::BTreeMap<String, String>,
     /// PMF.1: the oldest editor version the plugin runs on (`"0.9.10"`).
     #[serde(default)]
     min_lattice: Option<String>,
@@ -639,6 +657,22 @@ pub enum ManifestError {
     /// PMF.1: `min_lattice` was not a `major.minor.patch` version.
     #[error("`min_lattice` `{0}` is not a version (expected `major.minor.patch`, e.g. `0.9.10`)")]
     MinLattice(String),
+
+    /// OB.3b: a `mode_gates` entry named a mode the manifest does not enable by
+    /// default, or an option that is not the plugin's own. A gate on a mode
+    /// that is not a default mode would never be consulted, and one on another
+    /// plugin's option would tie this plugin's feature to a setting the user
+    /// does not know is linked; both are refused rather than ignored, so the
+    /// author finds out at load and not from a switch that does nothing.
+    #[error("`mode_gates` entry `{mode}` = `{option}`: {why}")]
+    ModeGate {
+        /// The mode, as written.
+        mode: String,
+        /// The option, as written.
+        option: String,
+        /// What is wrong with it.
+        why: String,
+    },
 
     /// PMF.1: an embedded `lattice-manifest` section was not UTF-8 text.
     #[error("the component's embedded `lattice-manifest` section is not UTF-8 text")]
@@ -698,6 +732,7 @@ impl PluginManifest {
             provides: Vec::new(),
             doc: None,
             default_modes: Vec::new(),
+            mode_gates: Vec::new(),
             min_lattice: None,
         }
     }
@@ -754,8 +789,46 @@ impl PluginManifest {
                 Some(parse_version(v).ok_or_else(|| ManifestError::MinLattice(v.to_string()))?)
             }
         };
+        let default_modes: Vec<String> = raw
+            .default_mode
+            .into_iter()
+            .chain(raw.default_modes)
+            .map(|m| m.trim().to_string())
+            .filter(|m| !m.is_empty())
+            .fold(Vec::new(), |mut acc, m| {
+                if !acc.contains(&m) {
+                    acc.push(m);
+                }
+                acc
+            });
+        let mut mode_gates = Vec::new();
+        for (mode, option) in raw.mode_gates {
+            let (mode, option) = (mode.trim().to_string(), option.trim().to_string());
+            let refuse = |why: &str| ManifestError::ModeGate {
+                mode: mode.clone(),
+                option: option.clone(),
+                why: why.to_string(),
+            };
+            if !default_modes.contains(&mode) {
+                return Err(refuse("the mode is not one of `default_modes`"));
+            }
+            let own = format!("{}.", raw.id);
+            if !option.starts_with(&own) || option.len() == own.len() {
+                return Err(refuse(&format!(
+                    "the option is not one of this plugin's own (`{own}…`)"
+                )));
+            }
+            if option == format!("{}.enabled", raw.id) {
+                return Err(refuse(&format!(
+                    "`{}.enabled` already gates every default mode",
+                    raw.id
+                )));
+            }
+            mode_gates.push((mode, option));
+        }
         Ok(Self {
             min_lattice,
+            mode_gates,
             id: raw.id,
             requested,
             editor_capabilities: editor,
@@ -765,18 +838,7 @@ impl PluginManifest {
             // then the list. Blanks dropped and duplicates collapsed: a
             // manifest that says the same mode both ways must not publish two
             // enablement requests for it.
-            default_modes: raw
-                .default_mode
-                .into_iter()
-                .chain(raw.default_modes)
-                .map(|m| m.trim().to_string())
-                .filter(|m| !m.is_empty())
-                .fold(Vec::new(), |mut acc, m| {
-                    if !acc.contains(&m) {
-                        acc.push(m);
-                    }
-                    acc
-                }),
+            default_modes,
         })
     }
 
@@ -1163,6 +1225,43 @@ mod tests {
     /// The blocker this fixes: a plugin with two on-by-default modes could
     /// name only one, and the other stayed registered, correct, and inert —
     /// the chord simply did nothing, with no message anywhere.
+    #[test]
+    fn mode_gates_parse_and_are_validated() {
+        let m = PluginManifest::from_toml_str(
+            "id = \"org\"\ndefault_modes = [\"org-mode-a\", \"org-babel-mode\"]\n\
+             mode_gates = { \"org-babel-mode\" = \"org.babel.enabled\" }\n",
+        )
+        .unwrap();
+        assert_eq!(
+            m.mode_gates,
+            vec![(
+                "org-babel-mode".to_string(),
+                "org.babel.enabled".to_string()
+            )]
+        );
+        let refused = |toml: &str| match PluginManifest::from_toml_str(toml) {
+            Err(ManifestError::ModeGate { why, .. }) => why,
+            other => panic!("expected a mode-gate refusal, got {other:?}"),
+        };
+        // Not a default mode: the gate would never be consulted.
+        assert!(refused(
+            "id = \"org\"\ndefault_modes = [\"a-mode\"]\nmode_gates = { \"b-mode\" = \"org.b\" }\n"
+        )
+        .contains("default_modes"));
+        // Another plugin's option, or the bare namespace.
+        for option in ["lsp.enabled", "org.", "orgx.enabled"] {
+            assert!(refused(&format!(
+                "id = \"org\"\ndefault_modes = [\"a-mode\"]\nmode_gates = {{ \"a-mode\" = \"{option}\" }}\n"
+            ))
+            .contains("own"));
+        }
+        // The plugin's own switch is not a second one.
+        assert!(refused(
+            "id = \"org\"\ndefault_modes = [\"a-mode\"]\nmode_gates = { \"a-mode\" = \"org.enabled\" }\n"
+        )
+        .contains("already gates"));
+    }
+
     #[test]
     fn parses_plural_default_modes_and_merges_them_with_the_singular() {
         let m = PluginManifest::from_toml_str(

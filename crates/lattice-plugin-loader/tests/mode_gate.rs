@@ -311,3 +311,140 @@ async fn two_default_modes_are_both_enabled_by_the_one_gate() {
         ],
     );
 }
+
+/// OB.3b — a default mode the manifest names in `mode_gates` has a switch of
+/// its own, beside the plugin's.
+///
+/// What it is for: org carries babel, which runs programs, beside features
+/// that do not, and a user must be able to turn babel off and keep org. The
+/// plugin could not do that itself — `modes.disable-mode` from the guest races
+/// this very gate, which re-enables every default mode on load and whenever
+/// `<id>.enabled` changes. So the host owns both switches, and every request
+/// it publishes is computed from both.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_gated_mode_follows_its_own_option_and_the_plugins() {
+    let Some(wasm) = auto_pair_wasm() else {
+        eprintln!("skipping: auto-pair wasm not built");
+        return;
+    };
+    let base = tempfile::tempdir().unwrap();
+    let plugins_dir = base.path().join("plugins");
+    let dir = plugins_dir.join("auto-pair");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("plugin.toml"),
+        "id = \"auto-pair\"\n\
+         provides = [\"grammar\", \"modes\", \"config\"]\n\
+         editor_capabilities = [\"tree-sitter\"]\n\
+         default_modes = [\"auto-pair-mode\", \"auto-pair-extra-mode\"]\n\
+         mode_gates = { \"auto-pair-extra-mode\" = \"auto-pair.extra.enabled\" }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("component.wasm"),
+        lattice_plugin_host::manifest::without_embedded_manifest(&wasm),
+    )
+    .unwrap();
+
+    let bus = Arc::new(EventBus::new());
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    bus.subscribe(
+        EventFilter::kind(EventKind::ModeEnablementRequested),
+        SubscriptionTarget::Channel(tx),
+    );
+    let config = Arc::new(ConfigRegistry::default());
+    let host = Arc::new(
+        PluginHost::with_dirs(base.path().join("cache"), base.path().join("data")).unwrap(),
+    );
+    let loader = Arc::new(PluginLoader::with_services(
+        host,
+        LoaderServices {
+            runtime: Some(tokio::runtime::Handle::current()),
+            bus: Some(bus.clone()),
+            command_registry: Some(empty_command_registry()),
+            mode_registry: Some(empty_mode_registry()),
+            config_registry: Some(config.clone()),
+            keymap: Some(KeymapHandle::new()),
+            ..Default::default()
+        },
+    ));
+    loader.subscribe_mode_gates();
+    loader
+        .discover_and_load(&plugins_dir, TrustTier::Bundled)
+        .await;
+
+    // Both on at load, and the gate's option registered, default true.
+    let mut on = Vec::new();
+    for _ in 0..2 {
+        on.push(next_enablement(&mut rx).await.expect("an enable request"));
+    }
+    assert_eq!(
+        on,
+        vec![
+            ("auto-pair-mode".to_string(), true),
+            ("auto-pair-extra-mode".to_string(), true),
+        ]
+    );
+    assert_eq!(
+        config
+            .lookup("auto-pair.extra.enabled")
+            .map(|o| o.get_formatted()),
+        Some("true".to_string()),
+        "the loader registers the gate's option"
+    );
+
+    // The mode's own switch off: that mode, and only that mode, goes.
+    set(&bus, &config, "auto-pair.extra.enabled", false);
+    assert_eq!(
+        next_enablement(&mut rx).await,
+        Some(("auto-pair-extra-mode".to_string(), false))
+    );
+    assert_eq!(
+        next_enablement(&mut rx).await,
+        None,
+        "the ungated mode is left alone"
+    );
+
+    // The plugin off, then on again: the gated mode stays off, because its
+    // own switch still is. This is the race the gate exists to win.
+    set(&bus, &config, "auto-pair.enabled", false);
+    let mut off = Vec::new();
+    for _ in 0..2 {
+        off.push(next_enablement(&mut rx).await.expect("a disable request"));
+    }
+    assert!(off.iter().all(|(_, on)| !on), "{off:?}");
+    set(&bus, &config, "auto-pair.enabled", true);
+    let mut back = Vec::new();
+    for _ in 0..2 {
+        back.push(next_enablement(&mut rx).await.expect("a re-enable request"));
+    }
+    assert_eq!(
+        back,
+        vec![
+            ("auto-pair-mode".to_string(), true),
+            ("auto-pair-extra-mode".to_string(), false),
+        ],
+        "re-enabling the plugin must not re-enable a feature the user turned off"
+    );
+
+    // And the mode's switch back on, with the plugin on: it returns.
+    set(&bus, &config, "auto-pair.extra.enabled", true);
+    assert_eq!(
+        next_enablement(&mut rx).await,
+        Some(("auto-pair-extra-mode".to_string(), true))
+    );
+}
+
+/// What `:set name=value` does, for a harness with no publisher wired: the
+/// registry takes the value, then the bus hears it changed.
+fn set(bus: &EventBus, config: &ConfigRegistry, name: &str, value: bool) {
+    let old = config.lookup(name).map(|o| o.get_formatted());
+    config
+        .parse_and_set_command(&format!("{name}={value}"))
+        .unwrap();
+    bus.publish(Event::OptionChanged {
+        name: name.to_string(),
+        old,
+        new: value.to_string(),
+    });
+}

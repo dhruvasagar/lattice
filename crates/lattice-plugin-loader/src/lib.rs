@@ -200,15 +200,12 @@ struct LoadedRecord {
     /// PL8.H.1: live health — `Healthy` at load, flipped to `Quarantined` by the
     /// `Event::PluginCrashed` subscription ([`PluginLoader::subscribe_health`]).
     health: PluginHealth,
-    /// PM.3: the mode this plugin enables by default (from its manifest), gated by
-    /// `<id>.enabled`. Kept so the `OptionChanged` subscription
-    /// ([`PluginLoader::subscribe_mode_gates`]) can map a changed `<id>.enabled`
-    /// back to the modes to (de)activate. Empty ⇒ no default mode.
-    default_modes: Vec<String>,
     /// PM.8a: where the plugin came from (its `.source` marker at load time).
     source: crate::source_record::SourceRecord,
     /// PMF.4: the manifest it loaded from, so a change to an option one of its
-    /// grants follows can be re-resolved without re-reading the plugin.
+    /// grants follows can be re-resolved without re-reading the plugin — and,
+    /// for PM.3 / OB.3b, so a changed `<id>.enabled` or `mode_gates` option maps
+    /// back to the default modes to (de)activate.
     manifest: lattice_plugin_host::PluginManifest,
     /// PMF.3/PMF.4: how its option-bound grants resolved at load — compared
     /// against a fresh resolution when such an option changes, and shown in
@@ -1309,7 +1306,6 @@ impl PluginLoader {
             granted,
             denied,
             health: PluginHealth::Healthy,
-            default_modes: manifest.default_modes.clone(),
             source: plugin.source.clone(),
             manifest: manifest.clone(),
             option_bound: outcome.option_bound.clone(),
@@ -1583,7 +1579,7 @@ impl PluginLoader {
         // (auto-pair on out of the box), user-overridable via `:set
         // <id>.enabled=false`. Subsequent changes are handled by
         // `subscribe_mode_gates`.
-        self.apply_default_mode_gate(&manifest.id, &manifest.default_modes);
+        self.apply_default_mode_gate(manifest);
         // PMF.4: the plugin has registered its options by now; a grant default
         // that disagrees with the option's own default is a plugin bug the user
         // would otherwise meet as a refusal.
@@ -1669,8 +1665,11 @@ impl PluginLoader {
     /// `default_mode`, then request the mode's enablement to match the option's
     /// current value. A no-op when the plugin declares no default mode, or when no
     /// config registry / bus is wired.
-    fn apply_default_mode_gate(&self, plugin_id: &str, default_modes: &[String]) {
-        if default_modes.is_empty() {
+    ///
+    /// OB.3b: a mode the manifest names in `mode_gates` also needs its own
+    /// option true; that option is registered here too, if the plugin has not.
+    fn apply_default_mode_gate(&self, manifest: &lattice_plugin_host::PluginManifest) {
+        if manifest.default_modes.is_empty() {
             return;
         }
         let (Some(registry), Some(bus)) =
@@ -1678,30 +1677,60 @@ impl PluginLoader {
         else {
             return;
         };
-        let option = Self::enabled_option_name(plugin_id);
         // Idempotent: a re-load (or a plugin that declared the option itself)
         // leaves the existing value untouched; only the first load registers it.
         lattice_plugin_host::config_host::register_plugin_option(
             registry,
-            &option,
+            &Self::enabled_option_name(&manifest.id),
             lattice_plugin_host::config_host::PluginOptionKind::Boolean,
             "true",
             "Enable this plugin's default mode.",
         );
-        let enabled = registry
-            .lookup(&option)
-            .map(|opt| opt.get_formatted() == "true")
-            .unwrap_or(true);
+        for (mode, option) in &manifest.mode_gates {
+            lattice_plugin_host::config_host::register_plugin_option(
+                registry,
+                option,
+                lattice_plugin_host::config_host::PluginOptionKind::Boolean,
+                "true",
+                &format!("Enable `{mode}`, while `{}.enabled` is on.", manifest.id),
+            );
+        }
         // One gate, N modes (OC.1a). `<id>.enabled` is the PLUGIN's switch, so
         // a plugin with two on-by-default modes gets one option rather than
         // one per mode — the user is turning org on or off, not curating its
-        // internals.
-        for mode in default_modes {
+        // internals. A mode that is a separable feature says so in
+        // `mode_gates` (OB.3b) and gets a second, narrower switch.
+        let read = |option: &str| Self::option_is_on(registry, option);
+        for mode in &manifest.default_modes {
             bus.publish(lattice_protocol::Event::ModeEnablementRequested {
                 mode: mode.clone(),
-                enabled,
+                enabled: Self::mode_is_on(manifest, mode, &read),
             });
         }
+    }
+
+    /// A boolean option's value, `true` when it is missing: a gate the
+    /// registry does not hold has not been turned off.
+    fn option_is_on(registry: &ConfigRegistry, option: &str) -> bool {
+        registry
+            .lookup(option)
+            .map(|opt| opt.get_formatted() == "true")
+            .unwrap_or(true)
+    }
+
+    /// Whether a default `mode` of `manifest` should be enabled: `<id>.enabled`
+    /// and, when `mode_gates` names one, the mode's own option (OB.3b).
+    fn mode_is_on(
+        manifest: &lattice_plugin_host::PluginManifest,
+        mode: &str,
+        read: &dyn Fn(&str) -> bool,
+    ) -> bool {
+        read(&Self::enabled_option_name(&manifest.id))
+            && manifest
+                .mode_gates
+                .iter()
+                .filter(|(gated, _)| gated == mode)
+                .all(|(_, option)| read(option))
     }
 
     /// PM.7/PM.8 follow-up: honour a `require`'s `enable-mode` sugar.
@@ -2091,27 +2120,54 @@ impl PluginLoader {
                 let Event::OptionChanged { name, new, .. } = event else {
                     continue;
                 };
-                let Some(plugin_id) = name.strip_suffix(".enabled") else {
+                if !name.ends_with(".enabled") {
                     continue;
-                };
+                }
                 let Some(loader) = weak.upgrade() else { break };
-                // Map `<id>.enabled` → the loaded plugin's default modes.
-                let modes = {
+                // `<id>.enabled` → every default mode of that plugin; an
+                // OB.3b gate option → the modes it gates. Each is recomputed
+                // from BOTH switches, reading the changed one from the event
+                // (the registry may not have caught up with it) and the other
+                // from the registry.
+                let manifests: Vec<lattice_plugin_host::PluginManifest> = {
                     let loaded = loader
                         .loaded
                         .lock()
                         .expect("plugin-loader loaded-set mutex poisoned");
                     loaded
                         .iter()
-                        .find(|r| r.name == plugin_id)
-                        .map(|r| r.default_modes.clone())
-                        .unwrap_or_default()
+                        .filter(|r| {
+                            name == Self::enabled_option_name(&r.name)
+                                || r.manifest.mode_gates.iter().any(|(_, o)| *o == name)
+                        })
+                        .map(|r| r.manifest.clone())
+                        .collect()
                 };
-                for mode in modes {
-                    bus.publish(lattice_protocol::Event::ModeEnablementRequested {
-                        mode,
-                        enabled: new == "true",
-                    });
+                let registry = loader.env.config_registry.clone();
+                let read = |option: &str| {
+                    if option == name {
+                        new == "true"
+                    } else {
+                        registry
+                            .as_deref()
+                            .is_none_or(|r| Self::option_is_on(r, option))
+                    }
+                };
+                for manifest in &manifests {
+                    let plugin_switch = name == Self::enabled_option_name(&manifest.id);
+                    for mode in &manifest.default_modes {
+                        let gated_here = manifest
+                            .mode_gates
+                            .iter()
+                            .any(|(m, o)| m == mode && *o == name);
+                        if !plugin_switch && !gated_here {
+                            continue;
+                        }
+                        bus.publish(lattice_protocol::Event::ModeEnablementRequested {
+                            mode: mode.clone(),
+                            enabled: Self::mode_is_on(manifest, mode, &read),
+                        });
+                    }
                 }
             }
         });

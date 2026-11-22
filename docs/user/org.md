@@ -79,6 +79,21 @@ grant to edit, and org reloads itself when they change. A write anywhere else
 is refused with a message naming the option. See [Capabilities and your
 configuration](help:plugins#capabilities-and-your-configuration).
 
+### Where org may run programs
+
+Babel runs a file's source blocks (`C-c C-c` in one), and it may run only the
+programs you list in `org.babel.languages`. The default list is empty, so a
+fresh install runs nothing:
+
+```toml
+[[org.babel.languages]]
+name    = "sh"
+command = "sh"
+```
+
+As with the directories, your list is the grant: org cannot add a program to
+it, and it reloads when the list changes.
+
 Confirm it loaded with `:plugins`, and reach for `:plugin-trace` if it did not.
 
 ## What you get
@@ -93,6 +108,7 @@ Confirm it loaded with `:plugins`, and reach for `:plugin-trace` if it did not.
 | **Habits** | repeating tasks with a consistency graph under their agenda row |
 | **Roam** | a Zettelkasten layer: id links, backlinks, dailies, and notes that nest. A note created while you write another links into it, or back to it |
 | **Clocking** | clock in and out, with the running clock in your modeline |
+| **Babel** | run source blocks in the background and keep their output under them as `#+RESULTS:`, byte-for-byte as emacs writes it — tables, drawers, values, append or replace |
 
 The agenda is a **multibuffer**: its rows are real excerpts of your files, so
 editing a row edits the file and `:w` saves it. That is why it behaves like the
@@ -121,8 +137,10 @@ the habit rules. It versions with the code.
 - **`doc/org.md`** in the plugin repository — the complete reference.
 - **`doc/roam.md`** — roam has its own page: nodes, the index, backlinks,
   the journal, note templates, and nesting notes inside captures.
+- **`doc/babel.md`** — babel: the languages table, running and cancelling,
+  `:results`, value wrappers and `:dir`.
 - **`:help`** inside lattice — the plugin contributes its own help topics at
-  load (`:help org`, `:help org.roam`), so they describe the version you have
+  load (`:help org`, `:help org.roam`, `:help org.babel`), so they describe the version you have
   installed.
 
 This page is deliberately thin. Duplicating that reference here would put two

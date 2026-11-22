@@ -24,7 +24,7 @@ of them inside `org-babel-mode` (design §0).
 | OB.5                      | Src blocks and header arguments, parsed and merged **(plugin)**            | ✅     |
 | OB.6                      | `C-c C-c` runs a block; output lands in `#+RESULTS:` **(plugin)**          | ✅     |
 | OB.7                      | Confirm, cancel, execute-buffer / -subtree, remove-result **(plugin)**     | ✅     |
-| OB.8                      | `:results` — insertion, format, `value` wrappers, `:dir` **(plugin)**      | 📝     |
+| OB.8                      | `:results` — insertion, format, `value` wrappers, `:dir` **(plugin)**      | ✅     |
 | **Phase 2 — tangle**      |                                                                            |        |
 | OB.9                      | `write-to-file` gains a `whole` anchor **(lattice)**                       | 📝     |
 | OB.10                     | `:tangle` **(plugin)**                                                     | 📝     |
@@ -696,7 +696,7 @@ a `*org-babel*` that `output-append` never creates — now
 `:org-babel-output` opens it, and a failed append says the output was lost
 instead of pointing at an empty buffer.
 
-### OB.8 — `:results`, `value`, `:dir` 📝 *(plugin)*
+### OB.8 — `:results`, `value`, `:dir` ✅ *(plugin)*
 
 **Files:** `src/babel/results.rs`, `src/babel/wrappers.rs`.
 
@@ -717,6 +717,19 @@ host); `value_without_a_wrapper_falls_back_to_output_and_says_so`;
 
 **Docs:** complete the Babel section of `doc/org.md`, `:help org-babel`, and
 lattice's `docs/user/org.md`. Plugin release (`min_lattice` = OB.R1).
+
+**As built (org `bdc83a0`):** as planned, plus `org` (a `#+begin_src org`)
+and babel's synonyms (`scalar`, `vector`, `discard`). `:results` words babel
+has and this does not (`file`, `list`, `html`, `latex`, `link`, `graphics`,
+`pp`) REFUSE the run before the confirm, by name — not written verbatim.
+Tables align as `org-table-align` (numeric columns right). Wrappers embed the
+body as hex so it cannot break out of a literal, and cut at the LAST
+sentinel (the run's uuid); no sentinel ⇒ the whole output (the traceback) is
+the result. Python accepts a trailing expression or a `return`. A block with
+no `:dir` runs in its file's directory (`doc.path()`), as emacs's
+`default-directory`. The `value`-without-wrapper echo is once per guest
+instance. Lattice's `docs/user/org.md` gained a babel row and "where org may
+run programs"; `:help org.babel` is `doc/babel.md`.
 
 ## Phase 2 — tangle
 

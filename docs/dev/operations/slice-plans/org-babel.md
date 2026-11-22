@@ -33,6 +33,64 @@ of them inside `org-babel-mode` (design §0).
 | OB.14                     | `spawn-interactive` + job stdin **(lattice)**                              | 📝     |
 | OB.15                     | `:session` **(plugin)**                                                    | 📝     |
 
+## Where this stands (2026-11-22)
+
+**Phase 1's lattice half is done: OB.1–OB.3 ✅, on branch `org-babel-phase-1`**
+(not yet merged to `main`, not pushed when this was written):
+
+| Commit | Slice |
+|---|---|
+| `7601db92` | design fragment + this plan |
+| `00fd3690` | OB.1 — list-valued option-bound grants |
+| `f21e2d5a` | OB.2 — `proc:spawn:{option:field}` |
+| `1cd970e5` | OB.3 — `post-effects` |
+
+**Verified per slice:** the slice's own tests, `cargo clippy --lib --bins`
+(zero production warnings), rustdoc + doc coverage, and the site build — the
+commands and counts are in each slice's *As built* block below.
+**Not yet run, and owed before merging:**
+
+1. The whole-crate suites for the crates touched — `lattice-config`,
+   `lattice-plugin-host`, `lattice-plugin-loader`, `lattice-wit`,
+   `lattice-plugin-api` — and `lattice-host` (only its boot pin was run). One
+   crate at a time, throttled (`CARGO_BUILD_JOBS=3 nice`), when the machine is
+   free.
+2. A fresh whole-branch code review of `7601db92..1cd970e5`, with the Review
+   focus list above and the decision log below as its brief.
+
+**Next:** OB.R1 (the release — see its section for what it must bump), then
+the plugin slices from OB.4 in `lattice-org-plugin`.
+
+**Toolchain note:** `scripts/docs-check.sh` runs rustdoc on `stable`; on the
+machine this was built on that was rustc 1.93, which some dependencies refuse.
+Run it with `DOCS_CHECK_TOOLCHAIN=1.94.0` (the pinned toolchain) until `stable`
+is updated — the failure is environmental, not the branch's.
+
+## Decision log
+
+Every call made while building, beyond what the design states, with what it
+costs if it turns out wrong. Design-level decisions are also in
+[`org-babel.md`](../../architecture/org-babel.md); this is the complete list.
+
+| Slice | Decision | Why | Cost if wrong |
+|---|---|---|---|
+| OB.1 | Each entry of a list grant is its own `OptionBoundGrant` (same `option`), not a `Vec` on one | No consumer type changes; `:plugins`, refusals and the loader read it as before | `:plugins` shows one line per directory |
+| OB.1 | `announce_moved_grants` compares per option over all entries (`moved_grant_options`) | Pairing entries one-for-one missed a list that GAINED an entry, so the plugin never reloaded onto it | none |
+| OB.1 | The grant reads the option as a `ConfigValue`, and a held value whole (`ConfigRegistry::held_config_value`) | A list flattened to text loses its entries | none |
+| OB.2 | Syntax `proc:spawn:{option:field}` / `{option}`, not `{option.field}` | Option names contain dots | a manifest string to change before org ships |
+| OB.2 | No `\|default` on a process grant | Nothing runs until the user configures it | none |
+| OB.2 | Commands compared as written, no `PATH` resolution | `sh` must not silently permit `/bin/sh` or another `sh` | a user writing `/usr/bin/python3` in config must request exactly that |
+| OB.2 | **A process grant follows only user-authored values** (`Authorship::UserOnly`): an option still at the default the plugin registered grants nothing | Security review: a plugin defaulting its list to `sh` would grant itself a shell | a user who sets the option to exactly the plugin's default is ignored (no provenance on option values) |
+| OB.2 | **Remembered values carry whether the user wrote them** (`GrantGuard::remembered: (ConfigValue, bool)`) | Security review: a directory grant on the same option remembered the default and laundered it into the process grant after a reload | none |
+| OB.2 | `register-server` still needs unbound `proc:spawn` | An option-bound grant was not given to register language servers | none |
+| OB.2 | `:plugins` shows the template (`proc:spawn:{org.babel.languages:command}`), not the resolved commands | Smallest change; the option is what the user edits | the user sees the option, not the list |
+| OB.2 | The grammar-seam spawn is covered by the shared `process_host::prepare` check, not a grammar fixture; cancel-on-reload by the existing `PluginState`-owned job teardown | Both seams reach the same check; teardown is already tested | a seam-specific regression shows only in `prepare`'s tests |
+| OB.3 | A refused posted effect becomes the usual warning and the call answers `ok`; `err` only when no sink is wired | Same as a returned effect; the plan's "err names the first refused" would have made posting differ from returning | a guest cannot branch on a refusal — the user sees it instead |
+| OB.3 | The sink is wired in `lattice-plugin-loader::install` from `boot.inbound`; no `LoaderServices` field; `lattice-host` untouched | The loader already owns plugin seam wiring; `WiredSeams.effect_sink` is the boot pin | none |
+| OB.3 | "Without a keypress" proven by composition, not a new full-editor plugin test | Each link already had a test: the post (`post_effects_seam.rs`), the inbound wake (`lattice-mode`), a drained `ApplyEdit` (`off_keystroke_applies_edits.rs`), the wire (boot pin) | a break where the links meet is caught only by the boot pin |
+| OB.3 | No WIT package version bump | Additive; the ABI fingerprint already marks built plugins stale | OB.R1 must bump the published crates before org can use it |
+| OB.3 | "Both linkers" is structural — one bindgen `host-services` interface, one `PluginState` impl | Adding a function to the interface adds it to both | none |
+
 ## Global constraints
 
 - **Mode ownership (design §0).** Every plugin slice's code is under
@@ -113,6 +171,21 @@ values it resolved, so PMF.4's "grant changed ⇒ reload" compares lists.
 - `changing_a_list_entry_reloads_the_plugin` — PMF.4 over a list.
 - `a_plugin_cannot_set_its_own_list_grant_option` — PMF.5 refuses `set-option`.
 
+
+**As built** (`00fd3690`): `grant_with`'s closure returns
+`Option<ConfigValue>` and resolves through `option_paths`; a registered option
+is read with `get_value()`, an unregistered one from
+`ConfigRegistry::held_config_value` (new) or the remembered value. Tests:
+`a_list_option_grants_each_entry`, `an_empty_list_grants_nothing_and_does_not_fall_back`,
+`blank_and_non_string_list_entries_grant_nothing`, `a_record_value_grants_no_path`
+(`capability.rs`); `a_held_list_is_in_the_first_grant_entry_by_entry`,
+`a_registered_list_option_grants_its_entries_and_tracks_changes`,
+`a_plugin_cannot_set_its_own_list_grant_option` (`lib.rs`);
+`held_config_value_keeps_a_list_whole_and_a_scalar_as_a_string`
+(`lattice-config`); `moved_grant_tests` ×3 (`lattice-plugin-loader`). The
+reload test the plan named is the loader's existing `grant_follows_option.rs`,
+which now compares per option.
+
 ### OB.2 — `proc:spawn:{option:field}` ✅ *(lattice)*
 
 **Manifest form:** `proc:spawn:{org.babel.languages:command}` — an option name,
@@ -142,7 +215,19 @@ the user sets equal to that default is therefore ignored too — the price of
 having no provenance on option values; set any other value, or hold it in
 `lattice.toml`, where it counts.
 
-**As built, beyond the plan:** the grammar-seam test is covered by the shared
+**As built** (`f21e2d5a`): `Capability::ProcSpawnOption(SpawnOption)` in
+`manifest.rs`; `CapabilityGrant { spawn_commands, spawn_options }` +
+`may_spawn`, `GrantOutcome::spawn_bound` (`SpawnBoundGrant`) and
+`option_commands` in `capability.rs`; the check in `process_host::prepare`; the
+loader records `spawn_bound` and reloads on it. Tests: the OB.2 block in
+`capability.rs`; `a_plugins_own_default_never_grants_a_program`,
+`a_default_is_not_remembered_into_a_spawn_grant`,
+`a_default_remembered_for_a_directory_grant_is_no_program`,
+`a_held_languages_list_grants_its_programs` (`lib.rs`); two `prepare` tests in
+`process_host.rs`; `tests/spawn_option_grant.rs` ×4; the loader's
+`the_plugin_reloads_when_its_spawn_option_moves`.
+
+**Beyond the plan:** the grammar-seam test is covered by the shared
 check in `process_host::prepare` (unit-tested), not a grammar fixture;
 `register-server` needs unbound `proc_spawn`, pinned by
 `a_user_plugin_is_granted_exactly_the_configured_commands`; job cancel on
@@ -196,18 +281,40 @@ fixture):
 - `a_guest_importing_post_effects_instantiates_on_both_linkers` — guards the
   unwired-import failure.
 
-**As built:** refused effects become a warning echo (as returned ones do) and
+**As built** (`1cd970e5`): refused effects become a warning echo (as returned ones do) and
 the call still answers `ok`; `err` means no sink was wired. The sink is set in
 `lattice-plugin-loader::install` from `boot.inbound`, and `WiredSeams.effect_sink`
 is the boot pin. "Without a keypress" is proven by composition — the post
 reaching the sink (`post_effects_seam.rs`), the inbound wake (`lattice-mode`),
 a drained `ApplyEdit` applying (`off_keystroke_applies_edits.rs`) — not by a new
 full-editor plugin test. No WIT version bump here; OB.R1 decides crate versions.
+Also: `PluginHost::set_effect_sink` / `effect_sink_wired`,
+`PluginEffectSinkHandle`, `effect_from_guest` made `pub(crate)`; the events
+fixture gained a `post-request` trigger and the `@example` for
+`host-services.post-effects`; the plugin-API reference was regenerated
+(`UPDATE_SITE_REFERENCE=1 cargo test -p lattice-plugin-api`).
 
 ### OB.R1 — lattice release 📝 *(lattice)*
 
-A release carrying OB.1–OB.3, via `docs/dev/operations/releasing.md`. The
-plugin's `min_lattice` moves to it in OB.4.
+A release carrying OB.1–OB.3, via `docs/dev/operations/releasing.md`. What it
+must take care of, beyond the usual:
+
+- **The plugin API crates.** OB.3 added `post-effects` to `host-services` and
+  bumped nothing. `lattice-org-plugin` builds against the *published*
+  `lattice-wit` / `lattice-plugin-sdk` / `lattice-plugin-sdk-derive`, so those
+  must be published with the new WIT before OB.4 can call it. Choose the
+  version per `crates/lattice-wit/README.md` (crate `major.minor` = the WIT
+  package's); `the_crate_versions_track_the_wit_package_version` pins them
+  together, so bump all three at once if the package version moves.
+- **Built plugins go stale.** Any WIT edit moves `lattice_wit::ABI_FINGERPRINT`,
+  so every plugin built against the old WIT is flagged stale until rebuilt —
+  the bundled ones by `cargo xtask build-core-plugins`, user plugins on their
+  next build. Say so in the release notes.
+- **Release notes** name the user-visible change: user-installed plugins may
+  now run programs you list in their options (`docs/user/plugins.md`,
+  "What a plugin may run").
+
+The plugin's `min_lattice` moves to this release in OB.4.
 
 ### OB.4 — `org-babel-mode` 📝 *(plugin)*
 

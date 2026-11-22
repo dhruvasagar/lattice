@@ -193,7 +193,9 @@ cannot run anything.
 
 1. **Option-bound grants may read a list.** `{org.babel.tangle-directories}`
    names a `list<string>` option; each entry becomes one `FsGrant`. The
-   existing scalar form is the one-element case. This is what lets tangling
+   existing scalar form is the one-element case. Each entry is reported as its
+   own resolved grant naming the option, and a list that gains or loses an
+   entry counts as a moved grant (PMF.4 reload). This is what lets tangling
    write outside `org.directory` without granting the plugin the whole disk.
 2. **`proc:spawn:{option:field}` — an option-bound process grant.** The option is a
    list of records (the config seam's structured `schema-node`s already carry

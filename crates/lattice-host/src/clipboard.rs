@@ -430,8 +430,10 @@ mod tests {
 
     #[test]
     fn win32yank_is_preferred_over_powershell() {
+        // Joined, not spelled `/a:/b`: Windows separates `PATH` with `;`.
+        let path = std::env::join_paths(["/a", "/b"]).unwrap();
         let tool = WslTool::find(
-            Some(OsStr::new("/a:/b")),
+            Some(&path),
             present(&["/a/powershell.exe", "/b/win32yank.exe"]),
         );
         assert_eq!(

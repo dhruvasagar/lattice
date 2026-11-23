@@ -3833,7 +3833,23 @@ impl PluginState {
     /// Shared body of `enable-mode` / `disable-mode` (CI.4): publish the
     /// host-internal enablement request onto the plugin's bus (the same
     /// `event_emit` handle `emit-event` uses).
+    ///
+    /// Only the user's `init.rs` may ask (review, 2026-11-23). This is the
+    /// user-enablement path, and from any other plugin it was a way to turn
+    /// a mode on that the user had switched off (`org.babel.enabled =
+    /// false`, which the grant guard keeps a plugin from setting), or to
+    /// turn another plugin's mode off.
     fn request_mode_enablement(&mut self, mode: String, enabled: bool) {
+        if !self.is_config_authority() {
+            // `info!`: one-shot and user-actionable, as a refused option is.
+            tracing::info!(
+                plugin = ?self.plugin_name,
+                %mode,
+                enabled,
+                "enable-mode/disable-mode refused: only init.rs may turn modes on or off"
+            );
+            return;
+        }
         match &self.event_emit {
             Some(ctx) => ctx
                 .bus
@@ -5921,6 +5937,61 @@ mod held_options_tests {
                 "org.directroy".to_string(),
                 lattice_config::HeldSource::Init
             )]
+        );
+    }
+}
+
+#[cfg(test)]
+mod mode_enablement_tests {
+    //! Review, 2026-11-23: `enable-mode` / `disable-mode` are the user's
+    //! `init.rs`'s, and from any other plugin they publish nothing.
+
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+    use crate::mode_host::bindings::lattice::plugin_host::modes::Host as ModesHost;
+    use lattice_protocol::EventKind;
+    use lattice_runtime::{EventFilter, SubscriptionTarget};
+
+    fn requests_from(plugin: &str) -> Vec<lattice_protocol::Event> {
+        let base = tempfile::tempdir().unwrap();
+        let host =
+            PluginHost::with_dirs(base.path().join("cache"), base.path().join("data")).unwrap();
+        host.set_config_authority("init");
+        let bus = Arc::new(EventBus::new());
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        bus.subscribe(
+            EventFilter::kind(EventKind::ModeEnablementRequested),
+            SubscriptionTarget::Channel(tx),
+        );
+        let mut store = host
+            .new_store(
+                WasiCtxBuilder::new().build(),
+                CapabilityGrant::default(),
+                PluginBudget::default(),
+                Some(plugin),
+            )
+            .unwrap();
+        store.data_mut().event_emit = Some(EventEmitCtx {
+            plugin_id: PluginId(1),
+            bus,
+            job_owner: 1,
+        });
+        ModesHost::enable_mode(store.data_mut(), "org-babel-mode".to_string());
+        ModesHost::disable_mode(store.data_mut(), "magit-mode".to_string());
+        std::iter::from_fn(|| rx.try_recv().ok()).collect()
+    }
+
+    #[test]
+    fn only_init_may_turn_a_mode_on_or_off() {
+        assert_eq!(
+            requests_from("init").len(),
+            2,
+            "init.rs is the user's config"
+        );
+        assert!(
+            requests_from("org").is_empty(),
+            "a plugin may not turn a mode on or off"
         );
     }
 }

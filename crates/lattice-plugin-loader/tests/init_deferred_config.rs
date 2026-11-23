@@ -121,7 +121,10 @@ async fn init_rs_enables_auto_pairs_mode_when_auto_pair_loads() {
         },
     );
 
-    // 1. init.rs FIRST — subscribes to `plugin-loaded` (CI.2 ordering).
+    // 1. init.rs FIRST — subscribes to `plugin-loaded` (CI.2 ordering). It is
+    //    the config authority, named before it loads as `install` names it:
+    //    `enable-mode` is refused from any other plugin.
+    loader.set_config_authority("init");
     loader
         .load_path(&init_dir, TrustTier::Bundled)
         .await
@@ -148,16 +151,24 @@ async fn init_rs_enables_auto_pairs_mode_when_auto_pair_loads() {
 
     // 3. The init handler ran on `plugin-loaded` and called enable-mode — assert
     //    the enablement request was published (the guest chain end to end).
-    let ev = tokio::time::timeout(Duration::from_secs(5), rx.recv())
-        .await
-        .expect("the init handler published an enablement request within 5s")
-        .expect("channel delivered");
-    match ev {
-        Event::ModeEnablementRequested { mode, enabled } => {
-            assert_eq!(mode, "auto-pair-mode", "init enabled auto-pair-mode");
-            assert!(enabled, "it enabled (not disabled) the mode");
+    //
+    //    TWO requests, not one. auto-pair declares `default_mode`, so the
+    //    loader publishes the same `auto-pair-mode` request itself as it loads
+    //    the plugin; waiting for one took the loader's and passed whether or
+    //    not init's ever arrived (found 2026-11-23, when refusing `enable-mode`
+    //    from a non-authority plugin left this test green).
+    for which in ["the loader's default-mode gate", "the init handler"] {
+        let ev = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .unwrap_or_else(|_| panic!("{which}'s enablement request within 5s"))
+            .expect("channel delivered");
+        match ev {
+            Event::ModeEnablementRequested { mode, enabled } => {
+                assert_eq!(mode, "auto-pair-mode", "{which} enabled auto-pair-mode");
+                assert!(enabled, "{which} enabled (not disabled) the mode");
+            }
+            other => panic!("expected ModeEnablementRequested, got {other:?}"),
         }
-        other => panic!("expected ModeEnablementRequested, got {other:?}"),
     }
 
     // 4. The OTHER half of the documented deferred shape: the same handler

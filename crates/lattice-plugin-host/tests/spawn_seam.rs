@@ -66,16 +66,17 @@ impl Drop for Harness {
 /// Spawn the fixture, whose manifest asks for `proc:spawn`, at `tier`, asking
 /// it to run `sh -c <script>`. `{dir}` in the script is a scratch directory.
 async fn start(wasm: &str, tier: TrustTier, script: &str) -> Harness {
+    start_with(wasm, tier, "spawn-request", &format!("sh\n-c\n{script}\n")).await
+}
+
+/// [`start`], with the request file and its text given.
+async fn start_with(wasm: &str, tier: TrustTier, file: &str, request: &str) -> Harness {
     let dirs = TempDir::new().unwrap();
     let data_base = dirs.path().join("data");
     let data_dir = data_base.join(PLUGIN_ID).join("data");
     std::fs::create_dir_all(&data_dir).unwrap();
-    let script = script.replace("{dir}", dirs.path().to_str().unwrap());
-    std::fs::write(
-        data_dir.join("spawn-request"),
-        format!("sh\n-c\n{script}\n"),
-    )
-    .unwrap();
+    let request = request.replace("{dir}", dirs.path().to_str().unwrap());
+    std::fs::write(data_dir.join(file), request).unwrap();
 
     let host = PluginHost::with_dirs(dirs.path().join("cache"), &data_base).expect("host builds");
     let component = host.compile(&std::fs::read(wasm).unwrap()).unwrap();
@@ -173,4 +174,32 @@ async fn a_user_installed_plugin_asking_for_proc_spawn_is_refused() {
     // Long enough that a process, had one started, would have run.
     tokio::time::sleep(Duration::from_millis(400)).await;
     assert!(!h.dirs.path().join("ran").exists(), "and nothing ran");
+}
+
+/// OB.14 end to end: a real guest starts `cat` with stdin open, writes to
+/// it and closes it, and hears what it wrote come back, then the exit that
+/// end of input causes. Proves the three functions are wired through the
+/// boundary, not just in `process_host`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_guest_feeds_an_interactive_process_through_stdin() {
+    let Some(wasm) = guest_wasm() else {
+        eprintln!("SKIP: events fixture guest not built");
+        return;
+    };
+    let h = start_with(wasm, TrustTier::Bundled, "interactive-request", "cat\n").await;
+    let line = wait_for(&h.data_dir, |l| l.starts_with("10:exit:")).await;
+    let log = recorded(&h.data_dir);
+    assert_eq!(
+        line.as_deref(),
+        Some("10:exit:ok"),
+        "cat ended at EOF: {log:?}"
+    );
+    for want in [
+        "interactive:started",
+        "interactive:write:ok",
+        "interactive:close:ok",
+        "10:out:hello",
+    ] {
+        assert!(log.iter().any(|l| l == want), "{want}: {log:?}");
+    }
 }

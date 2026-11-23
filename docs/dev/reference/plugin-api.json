@@ -1942,6 +1942,31 @@
           ]
         },
         {
+          "name": "close-job-stdin",
+          "display_name": "close-job-stdin",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [
+            {
+              "name": "id",
+              "type": "u64"
+            }
+          ],
+          "result": "result<_, string>",
+          "signature": "close-job-stdin: func(id: u64) -> result<_, string>",
+          "doc": "End job `id`'s input, after anything already written: the process\nsees end of file. Later writes are `err`. The same `err` cases as\n`write-job-stdin`.",
+          "examples": [
+            {
+              "id": "events-guest:host-services.close-job-stdin",
+              "caption": "End an interactive job's input, so a program that reads to end of file exits",
+              "source": "crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs",
+              "language": "rust",
+              "code": "let closed = host_services::close_job_stdin(id);"
+            }
+          ]
+        },
+        {
           "name": "data-dir",
           "display_name": "data-dir",
           "kind": "freestanding",
@@ -2420,6 +2445,39 @@
           "examples": []
         },
         {
+          "name": "spawn-interactive",
+          "display_name": "spawn-interactive",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [
+            {
+              "name": "command",
+              "type": "string"
+            },
+            {
+              "name": "args",
+              "type": "list<string>"
+            },
+            {
+              "name": "cwd",
+              "type": "string"
+            }
+          ],
+          "result": "result<u64, string>",
+          "signature": "spawn-interactive: func(command: string, args: list<string>, cwd: string) -> result<u64, string>",
+          "doc": "`spawn-process` with **stdin left open** (OB.14): the same signature,\nthe same `proc:spawn` gate, the same job, its output and exit arriving\nas `job-output` and `job-finished`. The guest feeds the process with\n`write-job-stdin` and ends its input with `close-job-stdin`; a REPL kept\nalive across calls (babel's `:session`) is what it is for.\n\nCancelling kills the process tree, as for `spawn-process`. Closing\nstdin is the polite way to end a program that exits at end of input.",
+          "examples": [
+            {
+              "id": "events-guest:host-services.spawn-interactive",
+              "caption": "Start a program whose stdin stays open, and hear its output and exit",
+              "source": "crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs",
+              "language": "rust",
+              "code": "events::subscribe(&kind_filter(EventKind::JobOutput), 10);\nevents::subscribe(&kind_filter(EventKind::JobFinished), 10);\nlet started = host_services::spawn_interactive(command, &args, \"\");"
+            }
+          ]
+        },
+        {
           "name": "spawn-process",
           "display_name": "spawn-process",
           "kind": "freestanding",
@@ -2682,6 +2740,35 @@
               "source": "crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs",
               "language": "rust",
               "code": "events::subscribe(&kind_filter(EventKind::FilesChanged), 6);\nlet outcome = match host_services::watch(target) {\n    Ok(()) => \"watch:ok\".to_string(),\n    Err(e) => format!(\"watch:err({e})\"),\n};\nrecord(&outcome);"
+            }
+          ]
+        },
+        {
+          "name": "write-job-stdin",
+          "display_name": "write-job-stdin",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [
+            {
+              "name": "id",
+              "type": "u64"
+            },
+            {
+              "name": "data",
+              "type": "list<u8>"
+            }
+          ],
+          "result": "result<_, string>",
+          "signature": "write-job-stdin: func(id: u64, data: list<u8>) -> result<_, string>",
+          "doc": "Queue `data` for the stdin of job `id`. Returns at once: a writer\nthread delivers it, so a process that is not reading never blocks the\ncaller.\n\n`err` for a job that has finished, whose input was closed, that was\nstarted with `spawn-process`, that belongs to another plugin, or that\nnever existed, all with one message, so another plugin's ids cannot be\nprobed. Any instance of the spawning plugin may write, as for\n`cancel-job`. `ok` means queued, not read: a process that exits first\nnever sees it.",
+          "examples": [
+            {
+              "id": "events-guest:host-services.write-job-stdin",
+              "caption": "Write to an interactive job's stdin; it is queued, never blocking",
+              "source": "crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs",
+              "language": "rust",
+              "code": "let wrote = host_services::write_job_stdin(id, b\"hello\\n\");"
             }
           ]
         }

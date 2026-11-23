@@ -154,12 +154,28 @@ impl PendingJob {
         kind: &'static str,
         work: impl FnOnce(&mut Job) -> Result<(), String> + Send + 'static,
     ) -> Self {
+        Self::new_with_id(plugin, bus, kind, |_| work)
+    }
+
+    /// [`Self::new`], with the work built from its id. For work that must be
+    /// addressable by id BEFORE it starts: an interactive process's stdin
+    /// takes writes from the moment the guest holds the id (OB.14).
+    pub(crate) fn new_with_id<W>(
+        plugin: u32,
+        bus: Arc<EventBus>,
+        kind: &'static str,
+        build: impl FnOnce(u64) -> W,
+    ) -> Self
+    where
+        W: FnOnce(&mut Job) -> Result<(), String> + Send + 'static,
+    {
+        let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
         Self {
-            id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
+            id,
             plugin,
             bus,
             kind,
-            work: Box::new(work),
+            work: Box::new(build(id)),
         }
     }
 

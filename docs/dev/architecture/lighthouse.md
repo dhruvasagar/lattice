@@ -282,6 +282,27 @@ There is **no separate task surface.** The July draft had `start-task` /
 plugin's behalf. With output arriving as events, the plugin appends to a buffer
 it owns (§2) and the three calls have nothing left to do.
 
+**`spawn-interactive`: the same job with stdin open** (OB.14, for babel's
+`:session`; `org-babel.md` §6.3). The signature, the gate and the job are
+`spawn-process`'s. `write-job-stdin` queues bytes and `close-job-stdin`
+ends the input. `spawn-process` is unchanged, so no guest that uses it sees
+a difference.
+- **A writer thread owns the pipe.** A child that stops reading fills it,
+  and a blocking write must never be a guest call, which may be a
+  keystroke on the grammar seam.
+- **Input is addressable from the moment the id exists.** The channel is
+  registered when the job is prepared, not when the child starts, so a
+  write made right after the call is queued, not refused. A session sends
+  its first block at once.
+- **Ownership is `cancel-job`'s.** Any instance of the spawning plugin may
+  write. Another plugin's id, a finished job, a closed input and an id
+  that never existed are one `err` with one message, so ids cannot be
+  probed.
+- **The entry goes with the work.** On exit, cancel, spawn failure, or a
+  job never started. A write after that is an `err`, never silently
+  dropped: `ok` means queued, and a process that exits first never reads
+  it.
+
 ### 3.4 `register-server` — mutate the supervisor from WIT
 
 ```wit

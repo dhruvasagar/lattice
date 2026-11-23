@@ -1805,8 +1805,60 @@ impl crate::lattice::plugin_host::host_services::Host for PluginState {
             &command,
             args,
             &cwd,
+            false,
         )?;
         Ok(self.launch_job(pending))
+    }
+
+    /// OB.14 `spawn-interactive`: `spawn-process` with stdin left open.
+    /// The same gate, the same job; only the pipe differs.
+    fn spawn_interactive(
+        &mut self,
+        command: String,
+        args: Vec<String>,
+        cwd: String,
+    ) -> Result<u64, String> {
+        let Some(ctx) = &self.event_emit else {
+            tracing::warn!(
+                command = %command,
+                "spawn-interactive refused: plugin has no event bus wired on this seam"
+            );
+            return Err(format!(
+                "spawn denied: '{command}' — this seam has no event bus, so the outcome \
+                 could never be delivered"
+            ));
+        };
+        let pending = process_host::prepare(
+            &self.grant,
+            Arc::clone(&ctx.bus),
+            ctx.job_owner,
+            &command,
+            args,
+            &cwd,
+            true,
+        )?;
+        Ok(self.launch_job(pending))
+    }
+
+    /// OB.14 `write-job-stdin`. Owned by the plugin as `cancel-job` is: by
+    /// `job_owner`, so any instance of the spawning plugin may write.
+    fn write_job_stdin(&mut self, id: u64, data: Vec<u8>) -> Result<(), String> {
+        let Some(ctx) = &self.event_emit else {
+            return Err(format!(
+                "job {id} takes no input: this seam started no jobs"
+            ));
+        };
+        process_host::write_stdin(ctx.job_owner, id, data)
+    }
+
+    /// OB.14 `close-job-stdin`.
+    fn close_job_stdin(&mut self, id: u64) -> Result<(), String> {
+        let Some(ctx) = &self.event_emit else {
+            return Err(format!(
+                "job {id} takes no input: this seam started no jobs"
+            ));
+        };
+        process_host::close_stdin(ctx.job_owner, id)
     }
 
     /// LH.0.4 `register-server`. Gated on `proc:spawn`: registering a command

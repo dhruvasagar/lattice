@@ -22,6 +22,26 @@
 //! A non-zero exit is an ordinary outcome and reports as an `err` naming the
 //! status. It is not a host failure and is never a panic.
 //!
+//! ## Interactive jobs: stdin (OB.14)
+//!
+//! `spawn-interactive` is the same job with stdin left open. A guest writes
+//! with `write-job-stdin` and ends the input with `close-job-stdin`. Babel's
+//! `:session` is the first user: a REPL that outlives one block, fed a block
+//! at a time.
+//!
+//! - **A writer thread per job owns the pipe.** A child that stops reading
+//!   fills the pipe, and a write to a full pipe blocks. That must never be
+//!   the guest's call, which may be on the grammar seam, a keystroke.
+//! - **The table names who may write.** It is process-wide, like
+//!   [`crate::job`]'s, because the instance that writes is not always the one
+//!   that spawned. Each entry carries its owner, and another plugin's id
+//!   reads as no job at all, the same `err` as an id that never existed, so
+//!   ids cannot be probed.
+//! - **The entry goes when the input can no longer be written.** When the
+//!   job's work returns (exit, cancel, spawn failure) and when the guest
+//!   closes it. A write after either is an `err`: input that cannot arrive
+//!   is never reported as sent.
+//!
 //! ## Cancelling kills the whole tree
 //!
 //! `npm` is a shell script that starts `node`, which starts more. Killing only
@@ -29,11 +49,12 @@
 //! so the job would never finish. The child is therefore started in its own
 //! process group and a cancel signals the group.
 
-use std::io::{BufRead as _, BufReader, Read};
+use std::collections::HashMap;
+use std::io::{BufRead as _, BufReader, Read, Write as _};
 use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
-use std::sync::Arc;
+use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
+use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use lattice_runtime::EventBus;
@@ -58,6 +79,118 @@ struct Request {
     command: String,
     args: Vec<String>,
     cwd: Option<PathBuf>,
+    /// `spawn-interactive`: stdin is a pipe the guest writes to.
+    interactive: bool,
+}
+
+/// What a guest sends an interactive job's stdin.
+enum Input {
+    Data(Vec<u8>),
+    Close,
+}
+
+/// Interactive jobs taking input, by id: the plugin that owns each and the
+/// channel to its writer thread.
+type InputTable = HashMap<u64, (u32, Sender<Input>)>;
+
+static INPUT: LazyLock<Mutex<InputTable>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// The table, surviving a poisoned lock: it holds ids and senders, nothing a
+/// panicking holder could have left half-written.
+fn input() -> MutexGuard<'static, InputTable> {
+    INPUT.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Send `msg` to `plugin`'s job `id`. Another plugin's job, a finished one, a
+/// closed one and one that never existed are one `err`, by design (module
+/// doc).
+fn send_input(plugin: u32, id: u64, msg: Input) -> Result<(), String> {
+    let close = matches!(msg, Input::Close);
+    let mut table = input();
+    let sent = match table.get(&id) {
+        Some((owner, tx)) if *owner == plugin => tx.send(msg).is_ok(),
+        _ => false,
+    };
+    if !sent {
+        return Err(format!(
+            "job {id} takes no input: it is not running, its input is closed, or it was not \
+             started with spawn-interactive by this plugin"
+        ));
+    }
+    if close {
+        table.remove(&id);
+    }
+    Ok(())
+}
+
+/// `write-job-stdin`: queue `data` for job `id`'s stdin. Returns at once; the
+/// writer thread delivers it.
+pub(crate) fn write_stdin(plugin: u32, id: u64, data: Vec<u8>) -> Result<(), String> {
+    send_input(plugin, id, Input::Data(data))
+}
+
+/// `close-job-stdin`: end job `id`'s input, after anything already written.
+pub(crate) fn close_stdin(plugin: u32, id: u64) -> Result<(), String> {
+    send_input(plugin, id, Input::Close)
+}
+
+/// An interactive job's place in [`INPUT`]. Registered when the job is
+/// prepared, so a write that arrives before the process exists is queued
+/// rather than refused, and removed when it drops: with the job's work,
+/// whether that work ran, failed to spawn, or was never started.
+struct InputEntry {
+    id: u64,
+    /// Taken by the writer thread once there is a pipe to write to.
+    rx: Option<Receiver<Input>>,
+}
+
+impl InputEntry {
+    fn register(id: u64, plugin: u32) -> Self {
+        let (tx, rx) = channel::<Input>();
+        input().insert(id, (plugin, tx));
+        Self { id, rx: Some(rx) }
+    }
+
+    /// Start the thread that writes what was queued, and what comes, to
+    /// `pipe`.
+    fn start_writer(&mut self, mut pipe: ChildStdin) {
+        let Some(rx) = self.rx.take() else {
+            return;
+        };
+        let spawned = std::thread::Builder::new()
+            .name("lattice-plugin-process-in".to_string())
+            .spawn(move || {
+                for msg in rx {
+                    match msg {
+                        // A child that exited breaks the pipe: stop. The
+                        // entry goes when the work returns.
+                        Input::Data(d) => {
+                            if pipe.write_all(&d).and_then(|()| pipe.flush()).is_err() {
+                                break;
+                            }
+                        }
+                        Input::Close => break,
+                    }
+                }
+                // Dropping `pipe` is the child's end of file.
+            });
+        if let Err(e) = spawned {
+            // No writer, so refuse every write from now on rather than
+            // accept input that goes nowhere.
+            tracing::warn!(
+                id = self.id,
+                ?e,
+                "spawn-interactive: no stdin writer thread"
+            );
+            input().remove(&self.id);
+        }
+    }
+}
+
+impl Drop for InputEntry {
+    fn drop(&mut self) {
+        input().remove(&self.id);
+    }
 }
 
 /// Validate a spawn against `grant` and make it a job.
@@ -72,6 +205,7 @@ pub(crate) fn prepare(
     command: &str,
     args: Vec<String>,
     cwd: &str,
+    interactive: bool,
 ) -> Result<PendingJob, String> {
     if !grant.may_spawn(command) {
         // info!: user-actionable (a plugin was denied a capability).
@@ -108,17 +242,27 @@ pub(crate) fn prepare(
         command: command.to_string(),
         args,
         cwd,
+        interactive,
     };
-    Ok(PendingJob::new(plugin, bus, "process", move |job| {
-        run(&request, job)
+    Ok(PendingJob::new_with_id(plugin, bus, "process", move |id| {
+        let mut input = request
+            .interactive
+            .then(|| InputEntry::register(id, plugin));
+        move |job| run(&request, job, input.as_mut())
     }))
 }
 
-fn run(req: &Request, job: &mut Job) -> Result<(), String> {
+/// `input` is an interactive job's registered stdin, written to once the
+/// child exists, and held (so writable) until this returns.
+fn run(req: &Request, job: &mut Job, input: Option<&mut InputEntry>) -> Result<(), String> {
     let mut command = Command::new(&req.command);
     command
         .args(&req.args)
-        .stdin(Stdio::null())
+        .stdin(if req.interactive {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     if let Some(cwd) = &req.cwd {
@@ -129,6 +273,10 @@ fn run(req: &Request, job: &mut Job) -> Result<(), String> {
     let mut child = command
         .spawn()
         .map_err(|e| format!("spawn failed: cannot run '{}': {e}", req.command))?;
+
+    if let (Some(input), Some(pipe)) = (input, child.stdin.take()) {
+        input.start_writer(pipe);
+    }
 
     let (tx, rx) = channel::<String>();
     if let Some(out) = child.stdout.take() {
@@ -265,6 +413,8 @@ mod tests {
     use super::*;
     use crate::job::CANCELLED;
     use crate::job::test_support::{Outcome, job_bus, outcome_of};
+    use lattice_protocol::Event as NativeEvent;
+    use tokio::sync::mpsc::UnboundedReceiver;
 
     fn bundled() -> CapabilityGrant {
         CapabilityGrant {
@@ -293,6 +443,7 @@ mod tests {
             "sh",
             vec!["-c".to_string(), "echo ok".to_string()],
             "",
+            false,
         )
         .expect("a listed command may spawn");
         let id = pending.id();
@@ -303,7 +454,7 @@ mod tests {
     #[test]
     fn an_option_bound_grant_refuses_an_unlisted_command_naming_the_option() {
         let bus = Arc::new(EventBus::new());
-        let Err(err) = prepare(&option_bound(&["python3"]), bus, 7, "sh", vec![], "") else {
+        let Err(err) = prepare(&option_bound(&["python3"]), bus, 7, "sh", vec![], "", false) else {
             panic!("sh is not listed");
         };
         assert!(err.contains("'sh'"), "{err}");
@@ -324,6 +475,7 @@ mod tests {
             "sh",
             vec!["-c".to_string(), script.to_string()],
             cwd,
+            false,
         )
         .expect("a bundled plugin may spawn");
         let id = pending.id();
@@ -376,6 +528,7 @@ mod tests {
             "lattice-no-such-program-xyz",
             Vec::new(),
             "",
+            false,
         )
         .unwrap();
         let id = pending.id();
@@ -435,6 +588,7 @@ mod tests {
             "sh",
             vec!["-c".to_string(), "sleep 60 & echo $!; wait".to_string()],
             "",
+            false,
         )
         .unwrap();
         let id = pending.id();
@@ -467,6 +621,7 @@ mod tests {
             "touch",
             vec![marker.display().to_string()],
             "",
+            false,
         )
         .expect_err("no grant");
         assert!(err.contains("denied"), "{err}");
@@ -477,10 +632,127 @@ mod tests {
     #[test]
     fn a_bad_working_directory_or_empty_command_is_refused() {
         let bus = || Arc::new(EventBus::new());
-        let err = prepare(&bundled(), bus(), 1, "sh", Vec::new(), "/no/such/dir/xyz")
-            .expect_err("no such directory");
+        let err = prepare(
+            &bundled(),
+            bus(),
+            1,
+            "sh",
+            Vec::new(),
+            "/no/such/dir/xyz",
+            false,
+        )
+        .expect_err("no such directory");
         assert!(err.contains("not a directory"), "{err}");
-        let err = prepare(&bundled(), bus(), 1, "", Vec::new(), "").expect_err("no command");
+        let err = prepare(&bundled(), bus(), 1, "", Vec::new(), "", false).expect_err("no command");
         assert!(err.contains("no command"), "{err}");
+    }
+
+    // ---- OB.14: interactive jobs ------------------------------------------
+
+    fn interactive(plugin: u32, script: &str) -> (PendingJob, UnboundedReceiver<NativeEvent>) {
+        let bus = Arc::new(EventBus::new());
+        let rx = job_bus(&bus);
+        let pending = prepare(
+            &bundled(),
+            bus,
+            plugin,
+            "sh",
+            vec!["-c".to_string(), script.to_string()],
+            "",
+            true,
+        )
+        .expect("a bundled plugin may spawn");
+        (pending, rx)
+    }
+
+    /// Input written, then closed, comes back. Written BEFORE the job starts
+    /// too: the guest holds the id from the call, and a write it makes at once
+    /// is queued, not refused.
+    #[test]
+    fn a_round_trip_through_cat() {
+        let (pending, mut rx) = interactive(11, "cat");
+        let id = pending.id();
+        write_stdin(11, id, b"early\n".to_vec()).expect("queued before the process exists");
+        let _guard = pending.start();
+        write_stdin(11, id, b"one\ntwo\n".to_vec()).unwrap();
+        close_stdin(11, id).unwrap();
+        let o = outcome_of(&mut rx, id);
+        assert_eq!(o.result, Ok(()), "cat exits at end of input");
+        assert_eq!(o.output, vec!["early", "one", "two"]);
+        assert!(
+            write_stdin(11, id, b"x".to_vec()).is_err(),
+            "closed is closed"
+        );
+    }
+
+    #[test]
+    fn write_after_exit_is_an_err() {
+        let (pending, mut rx) = interactive(12, "echo done");
+        let id = pending.id();
+        let _guard = pending.start();
+        assert_eq!(outcome_of(&mut rx, id).result, Ok(()));
+        let err = write_stdin(12, id, b"late\n".to_vec()).expect_err("the job is over");
+        assert!(err.contains("takes no input"), "{err}");
+        assert!(close_stdin(12, id).is_err());
+    }
+
+    /// Another plugin's id is no job at all: the same `err` as one that
+    /// never existed, so ids cannot be probed. A `spawn-process` job is not
+    /// writable either.
+    #[test]
+    fn another_plugins_job_is_not_writable() {
+        let (pending, mut rx) = interactive(13, "cat");
+        let id = pending.id();
+        let _guard = pending.start();
+        let theirs = write_stdin(99, id, b"x\n".to_vec()).expect_err("not plugin 99's job");
+        let none = write_stdin(99, u64::MAX, b"x\n".to_vec()).expect_err("no such job");
+        assert_eq!(
+            theirs.replace(&id.to_string(), "N"),
+            none.replace(&u64::MAX.to_string(), "N"),
+            "indistinguishable from a missing job"
+        );
+        assert!(close_stdin(99, id).is_err());
+        close_stdin(13, id).unwrap();
+        assert_eq!(outcome_of(&mut rx, id).result, Ok(()));
+
+        let bus = Arc::new(EventBus::new());
+        let mut rx = job_bus(&bus);
+        let plain = prepare(
+            &bundled(),
+            bus,
+            13,
+            "sh",
+            vec!["-c".to_string(), "sleep 1".to_string()],
+            "",
+            false,
+        )
+        .unwrap();
+        let id = plain.id();
+        let _guard = plain.start();
+        assert!(
+            write_stdin(13, id, b"x".to_vec()).is_err(),
+            "no stdin to write"
+        );
+        let _ = outcome_of(&mut rx, id);
+    }
+
+    /// A REPL is a process waiting on input forever; cancelling it must end
+    /// it, and what it started, as for any job.
+    #[test]
+    fn cancelling_kills_an_interactive_jobs_tree() {
+        let (pending, mut rx) = interactive(14, "sleep 60 & echo $!; cat");
+        let id = pending.id();
+        let _guard = pending.start();
+        std::thread::sleep(Duration::from_millis(500));
+        crate::job::cancel(14, id);
+        let o = outcome_of(&mut rx, id);
+        assert_eq!(o.result, Err(CANCELLED.to_string()));
+        assert!(write_stdin(14, id, b"x".to_vec()).is_err(), "gone with it");
+        let pid = o.output.first().expect("the grandchild's pid was printed");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while alive(pid) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(!alive(pid), "the grandchild ({pid}) died with the job");
     }
 }

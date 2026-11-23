@@ -138,6 +138,10 @@ const EXTRACT_REQUEST: &str = "/data/extract-request";
 /// program, each further line one argument.
 const SPAWN_REQUEST: &str = "/data/spawn-request";
 
+/// OB.14. Present ⇒ run a process with stdin open from `register-events`,
+/// write `hello` to it and close it. Lines as for [`SPAWN_REQUEST`].
+const INTERACTIVE_REQUEST: &str = "/data/interactive-request";
+
 /// OB.3. Present ⇒ post effects from `on-event`. One line: `edit <buffer-id>`
 /// posts an `apply-edit` inserting `posted` at the start of that buffer;
 /// `write <host-path>` posts a `write-to-file` there. OB.3a adds
@@ -325,6 +329,37 @@ impl Guest for Component {
             };
             record(&outcome);
             // @end-example
+        }
+        // OB.14: a process fed through stdin, if the test asked for one.
+        if let Ok(request) = std::fs::read_to_string(INTERACTIVE_REQUEST) {
+            let mut lines = request.lines();
+            let command = lines.next().unwrap_or_default();
+            let args: Vec<String> = lines.map(str::to_string).collect();
+            // @example host-services.spawn-interactive: Start a program whose stdin stays open, and hear its output and exit
+            events::subscribe(&kind_filter(EventKind::JobOutput), 10);
+            events::subscribe(&kind_filter(EventKind::JobFinished), 10);
+            let started = host_services::spawn_interactive(command, &args, "");
+            // @end-example
+            match started {
+                Ok(id) => {
+                    record("interactive:started");
+                    // @example host-services.write-job-stdin: Write to an interactive job's stdin; it is queued, never blocking
+                    let wrote = host_services::write_job_stdin(id, b"hello\n");
+                    // @end-example
+                    record(&format!(
+                        "interactive:write:{}",
+                        if wrote.is_ok() { "ok" } else { "err" }
+                    ));
+                    // @example host-services.close-job-stdin: End an interactive job's input, so a program that reads to end of file exits
+                    let closed = host_services::close_job_stdin(id);
+                    // @end-example
+                    record(&format!(
+                        "interactive:close:{}",
+                        if closed.is_ok() { "ok" } else { "err" }
+                    ));
+                }
+                Err(e) => record(&format!("interactive:err({e})")),
+            }
         }
         // LH.0.4: register a language server, if the test asked for one.
         if let Ok(request) = std::fs::read_to_string(SERVER_REQUEST) {

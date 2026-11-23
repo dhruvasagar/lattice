@@ -614,6 +614,33 @@ interface host-services {
     /// that is not a directory, or a seam with no event bus to report on.
     spawn-process: func(command: string, args: list<string>, cwd: string) -> result<u64, string>;
 
+    /// `spawn-process` with **stdin left open** (OB.14): the same signature,
+    /// the same `proc:spawn` gate, the same job, its output and exit arriving
+    /// as `job-output` and `job-finished`. The guest feeds the process with
+    /// `write-job-stdin` and ends its input with `close-job-stdin`; a REPL kept
+    /// alive across calls (babel's `:session`) is what it is for.
+    ///
+    /// Cancelling kills the process tree, as for `spawn-process`. Closing
+    /// stdin is the polite way to end a program that exits at end of input.
+    spawn-interactive: func(command: string, args: list<string>, cwd: string) -> result<u64, string>;
+
+    /// Queue `data` for the stdin of job `id`. Returns at once: a writer
+    /// thread delivers it, so a process that is not reading never blocks the
+    /// caller.
+    ///
+    /// `err` for a job that has finished, whose input was closed, that was
+    /// started with `spawn-process`, that belongs to another plugin, or that
+    /// never existed, all with one message, so another plugin's ids cannot be
+    /// probed. Any instance of the spawning plugin may write, as for
+    /// `cancel-job`. `ok` means queued, not read: a process that exits first
+    /// never sees it.
+    write-job-stdin: func(id: u64, data: list<u8>) -> result<_, string>;
+
+    /// End job `id`'s input, after anything already written: the process
+    /// sees end of file. Later writes are `err`. The same `err` cases as
+    /// `write-job-stdin`.
+    close-job-stdin: func(id: u64) -> result<_, string>;
+
     /// Tell the editor about a language server, so buffers it handles get one.
     /// Returns a token for `unregister-server`.
     ///

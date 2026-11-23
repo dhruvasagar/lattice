@@ -29,7 +29,7 @@ does — a bounded `walk` covers the fuzzy-finder.
 - [`position`](types.md#record-position) from [`types`](types.md)
 - [`effect`](types.md#variant-effect) from [`types`](types.md)
 
-## Functions (34)
+## Functions (37)
 
 ### `buffer-text`
 
@@ -159,6 +159,22 @@ Ok(vec![Effect::Echo(EchoPayload {
     level: EchoLevel::Info,
     text,
 })])
+```
+
+### `close-job-stdin`
+
+```wit
+close-job-stdin: func(id: u64) -> result<_, string>
+```
+
+End job `id`'s input, after anything already written: the process
+sees end of file. Later writes are `err`. The same `err` cases as
+`write-job-stdin`.
+
+**Example — End an interactive job's input, so a program that reads to end of file exits** · [`crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs`](../../../../crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs)
+
+```rust
+let closed = host_services::close_job_stdin(id);
 ```
 
 ### `data-dir`
@@ -821,6 +837,29 @@ per `source-location.buffer` above. The `document` resource is no help
 either: it is the guest's OWN buffer, and the line in question is one
 the view does not compose.
 
+### `spawn-interactive`
+
+```wit
+spawn-interactive: func(command: string, args: list<string>, cwd: string) -> result<u64, string>
+```
+
+`spawn-process` with **stdin left open** (OB.14): the same signature,
+the same `proc:spawn` gate, the same job, its output and exit arriving
+as `job-output` and `job-finished`. The guest feeds the process with
+`write-job-stdin` and ends its input with `close-job-stdin`; a REPL kept
+alive across calls (babel's `:session`) is what it is for.
+
+Cancelling kills the process tree, as for `spawn-process`. Closing
+stdin is the polite way to end a program that exits at end of input.
+
+**Example — Start a program whose stdin stays open, and hear its output and exit** · [`crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs`](../../../../crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs)
+
+```rust
+events::subscribe(&kind_filter(EventKind::JobOutput), 10);
+events::subscribe(&kind_filter(EventKind::JobFinished), 10);
+let started = host_services::spawn_interactive(command, &args, "");
+```
+
 ### `spawn-process`
 
 ```wit
@@ -1100,6 +1139,29 @@ let outcome = match host_services::watch(target) {
     Err(e) => format!("watch:err({e})"),
 };
 record(&outcome);
+```
+
+### `write-job-stdin`
+
+```wit
+write-job-stdin: func(id: u64, data: list<u8>) -> result<_, string>
+```
+
+Queue `data` for the stdin of job `id`. Returns at once: a writer
+thread delivers it, so a process that is not reading never blocks the
+caller.
+
+`err` for a job that has finished, whose input was closed, that was
+started with `spawn-process`, that belongs to another plugin, or that
+never existed, all with one message, so another plugin's ids cannot be
+probed. Any instance of the spawning plugin may write, as for
+`cancel-job`. `ok` means queued, not read: a process that exits first
+never sees it.
+
+**Example — Write to an interactive job's stdin; it is queued, never blocking** · [`crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs`](../../../../crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs)
+
+```rust
+let wrote = host_services::write_job_stdin(id, b"hello\n");
 ```
 
 ## Types (5)

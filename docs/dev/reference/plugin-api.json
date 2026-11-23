@@ -8484,12 +8484,12 @@
             {
               "name": "spawn-terminal",
               "type": "spawn-terminal-payload",
-              "doc": "OB.3a: a `cmd-line` is a process, so it needs the unbound\n`proc:spawn`; without one, the user's own shell opens."
+              "doc": "OB.3a: a `cmd-line` is a process, so it needs the unbound\n`proc:spawn`; without one, the user's own shell opens. A non-empty\n`env` needs `proc:spawn` too: a variable is code in the shell it\nreaches (`BASH_ENV`, `PROMPT_COMMAND`)."
             },
             {
               "name": "terminal-input",
               "type": "list<u8>",
-              "doc": null
+              "doc": "Bytes written to the focused terminal. Typed into a shell, they are\na command it runs, so this needs the unbound `proc:spawn`."
             },
             {
               "name": "set-option",

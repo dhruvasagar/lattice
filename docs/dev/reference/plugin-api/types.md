@@ -2129,8 +2129,11 @@ Mirrors `lattice_grammar::effect::Effect` (§4.4). Every arm is pure data;
 - `open-external-uri`: `string`
 - `open-buffer-at-column`: [`open-buffer-at-column-payload`](#record-open-buffer-at-column-payload)
 - `spawn-terminal`: [`spawn-terminal-payload`](#record-spawn-terminal-payload) — OB.3a: a `cmd-line` is a process, so it needs the unbound
-  `proc:spawn`; without one, the user's own shell opens.
-- `terminal-input`: `list<u8>`
+  `proc:spawn`; without one, the user's own shell opens. A non-empty
+  `env` needs `proc:spawn` too: a variable is code in the shell it
+  reaches (`BASH_ENV`, `PROMPT_COMMAND`).
+- `terminal-input`: `list<u8>` — Bytes written to the focused terminal. Typed into a shell, they are
+  a command it runs, so this needs the unbound `proc:spawn`.
 - `set-option`: `string` — OB.3a: refused (with a warning) for an option a plugin's grant
   follows (`fs:write:{opt}`, `proc:spawn:{opt}`) — those are the
   user's to set. So are `set-local-option` / `set-global-option`.

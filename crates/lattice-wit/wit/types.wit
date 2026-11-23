@@ -877,8 +877,12 @@ interface types {
         open-external-uri(string),
         open-buffer-at-column(open-buffer-at-column-payload),
         /// OB.3a: a `cmd-line` is a process, so it needs the unbound
-        /// `proc:spawn`; without one, the user's own shell opens.
+        /// `proc:spawn`; without one, the user's own shell opens. A non-empty
+        /// `env` needs `proc:spawn` too: a variable is code in the shell it
+        /// reaches (`BASH_ENV`, `PROMPT_COMMAND`).
         spawn-terminal(spawn-terminal-payload),
+        /// Bytes written to the focused terminal. Typed into a shell, they are
+        /// a command it runs, so this needs the unbound `proc:spawn`.
         terminal-input(list<u8>),
         /// OB.3a: refused (with a warning) for an option a plugin's grant
         /// follows (`fs:write:{opt}`, `proc:spawn:{opt}`) — those are the

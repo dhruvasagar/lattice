@@ -52,6 +52,9 @@ readable while a mode this plugin registered is active on it — the
 buffer the plugin is already running in, which is the reach the user
 gave it by turning that mode on. Any other buffer is `none`, so a
 plugin cannot read what the user has open elsewhere by guessing ids.
+Only a mode that runs where something chose it counts: a `majors`
+mode, or a `manual` one. A `global` or `universal` mode is on in every
+buffer, so it grants no read.
 The mode set is the editor's as of its last publish: a buffer whose
 mode was turned off a moment ago may still read for that moment.
 

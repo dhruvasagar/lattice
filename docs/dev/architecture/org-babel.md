@@ -251,8 +251,11 @@ cannot run anything.
    view owns, and an org buffer is nobody's excerpt. The addition is
    `host-services.buffer-text(buffer) -> option<string>`: the whole text, one
    crossing, **readable only while one of the calling plugin's own modes is
-   active on that buffer**. The gate is the reach the user already gave by
-   turning the mode on, and it is generic — a REPL, a test runner or a
+   active on that buffer**, and only a mode scoped to buffers (`majors` or
+   `manual`) counts. A `global` or `universal` mode is on in every buffer,
+   so it would make the gate read everything, a hole review found. The gate
+   is the reach the user already gave by turning the mode on, and it is
+   generic — a REPL, a test runner or a
    formatter that finishes asynchronously needs the same read of the buffer
    it runs in, and none of them should read what the user has open
    elsewhere by guessing ids. The host learns which modes are active from its

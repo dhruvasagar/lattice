@@ -305,6 +305,18 @@ impl Guest for Component {
             // MO.1: this mode sets no options for its buffers.
             options: vec![],
         });
+        // OB.3c: a mode scoped to a major, the only kind `buffer-text`'s gate
+        // counts. The modes above are `global`, which reach every buffer and
+        // so grant no read.
+        modes::register_mode(&ModeDeclaration {
+            id: "multiseam-scoped-mode".to_string(),
+            kind: ModeKind::Minor,
+            activation_policy: ActivationPolicy::Majors(vec!["text-mode".to_string()]),
+            capabilities: ModeCapabilities::empty(),
+            keymap: vec![],
+            target_language: None,
+            options: vec![],
+        });
         // OS.0: a THIRD mode, owning Insert-mode bindings — the shape eight
         // later org bindings depend on. `<M-CR>` binds to an action that
         // fires (proves an Insert-mode plugin chord reaches apply-action);

@@ -137,11 +137,26 @@ fn read_via_guest(modes: Option<Vec<(u32, Vec<&'static str>)>>, buffer: u32) -> 
 /// The plugin's own mode is on the buffer: the whole text, as the editor has it.
 #[test]
 fn a_buffer_the_plugins_mode_runs_in_is_readable() {
-    let Some(text) = read_via_guest(Some(vec![(7, vec!["text-mode", "multiseam-mode"])]), 7) else {
+    let Some(text) = read_via_guest(
+        Some(vec![(7, vec!["text-mode", "multiseam-scoped-mode"])]),
+        7,
+    ) else {
         eprintln!("SKIP: multiseam fixture not built");
         return;
     };
     assert_eq!(text, "#+begin_src sh\necho hi\n#+end_src\n");
+}
+
+/// The plugin's own mode is on the buffer, but it is `global`: on in every
+/// buffer, chosen by nobody. Counting it would make the gate read every
+/// buffer for any plugin that declares one (review, 2026-11-23).
+#[test]
+fn a_mode_that_is_on_everywhere_grants_no_read() {
+    let Some(text) = read_via_guest(Some(vec![(7, vec!["text-mode", "multiseam-mode"])]), 7) else {
+        eprintln!("SKIP: multiseam fixture not built");
+        return;
+    };
+    assert_eq!(text, "none");
 }
 
 /// Modes are on the buffer, but none of them is this plugin's.

@@ -464,7 +464,16 @@ async fn resuming_a_long_session_does_not_stall_the_runtime_thread() {
             .unwrap()
             .as_nanos()
     ));
-    std::fs::write(&path, encode(&conv, &Default::default()).unwrap()).unwrap();
+    let encoded = encode(&conv, &Default::default()).unwrap();
+    // What a stall would cost: the decode itself, timed on this machine.
+    // A fixed bound sits either near a slow runner's scheduling noise or
+    // far below a fast one's decode; half the decode separates the two on
+    // any machine, since a decode on the runtime thread stalls it for the
+    // whole decode.
+    let started = std::time::Instant::now();
+    decode(&encoded, "baseline").unwrap();
+    let stall = started.elapsed();
+    std::fs::write(&path, encoded).unwrap();
 
     let files = Arc::new(LlmSessionFiles::new(
         tokio::runtime::Handle::current(),
@@ -496,7 +505,7 @@ async fn resuming_a_long_session_does_not_stall_the_runtime_thread() {
     let _ = std::fs::remove_file(&path);
     let worst = *worst.lock().unwrap();
     assert!(
-        worst < Duration::from_millis(40),
-        "the runtime thread stalled for {worst:?}"
+        worst < stall / 2,
+        "the runtime thread stalled for {worst:?}; the decode takes {stall:?}"
     );
 }

@@ -145,6 +145,17 @@ asymmetry above. What it gives up is the blast-radius bound, deliberately: a
   opened `nobuflisted`. Tangling ten files does not put ten buffers in `:ls`,
   and the buffer still exists for `:b` and `:w`.
 
+What the bound does not cover, said plainly: a target the user has open
+**with unsaved edits** is replaced too, edits included, because the write
+lands in the buffer and the buffer is what it replaces. `u` brings them
+back, since the replace is one edit over a buffer that still holds its
+history. With `save = true`, though, the replacement is also written to
+disk at once, so the copy on disk holds no trace of the edits; only the
+buffer's undo does. Babel accepts this. A tangle target is generated
+output, and editing one by hand is the thing tangling overwrites by
+definition. A producer whose targets a user might be editing should not
+use `whole` with `save`.
+
 A new arm in a variant that crosses the boundary is an ABI break
 (`wit-ownership.md` §5), so this moved the package to `@0.6.0`.
 

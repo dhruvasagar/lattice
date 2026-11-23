@@ -239,3 +239,24 @@ fn error_paths_read_outside_in() {
         .under("[1]");
     assert_eq!(e.to_string(), "[1].target.file: boom");
 }
+
+/// A field named `value` is followed by others. The derive once read each
+/// field into a local named after it, and `value` rebound `from_value`'s own
+/// parameter, so the fields after it were looked up in the wrong place and
+/// the derive did not compile. Compiling this test is most of the proof.
+#[derive(Debug, Clone, PartialEq, Eq, ConfigShapeDerive)]
+struct ValueFirst {
+    value: Option<String>,
+    after: Option<Vec<String>>,
+    last: String,
+}
+
+#[test]
+fn a_field_named_value_does_not_shadow_the_fields_after_it() {
+    let v = ValueFirst {
+        value: Some("python".to_string()),
+        after: Some(vec!["-c".to_string()]),
+        last: "x".to_string(),
+    };
+    assert_eq!(ValueFirst::from_value(&v.to_value()).unwrap(), v);
+}

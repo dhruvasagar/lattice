@@ -2761,7 +2761,7 @@
           ],
           "result": "result<_, string>",
           "signature": "write-job-stdin: func(id: u64, data: list<u8>) -> result<_, string>",
-          "doc": "Queue `data` for the stdin of job `id`. Returns at once: a writer\nthread delivers it, so a process that is not reading never blocks the\ncaller.\n\n`err` for a job that has finished, whose input was closed, that was\nstarted with `spawn-process`, that belongs to another plugin, or that\nnever existed, all with one message, so another plugin's ids cannot be\nprobed. Any instance of the spawning plugin may write, as for\n`cancel-job`. `ok` means queued, not read: a process that exits first\nnever sees it.",
+          "doc": "Queue `data` for the stdin of job `id`. Returns at once: a writer\nthread delivers it, so a process that is not reading never blocks the\ncaller.\n\n`err` for a job that has finished, whose input was closed, that was\nstarted with `spawn-process`, that belongs to another plugin, or that\nnever existed, all with one message, so another plugin's ids cannot be\nprobed. Any instance of the spawning plugin may write, as for\n`cancel-job`. `ok` means queued, not read: a process that exits first\nnever sees it.\n\nAt most 4 MiB may wait, queued and not yet read, per job. A write that\nwould pass that is `err` (naming how much is waiting) and queues\nnothing: the process is not keeping up, and what it reads makes room.",
           "examples": [
             {
               "id": "events-guest:host-services.write-job-stdin",

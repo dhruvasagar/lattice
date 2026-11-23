@@ -637,6 +637,10 @@ interface host-services {
     /// probed. Any instance of the spawning plugin may write, as for
     /// `cancel-job`. `ok` means queued, not read: a process that exits first
     /// never sees it.
+    ///
+    /// At most 4 MiB may wait, queued and not yet read, per job. A write that
+    /// would pass that is `err` (naming how much is waiting) and queues
+    /// nothing: the process is not keeping up, and what it reads makes room.
     write-job-stdin: func(id: u64, data: list<u8>) -> result<_, string>;
 
     /// End job `id`'s input, after anything already written: the process

@@ -1167,6 +1167,10 @@ probed. Any instance of the spawning plugin may write, as for
 `cancel-job`. `ok` means queued, not read: a process that exits first
 never sees it.
 
+At most 4 MiB may wait, queued and not yet read, per job. A write that
+would pass that is `err` (naming how much is waiting) and queues
+nothing: the process is not keeping up, and what it reads makes room.
+
 **Example — Write to an interactive job's stdin; it is queued, never blocking** · [`crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs`](../../../../crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs)
 
 ```rust

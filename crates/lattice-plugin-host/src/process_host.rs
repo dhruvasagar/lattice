@@ -53,6 +53,7 @@ use std::collections::HashMap;
 use std::io::{BufRead as _, BufReader, Read, Write as _};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
@@ -89,9 +90,24 @@ enum Input {
     Close,
 }
 
-/// Interactive jobs taking input, by id: the plugin that owns each and the
-/// channel to its writer thread.
-type InputTable = HashMap<u64, (u32, Sender<Input>)>;
+/// The most input one job may have queued and not yet written: 4 MiB.
+///
+/// A write returns before the child reads it, so without a bound a plugin
+/// writing to a child that never reads (or to one not started yet) grows the
+/// editor's memory without limit. Past this a write is refused, and the
+/// plugin learns the child is not keeping up; what it reads frees the room.
+pub(crate) const MAX_PENDING_INPUT: usize = 4 << 20;
+
+/// An interactive job taking input: the plugin that owns it, the channel to
+/// its writer thread, and the bytes queued there and not yet written.
+struct Writer {
+    owner: u32,
+    tx: Sender<Input>,
+    pending: Arc<AtomicUsize>,
+}
+
+/// Interactive jobs taking input, by id.
+type InputTable = HashMap<u64, Writer>;
 
 static INPUT: LazyLock<Mutex<InputTable>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 
@@ -108,7 +124,21 @@ fn send_input(plugin: u32, id: u64, msg: Input) -> Result<(), String> {
     let close = matches!(msg, Input::Close);
     let mut table = input();
     let sent = match table.get(&id) {
-        Some((owner, tx)) if *owner == plugin => tx.send(msg).is_ok(),
+        Some(w) if w.owner == plugin => {
+            if let Input::Data(d) = &msg {
+                let queued = w.pending.load(Ordering::Acquire);
+                if queued.saturating_add(d.len()) > MAX_PENDING_INPUT {
+                    return Err(format!(
+                        "job {id} is not reading its input: {queued} bytes are still queued, and \
+                         {} more would pass the {} MiB limit",
+                        d.len(),
+                        MAX_PENDING_INPUT >> 20
+                    ));
+                }
+                w.pending.fetch_add(d.len(), Ordering::AcqRel);
+            }
+            w.tx.send(msg).is_ok()
+        }
         _ => false,
     };
     if !sent {
@@ -142,13 +172,27 @@ struct InputEntry {
     id: u64,
     /// Taken by the writer thread once there is a pipe to write to.
     rx: Option<Receiver<Input>>,
+    /// The writer's half of [`Writer::pending`]: it gives back what it wrote.
+    pending: Arc<AtomicUsize>,
 }
 
 impl InputEntry {
     fn register(id: u64, plugin: u32) -> Self {
         let (tx, rx) = channel::<Input>();
-        input().insert(id, (plugin, tx));
-        Self { id, rx: Some(rx) }
+        let pending = Arc::new(AtomicUsize::new(0));
+        input().insert(
+            id,
+            Writer {
+                owner: plugin,
+                tx,
+                pending: pending.clone(),
+            },
+        );
+        Self {
+            id,
+            rx: Some(rx),
+            pending,
+        }
     }
 
     /// Start the thread that writes what was queued, and what comes, to
@@ -157,6 +201,7 @@ impl InputEntry {
         let Some(rx) = self.rx.take() else {
             return;
         };
+        let pending = self.pending.clone();
         let spawned = std::thread::Builder::new()
             .name("lattice-plugin-process-in".to_string())
             .spawn(move || {
@@ -165,7 +210,9 @@ impl InputEntry {
                         // A child that exited breaks the pipe: stop. The
                         // entry goes when the work returns.
                         Input::Data(d) => {
-                            if pipe.write_all(&d).and_then(|()| pipe.flush()).is_err() {
+                            let written = pipe.write_all(&d).and_then(|()| pipe.flush());
+                            pending.fetch_sub(d.len(), Ordering::AcqRel);
+                            if written.is_err() {
                                 break;
                             }
                         }
@@ -734,6 +781,29 @@ mod tests {
             "no stdin to write"
         );
         let _ = outcome_of(&mut rx, id);
+    }
+
+    /// Review: queued input is bounded. Before the process exists nothing
+    /// drains the queue, so the limit is exact; once the child reads, the
+    /// room comes back.
+    #[test]
+    fn queued_input_is_bounded_and_reading_frees_it() {
+        let (pending, mut rx) = interactive(15, "cat >/dev/null");
+        let id = pending.id();
+        write_stdin(15, id, vec![b'x'; MAX_PENDING_INPUT]).expect("up to the limit");
+        let err = write_stdin(15, id, b"y".to_vec()).expect_err("one byte past it");
+        assert!(err.contains("not reading its input"), "{err}");
+        let _guard = pending.start();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while write_stdin(15, id, b"y".to_vec()).is_err() {
+            assert!(
+                Instant::now() < deadline,
+                "cat read the queue, freeing room"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        close_stdin(15, id).unwrap();
+        assert_eq!(outcome_of(&mut rx, id).result, Ok(()));
     }
 
     /// A REPL is a process waiting on input forever; cancelling it must end

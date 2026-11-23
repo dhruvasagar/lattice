@@ -5185,33 +5185,39 @@ impl PluginHost {
     /// reloads the plugin (PMF.4).
     pub fn grant_for(&self, manifest: &PluginManifest, tier: TrustTier) -> GrantOutcome {
         // PMF.5: once a grant follows an option, plugins may no longer set it.
+        // Review, 2026-11-23: nor may a project's config (D1) — the same
+        // options, named to the registry before anything below reads one.
         {
-            let mut guard = self
-                .grant_guard
-                .write()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            for cap in &manifest.requested {
-                match cap {
+            let mut protected: Vec<String> = manifest
+                .requested
+                .iter()
+                .filter_map(|cap| match cap {
                     Capability::FsReadOption(op) | Capability::FsWriteOption(op) => {
-                        guard.options.insert(op.option.clone());
+                        Some(op.option.clone())
                     }
                     // OB.2: what a plugin may RUN is the user's to set, too.
-                    Capability::ProcSpawnOption(op) => {
-                        guard.options.insert(op.option.clone());
-                    }
-                    _ => {}
+                    Capability::ProcSpawnOption(op) => Some(op.option.clone()),
+                    _ => None,
+                })
+                .collect();
+            // And whether its modes run at all. The switches the loader
+            // follows for a plugin's default modes are the user's way of
+            // turning a feature off; a plugin that could set them would turn
+            // itself back on.
+            if !manifest.default_modes.is_empty() {
+                protected.push(format!("{}.enabled", manifest.id));
+            }
+            protected.extend(manifest.mode_gates.iter().map(|(_, o)| o.clone()));
+            if let Some(registry) = self.config.get() {
+                for option in &protected {
+                    registry.refuse_from_project(option);
                 }
             }
-            // Review, 2026-11-23: and whether its modes run at all. The
-            // switches the loader follows for a plugin's default modes are
-            // the user's way of turning a feature off; a plugin that could
-            // set them would turn itself back on.
-            if !manifest.default_modes.is_empty() {
-                guard.options.insert(format!("{}.enabled", manifest.id));
-            }
-            for (_, option) in &manifest.mode_gates {
-                guard.options.insert(option.clone());
-            }
+            self.grant_guard
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .options
+                .extend(protected);
         }
         let registry = self.config.get().cloned();
         let remembered = self

@@ -929,6 +929,19 @@ is enough to check — and decline otherwise.
   either tier: it permits exactly the programs the user listed in the plugin's own option,
   compared as written, re-read on every grant computation, reloading the plugin when it moves
   (PMF.4) and closed to the plugin's own `set-option` (PMF.5).
+- **Only the user's own configuration decides a plugin's reach (D1).** The options a
+  grant follows, and the switches the loader follows for a plugin's default modes
+  (`<id>.enabled`, each `mode_gates` option), are set from `lattice.toml`, `init.rs` and
+  `:set`, never from a project's `.lattice/config.toml`. A project file arrives with a
+  cloned repository; were its `org.babel.languages = [{ command = "sh" }]` honoured,
+  opening the clone would choose what the user's plugins may run. The config registry
+  keeps the project file's values as their own held source (`HeldSource::ProjectFile`), so
+  refusing one leaves the user's value beside it intact, and `grant_for` names the
+  protected options to the registry (`refuse_from_project`) before it reads any. From then
+  a project value for one is not read for the grant, not applied when the option registers,
+  and refused with a warning naming the key when the file is read again. The same names
+  sit in the `GrantGuard`, so a plugin cannot set them either, and `enable-mode` /
+  `disable-mode` answer only to the config authority, the second way past a mode switch.
 - **Keymap write-gate.** Already enforced: `KeymapCapability::MinorMode` permits writes only
   to `KeymapLayer::MinorMode(_)`/`Buffer`, denies `Builtin`/`MajorMode`/`User`
   (`registry.rs:132`). A plugin cannot shadow universal vim grammar.

@@ -67,8 +67,15 @@ fn language(command: &str) -> ConfigValue {
 }
 
 /// Spawn the fixture as a user-installed plugin whose grant follows `OPTION`,
-/// with `configured` held for it, asking it to run `<program> -c <script>`.
-async fn start(wasm: &str, configured: Vec<ConfigValue>, program: &str, script: &str) -> Harness {
+/// with `configured` held for it from `source`, asking it to run
+/// `<program> -c <script>`.
+async fn start(
+    wasm: &str,
+    configured: Vec<ConfigValue>,
+    source: HeldSource,
+    program: &str,
+    script: &str,
+) -> Harness {
     let dirs = TempDir::new().unwrap();
     let data_base = dirs.path().join("data");
     let data_dir = data_base.join(PLUGIN_ID).join("data");
@@ -82,11 +89,7 @@ async fn start(wasm: &str, configured: Vec<ConfigValue>, program: &str, script: 
 
     let host = PluginHost::with_dirs(dirs.path().join("cache"), &data_base).expect("host builds");
     let config = Arc::new(ConfigRegistry::default());
-    config.hold_tree(
-        OPTION,
-        ConfigValue::List(configured),
-        HeldSource::ConfigFile,
-    );
+    config.hold_tree(OPTION, ConfigValue::List(configured), source);
     host.set_config_registry(config);
     let component = host.compile(&std::fs::read(wasm).unwrap()).unwrap();
     let manifest = PluginManifest::from_toml_str(&format!(
@@ -118,7 +121,14 @@ async fn a_user_plugin_spawns_a_listed_command() {
         eprintln!("SKIP: events fixture guest not built");
         return;
     };
-    let h = start(wasm, vec![language("sh")], "sh", "echo hi").await;
+    let h = start(
+        wasm,
+        vec![language("sh")],
+        HeldSource::ConfigFile,
+        "sh",
+        "echo hi",
+    )
+    .await;
     let line = wait_for(&h.data_dir, |l| l.starts_with("10:exit:")).await;
     let log = recorded(&h.data_dir);
     assert_eq!(line.as_deref(), Some("10:exit:ok"), "{log:?}");
@@ -127,11 +137,15 @@ async fn a_user_plugin_spawns_a_listed_command() {
 
 /// Refused at the seam, naming the option; and nothing ran.
 async fn assert_refused(configured: Vec<ConfigValue>, program: &str) {
+    assert_refused_from(configured, HeldSource::ConfigFile, program).await;
+}
+
+async fn assert_refused_from(configured: Vec<ConfigValue>, source: HeldSource, program: &str) {
     let Some(wasm) = guest_wasm() else {
         eprintln!("SKIP: events fixture guest not built");
         return;
     };
-    let h = start(wasm, configured, program, "touch {dir}/ran").await;
+    let h = start(wasm, configured, source, program, "touch {dir}/ran").await;
     let line = wait_for(&h.data_dir, |l| l.starts_with("spawn:"))
         .await
         .expect("the guest recorded the call's result");
@@ -155,4 +169,12 @@ async fn an_absolute_path_does_not_match_a_bare_name() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_empty_list_permits_nothing() {
     assert_refused(vec![], "sh").await;
+}
+
+/// D1: the same listed command, from a project's `.lattice/config.toml`
+/// instead of the user's `lattice.toml`, grants nothing. A cloned repository
+/// must not choose what a plugin may run.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_project_config_listing_a_command_grants_nothing() {
+    assert_refused_from(vec![language("sh")], HeldSource::ProjectFile, "sh").await;
 }

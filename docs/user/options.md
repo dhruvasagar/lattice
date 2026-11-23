@@ -177,6 +177,14 @@ no plugin declares (a typo) is reported once plugins have loaded.
 A project's `.lattice/config.toml` overrides your file, and
 `init.rs` overrides both.
 
+A project file cannot set what decides a plugin's reach: an
+option a plugin's file or program access follows (`org.directory`,
+`org.babel.languages`, `org.babel.tangle-directories`), or a switch
+that turns a plugin's mode on or off (`org.enabled`,
+`org.babel.enabled`). A repository you clone may carry one, and it
+would be choosing what your plugins may write and run. Such a key
+is skipped, `*messages*` names it, and your own value stands.
+
 ### Runtime tweaks: `:set`
 
 Use `:set` for mid-session changes. The change applies for the

@@ -428,6 +428,7 @@ capabilities = [                         # OS + editor powers it requests
 ]
 editor_capabilities = ["tree-sitter"]    # subsystems a declared mode needs
 default_modes = ["my-plugin-mode"]       # on by default, gated by my-plugin.enabled
+exported_commands = ["my-plugin-open"]   # commands OTHER plugins may name
 min_lattice = "0.9.11"                   # oldest editor that can load it
 ```
 
@@ -440,6 +441,7 @@ min_lattice = "0.9.11"                   # oldest editor that can load it
 | `editor_capabilities` | `buffer-uri`, `lsp`, `tree-sitter`, `folds`, `writable`, `diagnostics` — what a mode the plugin declares requires of the buffers it activates on. |
 | `default_modes` / `default_mode` | Minor modes enabled by default. The loader registers a `<id>.enabled` option that gates them; either spelling works. |
 | `mode_gates` | A default mode the user may turn off on its own: `mode_gates = { "my-plugin-extra-mode" = "my-plugin.extra.enabled" }`. The mode is on only while `<id>.enabled` and its option are both true. The option must be the plugin's own, and the mode one of `default_modes`; the loader registers the option (default true) if the plugin does not. Needs `min_lattice = "0.10.3"`. |
+| `exported_commands` | The plugin's commands that other plugins may name for the editor to run (an action, a picker row, a prompt, a menu row). A plugin's commands are its own by default: another plugin naming one is refused, since it would run with your whole authority. List a command here when it is safe to be called from outside, as an interface. Your own plugin needs nothing to name its own commands, from any of its seams. An older editor ignores the key and has no such rule. |
 | `min_lattice` | The oldest editor version that can load this plugin, `"major.minor.patch"`. An older editor refuses it by name (*"my-plugin needs lattice ≥ 0.9.11; this is 0.9.9"*). Declare `0.9.11` or later if the manifest is embedded or a grant names an option — earlier editors understand neither. |
 
 The manifest above is parsed by the real parser in a test

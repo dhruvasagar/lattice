@@ -845,6 +845,9 @@ impl PluginHost {
         // in the linker's import set — where it is one line, and testable.
         store.data_mut().ui = None;
         let id = self.alloc_id();
+        // D2: the commands this instance registers carry `id`; the gate maps
+        // it back to the plugin, for "its own" and "exported".
+        self.attribute_commands(id, manifest);
         // OC.1: wire the emit context, for the same reason and at the same point
         // in the sequence `spawn_event_plugin` does — BEFORE `register-grammar`
         // runs, since a guest may `register-event` from there and will

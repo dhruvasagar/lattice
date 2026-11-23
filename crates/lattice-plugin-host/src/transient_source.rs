@@ -248,7 +248,7 @@ mod tests {
             spec(vec![action_row("t", "org-capture-key", Some("todo"))]),
             &registry,
             "org",
-            &crate::effect_authorizer::CommandGate::default(),
+            &crate::effect_authorizer::CommandGate::owning("org", 1),
         );
 
         assert_eq!(native.title, "Capture");
@@ -286,7 +286,7 @@ mod tests {
             ]),
             &registry,
             "org",
-            &crate::effect_authorizer::CommandGate::default(),
+            &crate::effect_authorizer::CommandGate::owning("org", 1),
         );
 
         let keys: Vec<&str> = native.groups[0]
@@ -331,7 +331,7 @@ mod tests {
             ]),
             &registry,
             "org",
-            &crate::effect_authorizer::CommandGate::default(),
+            &crate::effect_authorizer::CommandGate::owning("org", 1),
         );
         let keys: Vec<&str> = native.groups[0]
             .items
@@ -350,7 +350,7 @@ mod tests {
             spec(Vec::new()),
             &registry,
             "org",
-            &crate::effect_authorizer::CommandGate::default(),
+            &crate::effect_authorizer::CommandGate::owning("org", 1),
         );
         assert!(native.preview.is_none());
     }

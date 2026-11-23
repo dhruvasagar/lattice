@@ -107,6 +107,13 @@ fn rig(base: &std::path::Path) -> Rig {
         lattice_plugin_host::PluginHost::with_dirs(base.join("cache"), base.join("data"))
             .expect("host builds"),
     );
+    // D2: the command above stands in for the plugin's grammar seam, which
+    // would have attributed it to the plugin; say so, or no plugin may name it.
+    host.attribute_commands(
+        lattice_plugin_host::PluginId(1),
+        &lattice_plugin_host::PluginManifest::from_toml_str("id = \"transient-guest\"\n")
+            .expect("manifest"),
+    );
     let loader = PluginLoader::with_services(
         host,
         LoaderServices {

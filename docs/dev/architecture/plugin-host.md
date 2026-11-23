@@ -959,10 +959,21 @@ is enough to check — and decline otherwise.
   command: `invoke-command`, `confirm`'s `yes-action`, `open-prompt`'s `on-submit-action`,
   `open-picker`'s `fill-action`, a code action's `otherwise`, a picker row's routing and
   accept outcome, a picker's `delete-command`, a transient row. The rules:
-  - **Default closed.** A plugin may name a command a plugin registered, or a native one
-    its owner opened (`CommandRegistry::allow_plugin_invocation` — today only `llm`,
-    whose tool calls ask the user first). A native command that forgets to say is refused
-    with a warning, never silently reachable: the failure of omission is visible.
+  - **Default closed.** A plugin may name its own command, a command another plugin lists
+    in its manifest's `exported_commands` (D2), or a native one its owner opened
+    (`CommandRegistry::allow_plugin_invocation` — today only `llm`, whose tool calls ask
+    the user first). A native command that forgets to say is refused with a warning, never
+    silently reachable: the failure of omission is visible. "Its own" is by manifest id,
+    not by the `SourceLayer::Plugin(id)` a command carries: that id is the registering
+    *instance's*, and one plugin's seams are separate instances (its picker names commands
+    its grammar seam registered). The host records instance → plugin wherever plugin
+    commands are registered — the grammar seam, and the loader's `:<mode>` toggles under
+    the modes instance — in the `GrantGuard` (`attribute_commands`); a command whose
+    instance has no recorded owner is nobody's to call. Before D2 any plugin's command
+    passed, so one plugin could run another's (org's `org-babel-run-confirmed`, a picker's
+    delete verb) with the user's whole authority. The audit found no plugin naming another's
+    command; a user-configured list (`project`'s `switch-commands`) can, and is refused
+    unless the owner exports the command.
   - **Exact names only.** No alias, no `ex:` guess, no line syntax. And the host keeps its
     side: `Editor::invoke_command_named` runs a registered name as *that* command, its
     args parsed as its args (`excommand::parse_named`), never as a line. The check and the

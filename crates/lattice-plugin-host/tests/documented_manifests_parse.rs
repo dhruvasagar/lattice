@@ -80,6 +80,8 @@ fn every_documented_manifest_parses() {
             "doc",
             "default_mode",
             "default_modes",
+            "mode_gates",
+            "exported_commands",
             "min_lattice",
         ];
         for line in toml.lines() {

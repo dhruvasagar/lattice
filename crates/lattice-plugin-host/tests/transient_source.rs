@@ -62,6 +62,9 @@ async fn client(host: &PluginHost) -> TransientClient {
         .compile(&std::fs::read(guest_wasm().unwrap()).unwrap())
         .expect("compile transient fixture");
     let manifest = PluginManifest::new("transient-fixture", Vec::new(), CapabilitySet::empty());
+    // D2: `commands()` registers the fixture's command by hand under instance
+    // 1, standing in for its grammar seam; attribute it as that seam would be.
+    host.attribute_commands(lattice_plugin_host::PluginId(1), &manifest);
     let (client, actor) = host
         .spawn_transient_source(
             &component,
@@ -101,7 +104,7 @@ async fn build(
         wit,
         registry,
         "transient-fixture",
-        &lattice_plugin_host::effect_authorizer::CommandGate::default(),
+        client.gate(),
     ))
 }
 

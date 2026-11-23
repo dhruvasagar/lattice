@@ -92,8 +92,9 @@ pub struct EffectAuthorizer {
 /// the user's whole authority. `shell-command`, `!` and `ex:filter` run a
 /// program; `set` moves an option a plugin's grant follows. The plugin's
 /// grant cannot be checked where those run, so it is checked here, where the
-/// plugin is still known. **Default closed:** a plugin may name a command a
-/// plugin registered, or a native one its owner opened
+/// plugin is still known. **Default closed:** a plugin may name its own
+/// command, one another plugin exports (D2, `exported_commands`), or a native
+/// one its owner opened
 /// ([`lattice_grammar::CommandRegistry::allow_plugin_invocation`]), and
 /// nothing else — a native command that forgets to say is refused, visibly,
 /// rather than reachable by every plugin.
@@ -147,6 +148,21 @@ impl CommandGate {
         }
     }
 
+    /// A test's gate for `plugin`, which owns grammar instance `instance`:
+    /// what the host records when it instantiates that plugin's grammar seam.
+    #[cfg(test)]
+    pub(crate) fn owning(plugin: &str, instance: u32) -> Self {
+        let mut guard = crate::GrantGuard::default();
+        let manifest =
+            crate::PluginManifest::new(plugin, Vec::new(), lattice_mode::CapabilitySet::empty());
+        guard.record_commands(instance, &manifest);
+        Self {
+            plugin: plugin.to_string(),
+            guard: Some(std::sync::Arc::new(std::sync::RwLock::new(guard))),
+            ..Self::default()
+        }
+    }
+
     /// Is this the user's `init.rs`?
     fn is_authority(&self) -> bool {
         self.guard.as_ref().is_some_and(|guard| {
@@ -182,15 +198,32 @@ impl CommandGate {
     /// May the plugin run the command `spec` describes? For a caller that has
     /// already resolved the name against its own registry snapshot — and runs
     /// what it resolved — so the check and the run see the same command.
+    ///
+    /// D2: a plugin command only when it is the caller's own (its manifest
+    /// id owns the grammar instance that registered it) or its owner lists it
+    /// in `exported_commands`. Any plugin's command used to pass, so one
+    /// plugin could run another's (org's babel runner, a picker's delete
+    /// verb) with the user's whole authority.
     pub fn permits(&self, spec: &lattice_grammar::CommandSpec) -> bool {
-        spec.plugin_may_invoke() || self.is_authority()
+        if self.is_authority() || spec.plugin_invokable {
+            return true;
+        }
+        let lattice_grammar::source::SourceLayer::Plugin(instance) = spec.source.layer else {
+            return false;
+        };
+        self.guard.as_ref().is_some_and(|guard| {
+            guard
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .may_invoke(instance, &self.plugin, &spec.name)
+        })
     }
 
     /// The refusal for a command the plugin may not run.
     pub fn refusal(&self, name: &str) -> String {
         format!(
-            "{}: refused to run `{name}` — a plugin may run only plugin commands \
-             and the editor commands opened to plugins",
+            "{}: refused to run `{name}` — a plugin may run only its own commands, those \
+             another plugin exports, and the editor commands opened to plugins",
             self.plugin
         )
     }
@@ -209,7 +242,7 @@ impl CommandGate {
         commands
             .id_by_name(name)
             .and_then(|id| commands.lookup(id))
-            .is_some_and(|spec| !spec.plugin_may_invoke())
+            .is_some_and(|spec| !self.permits(spec))
     }
 
     /// May the plugin apply `:set {spec}`? Refused when it names an option a
@@ -1234,13 +1267,16 @@ mod tests {
     }
 
     /// An editor with a native `shell-command` (closed), a native `llm`
-    /// (opened) and a plugin's `org-capture-cleanup`.
+    /// (opened), org's `org-capture-cleanup` (instance 7), and two of a
+    /// second plugin's (instance 9): one it exports and one it does not.
     fn commands() -> lattice_grammar::CommandRegistryHandle {
         let mut reg = lattice_grammar::CommandRegistry::new();
         reg.register_action("shell-command", "runs a program", noop_action());
         reg.register_action("llm", "asks a model", noop_action());
         assert!(reg.allow_plugin_invocation("llm"));
         reg.register_plugin_action(7, "org-capture-cleanup", "org's own", noop_action());
+        reg.register_plugin_action(9, "notes-open", "exported", noop_action());
+        reg.register_plugin_action(9, "notes-delete-all", "private", noop_action());
         std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(reg))
     }
 
@@ -1252,6 +1288,18 @@ mod tests {
         g.options.insert("org.babel.languages".to_string());
         g.options.insert("org.directory".to_string());
         g.authority = Some("init".to_string());
+        // D2: as `instantiate_grammar_plugin` records each grammar instance.
+        g.record_commands(
+            7,
+            &crate::PluginManifest::from_toml_str("id = \"org\"\n").unwrap(),
+        );
+        g.record_commands(
+            9,
+            &crate::PluginManifest::from_toml_str(
+                "id = \"notes\"\nexported_commands = [\"notes-open\"]\n",
+            )
+            .unwrap(),
+        );
         std::sync::Arc::new(std::sync::RwLock::new(g))
     }
 
@@ -1315,7 +1363,51 @@ mod tests {
         assert!(text.contains("`shell-command`"), "{text}");
     }
 
-    /// What it may name: its own (any plugin's) commands, and natives opened.
+    /// D2: another plugin's command only when that plugin exports it; the
+    /// owner itself runs both, and init.rs runs anything.
+    #[test]
+    fn another_plugins_command_needs_exporting() {
+        let org = gated("org", &CapabilityGrant::default());
+        assert!(
+            refused(&org.authorize(invoke("notes-open", "x"))).is_none(),
+            "exported"
+        );
+        let out = org.authorize(invoke("notes-delete-all", "x"));
+        let text = refused(&out).expect("not exported: refused");
+        assert!(text.contains("another plugin exports"), "{text}");
+        let notes = gated("notes", &CapabilityGrant::default());
+        assert!(
+            refused(&notes.authorize(invoke("notes-delete-all", "x"))).is_none(),
+            "its own"
+        );
+        assert!(
+            refused(&notes.authorize(invoke("org-capture-cleanup", "x"))).is_some(),
+            "org exports nothing"
+        );
+        let init = gated("init", &CapabilityGrant::default());
+        assert!(refused(&init.authorize(invoke("notes-delete-all", "x"))).is_none());
+    }
+
+    /// A command whose instance has no recorded owner is nobody's to call.
+    #[test]
+    fn a_command_with_no_known_owner_is_refused() {
+        let reg = {
+            let mut reg = lattice_grammar::CommandRegistry::new();
+            reg.register_plugin_action(42, "orphan", "doc", noop_action());
+            std::sync::Arc::new(arc_swap::ArcSwap::from_pointee(reg))
+        };
+        let grant = CapabilityGrant::default();
+        let auth = EffectAuthorizer::new(&grant, "org").with_command_gate(CommandGate::new(
+            "org",
+            &grant,
+            Some(reg),
+            guard(),
+            Some(options()),
+        ));
+        assert!(refused(&auth.authorize(invoke("orphan", "x"))).is_some());
+    }
+
+    /// What it may name: its own commands, and natives opened.
     #[test]
     fn a_plugin_may_invoke_plugin_commands_and_opened_natives() {
         let auth = gated("org", &CapabilityGrant::default());

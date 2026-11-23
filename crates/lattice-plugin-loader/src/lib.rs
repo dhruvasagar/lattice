@@ -4269,6 +4269,10 @@ impl PluginLoader {
         // command registry (load → clone → register → store), mirroring
         // `drain_grammar` above.
         if !mode_ids.is_empty() {
+            // D2: these carry the modes instance's id, not the grammar
+            // instance's, so attribute it too, or the plugin's own menus
+            // could not name its own mode toggles.
+            self.host.attribute_commands(id, manifest);
             let mut next_cmds = (**commands.load()).clone();
             for mode in &mode_ids {
                 let name = mode.to_string();

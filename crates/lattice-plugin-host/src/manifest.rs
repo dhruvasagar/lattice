@@ -572,6 +572,17 @@ pub struct PluginManifest {
     /// Validated at parse: the mode must be one of `default_modes`, and the
     /// option one of the plugin's own (`<id>.…`) and not `<id>.enabled`.
     pub mode_gates: Vec<(String, String)>,
+    /// D2: the commands of this plugin that OTHER plugins may name for the
+    /// host to run (`exported_commands = ["org-capture"]`).
+    ///
+    /// A plugin's commands are its own by default. Another plugin naming one,
+    /// from an action, a picker row, a prompt or a transient, runs it with
+    /// the user's whole authority, so a command that writes, spawns or edits
+    /// for its owner would do so on a stranger's say-so. Listing a command
+    /// here is the owner saying it is safe to be called from outside: an
+    /// interface, the way a library's `pub` is. A name the plugin does not
+    /// register exports nothing.
+    pub exported_commands: Vec<String>,
     /// PMF.1: the oldest editor this plugin runs on (`min_lattice = "0.9.10"`),
     /// as `(major, minor, patch)`. A manifest-format change (an embedded
     /// manifest, an option-bound grant) is not a plugin-API change, so the WIT
@@ -613,6 +624,9 @@ struct RawManifest {
     /// PMF.1: the oldest editor version the plugin runs on (`"0.9.10"`).
     #[serde(default)]
     min_lattice: Option<String>,
+    /// D2: the commands other plugins may name.
+    #[serde(default)]
+    exported_commands: Vec<String>,
 }
 
 /// Why a manifest failed to parse. Every failure is a value — the host logs +
@@ -733,6 +747,7 @@ impl PluginManifest {
             doc: None,
             default_modes: Vec::new(),
             mode_gates: Vec::new(),
+            exported_commands: Vec::new(),
             min_lattice: None,
         }
     }
@@ -826,9 +841,18 @@ impl PluginManifest {
             }
             mode_gates.push((mode, option));
         }
+        let mut exported_commands: Vec<String> = raw
+            .exported_commands
+            .into_iter()
+            .map(|c| c.trim().to_string())
+            .filter(|c| !c.is_empty())
+            .collect();
+        exported_commands.sort();
+        exported_commands.dedup();
         Ok(Self {
             min_lattice,
             mode_gates,
+            exported_commands,
             id: raw.id,
             requested,
             editor_capabilities: editor,
@@ -1260,6 +1284,19 @@ mod tests {
             "id = \"org\"\ndefault_modes = [\"a-mode\"]\nmode_gates = { \"a-mode\" = \"org.enabled\" }\n"
         )
         .contains("already gates"));
+    }
+
+    /// D2: `exported_commands` is read, trimmed, deduplicated, and empty when
+    /// absent.
+    #[test]
+    fn exported_commands_parse() {
+        let m = PluginManifest::from_toml_str(
+            "id = \"org\"\nexported_commands = [\" org-capture \", \"org-capture\", \"\", \"org-agenda\"]\n",
+        )
+        .unwrap();
+        assert_eq!(m.exported_commands, vec!["org-agenda", "org-capture"]);
+        let none = PluginManifest::from_toml_str("id = \"x\"\n").unwrap();
+        assert!(none.exported_commands.is_empty());
     }
 
     #[test]

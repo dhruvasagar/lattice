@@ -1049,6 +1049,12 @@ pub struct GrantGuard {
     /// option would remember the plugin's default and launder it into a
     /// program the plugin may run.
     remembered: std::collections::HashMap<String, (lattice_config::ConfigValue, bool)>,
+    /// D2: which plugin (manifest id) each grammar instance belongs to, by the
+    /// host-issued id its commands carry (`SourceLayer::Plugin(id)`). Ids are
+    /// never reused, so an unloaded plugin's entry cannot misattribute.
+    command_owners: std::collections::HashMap<u32, String>,
+    /// D2: each plugin's `exported_commands`, by manifest id.
+    exported_commands: std::collections::HashMap<String, std::collections::HashSet<String>>,
 }
 
 /// Shared between the host and every plugin instance it creates.
@@ -1108,6 +1114,29 @@ impl GrantGuard {
     /// PMF.6: `plugin`'s option-bound grants as last resolved.
     pub fn bound_for(&self, plugin: &str) -> Vec<crate::capability::OptionBoundGrant> {
         self.bound.get(plugin).cloned().unwrap_or_default()
+    }
+
+    /// D2: record that grammar instance `instance` is `manifest`'s, and what
+    /// it exports.
+    pub(crate) fn record_commands(&mut self, instance: u32, manifest: &PluginManifest) {
+        self.command_owners.insert(instance, manifest.id.clone());
+        self.exported_commands.insert(
+            manifest.id.clone(),
+            manifest.exported_commands.iter().cloned().collect(),
+        );
+    }
+
+    /// D2: may plugin `caller` name `command`, which grammar instance
+    /// `instance` registered? Its own, or one its owner exports. An instance
+    /// with no recorded owner is nobody's to call.
+    pub(crate) fn may_invoke(&self, instance: u32, caller: &str, command: &str) -> bool {
+        self.command_owners.get(&instance).is_some_and(|owner| {
+            owner == caller
+                || self
+                    .exported_commands
+                    .get(owner)
+                    .is_some_and(|exports| exports.contains(command))
+        })
     }
 
     fn refuses(&self, option: &str, writer: Option<&str>) -> bool {
@@ -4899,6 +4928,19 @@ impl PluginHost {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let next = owners.len() as u32;
         *owners.entry(name.to_string()).or_insert(next)
+    }
+
+    /// D2: attribute the commands registered under `instance` to `manifest`'s
+    /// plugin, with what it exports — what [`Self::instantiate_grammar_plugin`]
+    /// records for every grammar instance it creates. Public for a harness
+    /// that registers a plugin's commands itself, without its grammar seam;
+    /// host code, so trusted. Without it those commands have no owner, and
+    /// the command gate lets no plugin name them.
+    pub fn attribute_commands(&self, instance: PluginId, manifest: &PluginManifest) {
+        self.grant_guard
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .record_commands(instance.0, manifest);
     }
 
     /// Allocate the next host-issued [`PluginId`]. Monotonic and unique for the

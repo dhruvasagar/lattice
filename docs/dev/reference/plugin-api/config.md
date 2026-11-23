@@ -224,6 +224,14 @@ that does not fit the option is reported when it registers; a name no
 plugin ever declares is reported once every plugin has loaded. Any
 other plugin setting an unregistered name still gets `false`.
 
+**Some options only your configuration may set.** An option a
+plugin's capability grant follows (`fs:write:{org.directory|~/org}`,
+`proc:spawn:{org.babel.languages}`), and the switches that turn a
+plugin's default modes on (`<id>.enabled`, and each `mode_gates`
+option), decide what a plugin may reach or whether it runs at all. A
+plugin setting one gets `false`; only `init.rs`, `:set` and
+`lattice.toml` can.
+
 **Example — Toggle this plugin's `enabled` option from an ex-command** · [`plugins/treesitter-context/src/lib.rs`](../../../../plugins/treesitter-context/src/lib.rs)
 
 ```rust

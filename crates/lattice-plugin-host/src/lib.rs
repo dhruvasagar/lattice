@@ -5190,6 +5190,16 @@ impl PluginHost {
                     _ => {}
                 }
             }
+            // Review, 2026-11-23: and whether its modes run at all. The
+            // switches the loader follows for a plugin's default modes are
+            // the user's way of turning a feature off; a plugin that could
+            // set them would turn itself back on.
+            if !manifest.default_modes.is_empty() {
+                guard.options.insert(format!("{}.enabled", manifest.id));
+            }
+            for (_, option) in &manifest.mode_gates {
+                guard.options.insert(option.clone());
+            }
         }
         let registry = self.config.get().cloned();
         let remembered = self
@@ -6014,6 +6024,35 @@ mod grant_guard_tests {
         assert!(
             no_authority.refuses("org.directory", Some("init")),
             "unnamed authority grants no one"
+        );
+    }
+
+    /// Review: `org.babel.enabled` turns babel off, and org must not be
+    /// able to turn it back on; nor `org.enabled`, the plugin's own switch.
+    #[test]
+    fn computing_a_grant_guards_the_switches_of_its_modes() {
+        let host = PluginHost::new().unwrap();
+        let manifest = PluginManifest::from_toml_str(
+            "id = \"org\"\ndefault_modes = [\"org-mode\", \"org-babel-mode\"]\n\
+             mode_gates = { \"org-babel-mode\" = \"org.babel.enabled\" }\n",
+        )
+        .unwrap();
+        let _ = host.grant_for(&manifest, TrustTier::UserInstalled);
+        let g = host.grant_guard.read().unwrap();
+        assert!(g.refuses("org.babel.enabled", Some("org")));
+        assert!(g.refuses("org.enabled", Some("org")));
+        assert!(!g.refuses("org.todo-keywords", Some("org")));
+
+        let none = PluginManifest::from_toml_str("id = \"plain\"\n").unwrap();
+        drop(g);
+        let _ = host.grant_for(&none, TrustTier::UserInstalled);
+        assert!(
+            !host
+                .grant_guard
+                .read()
+                .unwrap()
+                .refuses("plain.enabled", Some("plain")),
+            "no default mode, no switch to guard"
         );
     }
 

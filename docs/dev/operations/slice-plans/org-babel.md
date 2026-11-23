@@ -29,8 +29,8 @@ of them inside `org-babel-mode` (design §0).
 | OB.9                      | `write-to-file` gains a `whole` anchor **(lattice)**                       | ✅     |
 | OB.10                     | `:tangle` **(plugin)**                                                     | ✅     |
 | **Phase 3 — cross-block** |                                                                            |        |
-| OB.11                     | `:var` — literals, named results, named tables **(plugin)**                | 📝     |
-| OB.12                     | Dependency chains — a missing result is run first **(plugin)**             | 📝     |
+| OB.11                     | `:var` — literals, named results, named tables **(plugin)**                | ✅     |
+| OB.12                     | Dependency chains — a missing result is run first **(plugin)**             | ✅     |
 | OB.13                     | noweb **(plugin)**                                                         | 📝     |
 | **Phase 4 — sessions**    |                                                                            |        |
 | OB.14                     | `spawn-interactive` + job stdin **(lattice)**                              | 📝     |
@@ -805,7 +805,7 @@ states and does not hide.
 
 ## Phase 3 — cross-block
 
-### OB.11 — `:var` 📝 *(plugin)*
+### OB.11 — `:var` ✅ *(plugin)*
 
 **Files:** `src/babel/vars.rs`, `src/babel/wrappers.rs` (preludes).
 
@@ -818,7 +818,25 @@ exist is an echoed error and nothing runs.
 **Tests:** one per value kind per prelude language; quoting survives `'`,
 `"`, `$` and newlines; `unknown_reference_runs_nothing`.
 
-### OB.12 — dependency chains 📝 *(plugin)*
+**As built** (org `9a5113c`). The prelude is chosen by the language record's
+`value`, the field that already names its wrapper, so "the same built-in
+table" is literal. A record with no `value` refuses `:var` and names the
+field. The prelude is prepended to the body *before* the wrapper wraps it,
+so `:results value` sees the variables. Values cross as hex-encoded JSON
+(python, ruby, node) or a single-quoted string (sh). A name bound at two
+inheritance levels takes the innermost value. A named block with no result
+refuses ("run it first"), which OB.12 replaces with running it. Indexing
+(`x[0]`), calls (`x()`) and other files are refused by name. Tests: one per
+prelude language, each reading all four value kinds with `'`, `"`, `$` and
+a newline in them, plus `var_is_seen_by_a_value_wrapper`, the plan's
+`unknown_reference_runs_nothing`, and refusal in a language without a
+prelude. Seven unit tests. All four interpreters ran; nothing skipped.
+
+**Not done here:** a tangled block's `:var` is not written into the
+tangled file. Babel does write it (`org-babel-expand-body`), and it belongs
+with noweb's expansion in OB.13, which also changes what a tangle writes.
+
+### OB.12 — dependency chains ✅ *(plugin)*
 
 A `:var` reference whose block has no results runs that block first; the
 referring block starts on its `job-finished`. The chain is a store-backed
@@ -828,6 +846,25 @@ before anything runs and echoed with the cycle. One confirm covers the chain.
 **Tests:** `a_missing_result_is_computed_first`; `a_three_block_chain`;
 `a_cycle_is_refused_before_anything_runs`;
 `a_failing_dependency_stops_the_chain_and_says_where`.
+
+**As built** (org `5f15a94`). **No store.** The plan called the chain
+store-backed, but a batch already travels job to job in the events
+instance's `Job.rest`. A chain is just a batch in dependency order, so
+it got that for free, along with cancel dropping it whole. The split:
+- **The grammar seam orders.** `run::expand` puts a block before the block
+  naming it when it has no result, or when it is in this run anyway (so
+  `C-c C-v b` gives the later block a fresh value, not the file's old one),
+  and refuses a cycle with its path.
+- **The events seam fills values.** A reference to a block earlier in the
+  chain is `Binding::After(name)` in the request. When that job exits 0,
+  its output is formatted as `#+RESULTS:` will hold it and read back by
+  the function that reads a stored result, so the two cannot disagree. A
+  failed run fills nothing, and what waits on it is skipped with an echo
+  naming both blocks. Independent blocks in the batch still run.
+
+The prelude moved from planning to `start_next`, once every binding is
+known. Tests: the plan's four (the first with the confirm on, asking once
+for both blocks), plus five unit tests. org_babel: 64.
 
 ### OB.13 — noweb 📝 *(plugin)*
 

@@ -31,7 +31,7 @@ of them inside `org-babel-mode` (design §0).
 | **Phase 3 — cross-block** |                                                                            |        |
 | OB.11                     | `:var` — literals, named results, named tables **(plugin)**                | ✅     |
 | OB.12                     | Dependency chains — a missing result is run first **(plugin)**             | ✅     |
-| OB.13                     | noweb **(plugin)**                                                         | 📝     |
+| OB.13                     | noweb **(plugin)**                                                         | ✅     |
 | **Phase 4 — sessions**    |                                                                            |        |
 | OB.14                     | `spawn-interactive` + job stdin **(lattice)**                              | 📝     |
 | OB.15                     | `:session` **(plugin)**                                                    | 📝     |
@@ -832,9 +832,10 @@ a newline in them, plus `var_is_seen_by_a_value_wrapper`, the plan's
 `unknown_reference_runs_nothing`, and refusal in a language without a
 prelude. Seven unit tests. All four interpreters ran; nothing skipped.
 
-**Not done here:** a tangled block's `:var` is not written into the
-tangled file. Babel does write it (`org-babel-expand-body`), and it belongs
-with noweb's expansion in OB.13, which also changes what a tangle writes.
+**Not done here, then done:** a tangled block's `:var` was not written
+into the tangled file. Babel writes it (`org-babel-expand-body`). It landed
+after OB.13 (org `1751aa8`), and the prelude became readable literals for
+it.
 
 ### OB.12 — dependency chains ✅ *(plugin)*
 
@@ -866,7 +867,7 @@ The prelude moved from planning to `start_next`, once every binding is
 known. Tests: the plan's four (the first with the confirm on, asking once
 for both blocks), plus five unit tests. org_babel: 64.
 
-### OB.13 — noweb 📝 *(plugin)*
+### OB.13 — noweb ✅ *(plugin)*
 
 **Files:** `src/babel/noweb.rs`.
 
@@ -878,6 +879,23 @@ tangle.
 **Tests:** expansion, recursion, a cycle refused, indentation of the
 reference line prefixed to every expanded line (as babel does),
 `noweb_tangle_expands_only_when_tangling`.
+
+**As built** (org `69fae07`, follow-up `1751aa8`). Babel's rules, all of
+them:
+- `:noweb-ref` blocks are the second source for a name.
+- A referenced body expands in turn only when its own `:noweb` allows the
+  same context, so the recursion is bounded by what the user marked.
+- `eval` expands only when running. `no-export` and `strip-export` act as
+  `yes`.
+- A reference naming nothing is left as written (`cat <<EOF`).
+- `<<name()>>` reads the result as `:var` does; arguments are refused.
+
+The follow-up closes OB.11's open item. A tangled block's `:var`s are
+written into its file. To make that readable, the prelude changed from
+hex-decoded JSON to escaped literals (`n = 5`, `rows = [["web",1]]`), which
+are valid python and JS, and ruby once `#` is escaped, and it is used for
+runs too, so the two cannot disagree. The `:var` tests now carry `#{x}`
+through ruby. org_babel: 68.
 
 ## Phase 4 — sessions
 

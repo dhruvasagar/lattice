@@ -387,6 +387,9 @@ table as a list of rows. The value reaches the program as a prelude
 generated into the script file — a per-language assignment (`x='…'` for sh,
 `x = [...]` for python), from the same built-in table as the value
 wrappers. A language with no prelude support refuses `:var` by name.
+The prelude is a readable literal, not an encoding, because a tangled file
+keeps it. Escaping in one encoder is what keeps a value inside its literal
+(`#` too, for ruby's `#{…}`).
 
 **A referenced block's result is read from its `#+RESULTS:`**, not re-run,
 unless that result is absent — then it is run first, and the referring block

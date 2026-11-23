@@ -1844,9 +1844,7 @@ impl crate::lattice::plugin_host::host_services::Host for PluginState {
     /// `job_owner`, so any instance of the spawning plugin may write.
     fn write_job_stdin(&mut self, id: u64, data: Vec<u8>) -> Result<(), String> {
         let Some(ctx) = &self.event_emit else {
-            return Err(format!(
-                "job {id} takes no input: this seam started no jobs"
-            ));
+            return Err(process_host::no_input(id));
         };
         process_host::write_stdin(ctx.job_owner, id, data)
     }
@@ -1854,9 +1852,7 @@ impl crate::lattice::plugin_host::host_services::Host for PluginState {
     /// OB.14 `close-job-stdin`.
     fn close_job_stdin(&mut self, id: u64) -> Result<(), String> {
         let Some(ctx) = &self.event_emit else {
-            return Err(format!(
-                "job {id} takes no input: this seam started no jobs"
-            ));
+            return Err(process_host::no_input(id));
         };
         process_host::close_stdin(ctx.job_owner, id)
     }
@@ -5942,9 +5938,10 @@ mod held_options_tests {
 }
 
 #[cfg(test)]
-mod mode_enablement_tests {
-    //! Review, 2026-11-23: `enable-mode` / `disable-mode` are the user's
-    //! `init.rs`'s, and from any other plugin they publish nothing.
+mod review_gate_tests {
+    //! Review, 2026-11-23, host functions driven on real stores with no
+    //! guest: `enable-mode` / `disable-mode` are the user's `init.rs`'s, and
+    //! job stdin refuses with one message whatever the reason.
 
     #![allow(clippy::unwrap_used)]
 
@@ -5980,6 +5977,29 @@ mod mode_enablement_tests {
         ModesHost::enable_mode(store.data_mut(), "org-babel-mode".to_string());
         ModesHost::disable_mode(store.data_mut(), "magit-mode".to_string());
         std::iter::from_fn(|| rx.try_recv().ok()).collect()
+    }
+
+    /// Review: a seam with no bus refused stdin with its own message, which
+    /// told a caller something about the id. It is the missing-job one now.
+    #[test]
+    fn stdin_from_a_seam_with_no_jobs_reads_as_no_such_job() {
+        use crate::lattice::plugin_host::host_services::Host as HostServices;
+        let host = PluginHost::new().unwrap();
+        let mut store = host
+            .new_store(
+                WasiCtxBuilder::new().build(),
+                CapabilityGrant::default(),
+                PluginBudget::default(),
+                Some("org"),
+            )
+            .unwrap();
+        let missing = process_host::write_stdin(1, 7, b"x".to_vec()).unwrap_err();
+        let state = store.data_mut();
+        assert_eq!(
+            HostServices::write_job_stdin(state, 7, b"x".to_vec()),
+            Err(missing.clone())
+        );
+        assert_eq!(HostServices::close_job_stdin(state, 7), Err(missing));
     }
 
     #[test]

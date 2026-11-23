@@ -142,15 +142,22 @@ fn send_input(plugin: u32, id: u64, msg: Input) -> Result<(), String> {
         _ => false,
     };
     if !sent {
-        return Err(format!(
-            "job {id} takes no input: it is not running, its input is closed, or it was not \
-             started with spawn-interactive by this plugin"
-        ));
+        return Err(no_input(id));
     }
     if close {
         table.remove(&id);
     }
     Ok(())
+}
+
+/// The one refusal for a job that takes no input, whatever the reason: not
+/// this plugin's, over, closed, never interactive, or asked from a seam that
+/// starts no jobs. One message, so the reason cannot be used to probe ids.
+pub(crate) fn no_input(id: u64) -> String {
+    format!(
+        "job {id} takes no input: it is not running, its input is closed, or it was not \
+         started with spawn-interactive by this plugin"
+    )
 }
 
 /// `write-job-stdin`: queue `data` for job `id`'s stdin. Returns at once; the

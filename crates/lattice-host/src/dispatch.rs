@@ -4993,8 +4993,14 @@ impl Editor {
             );
             return;
         }
-        // Its diff against HEAD steps aside; teardown hands it back.
-        self.yield_head_diff(buffer_id);
+        // Its diff against HEAD steps aside; teardown hands it back. Held
+        // until this session is registered, so a HEAD session landing from
+        // the VCS drainer cannot slip in between.
+        let vcs = self.vcs_handle();
+        let mut hold = vcs.as_deref().and_then(crate::vcs::VcsSubsystem::hold);
+        if let Some(h) = hold.as_mut() {
+            h.yield_buffer(buffer_id, &self.diff_subsystem);
+        }
         let provider_text: std::sync::Arc<dyn crate::diff::subsystem::BufferTextProvider> =
             std::sync::Arc::new(crate::diff::subsystem::BufferRegistryTextProvider::new(
                 self.buffers.clone(),
@@ -5020,6 +5026,7 @@ impl Editor {
             lattice_diff::DiffAlgorithm::Histogram,
             descriptor,
         );
+        drop(hold);
         // Build the overlay provider and capture the cache
         // handle so the D.3.b refresh task can write to the
         // same `Mutex<DiffOverlayCache>` the provider reads
@@ -6130,12 +6137,12 @@ impl Editor {
         self.reclaim_head_diffs(&watch);
     }
 
-    /// Step `buffer`'s diff against HEAD (the gutter signs, VCS.2) aside
-    /// for an explicit diff. False when it has none.
-    fn yield_head_diff(&self, buffer: lattice_core::BufferId) -> bool {
+    /// The VCS subsystem (the gutter signs' diff against HEAD, VCS.2),
+    /// shared, so an explicit diff can hold it while it claims buffers.
+    fn vcs_handle(&self) -> Option<std::sync::Arc<crate::vcs::VcsSubsystem>> {
         self.vcs_subscription_guard
             .as_ref()
-            .is_some_and(|g| g.subsystem().yield_buffer(buffer, &self.diff_subsystem))
+            .map(|g| std::sync::Arc::clone(g.subsystem_handle()))
     }
 
     /// Re-arm the diff against HEAD of every buffer in `buffers` that
@@ -6603,11 +6610,19 @@ impl Editor {
             crate::diff::subsystem::ConflictLayout::Resolve => members[0].buffer,
         };
         // A file's diff against HEAD (the gutter signs) steps aside for the
-        // explicit diff, and is handed back on every failure below.
+        // explicit diff, and is handed back on every failure below. The
+        // VCS subsystem is held from here until the session is registered:
+        // `:diffsplit` has just opened its file, and the drainer registering
+        // that file's HEAD session in between would read as an overlap.
+        let vcs = self.vcs_handle();
+        let mut hold = vcs.as_deref().and_then(crate::vcs::VcsSubsystem::hold);
         let yielded: Vec<lattice_core::BufferId> = members
             .iter()
             .map(|m| m.buffer)
-            .filter(|b| self.yield_head_diff(*b))
+            .filter(|b| {
+                hold.as_mut()
+                    .is_some_and(|h| h.yield_buffer(*b, &self.diff_subsystem))
+            })
             .collect();
         if let Some(busy) = members
             .iter()
@@ -6617,7 +6632,11 @@ impl Editor {
                 "buffer {} already participates in a diff session",
                 busy.buffer.0
             );
-            self.reclaim_head_diffs(&yielded);
+            if let Some(h) = hold.as_mut() {
+                for b in &yielded {
+                    h.reclaim(*b, &self.diff_subsystem);
+                }
+            }
             return Err(msg);
         }
 
@@ -6652,6 +6671,7 @@ impl Editor {
             lattice_diff::DiffAlgorithm::Histogram,
             descriptor,
         );
+        drop(hold);
         session.set_conflict_layout(layout);
 
         let mapper: std::sync::Arc<dyn crate::pane_group::RowMapper> = if arity == 2 {

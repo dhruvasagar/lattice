@@ -21,6 +21,7 @@
 
 ### Fixed
 - **`#[derive(ConfigShape)]` compiles for a record with a field named `value` followed by others.** Each field was read into a variable named after it, so a `value` field took the place of the derive's own `value` argument, and the build failed for every field after it, with an error naming none of them. Fields are now read under names of their own.
+- **`:diffsplit <file>` no longer fails at random on a file in a git repository.** It opens `<file>` and then claims both buffers; the gutter signs' diff against HEAD for the newly opened file was registered on another thread and could land in between, so the split opened but the diff was refused as "already participates in a diff session". The claim and that registration now take turns, so each sees the other whole.
 - **`o` / `O` on an org headline or list item no longer folds the new line shut.** While any other buffer that folds was open (the agenda, search results, an LLM chat), the new line landed inside a closed fold and everything typed into it stayed hidden. The keystroke itself had been fixed before; a refresh that runs between keystrokes still applied org's collapsed-overview folding to the fold the edit had just created. Folds an edit creates now stay open there too.
 
 ## 0.10.2 — 2026-11-18

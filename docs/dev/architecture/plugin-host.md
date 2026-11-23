@@ -961,8 +961,9 @@ is enough to check — and decline otherwise.
   accept outcome, a picker's `delete-command`, a transient row. The rules:
   - **Default closed.** A plugin may name its own command, a command another plugin lists
     in its manifest's `exported_commands` (D2), or a native one its owner opened
-    (`CommandRegistry::allow_plugin_invocation` — today only `llm`, whose tool calls ask
-    the user first). A native command that forgets to say is refused with a warning, never
+    (`CommandRegistry::allow_plugin_invocation` — today `llm`, whose tool calls ask the
+    user first, and `action:scan-view-clockreport-toggle`, which flips a view mode on the
+    user's own buffer and which org's agenda menu names). A native command that forgets to say is refused with a warning, never
     silently reachable: the failure of omission is visible. "Its own" is by manifest id,
     not by the `SourceLayer::Plugin(id)` a command carries: that id is the registering
     *instance's*, and one plugin's seams are separate instances (its picker names commands

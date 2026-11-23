@@ -418,6 +418,29 @@ as babel does; sessions are listed in `*org-babel*` and killed by
 `:org-babel-cancel`, by unload, or when their buffer closes. This is the last
 slice because it is the only one that needs a new kind of job.
 
+**Blocks go through a driver, not the interpreter's REPL.** A REPL prints
+prompts, node's echoes the value of every expression, and a prompt without a
+newline is glued onto the next output line. None of that is the block's
+output. So each value wrapper (§5.2) carries a small **driver**, a loop that
+reads one block per line and runs it in the interpreter's global scope.
+`session-args` passes it as `{driver}`. Sh needs none, because a shell
+reading a pipe already runs it command by command. A language has sessions
+only when its record has `session-args` and a value wrapper.
+
+**A block is delimited on both streams.** Its line ends by printing an end
+sentinel on stdout and on stderr. Each stream is read on its own thread, so
+a stderr line can arrive after a later stdout one. Once the sentinel has come
+on both, everything the block wrote has. The line carries the body encoded,
+never in the clear, as the value wrappers do. An error in the block is
+printed rather than fatal: the session outlives a failing block.
+
+**The end of a session is the end of its job.** `:org-babel-cancel` ends the
+buffer's sessions, idle ones too, so it is also the reset; the grammar seam
+finds idle ones through a store record, as it finds running blocks through
+their claims. A closed buffer's sessions end, and a block that was running
+has its output land in `*org-babel*`, as a script's does. An interpreter
+that exits takes its queued blocks with it, and each says so.
+
 ## 7. Tangling
 
 `:tangle path` (or `yes`, meaning the org file's name with the language's

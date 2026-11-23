@@ -19,7 +19,7 @@ of them inside `org-babel-mode` (design §0).
 | OB.3a                     | Security follow-ups to OB.2/OB.3 — **blocks OB.R1** **(lattice)**          | ✅     |
 | OB.3b                     | Per-mode switch `mode_gates` for `org.babel.enabled` **(lattice)**         | ✅     |
 | OB.3c                     | `buffer-text`, gated on the plugin's own modes **(lattice)**               | ✅     |
-| OB.R1                     | lattice release carrying OB.1–OB.3c, OB.9 **(lattice)**                    | 🚧     |
+| OB.R1                     | lattice release carrying OB.1–OB.3c, OB.9, OB.14 **(lattice)**             | 🚧     |
 | OB.4                      | `org-babel-mode`: the mode, its layer, its options **(plugin)**            | ✅     |
 | OB.5                      | Src blocks and header arguments, parsed and merged **(plugin)**            | ✅     |
 | OB.6                      | `C-c C-c` runs a block; output lands in `#+RESULTS:` **(plugin)**          | ✅     |
@@ -34,9 +34,22 @@ of them inside `org-babel-mode` (design §0).
 | OB.13                     | noweb **(plugin)**                                                         | ✅     |
 | **Phase 4 — sessions**    |                                                                            |        |
 | OB.14                     | `spawn-interactive` + job stdin **(lattice)**                              | ✅     |
-| OB.15                     | `:session` **(plugin)**                                                    | 📝     |
+| OB.15                     | `:session` **(plugin)**                                                    | ✅     |
 
-## Where this stands (2026-11-22)
+## Where this stands (2026-11-23)
+
+**Every build slice is ✅: OB.1–OB.15, in both repositories**, on branch
+`org-babel-phase-1` in each, unpushed. What is left is **OB.R1**, the
+release, which is Dhruva's: it needs `main`, a push and crates.io
+credentials. Before it, the gates listed below are owed, plus the
+whole-crate suites for the crates touched since: `lattice-host`
+(`write_to_file_effect`), `lattice-plugin-sdk` and
+`lattice-plugin-sdk-derive` (a derive fix OB.15 surfaced, `83d6c2fc`), and
+the org plugin's own integration suite (its `org_babel` file, 74 tests,
+passes). A whole-branch review of both branches is owed too.
+
+*The rest of this section is as it stood on 2026-11-22, when Phase 1's
+lattice half had just landed.*
 
 **Phase 1's lattice half is done: OB.1–OB.3 ✅, on branch `org-babel-phase-1`**
 (not yet merged to `main`, not pushed when this was written):
@@ -482,7 +495,9 @@ crates OB.R1 has not yet published.
 is **0.6.0, WIT package `@0.6.0`**. It was 0.5.1 / `@0.5.0` (all additive)
 until Dhruva folded OB.9's breaking `whole` anchor into this release rather
 than spending a second bump later (decision log, OB.9), so OB.R1 now carries
-OB.1–OB.3c **and OB.9**. The workspace is 0.10.3 ahead of the release so
+OB.1–OB.3c **and OB.9**, and OB.14 (additive within the unpublished
+`@0.6.0`), and the `ConfigShape` derive fix (`83d6c2fc`) in
+`lattice-plugin-sdk-derive`. The workspace is 0.10.3 ahead of the release so
 org's `min_lattice` can name it (the 0.9.11 precedent), the bundled plugins'
 and fixtures' lockfiles follow, and `## Unreleased` carries the Added,
 Security and `Plugin API 0.6.0 — breaking` entries.
@@ -924,7 +939,7 @@ missing job's, which a test pins. Design: `lighthouse.md` §3.3.
 they ride OB.R1 with OB.9. A release cut from before this commit would
 simply lack them. Cutting it is Dhruva's.
 
-### OB.15 — `:session` 📝 *(plugin)*
+### OB.15 — `:session` ✅ *(plugin)*
 
 **Files:** `src/babel/session.rs`.
 
@@ -939,3 +954,38 @@ when their buffer closes.
 **Tests:** `state_persists_between_blocks_in_a_session`;
 `two_sessions_are_independent`; `closing_the_buffer_ends_its_sessions`;
 `a_block_that_never_prints_the_sentinel_can_be_cancelled`.
+
+**As built** (org `7b7dd90`):
+- **Not REPL mode.** A REPL prints prompts, and node's echoes every value,
+  so each value wrapper has a small built-in **driver** instead.
+  `session-args` passes it as `{driver}`: python `["-u", "-c", "{driver}"]`,
+  ruby and node `["-e", "{driver}"]`. Sh needs none (`[]`), since sh reads
+  stdin.
+- **A block is one line on stdin**, the body never in the clear. It prints
+  the block's end sentinel on stdout and on stderr. The host reads the two
+  streams on separate threads, so only both sentinels together mean the
+  block's output is all in.
+- **A session needs a wrapper.** `:session` is refused at plan time
+  without `session-args` or a value wrapper, and when `{driver}` is missing
+  where one is needed, or named where there is none.
+- **An error in a block is printed, and the session survives.** Sh uses
+  `command eval`, since a plain `eval` exits a non-interactive shell on a
+  syntax error.
+- **Cancel ends idle sessions too**, which is how a session is reset. The
+  grammar seam counts them from a store record.
+- **A closed buffer's running block goes to `*org-babel*`**, as a script's
+  output does.
+- **The finish is shared.** `jobs::complete` is the one finish path for
+  scripts and session blocks alike.
+
+Tests:
+- The plan's four, as integration tests.
+- `a_python_session_keeps_state_and_gives_values` and
+  `a_language_without_session_args_refuses_a_session`.
+- `each_driver_keeps_state_across_blocks_and_survives_an_error`, a unit test
+  through the real sh, python, ruby and node.
+
+A field after `value` in the languages record broke the `ConfigShape`
+derive (its locals shadowed `from_value`'s `value` parameter), fixed in
+lattice at `83d6c2fc`. Org puts `session-args` first, so it builds either
+way.

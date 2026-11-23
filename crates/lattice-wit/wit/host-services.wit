@@ -747,6 +747,12 @@ interface host-services {
     /// the grant, exactly as it would be from a command. An `apply-edit`
     /// addresses its buffer by id and is dropped if that buffer has closed.
     ///
+    /// A post carries only what writing a result needs: `apply-edit`,
+    /// `write-to-file` (with no `cut`, which would be taken from whatever
+    /// buffer has focus when the post lands), `track-range`, `untrack-range`,
+    /// `open-synthetic-buffer` and `echo`. Anything else is replaced by a
+    /// warning naming it, and the effects after it are dropped.
+    ///
     /// Prefer returning effects where a seam can: an effect posted here lands
     /// after the current keystroke's, not inside it.
     ///

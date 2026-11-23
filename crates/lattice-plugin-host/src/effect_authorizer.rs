@@ -521,7 +521,9 @@ impl EffectAuthorizer {
     ///
     /// - `apply-edit` — the result, into a buffer;
     /// - `write-to-file` — the same into a file, still under `fs:write`
-    ///   ([`Self::authorize`] runs first);
+    ///   ([`Self::authorize`] runs first). Never with a `cut`: the cut is
+    ///   taken from "the buffer the action ran in", and a post ran in none,
+    ///   so it would land in whatever buffer has focus when it arrives;
     /// - `track-range` / `untrack-range` — following where the result went,
     ///   in the plugin's own range space;
     /// - `open-synthetic-buffer` — the buffer a result goes to when there is
@@ -551,13 +553,18 @@ impl EffectAuthorizer {
             }
             allowed @ (NativeEffect::None
             | NativeEffect::ApplyEdit { .. }
-            | NativeEffect::WriteToFile { .. }
+            | NativeEffect::WriteToFile { cut: None, .. }
             | NativeEffect::TrackRange { .. }
             | NativeEffect::UntrackRange { .. }
             | NativeEffect::OpenSyntheticBuffer { .. }
             | NativeEffect::Echo { .. }) => (allowed, false),
             refused => {
-                let name = effect_name(&refused);
+                let name = match &refused {
+                    NativeEffect::WriteToFile { cut: Some(_), .. } => {
+                        "WriteToFile with a cut".to_string()
+                    }
+                    other => effect_name(other),
+                };
                 // `info!`: one-shot and user-actionable, as a denied write is.
                 tracing::info!(
                     plugin = %self.plugin,
@@ -1104,6 +1111,37 @@ mod tests {
                 && matches!(&v[2], NativeEffect::Echo { level: EchoLevel::Info, text } if text == "done")),
             "{out:?}"
         );
+    }
+
+    /// Review: a posted `write-to-file` with a `cut` would delete from the
+    /// buffer focused when the post lands, which the job never saw. Refused,
+    /// and the batch ends there; the same write without one passes.
+    #[test]
+    fn a_posted_write_with_a_cut_is_refused() {
+        let auth = EffectAuthorizer::new(&CapabilityGrant::default(), "org");
+        let write = |cut| NativeEffect::WriteToFile {
+            path: std::path::PathBuf::from("/tmp/out.sh"),
+            anchor: lattice_grammar::effect::FileAnchor::End,
+            text: "echo\n".to_string(),
+            cut,
+            create_parents: false,
+            save: false,
+        };
+        let cut = Some(lattice_protocol::position::Range::new(
+            lattice_protocol::position::Position::new(0, 0),
+            lattice_protocol::position::Position::new(3, 0),
+        ));
+        let out = auth.restrict_posted(NativeEffect::Many(vec![write(cut), echo("after")]));
+        assert!(
+            matches!(&out, NativeEffect::Many(v) if v.len() == 1
+                && matches!(&v[0], NativeEffect::Echo { level: EchoLevel::Warn, text }
+                    if text.contains("WriteToFile with a cut"))),
+            "{out:?}"
+        );
+        assert!(matches!(
+            auth.restrict_posted(write(None)),
+            NativeEffect::WriteToFile { cut: None, .. }
+        ));
     }
 
     /// OB.3a: anything else is refused by name, and ends the batch.

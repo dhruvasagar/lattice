@@ -57056,17 +57056,18 @@ mod tests {
         }
     }
     fn write_temp(contents: &str, tag: &str) -> TempFilePath {
+        // Several tests share a tag and start together, and the clock
+        // alone does not separate them: two equal names let one test's
+        // drop delete the file another is about to read. The counter
+        // makes each name unique within the process.
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let mut path = std::env::temp_dir();
-        // Cargo test nameserver: pid + tag keeps tests
-        // running in parallel from colliding.
         path.push(format!(
             "lattice-diffsplit-{}-{}-{}.tmp",
             std::process::id(),
             tag,
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0),
+            n,
         ));
         std::fs::write(&path, contents).expect("write temp file");
         TempFilePath(path)

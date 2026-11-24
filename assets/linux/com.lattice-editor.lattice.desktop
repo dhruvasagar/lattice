@@ -7,6 +7,6 @@ Exec=lattice %F
 Icon=com.lattice-editor.lattice
 Terminal=false
 Categories=Development;TextEditor;
-MimeType=text/plain;
+MimeType=text/plain;application/pdf;
 Keywords=text;editor;vim;modal;gpu;
 StartupWMClass=lattice

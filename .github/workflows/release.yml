@@ -355,6 +355,12 @@ jobs:
             || { echo "::error::$deb declares Package: $deb_name, expected lattice-gui"; exit 1; }
           dpkg-deb -f "$deb" Description | head -n1 | grep -qv "generated from Rust crate" \
             || { echo "::error::$deb has a placeholder Description"; exit 1; }
+          # PF.11: lattice is a CANDIDATE PDF viewer ("Open with"), never the
+          # default. The MIME type in the shipped entry is the whole of it.
+          dpkg-deb --fsys-tarfile "$deb" \
+            | tar -xO --wildcards '*usr/share/applications/com.lattice-editor.lattice.desktop' \
+            | grep -q '^MimeType=.*application/pdf;' \
+            || { echo "::error::$deb's desktop entry does not offer application/pdf"; exit 1; }
           echo "ok: $deb"
 
           appimage="dist/lattice-gui-${VERSION}-${arch}.AppImage"

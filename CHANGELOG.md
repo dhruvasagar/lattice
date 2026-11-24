@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Added
+- **Open PDFs with lattice on Linux.** The `.deb` and the AppImage list lattice under "Open with" for PDF files, and change nothing else. `xdg-mime default com.lattice-editor.lattice.desktop application/pdf` makes it the default.
 - **`R` reloads a PDF or a picture**, as `:e!` does, at the page you were on.
 - **Reading keys in a PDF.** `J` / `K` turn pages, and `<Space>` / `<S-Space>`, `<C-f>` / `<C-b>` and `<PageDown>` / `<PageUp>` turn one page with that page at the top. `q` closes the PDF, or a picture, as `:bd` does. The modeline shows `page 3/12`.
 - **`ui.modeline.position-format`** sets what the modeline's position shows, as vim's `'rulerformat'`: `{line}`, `{col}` and `{lines}`, default `{line}:{col}`. A mode can set its own, as PDF buffers do.

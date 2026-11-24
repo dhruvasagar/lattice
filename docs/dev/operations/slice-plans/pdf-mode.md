@@ -22,7 +22,7 @@ text (design §8).
 | PF.4b | Fit width, zoom, rotate, `h` / `l`: scrolling inside a page        | ⛔     |
 | PF.5  | Reload in place on change                                            | ✅     |
 | PF.6  | System viewer, docs, benchmarks                                      | 📝     |
-| PF.11 | Lattice as a candidate PDF viewer (Linux desktop entry)              | 📝     |
+| PF.11 | Lattice as a candidate PDF viewer (Linux desktop entry)              | ✅     |
 | PF.7  | Text: search, selection, copy                                        | ⛔     |
 | PF.8  | Links and the outline                                                | ⛔     |
 | PF.9  | Inline PDFs in org (first page)                                      | ⛔     |
@@ -329,12 +329,20 @@ Added; probe and render benches recorded in
 [`benchmarks.md`](../benchmarks.md); `inline-media.md` §8.1 points to
 `pdf-mode.md`.
 
-### PF.11 — a candidate PDF viewer on Linux 📝
+### PF.11 — a candidate PDF viewer on Linux ✅
 
 `application/pdf` added to the desktop entry's `MimeType`, so the `.deb` and
 the AppImage put lattice under "Open with" and change no default (design
 §5a). `:help pdf-mode` gives the `xdg-mime` line that makes it the default.
 The `dist` leg's `.deb` assertions check the MIME type is present.
+
+**As built.** `MimeType=text/plain;application/pdf;` in
+`assets/linux/com.lattice-editor.lattice.desktop`, which both the `.deb`
+(`cargo-deb` assets) and the AppImage (`linuxdeploy -d`) ship. The release
+workflow's verify step extracts the entry from the `.deb` and fails without
+the type; it runs only when a release is cut, so it was checked locally
+against a `./usr`-prefixed archive, hence the `--wildcards` match. The
+`xdg-mime` line is in `:help pdf-mode` (PF.6).
 
 ### PF.12 — macOS and Windows ⛔
 

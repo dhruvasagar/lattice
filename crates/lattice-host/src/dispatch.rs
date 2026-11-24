@@ -9424,6 +9424,25 @@ impl Editor {
         {
             return Vec::new();
         }
+        // PF.5: a PRESENTED file (a picture, a PDF) is not text, so the
+        // content gate below cannot read it, and used to report it gone:
+        // re-exporting a PDF said "no longer available on disk". The stat
+        // gate above is the whole check for one. Its buffer is never dirty
+        // (its major makes it read-only), so a change is always a reload,
+        // and the reload rereads it however its major reads it.
+        if self
+            .mode_registry
+            .load()
+            .presenting_major_for_path(&change.path)
+            .is_some()
+        {
+            return match self.do_edit(Some(change.path.clone()), true) {
+                DoEditOutcome::Reloaded(s)
+                | DoEditOutcome::Opened(s)
+                | DoEditOutcome::Activated(s) => s,
+                _ => Vec::new(),
+            };
+        }
         let Ok(disk_text) = std::fs::read_to_string(&change.path) else {
             // Vanished between event and read — treat as a delete.
             self.set_message(
@@ -17446,8 +17465,24 @@ impl Editor {
                 // content (the file may have shrunk on disk).
                 let saved_cursor = self.cursor;
                 let saved_scroll = self.scroll;
-                let outcome =
-                    self.open_fresh_into_active_slot(target, DoEditOpenAction::Reload, None);
+                // PF.5: a PRESENTED file reopens as one empty line, and its
+                // major writes the real text later (a PDF's page labels,
+                // read off the actor). Restored against one line, the cursor
+                // would clamp to page 1 and the scroll to the top: every
+                // reload of an exported PDF would jump to its first page.
+                // So the fresh buffer starts with the text it replaces, and
+                // the major rewrites it only if the file says otherwise.
+                let presented = self
+                    .mode_registry
+                    .load()
+                    .presenting_major_for_path(&target)
+                    .is_some();
+                let carried = presented.then(|| self.document.text());
+                let outcome = self.open_fresh_into_active_slot(
+                    target,
+                    DoEditOpenAction::Reload,
+                    carried.as_deref(),
+                );
                 if old_id != self.document_buffer_id {
                     self.cursor = saved_cursor;
                     self.clamp_cursor_to_active_buffer();
@@ -17720,13 +17755,20 @@ impl Editor {
         // Seeded BEFORE the actor spawns, so syntax is built from the real
         // text and the first frame shows it. An ordinary edit, so the buffer
         // is modified and the dirty-buffer guard protects it.
-        if let Some(text) = seed.filter(|t| is_new && !t.is_empty()) {
+        //
+        // PF.5: a reload of a presented file carries its old text over
+        // instead (see `do_edit_seeded`). That text is its major's, not the
+        // user's, so it is the clean baseline, as the major's own write is.
+        let carry_over = matches!(action, DoEditOpenAction::Reload) && !is_new;
+        if let Some(text) = seed.filter(|t| (is_new || carry_over) && !t.is_empty()) {
             let insert = lattice_protocol::edit::Edit::insert(
                 lattice_protocol::position::Position::ZERO,
                 text,
             );
             if let Err(e) = new_doc.apply_edit(insert) {
                 tracing::warn!(path = %target.display(), "seeding a new file failed: {e}");
+            } else if carry_over {
+                new_doc.mark_clean();
             }
         }
         let lang = lattice_syntax::Lang::detect_from_path(new_doc.path());
@@ -55245,6 +55287,37 @@ mod tests {
             e.last_message.as_ref().map(|m| m.level),
             Some(EchoLevel::Warn),
             "delete warns"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// PF.5: a presented file (a picture here; a PDF the same) is not text,
+    /// so a change to it is a reload, never the "unreadable text" warning
+    /// below. Before, re-exporting a PDF reported it gone from disk.
+    #[test]
+    fn autoread_reloads_a_presented_file_instead_of_reading_it_as_text() {
+        let dir =
+            std::env::temp_dir().join(format!("lattice-ar4-presented-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("diagram.png");
+        std::fs::write(&path, [0x89, 0x50, 0x4e, 0x47, 0xff]).unwrap();
+        let mut e = crate::editor::Editor::boot(lattice_core::Document::from_text("scratch"));
+        e.do_edit(Some(path.clone()), false);
+        let before = e.document_buffer_id;
+        e.last_message = None;
+
+        std::fs::write(&path, [0x89, 0x50, 0x4e, 0x47, 0xff, 0xfe, 0x00]).unwrap();
+        inject_pending(&mut e, &path, crate::autoread::AutoreadChangeKind::Modified);
+        let _ = e.drain_autoread_changes();
+
+        assert_ne!(e.document_buffer_id, before, "reloaded into a fresh buffer");
+        assert_eq!(e.buffers.document_path(e.document_buffer_id), Some(path));
+        assert_ne!(
+            e.last_message.as_ref().map(|m| m.level),
+            Some(EchoLevel::Warn),
+            "not reported unreadable: {:?}",
+            e.last_message
         );
         std::fs::remove_dir_all(&dir).ok();
     }

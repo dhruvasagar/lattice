@@ -501,3 +501,113 @@ async fn the_modeline_shows_the_cursors_page() {
     keys(&mut editor, "JJ");
     assert_eq!(modeline_position(&mut editor), "page 3/12");
 }
+
+/// Rewrite `path` with `bytes`, its mtime moved clearly forward: two writes
+/// inside one timestamp tick must still read as a change.
+fn rewrite(path: &std::path::Path, bytes: &[u8]) {
+    std::fs::write(path, bytes).unwrap();
+    let later = std::time::SystemTime::now() + Duration::from_secs(5);
+    std::fs::File::options()
+        .write(true)
+        .open(path)
+        .unwrap()
+        .set_modified(later)
+        .unwrap();
+}
+
+/// The file revision each block was measured at.
+fn revisions(editor: &Editor, id: lattice_core::BufferId) -> Vec<u64> {
+    use lattice_host::per_buffer_cache::PerBufferCacheExt;
+    editor
+        .wasm_media
+        .cache
+        .get_for(id)
+        .map(|c| c.blocks.iter().map(|(b, _, _)| b.revision).collect())
+        .unwrap_or_default()
+}
+
+/// What the peer does with `R`'s effect: `:e!`, from its effect tail.
+fn reload_with_r(editor: &mut Editor) {
+    let mut partial = Vec::new();
+    let r = lattice_protocol::chord::parse_chord_sequence("R").unwrap()[0];
+    let (_, outcome) = editor.dispatch_chord_with_outcome(r, &mut partial);
+    assert!(
+        outcome.effects.iter().any(|e| matches!(
+            e,
+            lattice_grammar::Effect::OpenBuffer {
+                path: None,
+                force: true
+            }
+        )),
+        "R asked for :e!: {:?}",
+        outcome.effects
+    );
+    editor.do_edit(None, true);
+}
+
+/// PF.5 (design §5): a PDF rewritten on disk, as an export loop rewrites it,
+/// reloads at the page being read, never page 1. Its blocks carry the new
+/// revision, which is what makes the drawing peer render the pages again
+/// rather than keep the old pixels; the old ones stay meanwhile (the GPUI
+/// cache's own test).
+///
+/// The no-jump half races here: a 12-page probe often relabels the fresh
+/// buffer before the cursor is restored, and passes either way. The carry-over
+/// that closes the race for a long PDF is pinned without it, on a picture
+/// (`opening_an_image_file.rs`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_reload_stays_on_the_page_and_redraws_it() {
+    let (dir, mut editor, _) = open_drawn(12).await;
+    keys(&mut editor, "JJJJ");
+    assert_eq!(editor.cursor.line, 4);
+    let scroll = editor.scroll;
+    let before = revisions(&editor, editor.document_buffer_id);
+    assert!(
+        before.iter().all(|&r| r != 0),
+        "measured blocks carry a revision"
+    );
+
+    rewrite(&dir.path().join("paper.pdf"), &pdf_bytes(12));
+    reload_with_r(&mut editor);
+    let id = editor.document_buffer_id;
+    assert_eq!(editor.cursor.line, 4, "no jump while the labels are reread");
+    assert_eq!(editor.scroll, scroll);
+    assert_eq!(text_of(&editor, id).lines().count(), 12);
+
+    assert!(
+        settle_woken(&mut editor, |e| {
+            let now = revisions(e, id);
+            now.len() == 12 && now.iter().zip(&before).all(|(n, b)| n != b)
+        })
+        .await,
+        "the pages were never measured again: {:?}",
+        revisions(&editor, id)
+    );
+    assert_eq!(editor.cursor.line, 4, "still on page 5");
+    assert_eq!(editor.scroll, scroll);
+    assert!(
+        !editor.buffers.document_dirty(id),
+        "a reload is not a change"
+    );
+}
+
+/// PF.5: a file that lost pages puts the cursor on its new last page.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_reload_with_fewer_pages_clamps_to_the_last() {
+    let (dir, mut editor, _) = open_drawn(12).await;
+    keys(&mut editor, "G");
+    assert_eq!(editor.cursor.line, 11);
+
+    rewrite(&dir.path().join("paper.pdf"), &pdf_bytes(3));
+    reload_with_r(&mut editor);
+    let id = editor.document_buffer_id;
+    assert!(
+        settle_woken(&mut editor, |e| text_of(e, id).lines().count() == 3).await,
+        "the labels were never rewritten: {:?}",
+        text_of(&editor, id)
+    );
+    editor.run_tick_pending();
+    assert_eq!(text_of(&editor, id).lines().next(), Some("Page 1 of 3"));
+    assert_eq!(editor.cursor.line, 2, "on the new last page");
+    assert_eq!(modeline_position(&mut editor), "page 3/3");
+}

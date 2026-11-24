@@ -308,6 +308,14 @@ size, computes rows and `height_lh`, and builds the virtual rows — so
 sizing policy stays in one place and a plugin cannot reserve arbitrary
 vertical space or paint outside its block.
 
+The host also stamps each block's **`revision`**, the file's modification
+time when it was measured (PF.5). A drawing peer keys its pixels by source,
+which names a file and not its contents, so the revision is what makes a
+file rewritten on disk draw again; the peer keeps the old pixels on screen
+until the new ones land. It is taken when the size is, once per file per
+buffer, and carried with the size across refreshes, so it adds no `stat` per
+keystroke. A guest never sets it.
+
 ### 7.1 How the host learns a pixel (IM.7a)
 
 `block_geometry` needs a line height and a pane width **in pixels**, and

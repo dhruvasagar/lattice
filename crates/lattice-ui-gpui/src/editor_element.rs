@@ -583,6 +583,11 @@ struct MediaEntry {
     /// has since changed size (the pane was resized) is decoded again, with
     /// this one drawn meanwhile.
     target_h: u32,
+    /// The file's revision it was decoded from (PF.5,
+    /// [`MediaBlock::revision`](lattice_cells::MediaBlock::revision)). A
+    /// block naming another revision is decoded again, with this one drawn
+    /// meanwhile, exactly as for a size change.
+    revision: u64,
     /// The frame it was last drawn in (see [`MediaPixels::begin_frame`]).
     drawn: u64,
 }
@@ -591,10 +596,12 @@ struct MediaEntry {
 struct MediaPixelsInner {
     ready: std::collections::HashMap<lattice_cells::MediaSource, MediaEntry>,
     /// Decodes in flight, so a block visible for 200 frames spawns ONE task
-    /// rather than 200. It also retains sources that FAILED, which is what
-    /// stops a missing file being retried on every frame forever. A landed
-    /// decode leaves it, so a later size change can claim again.
-    dispatched: std::collections::HashSet<lattice_cells::MediaSource>,
+    /// rather than 200, each with the file revision it was claimed for. It
+    /// also retains sources that FAILED, which is what stops a missing file
+    /// being retried on every frame forever. A landed decode leaves it, so a
+    /// later size change can claim again, and a failure is retried only
+    /// when the file changes, which is when it might now succeed.
+    dispatched: std::collections::HashMap<lattice_cells::MediaSource, u64>,
     /// Sum of `ready`'s `bytes`.
     bytes: usize,
     /// The byte budget; 0 is "not yet configured" and means the default.
@@ -637,25 +644,31 @@ impl MediaPixels {
         }
     }
 
-    /// Claim the right to decode `source` for a block `target_h` logical
-    /// pixels high, or `false` if a decode is in flight, has failed, or has
-    /// already landed at that height.
+    /// Claim the right to decode `source` at file `revision` for a block
+    /// `target_h` logical pixels high, or `false` if a decode of that
+    /// revision is in flight or has failed, or one has already landed at
+    /// that height and revision.
     ///
     /// Called from prepaint, on the UI thread, so it does nothing but a hash
     /// lookup — the decode itself is spawned by the caller.
-    pub(crate) fn claim(&self, source: &lattice_cells::MediaSource, target_h: u32) -> bool {
+    pub(crate) fn claim(
+        &self,
+        source: &lattice_cells::MediaSource,
+        target_h: u32,
+        revision: u64,
+    ) -> bool {
         let Ok(mut inner) = self.inner.lock() else {
             return false;
         };
-        if inner.dispatched.contains(source)
+        if inner.dispatched.get(source) == Some(&revision)
             || inner
                 .ready
                 .get(source)
-                .is_some_and(|e| e.target_h == target_h)
+                .is_some_and(|e| e.target_h == target_h && e.revision == revision)
         {
             return false;
         }
-        inner.dispatched.insert(source.clone());
+        inner.dispatched.insert(source.clone(), revision);
         true
     }
 
@@ -668,11 +681,16 @@ impl MediaPixels {
         image: Arc<gpui::RenderImage>,
         bytes: usize,
         target_h: u32,
+        revision: u64,
     ) {
         let Ok(mut inner) = self.inner.lock() else {
             return;
         };
-        inner.dispatched.remove(&source);
+        // Only this decode's own claim: one for a newer revision, made while
+        // this was in flight, stays in flight.
+        if inner.dispatched.get(&source) == Some(&revision) {
+            inner.dispatched.remove(&source);
+        }
         // Drawn "now", so a page that lands while on screen is not the first
         // thing evicted to make room for itself.
         let drawn = inner.frame;
@@ -682,6 +700,7 @@ impl MediaPixels {
                 image,
                 bytes,
                 target_h,
+                revision,
                 drawn,
             },
         ) {
@@ -1047,16 +1066,23 @@ impl EditorElement {
             // is `Some` here — unresolved blocks are never collected into a
             // paint — so this is not a guess.
             let target_h = (m.block.height_lh.unwrap_or(1.0) * line_px).max(1.0) as u32;
+            let revision = m.block.revision;
             match &m.block.source {
                 lattice_cells::MediaSource::Path(path) => {
-                    if !self.media_pixels.claim(&m.block.source, target_h) {
+                    if !self.media_pixels.claim(&m.block.source, target_h, revision) {
                         continue;
                     }
                     // Width bound is generous: `block_geometry` already fitted
                     // the height to the pane, and `decode` preserves aspect
                     // ratio, so the height is the binding constraint.
                     let target = (target_h.saturating_mul(8).max(1), target_h);
-                    self.spawn_picture_decode(m.block.source.clone(), path.clone(), target, cx);
+                    self.spawn_picture_decode(
+                        m.block.source.clone(),
+                        path.clone(),
+                        target,
+                        revision,
+                        cx,
+                    );
                 }
                 lattice_cells::MediaSource::PdfPage { path, page } => {
                     // The block's box: its height, and the width its page's
@@ -1080,14 +1106,13 @@ impl EditorElement {
                             path: path.clone(),
                             page: p,
                         };
-                        if !self.media_pixels.claim(&source, target_h) {
+                        if !self.media_pixels.claim(&source, target_h, revision) {
                             continue;
                         }
                         self.spawn_page_render(
                             source,
-                            path.clone(),
-                            p,
                             (target_w, target_h),
+                            revision,
                             scale_factor,
                             cx,
                         );
@@ -1103,6 +1128,7 @@ impl EditorElement {
         source: lattice_cells::MediaSource,
         path: std::path::PathBuf,
         target: (u32, u32),
+        revision: u64,
         cx: &mut App,
     ) {
         let pixels = self.media_pixels.clone();
@@ -1124,7 +1150,7 @@ impl EditorElement {
                 })
                 .await;
             match decoded {
-                Ok(img) => land_media(&pixels, source, img, target.1, cx),
+                Ok(img) => land_media(&pixels, source, img, target.1, revision, cx),
                 Err(err) => {
                     // Logged once: `claim` keeps the source claimed on
                     // failure, so a missing file is not retried every
@@ -1146,12 +1172,15 @@ impl EditorElement {
     fn spawn_page_render(
         &self,
         source: lattice_cells::MediaSource,
-        path: std::path::PathBuf,
-        page: u32,
         target: (u32, u32),
+        revision: u64,
         scale_factor: f32,
         cx: &mut App,
     ) {
+        let lattice_cells::MediaSource::PdfPage { path, page } = &source else {
+            return;
+        };
+        let (path, page) = (path.clone(), *page);
         let pixels = self.media_pixels.clone();
         let sharp = (scale_factor > 1.01).then(|| {
             (
@@ -1186,7 +1215,7 @@ impl EditorElement {
                             ms = started.elapsed().as_secs_f32() * 1000.0,
                             "PDF page rendered"
                         );
-                        land_media(&pixels, source.clone(), img, target.1, cx);
+                        land_media(&pixels, source.clone(), img, target.1, revision, cx);
                     }
                     Err(err) => {
                         // Once, as for a picture: the source stays claimed. A
@@ -1212,6 +1241,7 @@ fn land_media(
     source: lattice_cells::MediaSource,
     img: lattice_media::DecodedImage,
     target_h: u32,
+    revision: u64,
     cx: &mut gpui::AsyncApp,
 ) {
     let bytes = img.rgba.len();
@@ -1224,6 +1254,7 @@ fn land_media(
         std::sync::Arc::new(gpui::RenderImage::new(vec![frame])),
         bytes,
         target_h,
+        revision,
     );
     let _ = cx.update(|cx| cx.refresh_windows());
 }
@@ -4873,9 +4904,9 @@ mod tests {
     fn a_decode_is_claimed_once_however_many_frames_the_block_is_visible() {
         let pixels = MediaPixels::default();
         let p = &lattice_cells::MediaSource::Path("/tmp/x.png".into());
-        assert!(pixels.claim(p, 10), "first frame claims it");
+        assert!(pixels.claim(p, 10, 0), "first frame claims it");
         for _ in 0..200 {
-            assert!(!pixels.claim(p, 10), "every later frame is a no-op");
+            assert!(!pixels.claim(p, 10, 0), "every later frame is a no-op");
         }
     }
 
@@ -4886,11 +4917,16 @@ mod tests {
     fn a_failed_path_is_not_retried_every_frame() {
         let pixels = MediaPixels::default();
         let p = &lattice_cells::MediaSource::Path("/tmp/missing.png".into());
-        assert!(pixels.claim(p, 10));
+        assert!(pixels.claim(p, 10, 0));
         // No `insert` follows — this is the failure path.
-        assert!(!pixels.claim(p, 10), "still claimed, so no second attempt");
-        // No in-session escape hatch by design — see `dispatched`. A failed
-        // image shows its alt text until the plugin reloads.
+        assert!(
+            !pixels.claim(p, 10, 0),
+            "still claimed, so no second attempt"
+        );
+        // Retried only when the file changes (PF.5): a broken PDF fixed on
+        // disk draws, an unchanged one is never tried twice.
+        assert!(pixels.claim(p, 10, 7), "a new revision is a new attempt");
+        assert!(!pixels.claim(p, 10, 7));
     }
 
     fn raster() -> Arc<gpui::RenderImage> {
@@ -4908,7 +4944,7 @@ mod tests {
 
     impl MediaPixels {
         fn claim_page(&self, n: u32) -> bool {
-            self.claim(&page(n), 10)
+            self.claim(&page(n), 10, 0)
         }
     }
 
@@ -4920,12 +4956,12 @@ mod tests {
         let mut b = lattice_cells::MediaBlock::from_source(page(0), None);
         b.height_lh = Some(1.0);
         let b = Arc::new(b);
-        assert!(pixels.claim(&page(0), 10));
-        pixels.insert(page(0), raster(), 100, 10);
-        assert!(!pixels.claim(&page(0), 10), "landed at this size");
-        assert!(pixels.claim(&page(0), 20), "the pane grew: decode again");
+        assert!(pixels.claim(&page(0), 10, 0));
+        pixels.insert(page(0), raster(), 100, 10, 0);
+        assert!(!pixels.claim(&page(0), 10, 0), "landed at this size");
+        assert!(pixels.claim(&page(0), 20, 0), "the pane grew: decode again");
         assert!(pixels.get(&b).is_some(), "the old size draws meanwhile");
-        assert!(!pixels.claim(&page(0), 20), "in flight");
+        assert!(!pixels.claim(&page(0), 20, 0), "in flight");
     }
 
     /// PF.3b: two pages of one PDF are two entries, not one picture.
@@ -4955,7 +4991,7 @@ mod tests {
         for n in 0..3u32 {
             pixels.begin_frame();
             assert!(pixels.claim_page(n));
-            pixels.insert(page(n), raster(), 100, 10);
+            pixels.insert(page(n), raster(), 100, 10, 0);
             assert!(pixels.get(&block(n)).is_some());
         }
         // 300 bytes against 250: page 0, drawn two frames ago, went.
@@ -4980,9 +5016,37 @@ mod tests {
     #[test]
     fn a_second_pass_replaces_the_first() {
         let pixels = MediaPixels::default();
-        pixels.insert(page(0), raster(), 100, 10);
-        pixels.insert(page(0), raster(), 400, 10);
+        pixels.insert(page(0), raster(), 100, 10, 0);
+        pixels.insert(page(0), raster(), 400, 10, 0);
         assert_eq!(pixels.bytes(), 400);
+    }
+
+    /// PF.5: a file rewritten on disk is decoded again, its old pixels draw
+    /// until the new ones land (no blank page on reload), and a decode of
+    /// the old revision that lands late cannot cancel the new one's claim.
+    #[test]
+    fn a_new_revision_is_decoded_again_with_the_old_pixels_as_placeholder() {
+        let pixels = MediaPixels::default();
+        let mut b = lattice_cells::MediaBlock::from_source(page(0), None);
+        b.height_lh = Some(1.0);
+        let b = Arc::new(b);
+        assert!(pixels.claim(&page(0), 10, 1));
+        pixels.insert(page(0), raster(), 100, 10, 1);
+        assert!(!pixels.claim(&page(0), 10, 1), "landed at this revision");
+
+        assert!(
+            pixels.claim(&page(0), 10, 2),
+            "the file changed: decode again"
+        );
+        assert!(pixels.get(&b).is_some(), "the old raster draws meanwhile");
+        // A second pass of the OLD render lands after the new claim.
+        pixels.insert(page(0), raster(), 100, 10, 1);
+        assert!(
+            !pixels.claim(&page(0), 10, 2),
+            "the new decode is still in flight"
+        );
+        pixels.insert(page(0), raster(), 100, 10, 2);
+        assert!(!pixels.claim(&page(0), 10, 2), "and has landed");
     }
 
     /// IM.5: consecutive rows sharing a descriptor coalesce into ONE block,

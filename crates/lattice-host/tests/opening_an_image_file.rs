@@ -142,3 +142,51 @@ fn a_bare_write_on_a_read_only_buffer_is_refused_out_loud() {
         "expected a read-only refusal, got {message:?}"
     );
 }
+
+/// PF.5: a presented file's reload keeps the text its major wrote, and the
+/// cursor on it.
+///
+/// A reload reopens the file into a fresh buffer, and a presented file
+/// opens as one empty line that its major fills in later. A PDF's page labels
+/// are read off the actor, so restoring the cursor against that one line put
+/// every reload of a long PDF on page 1. The fresh buffer starts with the
+/// old text instead. A picture shows this without the race: `image-mode`
+/// writes no text of its own, so what the buffer holds after the reload is
+/// exactly what the reload carried over.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_reload_carries_the_majors_text_and_the_cursor_over() {
+    let dir = tempfile::tempdir().unwrap();
+    let png = write_png(dir.path(), "diagram.png", 4, 4);
+    let mut editor = Editor::boot(CoreDocument::from_text("x\n"));
+    editor.do_edit(Some(png.clone()), false);
+    editor.run_tick_pending();
+    let id = editor.document_buffer_id;
+
+    // What a major writes as the buffer's owner: an edit, then clean.
+    let handle = editor.buffers.document_handle(id).unwrap();
+    handle
+        .apply_edit_batch(vec![lattice_protocol::edit::Edit::insert(
+            lattice_protocol::position::Position::ZERO,
+            "one\ntwo\nthree".to_string(),
+        )])
+        .await
+        .unwrap();
+    handle.mark_clean().await.unwrap();
+    editor.run_tick_pending();
+    editor.cursor.line = 2;
+
+    editor.do_edit(None, true);
+    let fresh = editor.document_buffer_id;
+    assert_ne!(fresh, id, "a reload is a fresh buffer");
+    let text = editor
+        .buffers
+        .document_handle(fresh)
+        .map(|h| h.text())
+        .unwrap();
+    assert_eq!(text, "one\ntwo\nthree", "the text came over");
+    assert_eq!(editor.cursor.line, 2, "and the cursor stayed on it");
+    assert!(
+        !editor.buffers.document_dirty(fresh),
+        "carried text is the owner's, not an edit"
+    );
+}

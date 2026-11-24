@@ -139,6 +139,17 @@ pub struct MediaBlock {
     /// whose header could not be read, it stays `None` and the alt text is
     /// the rendering.
     pub height_lh: Option<f32>,
+    /// PF.5: which version of the file the block was measured from — its
+    /// modification time in nanoseconds since the epoch, or 0 when unknown.
+    ///
+    /// A peer that keeps decoded pixels keys them by [`MediaSource`], which
+    /// names the file but not its contents, so without this a picture or a
+    /// PDF rewritten on disk would go on drawing its old pixels forever. A
+    /// peer holding pixels from another revision draws them until the new
+    /// ones land (the old raster is the placeholder, so nothing blanks), and
+    /// decodes again. The HOST stamps it, when it measures the file: once per
+    /// file per buffer, so it costs no `stat` per keystroke.
+    pub revision: u64,
 }
 
 impl MediaBlock {
@@ -169,6 +180,7 @@ impl MediaBlock {
             fit: MediaFit::default(),
             alt,
             height_lh: None,
+            revision: 0,
         }
     }
 

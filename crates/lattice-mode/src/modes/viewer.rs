@@ -1,7 +1,8 @@
 //! `viewer-mode` — what every buffer that PRESENTS a file shares (PF.4).
 //!
 //! `image-mode` and `pdf-mode` show a file rather than edit it, and a viewer
-//! has keys of its own that are not about the file type: `q` closes it.
+//! has keys of its own that are not about the file type: `q` closes it and
+//! `R` reads it again.
 //! Those keys live here, on one minor both majors imply, rather than
 //! declared again on each major — the shared-behaviour rule
 //! (`prefer-minor-modes-over-duplication`), whose failure mode is a copied
@@ -22,6 +23,9 @@ use crate::{
 
 /// The action `q` runs in a viewer.
 pub const VIEWER_CLOSE_ACTION: &str = "action:viewer-close";
+
+/// The action `R` runs in a viewer.
+pub const VIEWER_RELOAD_ACTION: &str = "action:viewer-reload";
 
 /// Minor mode carrying the keys every file viewer shares. Activated through
 /// [`Mode::implies`] by the majors that present a file.
@@ -51,7 +55,8 @@ impl Mode for ViewerMode {
 
     /// `q` closes the view, as in zathura, feh and magit. In a buffer that
     /// cannot be edited, vim's `q` (start recording a macro) records nothing
-    /// worth replaying.
+    /// worth replaying. `R` reloads it, as zathura's does; vim's `R` (Replace
+    /// mode) has nothing to replace here.
     fn keymap(&self) -> Keymap {
         Keymap::from_entries(viewer_keymap_entries())
     }
@@ -64,11 +69,18 @@ impl Mode for ViewerMode {
 fn viewer_keymap_entries() -> &'static [KeymapEntry] {
     static ENTRIES: OnceLock<Vec<KeymapEntry>> = OnceLock::new();
     ENTRIES.get_or_init(|| {
-        vec![keymap_entry! {
-            mode: Normal, chord: "q",
-            doc: "viewer: close the file's buffer, as :bd",
-            cmd: "action:viewer-close"
-        }]
+        vec![
+            keymap_entry! {
+                mode: Normal, chord: "q",
+                doc: "viewer: close the file's buffer, as :bd",
+                cmd: "action:viewer-close"
+            },
+            keymap_entry! {
+                mode: Normal, chord: "R",
+                doc: "viewer: read the file again, as :e!",
+                cmd: "action:viewer-reload"
+            },
+        ]
     })
 }
 
@@ -88,6 +100,22 @@ pub fn register_viewer_mode_actions(registry: &mut lattice_grammar::CommandRegis
             args_schema: vec![],
         },
     );
+    // `:e!`: the same reload autoread does on its own when the file changes,
+    // for a watcher that missed it (a network mount) or a user who wants to
+    // be sure. Forced, though a viewer is never dirty.
+    registry.register_action(
+        VIEWER_RELOAD_ACTION,
+        "viewer: read the file again, as `:e!` does (mode-owned).",
+        ActionSpec {
+            apply: Arc::new(|_| {
+                Ok(Effect::OpenBuffer {
+                    path: None,
+                    force: true,
+                })
+            }),
+            args_schema: vec![],
+        },
+    );
 }
 
 #[cfg(test)]
@@ -95,9 +123,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn q_closes_the_view() {
+    fn q_closes_the_view_and_r_reloads_it() {
         let km = ViewerMode.keymap();
-        assert_eq!(km.entries.len(), 1);
-        assert_eq!(km.entries[0].command, Some(VIEWER_CLOSE_ACTION));
+        let bound: Vec<_> = km.entries.iter().map(|e| e.command).collect();
+        assert_eq!(
+            bound,
+            [Some(VIEWER_CLOSE_ACTION), Some(VIEWER_RELOAD_ACTION)]
+        );
     }
 }

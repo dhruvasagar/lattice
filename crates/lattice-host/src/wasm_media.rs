@@ -228,14 +228,17 @@ impl Editor {
         // Carried across a RESIZE too: an intrinsic size does not depend on
         // the pane, so a resize re-runs `block_geometry`, which is
         // arithmetic, and reads nothing.
-        let known: std::collections::HashMap<lattice_cells::MediaSource, (u32, u32)> = self
+        // The revision travels with the size: both were read off the same
+        // file at the same time, and a reload is a fresh buffer with nothing
+        // known, so it measures (and stamps) again.
+        let known: Known = self
             .wasm_media
             .cache
             .get_for(buffer_id)
             .map(|c| {
                 c.blocks
                     .iter()
-                    .filter_map(|(b, _, _)| Some((b.source.clone(), b.intrinsic?)))
+                    .filter_map(|(b, _, _)| Some((b.source.clone(), (b.intrinsic?, b.revision))))
                     .collect()
             })
             .unwrap_or_default();
@@ -354,7 +357,7 @@ fn same_blocks(
 fn size_blocks(
     requests: Vec<MediaBlockRequest>,
     geometry: Option<MediaGeometry>,
-    known: &std::collections::HashMap<lattice_cells::MediaSource, (u32, u32)>,
+    known: &Known,
 ) -> Vec<(Arc<lattice_cells::MediaBlock>, u32, u16)> {
     // PF.3: every page of a PDF is measured by ONE parse of the file, shared
     // across this pass. Without it a 500-page document would be parsed 500
@@ -377,41 +380,59 @@ fn size_blocks(
             block.fit = req.fit;
             let rows = match geometry {
                 None => PROVISIONAL_ROWS,
-                Some((line_height_px, pane_width_px, pane_height_px)) => match known
-                    .get(&req.source)
-                    .copied()
-                    .map(Ok)
-                    .unwrap_or_else(|| measure(&req.source, &mut page_sizes))
-                {
-                    Ok(intrinsic) => {
-                        let (rows, height_lh) = lattice_media::block_geometry(
-                            intrinsic,
-                            req.fit,
-                            line_height_px,
-                            pane_width_px,
-                            pane_height_px,
-                        );
-                        block.intrinsic = Some(intrinsic);
-                        block.height_lh = Some(height_lh);
-                        rows
+                Some((line_height_px, pane_width_px, pane_height_px)) => {
+                    match known.get(&req.source).copied().map(Ok).unwrap_or_else(|| {
+                        // Stamped BEFORE the read, so a file rewritten
+                        // mid-measure carries the older revision and is
+                        // drawn again, never the newer with old pixels.
+                        let revision = file_revision(req.source.file());
+                        measure(&req.source, &mut page_sizes).map(|size| (size, revision))
+                    }) {
+                        Ok((intrinsic, revision)) => {
+                            block.revision = revision;
+                            let (rows, height_lh) = lattice_media::block_geometry(
+                                intrinsic,
+                                req.fit,
+                                line_height_px,
+                                pane_width_px,
+                                pane_height_px,
+                            );
+                            block.intrinsic = Some(intrinsic);
+                            block.height_lh = Some(height_lh);
+                            rows
+                        }
+                        Err(err) => {
+                            // `debug!`, not `warn!`: a buffer full of links to
+                            // images that are not there would otherwise log on
+                            // every refresh forever. The alt text is the visible
+                            // report, and it names the file.
+                            tracing::debug!(
+                                path = %req.source.file().display(),
+                                error = %err,
+                                "inline media could not be measured; alt text stands in"
+                            );
+                            UNREADABLE_ROWS
+                        }
                     }
-                    Err(err) => {
-                        // `debug!`, not `warn!`: a buffer full of links to
-                        // images that are not there would otherwise log on
-                        // every refresh forever. The alt text is the visible
-                        // report, and it names the file.
-                        tracing::debug!(
-                            path = %req.source.file().display(),
-                            error = %err,
-                            "inline media could not be measured; alt text stands in"
-                        );
-                        UNREADABLE_ROWS
-                    }
-                },
+                }
             };
             Some((Arc::new(block), req.anchor_line, rows))
         })
         .collect()
+}
+
+/// What a buffer's previous refresh already read off each file: its
+/// intrinsic size and the revision it was read at.
+type Known = std::collections::HashMap<lattice_cells::MediaSource, ((u32, u32), u64)>;
+
+/// A file's modification time in nanoseconds since the epoch, or 0 when it
+/// cannot be read (the block's alt text then stands in anyway).
+fn file_revision(path: &std::path::Path) -> u64 {
+    std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or(0, |d| d.as_nanos() as u64)
 }
 
 /// Each PDF's page sizes in points, read once per sizing pass (or why not).

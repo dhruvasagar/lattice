@@ -75,7 +75,7 @@ followed.
 The page keys live on `pdf-mode`'s major layer, so none of them reaches a
 text buffer. Most need no body: `J` / `K` name vim's `j` / `k`, and `<Space>`,
 `<S-Space>`, `<PageDown>` and `<PageUp>` name `<C-f>` / `<C-b>`. The keys a
-picture would want too (`q` today; `gx` and `R` when they land) are on
+picture would want too (`q` and `R` today, `gx` when it lands) are on
 **`viewer-mode`**, a minor both `image-mode` and `pdf-mode` imply, for the
 shared-behaviour rule: one declaration, not one per viewer. `q` is `:bd` (a
 PDF opened with `:e` is an ordinary buffer, so magit's bury would be a no-op),
@@ -195,6 +195,26 @@ that path (the cache key carries `mtime`), keeps the cursor's line (its
 page), and leaves the old rasters as placeholders until the new ones land.
 If the page count drops below the cursor's page, the cursor clamps to the
 last page. This is the `l o`-then-edit loop, and it must not jump.
+
+**As built (PF.5)**, in three pieces, none of them PDF-specific, so a picture
+rewritten on disk reloads the same way:
+
+- **Autoread knows a presented file is not text.** The stat gate is the
+  whole check for one; the content gate's `read_to_string` used to fail on
+  it and report the file gone. A change is always a reload, because a
+  presented buffer is never dirty.
+- **A reload carries the major's text over.** `:e!` reopens into a fresh
+  buffer, and a presented file opens as one empty line its major fills in
+  later, off the actor. The fresh buffer starts with the text it replaces
+  (clean, as the major's own write is), so the restored cursor has its line
+  and the labels are rewritten only if the page count changed.
+- **Blocks carry the file's revision** (inline-media §7). The probe's
+  document cache already keys on `(path, mtime)`; GPUI's pixel cache keys
+  on the source, so it re-renders a page whose revision moved and draws the
+  old raster until the new one lands. A failed decode is retried at a new
+  revision, so a broken PDF fixed on disk draws.
+
+`R` is the same reload by hand, on `viewer-mode`: `:e!`.
 
 ## 5a. Lattice as the system's PDF viewer
 

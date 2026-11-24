@@ -283,7 +283,7 @@ in fit width, `<C-e>` scrolls inside a page taller than the window and `j`
 still moves to the next page; in the TUI, a screen scroll is one page; the
 modeline shows the cursor's page.
 
-### PF.5 — reload 📝
+### PF.5 — reload ✅
 
 On a changed `mtime`: invalidate the probe and the path's cached pages, keep
 the cursor's page and the scroll, keep old rasters as placeholders, clamp
@@ -292,6 +292,27 @@ when the page count drops.
 Tests: rewriting the file re-renders at the same page with no keypress; a
 shorter file clamps the cursor; an export loop (write, reload, write)
 never shows a blank page.
+
+**As built** (design §5, "As built"): autoread's presented-file gate, the
+reload's text carry-over, `MediaBlock::revision`, the revision-aware GPUI
+pixel cache, and `R` on `viewer-mode`. Pictures share all of it.
+- **Tests.** `autoread_reloads_a_presented_file_instead_of_reading_it_as_text`
+  (host unit, fails without the gate: the old "no longer available on disk");
+  `a_reload_carries_the_majors_text_and_the_cursor_over` (a picture, so no
+  label race; fails without the carry-over); `a_reload_stays_on_the_page_and_redraws_it`
+  and `a_reload_with_fewer_pages_clamps_to_the_last` (PDF, through `R`);
+  `a_new_revision_is_decoded_again_with_the_old_pixels_as_placeholder` (GPUI
+  cache, including a late old-revision landing).
+- **The no-jump race.** With a 12-page test PDF the probe usually relabels
+  the fresh buffer before the cursor is restored, so the PDF test passes
+  with or without the carry-over; the picture test is the one that pins it.
+  A long PDF loses that race, which is what the carry-over is for.
+- **Not built: skipping an identical relabel.** Replacing the labels with
+  themselves after a same-count reload moved nothing the tests could see,
+  so the check was dropped rather than shipped unproven.
+- **"No keypress" is autoread's own**, already tested by AR.4; the
+  PDF tests drive the reload with `R` because the watcher is a real
+  filesystem watch.
 
 ### PF.6 — finish 📝
 

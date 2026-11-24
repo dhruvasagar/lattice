@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Added
+- **`R` reloads a PDF or a picture**, as `:e!` does, at the page you were on.
 - **Reading keys in a PDF.** `J` / `K` turn pages, and `<Space>` / `<S-Space>`, `<C-f>` / `<C-b>` and `<PageDown>` / `<PageUp>` turn one page with that page at the top. `q` closes the PDF, or a picture, as `:bd` does. The modeline shows `page 3/12`.
 - **`ui.modeline.position-format`** sets what the modeline's position shows, as vim's `'rulerformat'`: `{line}`, `{col}` and `{lines}`, default `{line}:{col}`. A mode can set its own, as PDF buffers do.
 - **`:e paper.pdf` opens the PDF as a list of its pages.** It used to fail, because the file was read as text. The buffer has one line per page, `Page 3 of 12`, so `G`, `gg`, `j`, `k`, marks and the jump list move between pages. It is read-only, and `:w` cannot replace the PDF with that list. A file that is not a readable PDF says why in one line. In the GUI, each page is drawn below its line, filling the window, sharp on a high-density display. Pages render in the background, the one being read and its neighbours first, and the terminal shows the page list. `media.cache-mb` (default 256) bounds the memory decoded pictures and pages may use; what is on screen is never dropped.
@@ -23,6 +24,7 @@
 - **A plugin can no longer type into your terminal without `proc:spawn`.** Any plugin could send keystrokes to the focused terminal, which in a shell is running a command, and could open a shell with environment variables of its choosing (`BASH_ENV`, `PROMPT_COMMAND`) that run code as it starts. Both now need the `proc:spawn` capability, as running a command already did. Opening a plain shell, as `:project-shell` does, still needs nothing.
 
 ### Fixed
+- **A PDF or a picture rewritten on disk reloads where you were reading it.** It used to say the file was "no longer available on disk", and in the GUI it kept drawing the old pages. Now it reloads on its own, keeps the page and the scroll, shows the old pages until the new ones are drawn, and moves to the last page if pages were removed.
 - **`<C-f>`, `<C-b>` and `<C-d>` in the GUI no longer overshoot a document with pictures.** A line with a picture below it counted as one line, so a screen scroll skipped every picture on the way and landed a screenful of lines later.
 - **`:bd` returns the pane to the buffer it showed before**, as vim's does. It went to whichever open buffer had been opened first.
 - **`lattice diagram.png` and `lattice paper.pdf` open from the command line.** They failed with "stream did not contain valid UTF-8": a file named on the command line was always read as text, while `:e` knew to skip that read for a picture or a PDF. Both now open through the same function.

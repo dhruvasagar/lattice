@@ -169,6 +169,89 @@ impl PdfDocument {
     }
 }
 
+/// Parsed documents, kept so the pages of one PDF share a parse (PF.3b).
+///
+/// Keyed by path and modification time: a PDF rewritten on disk (export
+/// recompiled it) has a new `mtime` and is parsed again, so a re-export
+/// never draws pages from the old file. Bounded by count, not bytes, because
+/// a parsed document is small next to the rasters it produces (hayro parses
+/// lazily; the file's bytes are the bulk), and the handful of PDFs open at
+/// once is what it has to cover.
+pub struct DocumentCache {
+    entries: std::sync::Mutex<Vec<CachedDocument>>,
+    capacity: usize,
+}
+
+struct CachedDocument {
+    path: std::path::PathBuf,
+    mtime: Option<std::time::SystemTime>,
+    doc: Arc<PdfDocument>,
+}
+
+/// The process's [`DocumentCache`]: four documents.
+pub static DOCUMENTS: std::sync::LazyLock<DocumentCache> =
+    std::sync::LazyLock::new(|| DocumentCache::new(4));
+
+impl DocumentCache {
+    /// An empty cache holding at most `capacity` documents.
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            entries: std::sync::Mutex::new(Vec::new()),
+            capacity: capacity.max(1),
+        }
+    }
+
+    /// The parsed document at `path`, from the cache when its `mtime` still
+    /// matches, otherwise read and parsed now. Blocking.
+    ///
+    /// The lock is not held across the parse, so two threads opening a new
+    /// document may both parse it; the second insert wins and nothing is
+    /// lost but the duplicated work. Holding it would make every render of
+    /// every cached document wait behind one slow parse.
+    pub fn get(&self, path: &Path) -> Result<Arc<PdfDocument>, MediaError> {
+        let mtime = std::fs::metadata(path)
+            .map_err(|e| MediaError::Unreadable(e.to_string()))?
+            .modified()
+            .ok();
+        {
+            let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(i) = entries
+                .iter()
+                .position(|e| e.path == path && e.mtime == mtime)
+            {
+                // Most recently used goes last.
+                let hit = entries.remove(i);
+                let doc = Arc::clone(&hit.doc);
+                entries.push(hit);
+                return Ok(doc);
+            }
+        }
+        let doc = Arc::new(PdfDocument::open(path)?);
+        let mut entries = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        // A stale entry for the same path is replaced, not kept beside it.
+        entries.retain(|e| e.path != path);
+        entries.push(CachedDocument {
+            path: path.to_path_buf(),
+            mtime,
+            doc: Arc::clone(&doc),
+        });
+        while entries.len() > self.capacity {
+            entries.remove(0);
+        }
+        Ok(doc)
+    }
+
+    /// How many documents are cached. For tests and diagnostics.
+    pub fn len(&self) -> usize {
+        self.entries.lock().map(|e| e.len()).unwrap_or(0)
+    }
+
+    /// True when nothing is cached.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
 /// The pixel size of a page of `size_pt` points fitted inside `target`,
 /// preserving its aspect ratio, scaling up or down (see the module docs).
 ///
@@ -357,6 +440,48 @@ mod tests {
     #[test]
     fn a_sliver_of_a_page_still_gets_a_pixel() {
         assert_eq!(page_fit((10_000.0, 1.0), (100, 100)).unwrap(), (100, 1));
+    }
+
+    /// The cache shares one parse across a document's pages, re-parses a
+    /// file rewritten on disk, and keeps no more documents than it may.
+    #[test]
+    fn the_document_cache_reuses_a_parse_until_the_file_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("p.pdf");
+        std::fs::write(&path, pdf_with_pages(&[(100.0, 50.0, RED_FILL)])).unwrap();
+        let cache = DocumentCache::new(2);
+
+        let a = cache.get(&path).unwrap();
+        let b = cache.get(&path).unwrap();
+        assert!(Arc::ptr_eq(&a, &b), "the second page reuses the parse");
+
+        // A rewrite with a different mtime is a different document.
+        std::fs::write(
+            &path,
+            pdf_with_pages(&[(100.0, 50.0, RED_FILL), (100.0, 50.0, RED_FILL)]),
+        )
+        .unwrap();
+        let later = std::time::SystemTime::now() + std::time::Duration::from_secs(5);
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(later)
+            .unwrap();
+        let c = cache.get(&path).unwrap();
+        assert_eq!(
+            c.info().pages.len(),
+            2,
+            "the rewritten file, not the stale parse"
+        );
+        assert_eq!(cache.len(), 1, "the stale entry was replaced");
+
+        for name in ["q.pdf", "r.pdf"] {
+            let p = dir.path().join(name);
+            std::fs::write(&p, pdf_with_pages(&[(10.0, 10.0, RED_FILL)])).unwrap();
+            cache.get(&p).unwrap();
+        }
+        assert_eq!(cache.len(), 2, "bounded by its capacity");
     }
 
     /// One parsed document serves renders on several threads at once: the

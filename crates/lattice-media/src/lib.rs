@@ -76,11 +76,43 @@ pub const PDF_SUPPORTED: bool = cfg!(feature = "pdf");
 pub fn pdf_page_sizes(path: &Path) -> Result<Vec<(f32, f32)>, MediaError> {
     #[cfg(feature = "pdf")]
     {
-        pdf::PdfDocument::open(path).map(|doc| doc.info().pages.clone())
+        pdf::DOCUMENTS.get(path).map(|doc| doc.info().pages.clone())
     }
     #[cfg(not(feature = "pdf"))]
     {
         let _ = path;
+        Err(MediaError::Undecodable(
+            "this build does not read PDFs".into(),
+        ))
+    }
+}
+
+/// Render page `page` (0-based) of the PDF at `path` to fit `target`, in
+/// `format` (PF.3b). Blocking, for a background thread: the first page of a
+/// document pays for the parse, the others reuse it.
+///
+/// The parse is kept in a small per-process cache keyed by path and `mtime`
+/// (see [`pdf::DocumentCache`] in a `pdf` build), so scrolling a document
+/// renders pages without re-reading the file, and a file rewritten on disk
+/// (a re-export) is parsed afresh rather than drawn from the stale copy.
+///
+/// Without the `pdf` feature it reads nothing and says so, like
+/// [`pdf_page_sizes`].
+pub fn render_pdf_page(
+    path: &Path,
+    page: u32,
+    target: (u32, u32),
+    format: PixelFormat,
+) -> Result<DecodedImage, MediaError> {
+    #[cfg(feature = "pdf")]
+    {
+        pdf::DOCUMENTS
+            .get(path)?
+            .render_page(page as usize, target, format)
+    }
+    #[cfg(not(feature = "pdf"))]
+    {
+        let _ = (path, page, target, format);
         Err(MediaError::Undecodable(
             "this build does not read PDFs".into(),
         ))

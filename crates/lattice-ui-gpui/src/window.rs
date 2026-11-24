@@ -737,6 +737,17 @@ fn inactive_pane_opacity(app: &GpuiApp, dim_inactive: bool) -> f32 {
     (percent.clamp(0, 100) as f32) / 100.0
 }
 
+/// `media.cache-mb` in bytes: how much decoded media the window keeps.
+fn media_budget_bytes(app: &GpuiApp) -> usize {
+    let mb = app
+        .options()
+        .config
+        .get_typed::<lattice_host::ui::theme_options::MediaCacheMb>()
+        .map(|v| *v)
+        .unwrap_or(256);
+    (mb.max(1) as usize).saturating_mul(1024 * 1024)
+}
+
 /// 2026-05-27: insert-completion filter-chord footer helpers.
 /// Mirror the TUI peer's adaption logic — full form when it fits,
 /// compact `[b]uf │ [o]lsp …` otherwise, prune from the right
@@ -2152,6 +2163,9 @@ impl EditorView {
         // borrow held across the function body.
         let ad = self.app.ad();
         let rs_guard = self.app.render_state.load();
+        // PF.3b: the decoded-media budget follows `media.cache-mb` live. A
+        // compare under an uncontended lock when it has not changed.
+        self.media_pixels.set_budget(media_budget_bytes(&self.app));
         // display-line B4.2: the `visible_spans` / `visible_rows`
         // prepaint loads retired here. `EditorElement`'s active-pane
         // shaping reads from `rs_guard.cells.matrix` /

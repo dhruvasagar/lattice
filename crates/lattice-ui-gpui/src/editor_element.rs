@@ -558,62 +558,171 @@ pub(crate) struct EditorElement {
 /// Populated off the UI thread by the media worker; read (never written) by
 /// `paint`. An empty map is the normal state for every buffer without images
 /// and costs one pointer chase to establish.
+///
+/// PF.3b: keyed by [`MediaSource`](lattice_cells::MediaSource), so two pages
+/// of one PDF are two entries, and **bounded by bytes** (`media.cache-mb`).
+/// It used to hold every decoded picture for the session, which a PDF would
+/// turn into gigabytes. Past the budget, what was drawn least recently goes,
+/// and its claim with it, so it is decoded again if it scrolls back. What was
+/// drawn in this frame or the last is never evicted: a budget smaller than a
+/// screenful is exceeded rather than made to flicker.
 #[derive(Default)]
 pub(crate) struct MediaPixels {
     /// Interior mutability because the two sides run on different threads:
     /// `paint` reads on the UI thread every frame, a background decode writes
-    /// when it finishes. A `Mutex` rather than RCU because the map is tiny —
-    /// the media blocks in one viewport — and the lock is uncontended.
+    /// when it finishes. A `Mutex` rather than RCU because the map is small
+    /// and the lock is held for a hash lookup or an insert.
     inner: std::sync::Mutex<MediaPixelsInner>,
+}
+
+/// One decoded raster and what the budget needs to know about it.
+struct MediaEntry {
+    image: Arc<gpui::RenderImage>,
+    bytes: usize,
+    /// The block height, in logical pixels, it was decoded for. A block that
+    /// has since changed size (the pane was resized) is decoded again, with
+    /// this one drawn meanwhile.
+    target_h: u32,
+    /// The frame it was last drawn in (see [`MediaPixels::begin_frame`]).
+    drawn: u64,
 }
 
 #[derive(Default)]
 struct MediaPixelsInner {
-    ready: std::collections::HashMap<std::path::PathBuf, Arc<gpui::RenderImage>>,
-    /// Decodes already dispatched, so a block visible for 200 frames spawns
-    /// ONE task rather than 200. It also retains paths that FAILED, which is
-    /// what stops a missing file being retried on every frame forever.
-    ///
-    /// **Never cleared within a session**, deliberately for now: the theme /
-    /// font-size signal that would invalidate a decode is handled on
-    /// `GpuiApp`, and this lives on `EditorView`, so there is no path to it
-    /// yet. Two consequences, both small and both preferable to a `clear`
-    /// method nothing calls: an image that failed once shows its alt text
-    /// until the plugin reloads, and a font-size change leaves images at
-    /// their previous target size until the same. Wire an invalidation
-    /// signal through when either starts to bite.
-    dispatched: std::collections::HashSet<std::path::PathBuf>,
+    ready: std::collections::HashMap<lattice_cells::MediaSource, MediaEntry>,
+    /// Decodes in flight, so a block visible for 200 frames spawns ONE task
+    /// rather than 200. It also retains sources that FAILED, which is what
+    /// stops a missing file being retried on every frame forever. A landed
+    /// decode leaves it, so a later size change can claim again.
+    dispatched: std::collections::HashSet<lattice_cells::MediaSource>,
+    /// Sum of `ready`'s `bytes`.
+    bytes: usize,
+    /// The byte budget; 0 is "not yet configured" and means the default.
+    budget: usize,
+    /// Bumped once per frame that draws media.
+    frame: u64,
 }
 
+/// `media.cache-mb`'s default, for a `MediaPixels` nobody configured (tests).
+const DEFAULT_MEDIA_BUDGET: usize = 256 * 1024 * 1024;
+
 impl MediaPixels {
-    /// Pixels for `block`, if they have been decoded. Never loads.
+    /// Pixels for `block`, if they have been decoded. Never loads. Marks the
+    /// entry drawn this frame, which is what protects it from eviction.
     pub(crate) fn get(
         &self,
         block: &lattice_cells::MediaBlockRef,
     ) -> Option<Arc<gpui::RenderImage>> {
-        let path = block.path()?;
-        self.inner.lock().ok()?.ready.get(path).cloned()
+        let mut inner = self.inner.lock().ok()?;
+        let frame = inner.frame;
+        let entry = inner.ready.get_mut(&block.source)?;
+        entry.drawn = frame;
+        Some(Arc::clone(&entry.image))
     }
 
-    /// Claim the right to decode `path`, or `false` if someone already has.
+    /// Start a frame. Called once from prepaint, before any `get`.
+    pub(crate) fn begin_frame(&self) {
+        if let Ok(mut inner) = self.inner.lock() {
+            inner.frame += 1;
+        }
+    }
+
+    /// Set the byte budget (`media.cache-mb`), evicting at once if it shrank.
+    pub(crate) fn set_budget(&self, bytes: usize) {
+        if let Ok(mut inner) = self.inner.lock()
+            && inner.budget != bytes
+        {
+            inner.budget = bytes;
+            inner.evict(None);
+        }
+    }
+
+    /// Claim the right to decode `source` for a block `target_h` logical
+    /// pixels high, or `false` if a decode is in flight, has failed, or has
+    /// already landed at that height.
     ///
     /// Called from prepaint, on the UI thread, so it does nothing but a hash
     /// lookup — the decode itself is spawned by the caller.
-    pub(crate) fn claim(&self, path: &std::path::Path) -> bool {
+    pub(crate) fn claim(&self, source: &lattice_cells::MediaSource, target_h: u32) -> bool {
         let Ok(mut inner) = self.inner.lock() else {
             return false;
         };
-        if inner.ready.contains_key(path) || inner.dispatched.contains(path) {
+        if inner.dispatched.contains(source)
+            || inner
+                .ready
+                .get(source)
+                .is_some_and(|e| e.target_h == target_h)
+        {
             return false;
         }
-        inner.dispatched.insert(path.to_path_buf());
+        inner.dispatched.insert(source.clone());
         true
     }
 
-    /// Record a finished decode. Called from the landing, never from paint.
-    pub(crate) fn insert(&self, path: std::path::PathBuf, image: Arc<gpui::RenderImage>) {
-        if let Ok(mut inner) = self.inner.lock() {
-            inner.ready.insert(path, image);
+    /// Record a finished decode, replacing any earlier one for the same
+    /// source (a page's sharp pass replaces its soft one). Called from the
+    /// landing, never from paint.
+    pub(crate) fn insert(
+        &self,
+        source: lattice_cells::MediaSource,
+        image: Arc<gpui::RenderImage>,
+        bytes: usize,
+        target_h: u32,
+    ) {
+        let Ok(mut inner) = self.inner.lock() else {
+            return;
+        };
+        inner.dispatched.remove(&source);
+        // Drawn "now", so a page that lands while on screen is not the first
+        // thing evicted to make room for itself.
+        let drawn = inner.frame;
+        if let Some(old) = inner.ready.insert(
+            source.clone(),
+            MediaEntry {
+                image,
+                bytes,
+                target_h,
+                drawn,
+            },
+        ) {
+            inner.bytes -= old.bytes;
+        }
+        inner.bytes += bytes;
+        inner.evict(Some(&source));
+    }
+
+    /// Bytes held. For tests and diagnostics.
+    #[cfg(test)]
+    pub(crate) fn bytes(&self) -> usize {
+        self.inner.lock().map(|i| i.bytes).unwrap_or(0)
+    }
+}
+
+impl MediaPixelsInner {
+    /// Drop least-recently-drawn entries until within budget, sparing
+    /// `keep` and anything drawn this frame or the last.
+    fn evict(&mut self, keep: Option<&lattice_cells::MediaSource>) {
+        let budget = if self.budget == 0 {
+            DEFAULT_MEDIA_BUDGET
+        } else {
+            self.budget
+        };
+        while self.bytes > budget {
+            let protected_from = self.frame.saturating_sub(1);
+            let victim = self
+                .ready
+                .iter()
+                .filter(|(k, e)| Some(*k) != keep && e.drawn < protected_from)
+                .min_by_key(|(_, e)| e.drawn)
+                .map(|(k, _)| k.clone());
+            let Some(victim) = victim else {
+                // Everything left is on screen: over budget, by design.
+                break;
+            };
+            if let Some(e) = self.ready.remove(&victim) {
+                self.bytes -= e.bytes;
+            }
+            self.dispatched.remove(&victim);
         }
     }
 }
@@ -924,68 +1033,199 @@ impl EditorElement {
     /// image would sit decoded and invisible until the user happened to type,
     /// which is the exact bug shape `boot-composition.md` §3 exists to
     /// prevent.
-    fn dispatch_media_decodes(&self, paints: &[MediaPaint], font_size: Pixels, cx: &mut App) {
+    fn dispatch_media_decodes(
+        &self,
+        paints: &[MediaPaint],
+        font_size: Pixels,
+        scale_factor: f32,
+        cx: &mut App,
+    ) {
+        self.media_pixels.begin_frame();
+        let line_px = f32::from(font_size) * 1.3;
         for m in paints {
-            let Some(path) = m.block.path() else { continue };
-            if !self.media_pixels.claim(path) {
-                continue;
-            }
-            let path = path.to_path_buf();
-            let pixels = self.media_pixels.clone();
             // Decode to the size the block will actually draw at. `height_lh`
             // is `Some` here — unresolved blocks are never collected into a
             // paint — so this is not a guess.
-            let line_px = f32::from(font_size) * 1.3;
             let target_h = (m.block.height_lh.unwrap_or(1.0) * line_px).max(1.0) as u32;
-            // Width bound is generous: `block_geometry` already fitted the
-            // height to the pane, and `decode` preserves aspect ratio, so the
-            // height is the binding constraint.
-            let target_w = target_h.saturating_mul(8).max(1);
-            cx.spawn(async move |cx: &mut gpui::AsyncApp| {
-                // The decode itself runs on the BACKGROUND executor — this is
-                // the one call in the whole feature that must not happen on
-                // the UI thread.
-                let decoded = cx
+            match &m.block.source {
+                lattice_cells::MediaSource::Path(path) => {
+                    if !self.media_pixels.claim(&m.block.source, target_h) {
+                        continue;
+                    }
+                    // Width bound is generous: `block_geometry` already fitted
+                    // the height to the pane, and `decode` preserves aspect
+                    // ratio, so the height is the binding constraint.
+                    let target = (target_h.saturating_mul(8).max(1), target_h);
+                    self.spawn_picture_decode(m.block.source.clone(), path.clone(), target, cx);
+                }
+                lattice_cells::MediaSource::PdfPage { path, page } => {
+                    // The block's box: its height, and the width its page's
+                    // aspect gives it. A page is drawn AT this size (it is
+                    // vector), so it is the box, not a bound.
+                    let (iw, ih) = m.block.intrinsic.unwrap_or((1, 1));
+                    let target_w = ((target_h as f32) * iw as f32 / ih.max(1) as f32)
+                        .round()
+                        .max(1.0) as u32;
+                    // This page, then the one after and the one before
+                    // (design §3: the viewport plus one either side), so a
+                    // page turn lands on a page that is already drawn. The
+                    // neighbours borrow this page's box: pages of one
+                    // document are almost always one size, and one that is
+                    // not is redrawn at its own when it comes into view.
+                    // Page `n+1` past the end fails its render once and stays
+                    // claimed, which is the end of it.
+                    let neighbours = [Some(*page), page.checked_add(1), page.checked_sub(1)];
+                    for p in neighbours.into_iter().flatten() {
+                        let source = lattice_cells::MediaSource::PdfPage {
+                            path: path.clone(),
+                            page: p,
+                        };
+                        if !self.media_pixels.claim(&source, target_h) {
+                            continue;
+                        }
+                        self.spawn_page_render(
+                            source,
+                            path.clone(),
+                            p,
+                            (target_w, target_h),
+                            scale_factor,
+                            cx,
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// IM.5c: decode one picture off the UI thread and land it.
+    fn spawn_picture_decode(
+        &self,
+        source: lattice_cells::MediaSource,
+        path: std::path::PathBuf,
+        target: (u32, u32),
+        cx: &mut App,
+    ) {
+        let pixels = self.media_pixels.clone();
+        cx.spawn(async move |cx: &mut gpui::AsyncApp| {
+            // The decode itself runs on the BACKGROUND executor — this is
+            // the one call in the whole feature that must not happen on
+            // the UI thread.
+            let decoded = cx
+                .background_executor()
+                .spawn({
+                    let path = path.clone();
+                    async move {
+                        lattice_media::decode(
+                            &path,
+                            target,
+                            lattice_media::PixelFormat::BgraPremultiplied8,
+                        )
+                    }
+                })
+                .await;
+            match decoded {
+                Ok(img) => land_media(&pixels, source, img, target.1, cx),
+                Err(err) => {
+                    // Logged once: `claim` keeps the source claimed on
+                    // failure, so a missing file is not retried every
+                    // frame forever. The alt text stands in.
+                    tracing::debug!(%err, path = %path.display(),
+                        "inline media unavailable; alt text stands in");
+                }
+            }
+        })
+        .detach();
+    }
+
+    /// PF.3b: render one PDF page off the UI thread, in two passes.
+    ///
+    /// The first pass draws at the block's size in logical pixels and lands
+    /// at once, so a slow page (PF.0: up to 330 ms for a dense figure at 2×)
+    /// shows soft rather than late. The second draws at the display's scale
+    /// and replaces it. On a 1× display there is no second pass.
+    fn spawn_page_render(
+        &self,
+        source: lattice_cells::MediaSource,
+        path: std::path::PathBuf,
+        page: u32,
+        target: (u32, u32),
+        scale_factor: f32,
+        cx: &mut App,
+    ) {
+        let pixels = self.media_pixels.clone();
+        let sharp = (scale_factor > 1.01).then(|| {
+            (
+                (target.0 as f32 * scale_factor).round() as u32,
+                (target.1 as f32 * scale_factor).round() as u32,
+            )
+        });
+        cx.spawn(async move |cx: &mut gpui::AsyncApp| {
+            for (pass, size) in std::iter::once(target).chain(sharp).enumerate() {
+                let started = std::time::Instant::now();
+                let rendered = cx
                     .background_executor()
                     .spawn({
                         let path = path.clone();
                         async move {
-                            lattice_media::decode(
+                            lattice_media::render_pdf_page(
                                 &path,
-                                (target_w, target_h),
+                                page,
+                                size,
                                 lattice_media::PixelFormat::BgraPremultiplied8,
                             )
                         }
                     })
                     .await;
-                match decoded {
+                match rendered {
                     Ok(img) => {
-                        let frame = image::Frame::new(
-                            image::RgbaImage::from_raw(img.width, img.height, img.rgba.to_vec())
-                                .unwrap_or_else(|| image::RgbaImage::new(1, 1)),
+                        tracing::debug!(
+                            page,
+                            pass,
+                            width = img.width,
+                            height = img.height,
+                            ms = started.elapsed().as_secs_f32() * 1000.0,
+                            "PDF page rendered"
                         );
-                        pixels.insert(
-                            path,
-                            std::sync::Arc::new(gpui::RenderImage::new(vec![frame])),
-                        );
-                        // The half that makes it appear WITHOUT a keypress.
-                        // Without this the image sits decoded and invisible
-                        // until the user happens to type — the exact bug
-                        // shape `boot-composition.md` §3 exists to prevent.
-                        let _ = cx.update(|cx| cx.refresh_windows());
+                        land_media(&pixels, source.clone(), img, target.1, cx);
                     }
                     Err(err) => {
-                        // Logged once: `claim` keeps the path claimed on
-                        // failure, so a missing file is not retried every
-                        // frame forever. The alt text stands in.
-                        tracing::debug!(%err, path = %path.display(),
-                            "inline media unavailable; alt text stands in");
+                        // Once, as for a picture: the source stays claimed. A
+                        // page past the end lands here too, for the
+                        // look-ahead past the last page.
+                        if pass == 0 {
+                            tracing::debug!(%err, page, path = %path.display(),
+                                "PDF page unavailable; alt text stands in");
+                        }
+                        return;
                     }
                 }
-            })
-            .detach();
-        }
+            }
+        })
+        .detach();
     }
+}
+
+/// Upload-ready pixels into the cache, then ask for a frame: the half that
+/// makes media appear WITHOUT a keypress (`boot-composition.md` §3).
+fn land_media(
+    pixels: &MediaPixels,
+    source: lattice_cells::MediaSource,
+    img: lattice_media::DecodedImage,
+    target_h: u32,
+    cx: &mut gpui::AsyncApp,
+) {
+    let bytes = img.rgba.len();
+    let frame = image::Frame::new(
+        image::RgbaImage::from_raw(img.width, img.height, img.rgba.to_vec())
+            .unwrap_or_else(|| image::RgbaImage::new(1, 1)),
+    );
+    pixels.insert(
+        source,
+        std::sync::Arc::new(gpui::RenderImage::new(vec![frame])),
+        bytes,
+        target_h,
+    );
+    let _ = cx.update(|cx| cx.refresh_windows());
 }
 
 /// IM.5: coalesce this frame's MediaBlock rows into one entry per block.
@@ -2400,7 +2640,7 @@ impl Element for EditorElement {
             branding: build_branding_paint(&branding_rows),
             media: {
                 let paints = build_media_paints(&media_rows);
-                self.dispatch_media_decodes(&paints, font_size, _cx);
+                self.dispatch_media_decodes(&paints, font_size, window.scale_factor(), _cx);
                 paints
             },
         }
@@ -4632,10 +4872,10 @@ mod tests {
     #[test]
     fn a_decode_is_claimed_once_however_many_frames_the_block_is_visible() {
         let pixels = MediaPixels::default();
-        let p = std::path::Path::new("/tmp/x.png");
-        assert!(pixels.claim(p), "first frame claims it");
+        let p = &lattice_cells::MediaSource::Path("/tmp/x.png".into());
+        assert!(pixels.claim(p, 10), "first frame claims it");
         for _ in 0..200 {
-            assert!(!pixels.claim(p), "every later frame is a no-op");
+            assert!(!pixels.claim(p, 10), "every later frame is a no-op");
         }
     }
 
@@ -4645,12 +4885,104 @@ mod tests {
     #[test]
     fn a_failed_path_is_not_retried_every_frame() {
         let pixels = MediaPixels::default();
-        let p = std::path::Path::new("/tmp/missing.png");
-        assert!(pixels.claim(p));
+        let p = &lattice_cells::MediaSource::Path("/tmp/missing.png".into());
+        assert!(pixels.claim(p, 10));
         // No `insert` follows — this is the failure path.
-        assert!(!pixels.claim(p), "still claimed, so no second attempt");
+        assert!(!pixels.claim(p, 10), "still claimed, so no second attempt");
         // No in-session escape hatch by design — see `dispatched`. A failed
         // image shows its alt text until the plugin reloads.
+    }
+
+    fn raster() -> Arc<gpui::RenderImage> {
+        Arc::new(gpui::RenderImage::new(vec![image::Frame::new(
+            image::RgbaImage::new(1, 1),
+        )]))
+    }
+
+    fn page(n: u32) -> lattice_cells::MediaSource {
+        lattice_cells::MediaSource::PdfPage {
+            path: "/d/paper.pdf".into(),
+            page: n,
+        }
+    }
+
+    impl MediaPixels {
+        fn claim_page(&self, n: u32) -> bool {
+            self.claim(&page(n), 10)
+        }
+    }
+
+    /// A block that changes size is decoded again, and the old pixels are
+    /// still there to draw until the new ones land (no blank page on resize).
+    #[test]
+    fn a_resized_block_is_decoded_again_without_losing_what_is_drawn() {
+        let pixels = MediaPixels::default();
+        let mut b = lattice_cells::MediaBlock::from_source(page(0), None);
+        b.height_lh = Some(1.0);
+        let b = Arc::new(b);
+        assert!(pixels.claim(&page(0), 10));
+        pixels.insert(page(0), raster(), 100, 10);
+        assert!(!pixels.claim(&page(0), 10), "landed at this size");
+        assert!(pixels.claim(&page(0), 20), "the pane grew: decode again");
+        assert!(pixels.get(&b).is_some(), "the old size draws meanwhile");
+        assert!(!pixels.claim(&page(0), 20), "in flight");
+    }
+
+    /// PF.3b: two pages of one PDF are two entries, not one picture.
+    #[test]
+    fn two_pages_of_one_pdf_are_claimed_separately() {
+        let pixels = MediaPixels::default();
+        assert!(pixels.claim_page(0));
+        assert!(pixels.claim_page(1), "a different page is a different key");
+        assert!(!pixels.claim_page(0));
+    }
+
+    /// PF.3b: past the budget the least recently drawn entry goes, and its
+    /// claim with it, so it is decoded again when it scrolls back into view.
+    /// What was drawn in this frame or the last stays, even over budget: the
+    /// alternative is a page that blinks out while it is being read.
+    #[test]
+    fn the_budget_evicts_the_least_recently_drawn_and_spares_the_screen() {
+        let pixels = MediaPixels::default();
+        pixels.set_budget(250);
+        let block = |n| {
+            let mut b = lattice_cells::MediaBlock::from_source(page(n), None);
+            b.height_lh = Some(1.0);
+            Arc::new(b)
+        };
+
+        // Frame 1 draws page 0; frame 2 draws page 1; frame 3 draws page 2.
+        for n in 0..3u32 {
+            pixels.begin_frame();
+            assert!(pixels.claim_page(n));
+            pixels.insert(page(n), raster(), 100, 10);
+            assert!(pixels.get(&block(n)).is_some());
+        }
+        // 300 bytes against 250: page 0, drawn two frames ago, went.
+        assert_eq!(pixels.bytes(), 200);
+        assert!(pixels.get(&block(0)).is_none(), "the oldest was evicted");
+        assert!(pixels.claim_page(0), "and can be decoded again");
+        assert!(
+            pixels.get(&block(1)).is_some(),
+            "last frame's page is spared"
+        );
+
+        // Shrink the budget below one screenful: nothing on screen goes.
+        pixels.begin_frame();
+        assert!(pixels.get(&block(1)).is_some());
+        assert!(pixels.get(&block(2)).is_some());
+        pixels.set_budget(50);
+        assert_eq!(pixels.bytes(), 200, "over budget rather than flickering");
+    }
+
+    /// A sharp pass replaces its soft pass for the same page: the bytes are
+    /// the new raster's, not the sum of both.
+    #[test]
+    fn a_second_pass_replaces_the_first() {
+        let pixels = MediaPixels::default();
+        pixels.insert(page(0), raster(), 100, 10);
+        pixels.insert(page(0), raster(), 400, 10);
+        assert_eq!(pixels.bytes(), 400);
     }
 
     /// IM.5: consecutive rows sharing a descriptor coalesce into ONE block,

@@ -17,7 +17,7 @@ text (design §8).
 | PF.1  | `lattice-media` `pdf` feature: probe and render a page               | ✅     |
 | PF.2  | `pdf-mode`: presents `.pdf`, one label line per page, read-only      | ✅     |
 | PF.3a | A media block per page, sized from its points before it is drawn    | ✅     |
-| PF.3b | GPUI draws the pages: near the viewport, two passes, byte-bounded cache | 📝   |
+| PF.3b | GPUI draws the pages: near the viewport, two passes, byte-bounded cache | ✅     |
 | PF.4  | The keymap: page, screen and step navigation; fit, zoom, rotate      | 📝     |
 | PF.5  | Reload in place on change                                            | 📝     |
 | PF.6  | System viewer, docs, benchmarks                                      | 📝     |
@@ -153,7 +153,7 @@ announcement wakes a quiet editor. That one fails without the wake.
 `lattice-host`'s tests enable `lattice-media/pdf` through a dev-dependency, so
 the probe they open files with is the real one.
 
-### PF.3 — pages (PF.3a ✅, PF.3b 📝)
+### PF.3 — pages ✅
 
 One media block per label line, named `MediaSource::PdfPage { path, page }`
 (design §1); render only the pages in the viewport plus one either side, in
@@ -181,8 +181,33 @@ per pass. **A page reserves no rows on a peer that draws no pixels**: the
 TUI's rendering is the label line, and a picture-style alt row under every
 label would make the list twice as long or more. So the TUI shows exactly
 what PF.2 showed. Until PF.3b, GPUI shows each page's box with its alt text.
-**PF.3b 📝** is the GPUI peer: decode by `MediaSource`, the page renderer,
-the viewport ±1, two passes and `media.cache-mb`.
+**PF.3b ✅** is the GPUI peer.
+- **The cache.** `MediaPixels` is keyed by `MediaSource` and bounded by
+  `media.cache-mb` (default 256), which is read live each frame. It evicts
+  whatever was drawn least recently. Anything drawn in this frame or the
+  last is spared, so a budget smaller than a screenful is exceeded rather
+  than made to flicker.
+- **Re-rendering.** Each entry records the block height it was decoded for.
+  A resized block is decoded again while the old pixels keep drawing, and a
+  landed decode releases its claim so that can happen. A failed decode stays
+  claimed, so it is not retried every frame.
+- **Rendering pages.** `lattice_media::render_pdf_page` exists in every
+  build and draws through `pdf::DOCUMENTS`, a cache of four parsed documents
+  keyed by path and mtime, so a re-export is parsed afresh. GPUI renders a
+  visible page, then the one after and the one before it, borrowing the
+  visible page's box.
+- **Two passes.** The first draws at logical size and lands at once. The
+  second draws at `window.scale_factor()` and replaces it. A 1× display
+  skips the second pass.
+- **Verified live.** `lattice --gui man.pdf` (a 6-page man page) rendered
+  pages 1–2 at 257×363 in about 10 ms each, debug build, logged at `debug`
+  as "PDF page rendered". The run turned up a bug, fixed in its own commit:
+  the command line read the file as text, never asking whether a major
+  presents it. `ModeRegistry::open_document` is now shared with `:e`.
+  WSLg does not let X capture GPUI's surface, so the pixels themselves are
+  Dhruva's to look at.
+- **Deferred to PF.6.** No bench yet for the virtual-row cost of a long
+  document, nor for the cache under scrolling.
 
 ### PF.4 — the keymap 📝
 

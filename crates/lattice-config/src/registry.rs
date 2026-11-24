@@ -121,6 +121,9 @@ struct Inner {
     /// PMF.16: values the user's configuration gave options, by full name and
     /// source — see [`ConfigRegistry::hold`].
     held: HashMap<String, std::collections::BTreeMap<HeldSource, HeldValue>>,
+    /// D1: options a project's `.lattice/config.toml` may not set — see
+    /// [`ConfigRegistry::refuse_from_project`].
+    project_refused: std::collections::HashSet<String>,
 }
 
 /// A value held for an option that does not exist yet, kept in the shape the
@@ -140,16 +143,20 @@ pub enum HeldValue {
     Tree(crate::ConfigValue),
 }
 
-/// PMF.16: which part of the user's configuration a held value came from.
+/// PMF.16: which part of the configuration a held value came from.
 ///
 /// The order is the precedence: values are applied in this order, so a later
-/// source wins — `lattice.toml` (and a project's `config.toml`), then
+/// source wins — `lattice.toml`, then a project's `.lattice/config.toml`, then
 /// `init.rs`, matching the order they are read in. Each source is cleared on
 /// its own when it is read again, so re-reading one never drops another's.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum HeldSource {
-    /// `lattice.toml` / a project's `.lattice/config.toml`.
+    /// The user's `lattice.toml`.
     ConfigFile,
+    /// D1: a project's `.lattice/config.toml`. Not the user's: it can arrive
+    /// in a cloned repository, so it may not set what
+    /// [`ConfigRegistry::refuse_from_project`] names.
+    ProjectFile,
     /// The user's `init.rs`.
     Init,
 }
@@ -159,6 +166,7 @@ impl HeldSource {
     pub fn label(self) -> &'static str {
         match self {
             HeldSource::ConfigFile => "lattice.toml",
+            HeldSource::ProjectFile => ".lattice/config.toml",
             HeldSource::Init => "init.rs",
         }
     }
@@ -365,7 +373,18 @@ impl ConfigRegistry {
         // PMF.16: the user's configuration may have named this option before
         // it existed (a plugin's option, set from `lattice.toml` or `init.rs`);
         // it starts with their value, not its default. In precedence order.
+        let refused = self.refuses_from_project(&name);
         for (source, value) in held.into_iter().flatten() {
+            if refused && source == HeldSource::ProjectFile {
+                // User-actionable: the project file named it, and nothing
+                // else will say why it had no effect.
+                tracing::warn!(
+                    option = %name,
+                    "`{name}` in .lattice/config.toml was not applied: it decides what a plugin \
+                     may reach or whether it runs, so only your own configuration can set it"
+                );
+                continue;
+            }
             let applied = match &value {
                 HeldValue::Text(text) => self
                     .parse_and_set_command(&format!("{name}={text}"))
@@ -476,16 +495,74 @@ impl ConfigRegistry {
     /// caller that must decide before then (a plugin's file grant). Text only:
     /// a grant follows a path, and a held list or table names none.
     pub fn held_value(&self, name: &str) -> std::option::Option<String> {
-        self.inner
-            .lock()
-            .expect("ConfigRegistry poisoned")
+        let inner = self.inner.lock().expect("ConfigRegistry poisoned");
+        let refused = inner.project_refused.contains(name);
+        inner
             .held
             .get(name)
-            .and_then(|by_source| by_source.values().next_back())
+            .and_then(|by_source| {
+                by_source
+                    .iter()
+                    .rev()
+                    .find(|(source, _)| !(refused && **source == HeldSource::ProjectFile))
+                    .map(|(_, value)| value)
+            })
             .and_then(|value| match value {
                 HeldValue::Text(text) => Some(text.clone()),
                 HeldValue::Tree(_) => None,
             })
+    }
+
+    /// OB.1: [`Self::held_value`] in the option's own shape — a held list or
+    /// table whole, text as a string. For a grant that follows a list option
+    /// (`fs:write:{org.babel.tangle-directories}`), where flattening the list
+    /// to text before the option registers would lose every entry.
+    pub fn held_config_value(&self, name: &str) -> std::option::Option<crate::ConfigValue> {
+        let inner = self.inner.lock().expect("ConfigRegistry poisoned");
+        let refused = inner.project_refused.contains(name);
+        inner
+            .held
+            .get(name)
+            .and_then(|by_source| {
+                by_source
+                    .iter()
+                    .rev()
+                    .find(|(source, _)| !(refused && **source == HeldSource::ProjectFile))
+                    .map(|(_, value)| value)
+            })
+            .map(|value| match value {
+                HeldValue::Text(text) => crate::ConfigValue::Str(text.clone()),
+                HeldValue::Tree(tree) => tree.clone(),
+            })
+    }
+
+    /// D1: a project's `.lattice/config.toml` may not set `name`.
+    ///
+    /// For an option that decides what a plugin may reach or whether it runs:
+    /// one a capability grant follows (`fs:write:{org.directory|~/org}`,
+    /// `proc:spawn:{org.babel.languages}`), and a plugin's mode switches. The
+    /// project file is not the user's. It arrives with a cloned repository, so
+    /// a value there would be a stranger choosing what the user's plugins may
+    /// run. The plugin host names them as it computes each grant, which is
+    /// before the plugin registers its options; from then on a project value
+    /// for one is neither applied when the option registers, nor read by
+    /// [`Self::held_value`], nor set by a later load of the file. The user's
+    /// own `lattice.toml`, `init.rs` and `:set` are untouched.
+    pub fn refuse_from_project(&self, name: &str) {
+        self.inner
+            .lock()
+            .expect("ConfigRegistry poisoned")
+            .project_refused
+            .insert(name.to_string());
+    }
+
+    /// D1: is `name` one [`Self::refuse_from_project`] named?
+    pub fn refuses_from_project(&self, name: &str) -> bool {
+        self.inner
+            .lock()
+            .expect("ConfigRegistry poisoned")
+            .project_refused
+            .contains(name)
     }
 
     /// PMF.16: forget what `source` holds, before it is read again — a line the

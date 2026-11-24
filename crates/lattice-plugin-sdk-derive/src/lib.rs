@@ -24,7 +24,7 @@
 //! its own tests).
 
 use proc_macro::TokenStream;
-use quote::quote;
+use quote::{format_ident, quote};
 use syn::{Attribute, Data, DeriveInput, Fields, LitStr, Type, parse_macro_input};
 
 /// Derive `PluginEvent` for a serde-serializable struct. See the crate docs for
@@ -322,7 +322,14 @@ fn config_shape_for_struct(ident: &syn::Ident, named: &syn::FieldsNamed) -> Toke
         // sections have a `match` field, because that is org's own name for
         // it. Emitting `r#match` as the wire name would have produced a schema
         // whose field no config file could ever spell.
-        let wire = to_kebab_case(fident.to_string().trim_start_matches("r#"));
+        let plain = fident.to_string();
+        let plain = plain.trim_start_matches("r#");
+        let wire = to_kebab_case(plain);
+        // Each field is read into a local of its own, never one named after
+        // the field: `from_value`'s parameter is `value`, and a field called
+        // `value` (org's babel languages have one) would rebind it, so every
+        // field after it was looked up in that field's value instead.
+        let local = format_ident!("__field_{}", plain);
         let doc = doc_string(&f.attrs);
         let ty = &f.ty;
         let optional = is_option_type(ty);
@@ -349,7 +356,7 @@ fn config_shape_for_struct(ident: &syn::Ident, named: &syn::FieldsNamed) -> Toke
                 }
             });
             field_from.push(quote! {
-                let #fident = match value.field(#wire) {
+                let #local = match value.field(#wire) {
                     ::core::option::Option::Some(v) => ::core::option::Option::Some(
                         ::lattice_plugin_sdk::shape::ConfigShape::from_value(v)
                             .map_err(|e| e.under(#wire))?,
@@ -365,7 +372,7 @@ fn config_shape_for_struct(ident: &syn::Ident, named: &syn::FieldsNamed) -> Toke
                 ));
             });
             field_from.push(quote! {
-                let #fident = {
+                let #local = {
                     let v = value.field(#wire).ok_or_else(|| {
                         ::lattice_plugin_sdk::shape::ShapeError::new("required field is missing")
                             .under(#wire)
@@ -375,7 +382,7 @@ fn config_shape_for_struct(ident: &syn::Ident, named: &syn::FieldsNamed) -> Toke
                 };
             });
         }
-        binds.push(quote! { #fident });
+        binds.push(quote! { #fident: #local });
     }
 
     let expanded = quote! {

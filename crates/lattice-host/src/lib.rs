@@ -61,6 +61,7 @@ pub mod dashboard;
 // AP.0.2: the layer peel behind `Effect::Declined`. One walk, called by the
 // host dispatcher and by both renderer peers — it was three loops, and the
 // one that did not exist is why every auto-pair key was dead in GPUI.
+pub mod active_modes_query;
 pub mod decline;
 pub mod diagnostics_query;
 pub mod dispatch;

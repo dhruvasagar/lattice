@@ -61,10 +61,15 @@ pub fn project_transient_context(
 /// Never fails: a row the host cannot honour is dropped, not escalated. The
 /// only way a plugin loses its whole menu is by returning an `err` from
 /// `build`, which is a statement rather than an accident.
+///
+/// OB.3a: so is a row naming a command `gate` does not let the plugin run — a
+/// native one not opened to plugins. The row runs the command resolved here,
+/// by id, so this is the check that counts.
 pub fn spec_from_wit(
     wit: WitTransientSpec,
     registry: &CommandRegistryHandle,
     plugin: &str,
+    gate: &crate::effect_authorizer::CommandGate,
 ) -> NativeTransientSpec {
     let commands = registry.load();
     let groups = wit
@@ -101,6 +106,17 @@ pub fn spec_from_wit(
                                 );
                                 return None;
                             };
+                            if !commands.lookup(command).is_some_and(|c| gate.permits(c)) {
+                                // `warn!`, unlike an unregistered name: this is
+                                // a plugin reaching for a command it may not
+                                // run, which its author needs to see.
+                                tracing::warn!(
+                                    key = ?item.key,
+                                    "{}; dropping the row",
+                                    gate.refusal(&action.command)
+                                );
+                                return None;
+                            }
                             let args = match lattice_grammar::Args::from_wit(action.args) {
                                 Ok(args) => args,
                                 Err(e) => {
@@ -162,7 +178,7 @@ pub fn transient_builder(
                 Ok(inner) => inner?,
                 Err(host_err) => return Err(format!("{plugin}: {host_err}")),
             };
-            Ok(spec_from_wit(wit, &registry, &plugin))
+            Ok(spec_from_wit(wit, &registry, &plugin, client.gate()))
         })
     }
 }
@@ -183,7 +199,9 @@ mod tests {
     fn registry_with(names: &[&str]) -> CommandRegistryHandle {
         let mut reg = lattice_grammar::CommandRegistry::new();
         for name in names {
-            reg.register_action(
+            // A plugin's own action, as a plugin's menu names.
+            reg.register_plugin_action(
+                1,
                 name,
                 "test action",
                 lattice_grammar::registry::ActionSpec {
@@ -230,6 +248,7 @@ mod tests {
             spec(vec![action_row("t", "org-capture-key", Some("todo"))]),
             &registry,
             "org",
+            &crate::effect_authorizer::CommandGate::owning("org", 1),
         );
 
         assert_eq!(native.title, "Capture");
@@ -267,6 +286,7 @@ mod tests {
             ]),
             &registry,
             "org",
+            &crate::effect_authorizer::CommandGate::owning("org", 1),
         );
 
         let keys: Vec<&str> = native.groups[0]
@@ -281,12 +301,57 @@ mod tests {
         );
     }
 
+    /// OB.3a: a row naming an editor command not opened to plugins is dropped
+    /// like an unresolvable one — the host runs a row's command by id, so this
+    /// is the check that counts.
+    #[test]
+    fn a_row_naming_a_closed_native_command_is_dropped() {
+        let mut reg = lattice_grammar::CommandRegistry::new();
+        reg.register_plugin_action(
+            1,
+            "org-capture-key",
+            "a plugin's own",
+            lattice_grammar::registry::ActionSpec {
+                args_schema: Vec::new(),
+                apply: Arc::new(|_| Ok(lattice_grammar::Effect::None)),
+            },
+        );
+        // Any native command, not opened to plugins — the shape of
+        // `shell-command`.
+        reg.register_ex_command(
+            "shell-command",
+            "runs a program",
+            lattice_grammar::registry::mode_toggle_ex_command_spec("shell"),
+        );
+        let registry: CommandRegistryHandle = Arc::new(arc_swap::ArcSwap::from_pointee(reg));
+        let native = spec_from_wit(
+            spec(vec![
+                action_row("t", "org-capture-key", Some("todo")),
+                action_row("x", "shell-command", Some("rm -rf ~")),
+            ]),
+            &registry,
+            "org",
+            &crate::effect_authorizer::CommandGate::owning("org", 1),
+        );
+        let keys: Vec<&str> = native.groups[0]
+            .items
+            .iter()
+            .map(|i| i.key[0].as_str())
+            .collect();
+        assert_eq!(keys, vec!["t"], "the closed command's row is gone");
+    }
+
     /// A guest spec never carries a preview: the native field is a closure, and
     /// a closure has no WIT form.
     #[test]
     fn a_guest_spec_has_no_preview() {
         let registry = registry_with(&[]);
-        let native = spec_from_wit(spec(Vec::new()), &registry, "org");
+        let native = spec_from_wit(
+            spec(Vec::new()),
+            &registry,
+            "org",
+            &crate::effect_authorizer::CommandGate::owning("org", 1),
+        );
         assert!(native.preview.is_none());
     }
 

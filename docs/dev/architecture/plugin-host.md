@@ -923,14 +923,81 @@ is enough to check — and decline otherwise.
   writes outside it require an explicit broader grant (§5.5.6 prerequisite 2).
 - **Trust tiers.** *Bundled* plugins inherit the editor's trust (capabilities pre-granted at
   build time, no prompt). *User-installed* plugins prompt for consent on first install
-  (§5.5.6). `proc:spawn` is bundled-only in v1; user plugins ship pre-built binary recipes,
-  not source-build spawn paths (§5.5.6 prerequisite 4).
+  (§5.5.6). Unbound `proc:spawn` is bundled-only in v1; user plugins ship pre-built binary recipes,
+  not source-build spawn paths (§5.5.6 prerequisite 4). The option-bound form
+  `proc:spawn:{<option>[:<field>]}` (OB.2, [`org-babel.md`](org-babel.md) §4) is granted at
+  either tier: it permits exactly the programs the user listed in the plugin's own option,
+  compared as written, re-read on every grant computation, reloading the plugin when it moves
+  (PMF.4) and closed to the plugin's own `set-option` (PMF.5).
+- **Only the user's own configuration decides a plugin's reach (D1).** The options a
+  grant follows, and the switches the loader follows for a plugin's default modes
+  (`<id>.enabled`, each `mode_gates` option), are set from `lattice.toml`, `init.rs` and
+  `:set`, never from a project's `.lattice/config.toml`. A project file arrives with a
+  cloned repository; were its `org.babel.languages = [{ command = "sh" }]` honoured,
+  opening the clone would choose what the user's plugins may run. The config registry
+  keeps the project file's values as their own held source (`HeldSource::ProjectFile`), so
+  refusing one leaves the user's value beside it intact, and `grant_for` names the
+  protected options to the registry (`refuse_from_project`) before it reads any. From then
+  a project value for one is not read for the grant, not applied when the option registers,
+  and refused with a warning naming the key when the file is read again. The same names
+  sit in the `GrantGuard`, so a plugin cannot set them either, and `enable-mode` /
+  `disable-mode` answer only to the config authority, the second way past a mode switch.
 - **Keymap write-gate.** Already enforced: `KeymapCapability::MinorMode` permits writes only
   to `KeymapLayer::MinorMode(_)`/`Buffer`, denies `Builtin`/`MajorMode`/`User`
   (`registry.rs:132`). A plugin cannot shadow universal vim grammar.
 - **Provenance is host-issued.** No public API accepts a `SourceLocation`; the host stamps
   `SourceLayer::Plugin(id)` for every plugin contribution (`source.rs:38`). A plugin cannot
   forge a builtin/user provenance.
+- **What a plugin names for the host to run is gated (OB.3a).** An effect loses its
+  provenance at the boundary — by design, §4.4 — so a command it names runs with the
+  user's whole authority. Until OB.3a that made every grant decorative:
+  `invoke-command { id: "shell-command", … }` ran a program with no `proc:spawn`, `set …`
+  moved an option a grant follows past PMF.5, and a command whose *name* was ex syntax
+  (`g/x/d`, `%d`) ran as the line it spelled. The check therefore lives where the plugin is
+  still known — `EffectAuthorizer`'s `CommandGate`, built from the instance's grant, the
+  editor's `CommandRegistry` and the `GrantGuard` — and covers every place a plugin names a
+  command: `invoke-command`, `confirm`'s `yes-action`, `open-prompt`'s `on-submit-action`,
+  `open-picker`'s `fill-action`, a code action's `otherwise`, a picker row's routing and
+  accept outcome, a picker's `delete-command`, a transient row. The rules:
+  - **Default closed.** A plugin may name its own command, a command another plugin lists
+    in its manifest's `exported_commands` (D2), or a native one its owner opened
+    (`CommandRegistry::allow_plugin_invocation` — today `llm`, whose tool calls ask the
+    user first, and `action:scan-view-clockreport-toggle`, which flips a view mode on the
+    user's own buffer and which org's agenda menu names). A native command that forgets to say is refused with a warning, never
+    silently reachable: the failure of omission is visible. "Its own" is by manifest id,
+    not by the `SourceLayer::Plugin(id)` a command carries: that id is the registering
+    *instance's*, and one plugin's seams are separate instances (its picker names commands
+    its grammar seam registered). The host records instance → plugin wherever plugin
+    commands are registered — the grammar seam, and the loader's `:<mode>` toggles under
+    the modes instance — in the `GrantGuard` (`attribute_commands`); a command whose
+    instance has no recorded owner is nobody's to call. Before D2 any plugin's command
+    passed, so one plugin could run another's (org's `org-babel-run-confirmed`, a picker's
+    delete verb) with the user's whole authority. The audit found no plugin naming another's
+    command; a user-configured list (`project`'s `switch-commands`) can, and is refused
+    unless the owner exports the command.
+  - **Exact names only.** No alias, no `ex:` guess, no line syntax. And the host keeps its
+    side: `Editor::invoke_command_named` runs a registered name as *that* command, its
+    args parsed as its args (`excommand::parse_named`), never as a line. The check and the
+    run see the same command.
+  - **Options and programs.** `set-option` / `set-local-option` / `set-global-option`
+    naming an option the `GrantGuard` holds — by name, by `no`-form, or by an alias the
+    plugin registered — is refused, as the config seam's `set-option` is. A
+    `spawn-terminal` with a `cmd-line` needs the unbound `proc:spawn`.
+  - **`init.rs` is exempt** — it is the user's own code (PMF.15's authority).
+  - **Not gated: a mode's keymap bindings.** They name a command with no arguments and
+    fire on the user's key, so they cannot hand `shell-command` a command line. Revisit if
+    bindings ever carry args.
+- **Posted effects are an allowlist (OB.3a).** `post-effects` arrives unprompted, so it
+  carries only what a background result needs — `apply-edit`, `write-to-file` (still under
+  `fs:write`), `track-range` / `untrack-range`, `open-synthetic-buffer`, `echo` — after the
+  command gate above. Anything else is a warning naming the variant, and ends the batch.
+- **Reading a buffer back is gated on the plugin's own modes (OB.3c).** `buffer-text` hands
+  over a whole buffer's text — the read a job's result needs from `on-event`, which has no
+  `document` — but only while a mode that plugin registered is active on that buffer. The
+  host keeps which plugin registered each mode (recorded only for a mode the registry
+  accepted, so declaring another plugin's id buys nothing) and reads which modes are active
+  from the published render state. Any other buffer, a closed one, or a host with no
+  active-modes query wired is `none`.
 
 > **UX (higher court):** capability prompts are the one place plugins touch consent UX; they
 > must be legible ("git-gutter wants: read files under this repo") and never block boot —

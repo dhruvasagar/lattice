@@ -258,6 +258,7 @@ docs = [
   "architecture/org-capture-drafts",
   "architecture/org-agenda",
   "architecture/org-habits",
+  "architecture/org-babel",
   "architecture/org-roam",
 ]
 

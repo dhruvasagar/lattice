@@ -197,7 +197,9 @@ document buffer with no consent — wrong for a third-party contribution.
   enabling — so plugin modes are available-but-off.
 - **`enable-mode(id)` / `disable-mode(id)`** (modes seam) flip enablement (RCU on
   the mode-registry handle). Called from an `on-plugin-loaded` handler in init.rs,
-  or a future `:mode-enable`.
+  or a future `:mode-enable`. **Only from init.rs**, the config authority: from any
+  other plugin the call is dropped, since it would override the user's choice of
+  which modes run (review, 2026-11-23; `plugin-host.md`, D1).
 - **Re-activation:** because plugins load async *after* render, enabling a mode
   must activate it on **buffers already open** — bounded (O(open buffers) whose
   major admits it). The one piece of real machinery here; legitimate anyway

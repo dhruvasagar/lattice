@@ -440,6 +440,17 @@ record command-ref {
 }
 ```
 
+A command for the host to run, by name, with its arguments.
+
+OB.3a: `id` must be a command's registered name, exactly — no alias, no
+ex-line syntax — and one a plugin may run: a command a plugin
+registered, or an editor command opened to plugins. Anything else is
+refused with a warning to the user. The same holds wherever a plugin
+names a command: `confirm`'s `yes-action`, `open-prompt`'s
+`on-submit-action`, `open-picker`'s `fill-action`, a picker row's
+routing or `delete-command`, a transient row. The user's `init.rs` is
+exempt.
+
 **Fields**
 
 - `id`: `string`
@@ -938,6 +949,7 @@ variant file-anchor {
     end,
     start,
     line(u32),
+    whole,
 }
 ```
 
@@ -946,9 +958,11 @@ XF.4: where in a target file a `write-to-file` lands.
 A *position*, not a range, and the asymmetry with `apply-edit` is
 deliberate: for its own buffer a guest holds `borrow<document>` and can
 compute a range that means something; for a file it has never read, a
-range would be a guess. These are the three positions namable without
-reading. Insert-only also means a guest cannot silently destroy content
-in a file the user was not looking at.
+range would be a guess. `end`, `start` and `line` are the positions
+namable without reading, and they only insert, so a guest cannot
+silently destroy content in a file the user was not looking at.
+`whole` is the one exception, and it is just as namable: it needs no
+position because it replaces everything.
 
 **Cases**
 
@@ -959,6 +973,13 @@ in a file the user was not looking at.
   failing: a guest computing a line from a file it has not read can
   legitimately be off, and refusing to file the text at all is worse
   than filing it at the end.
+- `whole` — OB.9: replace the target's entire text, as ONE edit, so one `u` in
+  that buffer brings back what was there. For a file the producer
+  generates whole, whose previous contents it has no claim to keep:
+  babel's `:tangle` target. A missing file is created. A target the
+  editor did not have open is opened unlisted (`nobuflisted`), so
+  writing ten files does not put ten buffers in `:ls`. The `fs:write`
+  check is the same as for the other anchors: a path, not a position.
 
 ### record `write-to-file-payload`
 
@@ -2107,9 +2128,15 @@ Mirrors `lattice_grammar::effect::Effect` (§4.4). Every arm is pure data;
 - `open-buffer-at`: [`open-buffer-at-payload`](#record-open-buffer-at-payload)
 - `open-external-uri`: `string`
 - `open-buffer-at-column`: [`open-buffer-at-column-payload`](#record-open-buffer-at-column-payload)
-- `spawn-terminal`: [`spawn-terminal-payload`](#record-spawn-terminal-payload)
-- `terminal-input`: `list<u8>`
-- `set-option`: `string`
+- `spawn-terminal`: [`spawn-terminal-payload`](#record-spawn-terminal-payload) — OB.3a: a `cmd-line` is a process, so it needs the unbound
+  `proc:spawn`; without one, the user's own shell opens. A non-empty
+  `env` needs `proc:spawn` too: a variable is code in the shell it
+  reaches (`BASH_ENV`, `PROMPT_COMMAND`).
+- `terminal-input`: `list<u8>` — Bytes written to the focused terminal. Typed into a shell, they are
+  a command it runs, so this needs the unbound `proc:spawn`.
+- `set-option`: `string` — OB.3a: refused (with a warning) for an option a plugin's grant
+  follows (`fs:write:{opt}`, `proc:spawn:{opt}`) — those are the
+  user's to set. So are `set-local-option` / `set-global-option`.
 - `set-local-option`: `string`
 - `set-global-option`: `string`
 - `clear-search-highlight`

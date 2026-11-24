@@ -1,5 +1,5 @@
 {
-  "package": "lattice:plugin-host@0.5.0",
+  "package": "lattice:plugin-host@0.6.0",
   "interfaces": [
     {
       "name": "buffer",
@@ -494,7 +494,7 @@
           ],
           "result": "bool",
           "signature": "set-option: func(name: string, value: string) -> bool",
-          "doc": "Set (override) an EXISTING option's value (CI.7) — the init.rs config\nfront-end symmetric with `lattice.toml` and `:set`. Backed by the same\n`parse_and_set_command` path `:set name=value` uses: the value string is\ntype-coerced and validated, and a successful set publishes\n`OptionChanged` so subscribers react uniformly. Returns `false` (setting\nnothing) if the option is unregistered, the value is invalid for its type,\nor no registry is wired — never a trap. Like `get-option`, resolves the\ncaller's OWN namespace first (`style` → `<id>.style`), else the raw name —\nso a config can set another plugin's option by its full\n`auto-pair.style` name.\n\n**From the user's `init.rs`, an option need not exist yet.** `init.rs`\nloads before every user plugin, so the option a plugin will declare is\nnot registered when `init.rs` runs. Its `set-option` on such a name is\nheld and returns `true`; the value is applied when the plugin registers\nthe option — and again whenever it re-registers after a reload — and a\nplugin's file grant that follows the option already sees it. A value\nthat does not fit the option is reported when it registers; a name no\nplugin ever declares is reported once every plugin has loaded. Any\nother plugin setting an unregistered name still gets `false`.",
+          "doc": "Set (override) an EXISTING option's value (CI.7) — the init.rs config\nfront-end symmetric with `lattice.toml` and `:set`. Backed by the same\n`parse_and_set_command` path `:set name=value` uses: the value string is\ntype-coerced and validated, and a successful set publishes\n`OptionChanged` so subscribers react uniformly. Returns `false` (setting\nnothing) if the option is unregistered, the value is invalid for its type,\nor no registry is wired — never a trap. Like `get-option`, resolves the\ncaller's OWN namespace first (`style` → `<id>.style`), else the raw name —\nso a config can set another plugin's option by its full\n`auto-pair.style` name.\n\n**From the user's `init.rs`, an option need not exist yet.** `init.rs`\nloads before every user plugin, so the option a plugin will declare is\nnot registered when `init.rs` runs. Its `set-option` on such a name is\nheld and returns `true`; the value is applied when the plugin registers\nthe option — and again whenever it re-registers after a reload — and a\nplugin's file grant that follows the option already sees it. A value\nthat does not fit the option is reported when it registers; a name no\nplugin ever declares is reported once every plugin has loaded. Any\nother plugin setting an unregistered name still gets `false`.\n\n**Some options only your configuration may set.** An option a\nplugin's capability grant follows (`fs:write:{org.directory|~/org}`,\n`proc:spawn:{org.babel.languages}`), and the switches that turn a\nplugin's default modes on (`<id>.enabled`, and each `mode_gates`\noption), decide what a plugin may reach or whether it runs at all. A\nplugin setting one gets `false`; only `init.rs`, `:set` and\n`lattice.toml` can.",
           "examples": [
             {
               "id": "treesitter-context:config.set-option",
@@ -1838,6 +1838,31 @@
       "examples": [],
       "functions": [
         {
+          "name": "buffer-text",
+          "display_name": "buffer-text",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [
+            {
+              "name": "buffer",
+              "type": "u32"
+            }
+          ],
+          "result": "option<string>",
+          "signature": "buffer-text: func(buffer: u32) -> option<string>",
+          "doc": "OB.3c: the whole text of an open buffer **one of this plugin's own\nmodes is active in** — as it is in the editor, unsaved edits included.\n\nFor finishing work a mode started on its buffer from a seam with no\n`document` to read: a job's result arrives in `on-event`, possibly\nafter the user has edited the buffer or moved to another one, and the\nplugin has to see the buffer as it is NOW to put the result in the\nright place. `buffer` is the `buffer-id` a `document` or\n`buffer-snapshot` reported when the work began.\n\n**Gated on the plugin's modes, not on a capability.** A buffer is\nreadable while a mode this plugin registered is active on it — the\nbuffer the plugin is already running in, which is the reach the user\ngave it by turning that mode on. Any other buffer is `none`, so a\nplugin cannot read what the user has open elsewhere by guessing ids.\nOnly a mode that runs where something chose it counts: a `majors`\nmode, or a `manual` one. A `global` or `universal` mode is on in every\nbuffer, so it grants no read.\nThe mode set is the editor's as of its last publish: a buffer whose\nmode was turned off a moment ago may still read for that moment.\n\n`none` for a buffer that is closed, not this plugin's, or a host that\nwired no buffer store. One call, the whole text: a guest that wants\nlines splits it.",
+          "examples": [
+            {
+              "id": "multiseam-guest:host-services.buffer-text",
+              "caption": "Read back a buffer one of this plugin's modes runs in; `none` for any other",
+              "source": "crates/lattice-plugin-host/tests/fixtures/multiseam-guest/src/lib.rs",
+              "language": "rust",
+              "code": "let text = host_services::buffer_text(buffer).unwrap_or_else(|| \"none\".to_string());\nOk(vec![Effect::Echo(EchoPayload {\n    level: EchoLevel::Info,\n    text,\n})])"
+            }
+          ]
+        },
+        {
           "name": "can-write-file",
           "display_name": "can-write-file",
           "kind": "freestanding",
@@ -1913,6 +1938,31 @@
               "source": "crates/lattice-plugin-host/tests/fixtures/multiseam-guest/src/lib.rs",
               "language": "rust",
               "code": "let text = match host_services::clamp_position(buffer, Position { line, byte }) {\n    Some(p) => format!(\"{}:{}\", p.line, p.byte),\n    None => \"none\".to_string(),\n};\nOk(vec![Effect::Echo(EchoPayload {\n    level: EchoLevel::Info,\n    text,\n})])"
+            }
+          ]
+        },
+        {
+          "name": "close-job-stdin",
+          "display_name": "close-job-stdin",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [
+            {
+              "name": "id",
+              "type": "u64"
+            }
+          ],
+          "result": "result<_, string>",
+          "signature": "close-job-stdin: func(id: u64) -> result<_, string>",
+          "doc": "End job `id`'s input, after anything already written: the process\nsees end of file. Later writes are `err`. The same `err` cases as\n`write-job-stdin`.",
+          "examples": [
+            {
+              "id": "events-guest:host-services.close-job-stdin",
+              "caption": "End an interactive job's input, so a program that reads to end of file exits",
+              "source": "crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs",
+              "language": "rust",
+              "code": "let closed = host_services::close_job_stdin(id);"
             }
           ]
         },
@@ -2233,6 +2283,31 @@
           ]
         },
         {
+          "name": "post-effects",
+          "display_name": "post-effects",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [
+            {
+              "name": "effects",
+              "type": "list<effect>"
+            }
+          ],
+          "result": "result<_, string>",
+          "signature": "post-effects: func(effects: list<effect>) -> result<_, string>",
+          "doc": "OB.3: hand the editor `effects` from a seam that cannot return them —\nthe events seam's `on-event` and `on-wake`, which return nothing. The\nresult of a job a plugin started (`spawn-process`, `http-download`)\narrives there, and this is how that result becomes an edit, an echo or\na buffer the user sees.\n\nThe effects go through the editor's inbound path, which wakes it: they\nare applied **without a keypress**, in the order given, as one batch.\nThey pass the same checks returned effects do — a `write-to-file`\noutside the plugin's `fs:write` grant is replaced by a warning naming\nthe grant, exactly as it would be from a command. An `apply-edit`\naddresses its buffer by id and is dropped if that buffer has closed.\n\nA post carries only what writing a result needs: `apply-edit`,\n`write-to-file` (with no `cut`, which would be taken from whatever\nbuffer has focus when the post lands), `track-range`, `untrack-range`,\n`open-synthetic-buffer` and `echo`. Anything else is replaced by a\nwarning naming it, and the effects after it are dropped.\n\nPrefer returning effects where a seam can: an effect posted here lands\nafter the current keystroke's, not inside it.\n\n`err` only when this seam has nowhere to post to (an editor that wired\nnone) — the effects are then dropped, and the plugin is told.",
+          "examples": [
+            {
+              "id": "events-guest:host-services.post-effects",
+              "caption": "Turn a job's result into an edit from `on-event`, which returns nothing",
+              "source": "crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs",
+              "language": "rust",
+              "code": "let outcome = match host_services::post_effects(&[effect]) {\n    Ok(()) => \"post:ok\".to_string(),\n    Err(e) => format!(\"post:err({e})\"),\n};\nrecord(&outcome);"
+            }
+          ]
+        },
+        {
           "name": "read-file",
           "display_name": "read-file",
           "kind": "freestanding",
@@ -2370,6 +2445,39 @@
           "examples": []
         },
         {
+          "name": "spawn-interactive",
+          "display_name": "spawn-interactive",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [
+            {
+              "name": "command",
+              "type": "string"
+            },
+            {
+              "name": "args",
+              "type": "list<string>"
+            },
+            {
+              "name": "cwd",
+              "type": "string"
+            }
+          ],
+          "result": "result<u64, string>",
+          "signature": "spawn-interactive: func(command: string, args: list<string>, cwd: string) -> result<u64, string>",
+          "doc": "`spawn-process` with **stdin left open** (OB.14): the same signature,\nthe same `proc:spawn` gate, the same job, its output and exit arriving\nas `job-output` and `job-finished`. The guest feeds the process with\n`write-job-stdin` and ends its input with `close-job-stdin`; a REPL kept\nalive across calls (babel's `:session`) is what it is for.\n\nCancelling kills the process tree, as for `spawn-process`. Closing\nstdin is the polite way to end a program that exits at end of input.",
+          "examples": [
+            {
+              "id": "events-guest:host-services.spawn-interactive",
+              "caption": "Start a program whose stdin stays open, and hear its output and exit",
+              "source": "crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs",
+              "language": "rust",
+              "code": "events::subscribe(&kind_filter(EventKind::JobOutput), 10);\nevents::subscribe(&kind_filter(EventKind::JobFinished), 10);\nlet started = host_services::spawn_interactive(command, &args, \"\");"
+            }
+          ]
+        },
+        {
           "name": "spawn-process",
           "display_name": "spawn-process",
           "kind": "freestanding",
@@ -2391,7 +2499,7 @@
           ],
           "result": "result<u64, string>",
           "signature": "spawn-process: func(command: string, args: list<string>, cwd: string) -> result<u64, string>",
-          "doc": "Run the program `command` with `args`, in `cwd` (`\"\"` for the editor's\nown). **A job** (see `cancel-job`): returns its id; what the process\nwrites arrives as `job-output`, and its exit as `job-finished`.\n\n**Gated on `proc:spawn`, which only a bundled plugin is ever granted.**\nThe process is not sandboxed — it runs as the user, with the user's\nenvironment and reach — so this is full trust, and a user-installed\nplugin is refused here whatever its manifest asks for.\n\n`command` is a program, found on `PATH` or named by path; `args` are\npassed to it as given. **No shell is involved**: nothing is split,\nexpanded or interpolated, so an argument containing spaces or `;` is one\nargument. A caller that wants a shell runs `sh` and says so.\n\nThe process has no stdin. `job-finished` is `ok` for exit status 0 and\notherwise an `err` naming the status — an ordinary outcome, with the\noutput that explains it already delivered. A program that cannot be\nstarted at all (not found, not executable) is reported the same way, as\nthe job's outcome.\n\nCancelling kills the process and everything it started.\n\n`err` here for a plugin without the grant, an empty `command`, a `cwd`\nthat is not a directory, or a seam with no event bus to report on.",
+          "doc": "Run the program `command` with `args`, in `cwd` (`\"\"` for the editor's\nown). **A job** (see `cancel-job`): returns its id; what the process\nwrites arrives as `job-output`, and its exit as `job-finished`.\n\n**Gated on `proc:spawn`.** The process is not sandboxed — it runs as the\nuser, with the user's environment and reach. The unbound form, any\nprogram, is granted only to a bundled plugin. The option-bound form,\n`proc:spawn:{<option>:<field>}` (OB.2), is granted at either tier and\npermits exactly the programs the user listed in that option, compared\nas written (`sh` is not `/bin/sh`); a program not listed is refused\nwith an `err` naming the option to add it to.\n\n`command` is a program, found on `PATH` or named by path; `args` are\npassed to it as given. **No shell is involved**: nothing is split,\nexpanded or interpolated, so an argument containing spaces or `;` is one\nargument. A caller that wants a shell runs `sh` and says so.\n\nThe process has no stdin. `job-finished` is `ok` for exit status 0 and\notherwise an `err` naming the status — an ordinary outcome, with the\noutput that explains it already delivered. A program that cannot be\nstarted at all (not found, not executable) is reported the same way, as\nthe job's outcome.\n\nCancelling kills the process and everything it started.\n\n`err` here for a plugin without the grant, an empty `command`, a `cwd`\nthat is not a directory, or a seam with no event bus to report on.",
           "examples": [
             {
               "id": "events-guest:host-services.spawn-process",
@@ -2634,6 +2742,35 @@
               "code": "events::subscribe(&kind_filter(EventKind::FilesChanged), 6);\nlet outcome = match host_services::watch(target) {\n    Ok(()) => \"watch:ok\".to_string(),\n    Err(e) => format!(\"watch:err({e})\"),\n};\nrecord(&outcome);"
             }
           ]
+        },
+        {
+          "name": "write-job-stdin",
+          "display_name": "write-job-stdin",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [
+            {
+              "name": "id",
+              "type": "u64"
+            },
+            {
+              "name": "data",
+              "type": "list<u8>"
+            }
+          ],
+          "result": "result<_, string>",
+          "signature": "write-job-stdin: func(id: u64, data: list<u8>) -> result<_, string>",
+          "doc": "Queue `data` for the stdin of job `id`. Returns at once: a writer\nthread delivers it, so a process that is not reading never blocks the\ncaller.\n\n`err` for a job that has finished, whose input was closed, that was\nstarted with `spawn-process`, that belongs to another plugin, or that\nnever existed, all with one message, so another plugin's ids cannot be\nprobed. Any instance of the spawning plugin may write, as for\n`cancel-job`. `ok` means queued, not read: a process that exits first\nnever sees it.\n\nAt most 4 MiB may wait, queued and not yet read, per job. A write that\nwould pass that is `err` (naming how much is waiting) and queues\nnothing: the process is not keeping up, and what it reads makes room.",
+          "examples": [
+            {
+              "id": "events-guest:host-services.write-job-stdin",
+              "caption": "Write to an interactive job's stdin; it is queued, never blocking",
+              "source": "crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs",
+              "language": "rust",
+              "code": "let wrote = host_services::write_job_stdin(id, b\"hello\\n\");"
+            }
+          ]
         }
       ],
       "types": [
@@ -2778,6 +2915,11 @@
           "name": "position",
           "from": "types",
           "original": "position"
+        },
+        {
+          "name": "effect",
+          "from": "types",
+          "original": "effect"
         }
       ]
     },
@@ -3250,7 +3392,7 @@
           ],
           "result": null,
           "signature": "disable-mode: func(id: string)",
-          "doc": "Disable a registered minor mode globally (CI.4) — the inverse of\n`enable-mode`; the Editor deactivates it on open buffers.",
+          "doc": "Disable a registered minor mode globally (CI.4) — the inverse of\n`enable-mode`; the Editor deactivates it on open buffers.\nLikewise only from the user's `init.rs`.",
           "examples": []
         },
         {
@@ -3267,7 +3409,7 @@
           ],
           "result": null,
           "signature": "enable-mode: func(id: string)",
-          "doc": "Enable a registered minor mode globally (CI.4) — the user-enablement path\n(config-and-init.md §6). A plugin minor mode is registered\navailable-but-off; an `init.rs` `on-plugin-loaded` handler calls this to\nturn it on. The host publishes a `mode-enablement-requested` signal and\nthe Editor flips the enablement + re-activates open buffers (this call is\nthe request, not the apply — the guest can't reach the activator). A\nno-bus / unknown-id case is a `warn` + drop (graceful), never a trap.",
+          "doc": "Enable a registered minor mode globally (CI.4) — the user-enablement path\n(config-and-init.md §6). A plugin minor mode is registered\navailable-but-off; an `init.rs` `on-plugin-loaded` handler calls this to\nturn it on. The host publishes a `mode-enablement-requested` signal and\nthe Editor flips the enablement + re-activates open buffers (this call is\nthe request, not the apply — the guest can't reach the activator). A\nno-bus / unknown-id case is a `warn` + drop (graceful), never a trap.\n\n**Only the user's `init.rs` may call it.** From any other plugin the\ncall is dropped (and logged): a plugin turning modes on or off would\noverride the user's choice, `<id>.enabled` and the `mode_gates`\nswitches included. A plugin's own modes go on through its manifest's\n`default_mode`.",
           "examples": [
             {
               "id": "init-guest:modes.enable-mode",
@@ -5929,7 +6071,7 @@
         {
           "name": "command-ref",
           "kind": "record",
-          "doc": null,
+          "doc": "A command for the host to run, by name, with its arguments.\n\nOB.3a: `id` must be a command's registered name, exactly — no alias, no\nex-line syntax — and one a plugin may run: a command a plugin\nregistered, or an editor command opened to plugins. Anything else is\nrefused with a warning to the user. The same holds wherever a plugin\nnames a command: `confirm`'s `yes-action`, `open-prompt`'s\n`on-submit-action`, `open-picker`'s `fill-action`, a picker row's\nrouting or `delete-command`, a transient row. The user's `init.rs` is\nexempt.",
           "definition": "record command-ref {\n    id: string,\n    args: args,\n}",
           "members": [
             {
@@ -6725,8 +6867,8 @@
         {
           "name": "file-anchor",
           "kind": "variant",
-          "doc": "XF.4: where in a target file a `write-to-file` lands.\n\nA *position*, not a range, and the asymmetry with `apply-edit` is\ndeliberate: for its own buffer a guest holds `borrow<document>` and can\ncompute a range that means something; for a file it has never read, a\nrange would be a guess. These are the three positions namable without\nreading. Insert-only also means a guest cannot silently destroy content\nin a file the user was not looking at.",
-          "definition": "variant file-anchor {\n    end,\n    start,\n    line(u32),\n}",
+          "doc": "XF.4: where in a target file a `write-to-file` lands.\n\nA *position*, not a range, and the asymmetry with `apply-edit` is\ndeliberate: for its own buffer a guest holds `borrow<document>` and can\ncompute a range that means something; for a file it has never read, a\nrange would be a guess. `end`, `start` and `line` are the positions\nnamable without reading, and they only insert, so a guest cannot\nsilently destroy content in a file the user was not looking at.\n`whole` is the one exception, and it is just as namable: it needs no\nposition because it replaces everything.",
+          "definition": "variant file-anchor {\n    end,\n    start,\n    line(u32),\n    whole,\n}",
           "members": [
             {
               "name": "end",
@@ -6742,6 +6884,11 @@
               "name": "line",
               "type": "u32",
               "doc": "Before this 0-based line. Past the end clamps to `end` rather than\nfailing: a guest computing a line from a file it has not read can\nlegitimately be off, and refusing to file the text at all is worse\nthan filing it at the end."
+            },
+            {
+              "name": "whole",
+              "type": null,
+              "doc": "OB.9: replace the target's entire text, as ONE edit, so one `u` in\nthat buffer brings back what was there. For a file the producer\ngenerates whole, whose previous contents it has no claim to keep:\nbabel's `:tangle` target. A missing file is created. A target the\neditor did not have open is opened unlisted (`nobuflisted`), so\nwriting ten files does not put ten buffers in `:ls`. The `fs:write`\ncheck is the same as for the other anchors: a path, not a position."
             }
           ],
           "examples": []
@@ -8337,17 +8484,17 @@
             {
               "name": "spawn-terminal",
               "type": "spawn-terminal-payload",
-              "doc": null
+              "doc": "OB.3a: a `cmd-line` is a process, so it needs the unbound\n`proc:spawn`; without one, the user's own shell opens. A non-empty\n`env` needs `proc:spawn` too: a variable is code in the shell it\nreaches (`BASH_ENV`, `PROMPT_COMMAND`)."
             },
             {
               "name": "terminal-input",
               "type": "list<u8>",
-              "doc": null
+              "doc": "Bytes written to the focused terminal. Typed into a shell, they are\na command it runs, so this needs the unbound `proc:spawn`."
             },
             {
               "name": "set-option",
               "type": "string",
-              "doc": null
+              "doc": "OB.3a: refused (with a warning) for an option a plugin's grant\nfollows (`fs:write:{opt}`, `proc:spawn:{opt}`) — those are the\nuser's to set. So are `set-local-option` / `set-global-option`."
             },
             {
               "name": "set-local-option",

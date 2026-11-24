@@ -71,6 +71,24 @@ target rather than just a slower number.
 
 ---
 
+## OB.5 — babel's header-argument merge (2026-11-22)
+
+⚠️ **WSL2 dev box, native (not wasm), release.** `cargo test --release
+block_merge_timing -- --ignored --nocapture` in `lattice-org-plugin`. Org is a
+cdylib, which `benches/` cannot link, so this is an ignored timing test.
+
+| Workload | Time |
+|---|---|
+| 4 993 lines, `header-args` drawer six levels up: split + find block + merge | **202 µs** |
+
+Paid once per `C-c C-c` (and once per block of `execute-buffer`), never per
+keystroke, so it has no frame budget. It is O(file), because
+`#+PROPERTY:` lines may sit anywhere. The number to watch is the wasm one,
+expected at 2–3× native, which is still far below what spawning the process
+costs right after it.
+
+---
+
 ## AT.5c — a plugin tool call (2026-11-11)
 
 `llm_tools_call_warm` in `crates/lattice-plugin-host/benches/llm_tools.rs` is one warm call

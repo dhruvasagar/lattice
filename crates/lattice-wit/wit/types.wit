@@ -1,4 +1,4 @@
-package lattice:plugin-host@0.5.0;
+package lattice:plugin-host@0.6.0;
 
 /// Shared boundary records/variants — the owned, WIT-serializable mirrors of
 /// the native grammar + picker/completion types (plugin-host.md §4). Every
@@ -275,6 +275,16 @@ interface types {
         /// implementation without seeing the server's answer.
         otherwise: option<command-ref>,
     }
+    /// A command for the host to run, by name, with its arguments.
+    ///
+    /// OB.3a: `id` must be a command's registered name, exactly — no alias, no
+    /// ex-line syntax — and one a plugin may run: a command a plugin
+    /// registered, or an editor command opened to plugins. Anything else is
+    /// refused with a warning to the user. The same holds wherever a plugin
+    /// names a command: `confirm`'s `yes-action`, `open-prompt`'s
+    /// `on-submit-action`, `open-picker`'s `fill-action`, a picker row's
+    /// routing or `delete-command`, a transient row. The user's `init.rs` is
+    /// exempt.
     record command-ref {
         id: string,
         args: args,
@@ -498,9 +508,11 @@ interface types {
     /// A *position*, not a range, and the asymmetry with `apply-edit` is
     /// deliberate: for its own buffer a guest holds `borrow<document>` and can
     /// compute a range that means something; for a file it has never read, a
-    /// range would be a guess. These are the three positions namable without
-    /// reading. Insert-only also means a guest cannot silently destroy content
-    /// in a file the user was not looking at.
+    /// range would be a guess. `end`, `start` and `line` are the positions
+    /// namable without reading, and they only insert, so a guest cannot
+    /// silently destroy content in a file the user was not looking at.
+    /// `whole` is the one exception, and it is just as namable: it needs no
+    /// position because it replaces everything.
     variant file-anchor {
         /// After the last line. The common case — archive, refile and capture
         /// all append.
@@ -512,6 +524,14 @@ interface types {
         /// legitimately be off, and refusing to file the text at all is worse
         /// than filing it at the end.
         line(u32),
+        /// OB.9: replace the target's entire text, as ONE edit, so one `u` in
+        /// that buffer brings back what was there. For a file the producer
+        /// generates whole, whose previous contents it has no claim to keep:
+        /// babel's `:tangle` target. A missing file is created. A target the
+        /// editor did not have open is opened unlisted (`nobuflisted`), so
+        /// writing ten files does not put ten buffers in `:ls`. The `fs:write`
+        /// check is the same as for the other anchors: a path, not a position.
+        whole,
     }
 
     /// XF.4: move text into a file the editor may not have open.
@@ -856,8 +876,17 @@ interface types {
         open-buffer-at(open-buffer-at-payload),
         open-external-uri(string),
         open-buffer-at-column(open-buffer-at-column-payload),
+        /// OB.3a: a `cmd-line` is a process, so it needs the unbound
+        /// `proc:spawn`; without one, the user's own shell opens. A non-empty
+        /// `env` needs `proc:spawn` too: a variable is code in the shell it
+        /// reaches (`BASH_ENV`, `PROMPT_COMMAND`).
         spawn-terminal(spawn-terminal-payload),
+        /// Bytes written to the focused terminal. Typed into a shell, they are
+        /// a command it runs, so this needs the unbound `proc:spawn`.
         terminal-input(list<u8>),
+        /// OB.3a: refused (with a warning) for an option a plugin's grant
+        /// follows (`fs:write:{opt}`, `proc:spawn:{opt}`) — those are the
+        /// user's to set. So are `set-local-option` / `set-global-option`.
         set-option(string),
         set-local-option(string),
         set-global-option(string),

@@ -474,6 +474,12 @@ impl PluginHost {
             .await
             .map_err(|e| PluginHostError::Instantiate(e.into()))?;
         let id = self.alloc_id();
+        // OB.3a: this instance's tracked ranges live in its own id space, as a
+        // grammar instance's do (`instantiate_grammar_plugin`). `post-effects`
+        // reaches `track-range` from here, and left unassigned every events
+        // plugin minted into one shared space — two plugins' range 1 was the
+        // same range.
+        store.data_mut().range_space = id.0;
 
         // Wire the emit context BEFORE `register-events` runs: the guest may call
         // the imported `register-event` / `emit-event` host-services from inside

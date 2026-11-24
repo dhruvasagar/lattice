@@ -39,10 +39,13 @@ fn guest_wasm() -> Option<&'static str> {
 }
 
 /// A command registry holding the one command the fixture's good rows name.
-/// The ghost row's command is deliberately absent.
+/// The ghost row's command is deliberately absent. Registered as a plugin's
+/// own, which is what a menu's rows name (OB.3a: a native command would need
+/// opening to plugins).
 fn commands() -> lattice_grammar::CommandRegistryHandle {
     let mut reg = lattice_grammar::CommandRegistry::new();
-    reg.register_action(
+    reg.register_plugin_action(
+        1,
         COMMAND,
         "fixture capture (test)",
         lattice_grammar::registry::ActionSpec {
@@ -59,6 +62,9 @@ async fn client(host: &PluginHost) -> TransientClient {
         .compile(&std::fs::read(guest_wasm().unwrap()).unwrap())
         .expect("compile transient fixture");
     let manifest = PluginManifest::new("transient-fixture", Vec::new(), CapabilitySet::empty());
+    // D2: `commands()` registers the fixture's command by hand under instance
+    // 1, standing in for its grammar seam; attribute it as that seam would be.
+    host.attribute_commands(lattice_plugin_host::PluginId(1), &manifest);
     let (client, actor) = host
         .spawn_transient_source(
             &component,
@@ -94,7 +100,12 @@ async fn build(
         .build(project_transient_context(ctx).expect("the context projects"))
         .await
         .expect("no host-side trap")?;
-    Ok(spec_from_wit(wit, registry, "transient-fixture"))
+    Ok(spec_from_wit(
+        wit,
+        registry,
+        "transient-fixture",
+        client.gate(),
+    ))
 }
 
 fn in_org() -> TransientContext {

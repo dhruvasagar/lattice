@@ -119,6 +119,9 @@ enum PickerCall {
 pub struct PickerClient {
     tx: mpsc::UnboundedSender<PickerCall>,
     id: PluginId,
+    /// OB.3a: what this plugin's sources may name — a row's routing, an
+    /// accept's outcome, the source's delete verb.
+    gate: crate::effect_authorizer::CommandGate,
 }
 
 impl PickerClient {
@@ -126,6 +129,11 @@ impl PickerClient {
     /// inside its `SourceLayer::Plugin(id)` provenance.
     pub fn id(&self) -> PluginId {
         self.id
+    }
+
+    /// OB.3a: the gate for what this plugin's sources name.
+    pub(crate) fn gate(&self) -> &crate::effect_authorizer::CommandGate {
+        &self.gate
     }
 
     /// OR.5b: drive the guest's `register-picker-sources()` and collect every
@@ -409,7 +417,8 @@ impl PluginHost {
             store.data_mut().config_registry = Some(Arc::clone(registry));
         }
         let (tx, rx) = mpsc::unbounded();
-        let client = PickerClient { tx, id };
+        let gate = store.data().command_gate();
+        let client = PickerClient { tx, id, gate };
         let actor = PickerActor {
             store,
             bindings,

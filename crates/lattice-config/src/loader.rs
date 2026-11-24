@@ -299,6 +299,7 @@ pub fn load_default_paths(
     // deleted since the last read must not keep applying. `init.rs`'s are its
     // own, cleared when it reloads.
     registry.clear_held(crate::registry::HeldSource::ConfigFile);
+    registry.clear_held(crate::registry::HeldSource::ProjectFile);
     if let Some(user) = default_user_config_path()
         && user.exists()
     {
@@ -345,11 +346,12 @@ fn load_project_file(
     structural_prefixes: &[&str],
 ) -> LoadOutcome {
     let mut out = LoadOutcome::default();
+    let project = crate::registry::HeldSource::ProjectFile;
     let Ok(text) = std::fs::read_to_string(path) else {
-        return load_file(registry, path, structural_prefixes);
+        return load_file_as(registry, path, structural_prefixes, project);
     };
     let Ok(mut table) = text.parse::<toml::Table>() else {
-        return load_file(registry, path, structural_prefixes);
+        return load_file_as(registry, path, structural_prefixes, project);
     };
     // The walk joins keys with `.`, so a quoted key `"llm.tools"` or a table
     // `["llm.providers".x]` reaches the same registry path as `[llm]` does.
@@ -373,7 +375,18 @@ fn load_project_file(
         });
     }
     out.raw_tree = table.clone();
-    walk_table(registry, path, &mut out, structural_prefixes, &[], &table);
+    let source = Source {
+        path,
+        held: project,
+    };
+    walk_table(
+        registry,
+        &source,
+        &mut out,
+        structural_prefixes,
+        &[],
+        &table,
+    );
     out
 }
 
@@ -385,6 +398,21 @@ pub fn load_file(
     registry: &ConfigRegistry,
     path: &Path,
     structural_prefixes: &[&str],
+) -> LoadOutcome {
+    load_file_as(
+        registry,
+        path,
+        structural_prefixes,
+        crate::registry::HeldSource::ConfigFile,
+    )
+}
+
+/// [`load_file`], its held values counted as `held`'s.
+fn load_file_as(
+    registry: &ConfigRegistry,
+    path: &Path,
+    structural_prefixes: &[&str],
+    held: crate::registry::HeldSource,
 ) -> LoadOutcome {
     let mut out = LoadOutcome::default();
     let text = match std::fs::read_to_string(path) {
@@ -418,7 +446,15 @@ pub fn load_file(
     // `workspace/configuration` walk this by dotted-path; the
     // walker's apply-and-bucket pass below stays unchanged.
     out.raw_tree = table.clone();
-    walk_table(registry, path, &mut out, structural_prefixes, &[], &table);
+    let source = Source { path, held };
+    walk_table(
+        registry,
+        &source,
+        &mut out,
+        structural_prefixes,
+        &[],
+        &table,
+    );
     out
 }
 
@@ -436,6 +472,44 @@ pub fn describe_toml_error(text: &str, e: &toml::de::Error) -> String {
     let line = before.matches('\n').count() + 1;
     let column = before.rsplit('\n').next().map_or(0, |l| l.chars().count()) + 1;
     format!("line {line}, column {column}: {message}")
+}
+
+/// The file being walked, and which source its held values count as.
+struct Source<'a> {
+    path: &'a Path,
+    held: crate::registry::HeldSource,
+}
+
+impl Source<'_> {
+    fn to_path_buf(&self) -> PathBuf {
+        self.path.to_path_buf()
+    }
+}
+
+/// D1: `true` when `source` is a project file and `dotted` is an option it
+/// may not set ([`ConfigRegistry::refuse_from_project`]). The value is then
+/// neither set nor held, and the user is told which key had no effect.
+fn project_refuses(
+    registry: &ConfigRegistry,
+    source: &Source<'_>,
+    out: &mut LoadOutcome,
+    dotted: &str,
+) -> bool {
+    if source.held != crate::registry::HeldSource::ProjectFile
+        || !registry.refuses_from_project(dotted)
+    {
+        return false;
+    }
+    out.messages.push(LoadMessage {
+        level: LoadMessageLevel::Warning,
+        source: source.to_path_buf(),
+        body: format!(
+            "`{dotted}`: refused: it decides what a plugin may reach or whether it runs, so a \
+             project's config cannot set it; set it in your own lattice.toml or init.rs"
+        ),
+        option: Some(dotted.to_string()),
+    });
+    true
 }
 
 /// Recursive walker. `prefix` is the dotted path leading to
@@ -458,7 +532,7 @@ pub fn describe_toml_error(text: &str, e: &toml::de::Error) -> String {
 /// would force every caller to re-walk one extra level.
 fn walk_table(
     registry: &ConfigRegistry,
-    source: &Path,
+    source: &Source<'_>,
     out: &mut LoadOutcome,
     structural_prefixes: &[&str],
     prefix: &[String],
@@ -503,7 +577,7 @@ fn walk_table(
 /// table children warn; structural namespaces in v1 hold sub-
 /// tables only.
 fn record_namespace_children(
-    source: &Path,
+    source: &Source<'_>,
     out: &mut LoadOutcome,
     namespace_dotted: &str,
     table: &toml::Table,
@@ -535,7 +609,7 @@ fn record_namespace_children(
 /// bad key.
 fn apply_scalar(
     registry: &ConfigRegistry,
-    source: &Path,
+    source: &Source<'_>,
     out: &mut LoadOutcome,
     dotted: &str,
     value: &toml::Value,
@@ -596,7 +670,7 @@ fn apply_scalar(
 /// warns (list elements must be scalars in v1).
 fn apply_array(
     registry: &ConfigRegistry,
-    source: &Path,
+    source: &Source<'_>,
     out: &mut LoadOutcome,
     dotted: &str,
     items: &[toml::Value],
@@ -647,11 +721,14 @@ fn apply_array(
 /// as a warning. Shared by the scalar + array leaf paths.
 fn apply_assignment(
     registry: &ConfigRegistry,
-    source: &Path,
+    source: &Source<'_>,
     out: &mut LoadOutcome,
     dotted: &str,
     value: &str,
 ) {
+    if project_refuses(registry, source, out, dotted) {
+        return;
+    }
     // PMF.16: a plugin's option. The plugin has not loaded yet — this file is
     // read before any does — so its options do not exist; the value is held
     // and applied when the plugin registers the option, and again if it
@@ -663,7 +740,7 @@ fn apply_assignment(
         let known = registry.lookup(dotted).is_some();
         let awaited = awaits_plugin(registry, dotted);
         if known || awaited {
-            registry.hold(dotted, value, crate::registry::HeldSource::ConfigFile);
+            registry.hold(dotted, value, source.held);
         }
         if awaited {
             return;
@@ -698,7 +775,7 @@ fn apply_assignment(
 /// option by that exact name exists and says it has structure.
 fn apply_tree_if_composite(
     registry: &ConfigRegistry,
-    source: &Path,
+    source: &Source<'_>,
     out: &mut LoadOutcome,
     dotted: &str,
     value: &toml::Value,
@@ -709,6 +786,9 @@ fn apply_tree_if_composite(
     let schema = opt.schema();
     if !schema.is_composite() {
         return false;
+    }
+    if project_refuses(registry, source, out, dotted) {
+        return true;
     }
     let tree = match toml_to_config_value(value) {
         Ok(v) => v,
@@ -750,7 +830,7 @@ fn apply_tree_if_composite(
     // Held as well as set, as a scalar is (`apply_assignment`): a plugin's
     // options go when it reloads, and this brings the value back with them.
     if dotted.contains('.') {
-        registry.hold_tree(dotted, tree, crate::registry::HeldSource::ConfigFile);
+        registry.hold_tree(dotted, tree, source.held);
     }
     true
 }
@@ -773,7 +853,7 @@ fn awaits_plugin(registry: &ConfigRegistry, dotted: &str) -> bool {
 /// namespace of scalars may hold a float, and is held leaf by leaf instead.
 fn hold_tree_if_awaited(
     registry: &ConfigRegistry,
-    source: &Path,
+    source: &Source<'_>,
     out: &mut LoadOutcome,
     dotted: &str,
     value: &toml::Value,
@@ -782,8 +862,11 @@ fn hold_tree_if_awaited(
     if !awaits_plugin(registry, dotted) {
         return false;
     }
+    if project_refuses(registry, source, out, dotted) {
+        return true;
+    }
     match toml_to_config_value(value) {
-        Ok(tree) => registry.hold_tree(dotted, tree, crate::registry::HeldSource::ConfigFile),
+        Ok(tree) => registry.hold_tree(dotted, tree, source.held),
         Err(_) if !report => {}
         Err(err) => out.messages.push(LoadMessage {
             level: LoadMessageLevel::Warning,
@@ -1639,6 +1722,69 @@ mod tests {
         assert_eq!(string_of(&r, "org.directory").as_deref(), Some("~/notes"));
     }
 
+    /// D1: a project's config names `org.directory`, which a plugin's write
+    /// grant follows. Held while org has not loaded; once the host refuses it
+    /// from the project (computing org's grant), the project value is neither
+    /// read for the grant nor applied, and the user's `lattice.toml` value,
+    /// held beside it rather than overwritten, is what org gets.
+    #[test]
+    fn a_project_config_cannot_set_an_option_a_grant_follows() {
+        let r = registry_with_options();
+        let user = write_temp("d1-user", "[org]\ndirectory = \"~/notes\"\n");
+        let project = write_temp("d1-project", "[org]\ndirectory = \"/\"\nother = \"kept\"\n");
+        load_file(&r, &user, &[]);
+        let out = load_project_file(&r, &project, &[]);
+        assert!(
+            out.messages.is_empty(),
+            "nothing refused yet: {:?}",
+            out.messages
+        );
+
+        r.refuse_from_project("org.directory");
+        assert_eq!(
+            r.held_value("org.directory").as_deref(),
+            Some("~/notes"),
+            "the grant reads the user's value, not the project's"
+        );
+        register_plugin_string(&r, "org.directory", "~/org");
+        register_plugin_string(&r, "org.other", "default");
+        assert_eq!(string_of(&r, "org.directory").as_deref(), Some("~/notes"));
+        assert_eq!(
+            string_of(&r, "org.other").as_deref(),
+            Some("kept"),
+            "an ordinary option from the project still applies"
+        );
+
+        // Read again with org loaded: refused at the key, with a message.
+        let out = load_project_file(&r, &project, &[]);
+        let refused: Vec<_> = out
+            .messages
+            .iter()
+            .filter(|m| m.body.contains("refused"))
+            .collect();
+        assert_eq!(refused.len(), 1, "{:?}", out.messages);
+        assert_eq!(refused[0].option.as_deref(), Some("org.directory"));
+        assert_eq!(string_of(&r, "org.directory").as_deref(), Some("~/notes"));
+    }
+
+    /// D1, no user value: the project's is dropped and the option keeps its
+    /// default. A list option a process grant follows, held as a tree.
+    #[test]
+    fn a_project_config_cannot_name_a_program_a_plugin_may_run() {
+        let r = registry_with_options();
+        let project = write_temp(
+            "d1-languages",
+            "[org.babel]\nlanguages = [\"evil\"]\nenabled = true\n",
+        );
+        load_project_file(&r, &project, &[]);
+        r.refuse_from_project("org.babel.languages");
+        r.refuse_from_project("org.babel.enabled");
+        assert_eq!(r.held_config_value("org.babel.languages"), None);
+        assert_eq!(r.held_value("org.babel.enabled"), None);
+        register_plugin_string(&r, "org.babel.enabled", "false");
+        assert_eq!(string_of(&r, "org.babel.enabled").as_deref(), Some("false"));
+    }
+
     /// What a plugin's structured option is registered as: a `ConfigValue`
     /// with the schema it declared (`config_host.rs`).
     fn register_plugin_structured(r: &ConfigRegistry, name: &str, schema: crate::ConfigSchema) {
@@ -1854,6 +2000,34 @@ mod tests {
 
         r.clear_held(HeldSource::ConfigFile);
         assert_eq!(r.held_value("org.directory"), None);
+    }
+
+    /// OB.1: a grant can follow a list, so the held value it reads before the
+    /// option registers must keep the list whole; text stays a string.
+    #[test]
+    fn held_config_value_keeps_a_list_whole_and_a_scalar_as_a_string() {
+        use crate::ConfigValue;
+        use crate::registry::HeldSource;
+        let r = registry_with_options();
+        let list = ConfigValue::List(vec![
+            ConfigValue::Str("~/a".into()),
+            ConfigValue::Str("~/b".into()),
+        ]);
+        r.hold_tree(
+            "org.babel.tangle-directories",
+            list.clone(),
+            HeldSource::ConfigFile,
+        );
+        r.hold("org.directory", "~/notes", HeldSource::ConfigFile);
+        assert_eq!(
+            r.held_config_value("org.babel.tangle-directories"),
+            Some(list)
+        );
+        assert_eq!(
+            r.held_config_value("org.directory"),
+            Some(ConfigValue::Str("~/notes".into()))
+        );
+        assert_eq!(r.held_config_value("org.nothing"), None);
     }
 
     #[test]

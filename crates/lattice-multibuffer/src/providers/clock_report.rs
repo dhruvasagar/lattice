@@ -886,6 +886,12 @@ pub fn register_clock_report_actions(registry: &mut lattice_grammar::CommandRegi
             args_schema: vec![],
         },
     );
+    // OB.3a: opened to plugins. Org's agenda view-dispatch (`gD`) offers the
+    // report as a row naming exactly this action, rather than declaring a
+    // second toggle for the one switch (OA.16). It flips a view mode on the
+    // buffer the user is in and nothing else, so a plugin naming it reaches
+    // no further than the user's `cr` does. Closed, the row was dropped.
+    registry.allow_plugin_invocation(TOGGLE_ACTION);
 }
 
 /// The inclusive epoch-day range a fresh report covers: today.
@@ -942,6 +948,16 @@ mod mode_tests {
             !ScanViewClockReportMode::mode_id().as_str().contains("org"),
             "the host does not name a generic mechanism after one plugin"
         );
+    }
+
+    /// A plugin's menu may name the toggle: org's agenda `gD` row does, and
+    /// a closed native is dropped from a plugin's menu (OB.3a).
+    #[test]
+    fn the_toggle_action_is_open_to_plugins() {
+        let mut reg = lattice_grammar::CommandRegistry::new();
+        register_clock_report_actions(&mut reg);
+        let spec = reg.lookup_by_name(TOGGLE_ACTION).expect("registered");
+        assert!(spec.plugin_may_invoke());
     }
 
     /// `cr`'s target flips THIS mode. A toggle that named some other mode — or

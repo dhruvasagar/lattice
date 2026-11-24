@@ -200,20 +200,19 @@ struct LoadedRecord {
     /// PL8.H.1: live health — `Healthy` at load, flipped to `Quarantined` by the
     /// `Event::PluginCrashed` subscription ([`PluginLoader::subscribe_health`]).
     health: PluginHealth,
-    /// PM.3: the mode this plugin enables by default (from its manifest), gated by
-    /// `<id>.enabled`. Kept so the `OptionChanged` subscription
-    /// ([`PluginLoader::subscribe_mode_gates`]) can map a changed `<id>.enabled`
-    /// back to the modes to (de)activate. Empty ⇒ no default mode.
-    default_modes: Vec<String>,
     /// PM.8a: where the plugin came from (its `.source` marker at load time).
     source: crate::source_record::SourceRecord,
     /// PMF.4: the manifest it loaded from, so a change to an option one of its
-    /// grants follows can be re-resolved without re-reading the plugin.
+    /// grants follows can be re-resolved without re-reading the plugin — and,
+    /// for PM.3 / OB.3b, so a changed `<id>.enabled` or `mode_gates` option maps
+    /// back to the default modes to (de)activate.
     manifest: lattice_plugin_host::PluginManifest,
     /// PMF.3/PMF.4: how its option-bound grants resolved at load — compared
     /// against a fresh resolution when such an option changes, and shown in
     /// `:plugins` (PMF.6).
     option_bound: Vec<lattice_plugin_host::capability::OptionBoundGrant>,
+    /// OB.2: the same for its option-bound process grants.
+    spawn_bound: Vec<lattice_plugin_host::capability::SpawnBoundGrant>,
 }
 
 /// PM.8b: what a build for one plugin is doing right now.
@@ -760,6 +759,11 @@ pub struct WiredSeams {
     /// LH.0.5: `output-*` refuses every call on a host with no output store,
     /// and a plugin's progress buffer then never gains a line.
     pub plugin_output: bool,
+    /// OB.3: [`PluginHost::effect_sink_wired`].
+    pub effect_sink: bool,
+    /// OB.3c: [`PluginHost::active_modes_query_wired`]. Unwired, every
+    /// `buffer-text` is `none`, and a babel result never finds its block.
+    pub active_modes: bool,
 }
 
 impl WiredSeams {
@@ -792,6 +796,8 @@ impl WiredSeams {
             && self.buffer_store
             && self.language_servers
             && self.plugin_output
+            && self.effect_sink
+            && self.active_modes
     }
 }
 
@@ -1059,6 +1065,12 @@ impl PluginLoader {
         if let Some(registry) = &services.config_registry {
             host.set_config_registry(Arc::clone(registry));
         }
+        // OB.3a: and the command registry, for the command gate — the same
+        // constructor for the same reason. Unwired, a plugin can name no
+        // command at all.
+        if let Some(commands) = &services.command_registry {
+            host.set_command_registry(Arc::clone(commands));
+        }
         // RF.2e: the same reasoning for buffer-local reads — every store, and
         // the test harnesses that build through this constructor too.
         if let Some(bus) = &services.bus {
@@ -1122,6 +1134,8 @@ impl PluginLoader {
             buffer_store: self.host.buffer_store_wired(),
             language_servers: self.host.language_server_registrar_wired(),
             plugin_output: self.host.plugin_output_wired(),
+            effect_sink: self.host.effect_sink_wired(),
+            active_modes: self.host.active_modes_query_wired(),
         }
     }
 
@@ -1297,10 +1311,10 @@ impl PluginLoader {
             granted,
             denied,
             health: PluginHealth::Healthy,
-            default_modes: manifest.default_modes.clone(),
             source: plugin.source.clone(),
             manifest: manifest.clone(),
             option_bound: outcome.option_bound.clone(),
+            spawn_bound: outcome.spawn_bound.clone(),
         };
         // EVERY host id this load issued, in DRAIN order (see the sort below —
         // no longer the order `provides` lists them in).
@@ -1570,7 +1584,7 @@ impl PluginLoader {
         // (auto-pair on out of the box), user-overridable via `:set
         // <id>.enabled=false`. Subsequent changes are handled by
         // `subscribe_mode_gates`.
-        self.apply_default_mode_gate(&manifest.id, &manifest.default_modes);
+        self.apply_default_mode_gate(manifest);
         // PMF.4: the plugin has registered its options by now; a grant default
         // that disagrees with the option's own default is a plugin bug the user
         // would otherwise meet as a refusal.
@@ -1583,7 +1597,7 @@ impl PluginLoader {
         // moved is announced through `OptionChanged`, which
         // `subscribe_grant_options` turns into a reload — rather than
         // reloading from inside this load.
-        self.announce_moved_grants(manifest, tier, &outcome.option_bound);
+        self.announce_moved_grants(manifest, tier, &outcome.option_bound, &outcome.spawn_bound);
         // LA.1: the mode/language CATALOG changed. Separate from `PluginLoaded`
         // above because the subscriber is different and much more expensive —
         // it re-resolves the major mode of every open buffer
@@ -1656,8 +1670,11 @@ impl PluginLoader {
     /// `default_mode`, then request the mode's enablement to match the option's
     /// current value. A no-op when the plugin declares no default mode, or when no
     /// config registry / bus is wired.
-    fn apply_default_mode_gate(&self, plugin_id: &str, default_modes: &[String]) {
-        if default_modes.is_empty() {
+    ///
+    /// OB.3b: a mode the manifest names in `mode_gates` also needs its own
+    /// option true; that option is registered here too, if the plugin has not.
+    fn apply_default_mode_gate(&self, manifest: &lattice_plugin_host::PluginManifest) {
+        if manifest.default_modes.is_empty() {
             return;
         }
         let (Some(registry), Some(bus)) =
@@ -1665,30 +1682,60 @@ impl PluginLoader {
         else {
             return;
         };
-        let option = Self::enabled_option_name(plugin_id);
         // Idempotent: a re-load (or a plugin that declared the option itself)
         // leaves the existing value untouched; only the first load registers it.
         lattice_plugin_host::config_host::register_plugin_option(
             registry,
-            &option,
+            &Self::enabled_option_name(&manifest.id),
             lattice_plugin_host::config_host::PluginOptionKind::Boolean,
             "true",
             "Enable this plugin's default mode.",
         );
-        let enabled = registry
-            .lookup(&option)
-            .map(|opt| opt.get_formatted() == "true")
-            .unwrap_or(true);
+        for (mode, option) in &manifest.mode_gates {
+            lattice_plugin_host::config_host::register_plugin_option(
+                registry,
+                option,
+                lattice_plugin_host::config_host::PluginOptionKind::Boolean,
+                "true",
+                &format!("Enable `{mode}`, while `{}.enabled` is on.", manifest.id),
+            );
+        }
         // One gate, N modes (OC.1a). `<id>.enabled` is the PLUGIN's switch, so
         // a plugin with two on-by-default modes gets one option rather than
         // one per mode — the user is turning org on or off, not curating its
-        // internals.
-        for mode in default_modes {
+        // internals. A mode that is a separable feature says so in
+        // `mode_gates` (OB.3b) and gets a second, narrower switch.
+        let read = |option: &str| Self::option_is_on(registry, option);
+        for mode in &manifest.default_modes {
             bus.publish(lattice_protocol::Event::ModeEnablementRequested {
                 mode: mode.clone(),
-                enabled,
+                enabled: Self::mode_is_on(manifest, mode, &read),
             });
         }
+    }
+
+    /// A boolean option's value, `true` when it is missing: a gate the
+    /// registry does not hold has not been turned off.
+    fn option_is_on(registry: &ConfigRegistry, option: &str) -> bool {
+        registry
+            .lookup(option)
+            .map(|opt| opt.get_formatted() == "true")
+            .unwrap_or(true)
+    }
+
+    /// Whether a default `mode` of `manifest` should be enabled: `<id>.enabled`
+    /// and, when `mode_gates` names one, the mode's own option (OB.3b).
+    fn mode_is_on(
+        manifest: &lattice_plugin_host::PluginManifest,
+        mode: &str,
+        read: &dyn Fn(&str) -> bool,
+    ) -> bool {
+        read(&Self::enabled_option_name(&manifest.id))
+            && manifest
+                .mode_gates
+                .iter()
+                .filter(|(gated, _)| gated == mode)
+                .all(|(_, option)| read(option))
     }
 
     /// PM.7/PM.8 follow-up: honour a `require`'s `enable-mode` sugar.
@@ -1902,11 +1949,6 @@ impl PluginLoader {
         });
     }
 
-    /// PM.3: react to `<id>.enabled` changes — the config gate for a plugin's
-    /// default mode. On a `:set <id>.enabled=<bool>` (an `OptionChanged`), map the
-    /// option back to the loaded plugin's `default_mode` and request the mode's
-    /// enablement to match, so the toggle activates / deactivates it live. Mirrors
-    /// [`Self::subscribe_health`]; a no-op when no bus/runtime was wired.
     /// PMF.4: warn when an option-bound grant's default (`{org.directory|~/org}`)
     /// disagrees with the default the plugin registered for that option.
     ///
@@ -1932,15 +1974,19 @@ impl PluginLoader {
                 );
                 continue;
             };
-            let registered = std::path::PathBuf::from(lattice_core::home::expand_tilde(
-                registered.default_formatted(),
-            ));
-            if op.default.as_ref() != Some(&registered) && !registered.as_os_str().is_empty() {
+            // An option with no default leaves the template's in force, which
+            // is the template's purpose; only a default that NAMES directories
+            // can disagree with it.
+            let registered =
+                lattice_plugin_host::capability::registered_default_paths(registered.as_ref());
+            if !registered.is_empty()
+                && op.default.iter().cloned().collect::<Vec<_>>() != registered
+            {
                 tracing::warn!(
                     plugin = %manifest.id,
                     option = %op.option,
                     grant_default = ?op.default,
-                    option_default = %registered.display(),
+                    option_default = ?registered,
                     "the manifest grants a different default directory than the option uses"
                 );
             }
@@ -1965,22 +2011,22 @@ impl PluginLoader {
         manifest: &lattice_plugin_host::PluginManifest,
         tier: TrustTier,
         at_load: &[lattice_plugin_host::capability::OptionBoundGrant],
+        spawn_at_load: &[lattice_plugin_host::capability::SpawnBoundGrant],
     ) {
         let Some(bus) = self.env.bus.as_ref() else {
             return;
         };
-        let now = self.host.grant_for(manifest, tier).option_bound;
-        for (then, now) in at_load.iter().zip(now.iter()) {
-            if then.path != now.path {
-                let new = now
-                    .path
-                    .as_ref()
-                    .map(|p| p.display().to_string())
-                    .unwrap_or_default();
+        let now = self.host.grant_for(manifest, tier);
+        for (name, old, new) in moved_grant_options(at_load, &now.option_bound) {
+            bus.publish(Event::OptionChanged { name, old, new });
+        }
+        // OB.2: a process grant that moved is a reason to reload as well.
+        for (then, now) in spawn_at_load.iter().zip(&now.spawn_bound) {
+            if then.commands != now.commands {
                 bus.publish(Event::OptionChanged {
                     name: now.option.clone(),
-                    old: then.path.as_ref().map(|p| p.display().to_string()),
-                    new,
+                    old: (!then.commands.is_empty()).then(|| then.commands.join(",")),
+                    new: now.commands.join(","),
                 });
             }
         }
@@ -2015,12 +2061,16 @@ impl PluginLoader {
                         .expect("plugin-loader loaded-set mutex poisoned");
                     loaded
                         .iter()
-                        .filter(|r| r.option_bound.iter().any(|g| g.option == name))
+                        .filter(|r| {
+                            r.option_bound.iter().any(|g| g.option == name)
+                                || r.spawn_bound.iter().any(|g| g.option == name)
+                        })
                         .map(|r| (r.name.clone(), r.tier, r.manifest.clone()))
                         .collect()
                 };
                 for (plugin, tier, manifest) in affected {
-                    let fresh = loader.host.grant_for(&manifest, tier).option_bound;
+                    let fresh_outcome = loader.host.grant_for(&manifest, tier);
+                    let (fresh, fresh_spawn) = (fresh_outcome.option_bound, fresh_outcome.spawn_bound);
                     let changed = {
                         let mut loaded = loader
                             .loaded
@@ -2034,9 +2084,11 @@ impl PluginLoader {
                                 .map(|g| (g.option.clone(), g.path.clone(), g.write))
                                 .collect::<Vec<_>>()
                         };
-                        let changed = paths(&record.option_bound) != paths(&fresh);
+                        let changed = paths(&record.option_bound) != paths(&fresh)
+                            || record.spawn_bound != fresh_spawn;
                         if !changed {
                             record.option_bound = fresh;
+                            record.spawn_bound = fresh_spawn;
                         }
                         changed
                     };
@@ -2056,6 +2108,14 @@ impl PluginLoader {
         });
     }
 
+    /// PM.3: react to `<id>.enabled` changes — the config gate for a plugin's
+    /// default mode. On a `:set <id>.enabled=<bool>` (an `OptionChanged`), map the
+    /// option back to the loaded plugin's default modes and request the mode's
+    /// enablement to match, so the toggle activates / deactivates it live. Mirrors
+    /// [`Self::subscribe_health`]; a no-op when no bus/runtime was wired.
+    ///
+    /// OB.3b: a `mode_gates` option is followed the same way, and every request
+    /// is computed from both switches.
     pub fn subscribe_mode_gates(self: &Arc<Self>) {
         let (Some(bus), Some(runtime)) = (self.env.bus.as_ref(), self.env.runtime.as_ref()) else {
             return;
@@ -2072,27 +2132,54 @@ impl PluginLoader {
                 let Event::OptionChanged { name, new, .. } = event else {
                     continue;
                 };
-                let Some(plugin_id) = name.strip_suffix(".enabled") else {
+                if !name.ends_with(".enabled") {
                     continue;
-                };
+                }
                 let Some(loader) = weak.upgrade() else { break };
-                // Map `<id>.enabled` → the loaded plugin's default modes.
-                let modes = {
+                // `<id>.enabled` → every default mode of that plugin; an
+                // OB.3b gate option → the modes it gates. Each is recomputed
+                // from BOTH switches, reading the changed one from the event
+                // (the registry may not have caught up with it) and the other
+                // from the registry.
+                let manifests: Vec<lattice_plugin_host::PluginManifest> = {
                     let loaded = loader
                         .loaded
                         .lock()
                         .expect("plugin-loader loaded-set mutex poisoned");
                     loaded
                         .iter()
-                        .find(|r| r.name == plugin_id)
-                        .map(|r| r.default_modes.clone())
-                        .unwrap_or_default()
+                        .filter(|r| {
+                            name == Self::enabled_option_name(&r.name)
+                                || r.manifest.mode_gates.iter().any(|(_, o)| *o == name)
+                        })
+                        .map(|r| r.manifest.clone())
+                        .collect()
                 };
-                for mode in modes {
-                    bus.publish(lattice_protocol::Event::ModeEnablementRequested {
-                        mode,
-                        enabled: new == "true",
-                    });
+                let registry = loader.env.config_registry.clone();
+                let read = |option: &str| {
+                    if option == name {
+                        new == "true"
+                    } else {
+                        registry
+                            .as_deref()
+                            .is_none_or(|r| Self::option_is_on(r, option))
+                    }
+                };
+                for manifest in &manifests {
+                    let plugin_switch = name == Self::enabled_option_name(&manifest.id);
+                    for mode in &manifest.default_modes {
+                        let gated_here = manifest
+                            .mode_gates
+                            .iter()
+                            .any(|(m, o)| m == mode && *o == name);
+                        if !plugin_switch && !gated_here {
+                            continue;
+                        }
+                        bus.publish(lattice_protocol::Event::ModeEnablementRequested {
+                            mode: mode.clone(),
+                            enabled: Self::mode_is_on(manifest, mode, &read),
+                        });
+                    }
                 }
             }
         });
@@ -4182,6 +4269,10 @@ impl PluginLoader {
         // command registry (load → clone → register → store), mirroring
         // `drain_grammar` above.
         if !mode_ids.is_empty() {
+            // D2: these carry the modes instance's id, not the grammar
+            // instance's, so attribute it too, or the plugin's own menus
+            // could not name its own mode toggles.
+            self.host.attribute_commands(id, manifest);
             let mut next_cmds = (**commands.load()).clone();
             for mode in &mode_ids {
                 let name = mode.to_string();
@@ -5556,6 +5647,94 @@ mod keyed_builds {
         assert_eq!(
             report.summary(BulkOp::Rebuild.past()),
             "a bulk plugin operation is already running"
+        );
+    }
+}
+
+/// PMF.4 / OB.1: the options whose resolved grant differs between `then` and
+/// `now`, as `(option, old, new)` with each side's paths comma-joined (`None`
+/// when the option granted nothing before).
+///
+/// Compared per OPTION, over all of its entries: a list-valued grant resolves
+/// to one entry per path, so pairing entries one-for-one would miss a list
+/// that gained an entry while keeping every entry it had.
+fn moved_grant_options(
+    then: &[lattice_plugin_host::capability::OptionBoundGrant],
+    now: &[lattice_plugin_host::capability::OptionBoundGrant],
+) -> Vec<(String, Option<String>, String)> {
+    let paths = |grants: &[lattice_plugin_host::capability::OptionBoundGrant], option: &str| {
+        grants
+            .iter()
+            .filter(|g| g.option == option)
+            .filter_map(|g| g.path.as_ref().map(|p| p.display().to_string()))
+            .collect::<Vec<_>>()
+    };
+    let mut options: Vec<&str> = Vec::new();
+    for g in then.iter().chain(now) {
+        if !options.contains(&g.option.as_str()) {
+            options.push(&g.option);
+        }
+    }
+    options
+        .into_iter()
+        .filter_map(|option| {
+            let (old, new) = (paths(then, option), paths(now, option));
+            (old != new).then(|| {
+                let old = (!old.is_empty()).then(|| old.join(","));
+                (option.to_string(), old, new.join(","))
+            })
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod moved_grant_tests {
+    #![allow(clippy::unwrap_used)]
+    use super::moved_grant_options;
+    use lattice_plugin_host::capability::OptionBoundGrant;
+    use std::path::PathBuf;
+
+    fn g(option: &str, path: Option<&str>) -> OptionBoundGrant {
+        OptionBoundGrant {
+            option: option.to_string(),
+            path: path.map(PathBuf::from),
+            from_default: false,
+            write: true,
+        }
+    }
+
+    /// OB.1: a list-valued grant that gains an entry has moved, though every
+    /// entry it had before is unchanged — pairing entries one-for-one missed it.
+    #[test]
+    fn a_list_that_gains_an_entry_has_moved() {
+        let then = [g("org.t", Some("/a"))];
+        let now = [g("org.t", Some("/a")), g("org.t", Some("/c"))];
+        let moved = moved_grant_options(&then, &now);
+        assert_eq!(moved.len(), 1, "{moved:?}");
+        assert_eq!(moved[0].0, "org.t");
+        assert_eq!(moved[0].1.as_deref(), Some("/a"));
+        assert_eq!(moved[0].2, "/a,/c");
+    }
+
+    #[test]
+    fn a_list_that_loses_an_entry_has_moved_and_an_unchanged_one_has_not() {
+        let then = [
+            g("org.t", Some("/a")),
+            g("org.t", Some("/b")),
+            g("org.d", Some("/o")),
+        ];
+        let now = [g("org.t", Some("/a")), g("org.d", Some("/o"))];
+        let moved = moved_grant_options(&then, &now);
+        assert_eq!(moved.len(), 1, "org.d did not move: {moved:?}");
+        assert_eq!(moved[0].0, "org.t");
+    }
+
+    #[test]
+    fn a_scalar_that_becomes_empty_has_moved_to_nothing() {
+        let moved = moved_grant_options(&[g("org.d", Some("/o"))], &[g("org.d", None)]);
+        assert_eq!(
+            moved,
+            vec![("org.d".to_string(), Some("/o".to_string()), String::new())]
         );
     }
 }

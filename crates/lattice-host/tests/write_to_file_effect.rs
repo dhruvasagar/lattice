@@ -725,3 +725,93 @@ fn switching_to_a_written_target_gives_it_its_major() {
          never learned what it was"
     );
 }
+
+fn whole(path: &std::path::Path, text: &str, save: bool) -> Effect {
+    Effect::WriteToFile {
+        path: path.to_path_buf(),
+        anchor: FileAnchor::Whole,
+        text: text.to_string(),
+        cut: None,
+        create_parents: false,
+        save,
+    }
+}
+
+/// OB.9: `whole` replaces everything as ONE edit, so a single `u` in the
+/// target brings back what was there — babel's `:tangle` into a file the user
+/// has open.
+#[test]
+fn whole_replaces_an_open_buffer_as_one_undo_step() {
+    let dir = tmp("whole-undo");
+    let target = dir.join("out.sh");
+    std::fs::write(&target, "old one\nold two\n").unwrap();
+
+    let mut editor = boot("x\n");
+    editor.do_edit(Some(target.clone()), false);
+    let opened = editor.document_buffer_id;
+    editor.handle_effect(whole(&target, "new\n", false));
+    assert_eq!(target_text(&editor, &target), "new\n");
+
+    let _ = editor.activate_buffer(opened);
+    editor.undo_blocking().expect("undo");
+    assert_eq!(
+        target_text(&editor, &target),
+        "old one\nold two\n",
+        "one undo, not a delete and an insert"
+    );
+}
+
+#[test]
+fn whole_creates_an_absent_file() {
+    let dir = tmp("whole-create");
+    let target = dir.join("new.sh");
+    let mut editor = boot("x\n");
+    editor.handle_effect(whole(&target, "#!/bin/sh\necho hi\n", false));
+    assert_eq!(target_text(&editor, &target), "#!/bin/sh\necho hi\n");
+}
+
+/// A target with no final newline gets none added: `whole` writes exactly the
+/// text, unlike an append, which supplies a line break.
+#[test]
+fn whole_writes_exactly_the_text_over_a_file_with_no_final_newline() {
+    let dir = tmp("whole-nonl");
+    let target = dir.join("out.txt");
+    std::fs::write(&target, "a\nb").unwrap();
+    let mut editor = boot("x\n");
+    editor.handle_effect(whole(&target, "c", false));
+    assert_eq!(target_text(&editor, &target), "c");
+}
+
+#[test]
+fn whole_with_save_reaches_disk() {
+    let dir = tmp("whole-save");
+    let target = dir.join("out.sh");
+    std::fs::write(&target, "old\n").unwrap();
+    let mut editor = boot("x\n");
+    editor.handle_effect(whole(&target, "new\n", true));
+    assert_eq!(on_disk(&target), "new\n");
+    assert!(!target_is_dirty(&editor, &target));
+}
+
+/// Writing ten tangle targets must not put ten buffers in `:ls`: an unopened
+/// target is opened `nobuflisted`. One the user already had open keeps its
+/// listing.
+#[test]
+fn an_unopened_target_is_not_listed() {
+    let dir = tmp("whole-unlisted");
+    let fresh = dir.join("fresh.sh");
+    let open = dir.join("open.sh");
+    std::fs::write(&open, "x\n").unwrap();
+
+    let mut editor = boot("x\n");
+    editor.do_edit(Some(open.clone()), false);
+    editor.handle_effect(whole(&fresh, "a\n", false));
+    editor.handle_effect(whole(&open, "b\n", false));
+
+    let listed = |p: &std::path::Path| {
+        let id = editor.find_document_by_path(p).expect("a buffer");
+        editor.buffers.flags_of(id).expect("flags").listed
+    };
+    assert!(!listed(&fresh), "opened by the write: unlisted");
+    assert!(listed(&open), "the user's own buffer keeps its listing");
+}

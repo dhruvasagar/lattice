@@ -27,8 +27,50 @@ does — a bounded `walk` covers the fuzzy-finder.
 ## Uses
 
 - [`position`](types.md#record-position) from [`types`](types.md)
+- [`effect`](types.md#variant-effect) from [`types`](types.md)
 
-## Functions (32)
+## Functions (37)
+
+### `buffer-text`
+
+```wit
+buffer-text: func(buffer: u32) -> option<string>
+```
+
+OB.3c: the whole text of an open buffer **one of this plugin's own
+modes is active in** — as it is in the editor, unsaved edits included.
+
+For finishing work a mode started on its buffer from a seam with no
+`document` to read: a job's result arrives in `on-event`, possibly
+after the user has edited the buffer or moved to another one, and the
+plugin has to see the buffer as it is NOW to put the result in the
+right place. `buffer` is the `buffer-id` a `document` or
+`buffer-snapshot` reported when the work began.
+
+**Gated on the plugin's modes, not on a capability.** A buffer is
+readable while a mode this plugin registered is active on it — the
+buffer the plugin is already running in, which is the reach the user
+gave it by turning that mode on. Any other buffer is `none`, so a
+plugin cannot read what the user has open elsewhere by guessing ids.
+Only a mode that runs where something chose it counts: a `majors`
+mode, or a `manual` one. A `global` or `universal` mode is on in every
+buffer, so it grants no read.
+The mode set is the editor's as of its last publish: a buffer whose
+mode was turned off a moment ago may still read for that moment.
+
+`none` for a buffer that is closed, not this plugin's, or a host that
+wired no buffer store. One call, the whole text: a guest that wants
+lines splits it.
+
+**Example — Read back a buffer one of this plugin's modes runs in; `none` for any other** · [`crates/lattice-plugin-host/tests/fixtures/multiseam-guest/src/lib.rs`](../../../../crates/lattice-plugin-host/tests/fixtures/multiseam-guest/src/lib.rs)
+
+```rust
+let text = host_services::buffer_text(buffer).unwrap_or_else(|| "none".to_string());
+Ok(vec![Effect::Echo(EchoPayload {
+    level: EchoLevel::Info,
+    text,
+})])
+```
 
 ### `can-write-file`
 
@@ -120,6 +162,22 @@ Ok(vec![Effect::Echo(EchoPayload {
     level: EchoLevel::Info,
     text,
 })])
+```
+
+### `close-job-stdin`
+
+```wit
+close-job-stdin: func(id: u64) -> result<_, string>
+```
+
+End job `id`'s input, after anything already written: the process
+sees end of file. Later writes are `err`. The same `err` cases as
+`write-job-stdin`.
+
+**Example — End an interactive job's input, so a program that reads to end of file exits** · [`crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs`](../../../../crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs)
+
+```rust
+let closed = host_services::close_job_stdin(id);
 ```
 
 ### `data-dir`
@@ -563,6 +621,47 @@ let status = host_services::output_status(
 );
 ```
 
+### `post-effects`
+
+```wit
+post-effects: func(effects: list<effect>) -> result<_, string>
+```
+
+OB.3: hand the editor `effects` from a seam that cannot return them —
+the events seam's `on-event` and `on-wake`, which return nothing. The
+result of a job a plugin started (`spawn-process`, `http-download`)
+arrives there, and this is how that result becomes an edit, an echo or
+a buffer the user sees.
+
+The effects go through the editor's inbound path, which wakes it: they
+are applied **without a keypress**, in the order given, as one batch.
+They pass the same checks returned effects do — a `write-to-file`
+outside the plugin's `fs:write` grant is replaced by a warning naming
+the grant, exactly as it would be from a command. An `apply-edit`
+addresses its buffer by id and is dropped if that buffer has closed.
+
+A post carries only what writing a result needs: `apply-edit`,
+`write-to-file` (with no `cut`, which would be taken from whatever
+buffer has focus when the post lands), `track-range`, `untrack-range`,
+`open-synthetic-buffer` and `echo`. Anything else is replaced by a
+warning naming it, and the effects after it are dropped.
+
+Prefer returning effects where a seam can: an effect posted here lands
+after the current keystroke's, not inside it.
+
+`err` only when this seam has nowhere to post to (an editor that wired
+none) — the effects are then dropped, and the plugin is told.
+
+**Example — Turn a job's result into an edit from `on-event`, which returns nothing** · [`crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs`](../../../../crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs)
+
+```rust
+let outcome = match host_services::post_effects(&[effect]) {
+    Ok(()) => "post:ok".to_string(),
+    Err(e) => format!("post:err({e})"),
+};
+record(&outcome);
+```
+
 ### `read-file`
 
 ```wit
@@ -747,6 +846,29 @@ per `source-location.buffer` above. The `document` resource is no help
 either: it is the guest's OWN buffer, and the line in question is one
 the view does not compose.
 
+### `spawn-interactive`
+
+```wit
+spawn-interactive: func(command: string, args: list<string>, cwd: string) -> result<u64, string>
+```
+
+`spawn-process` with **stdin left open** (OB.14): the same signature,
+the same `proc:spawn` gate, the same job, its output and exit arriving
+as `job-output` and `job-finished`. The guest feeds the process with
+`write-job-stdin` and ends its input with `close-job-stdin`; a REPL kept
+alive across calls (babel's `:session`) is what it is for.
+
+Cancelling kills the process tree, as for `spawn-process`. Closing
+stdin is the polite way to end a program that exits at end of input.
+
+**Example — Start a program whose stdin stays open, and hear its output and exit** · [`crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs`](../../../../crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs)
+
+```rust
+events::subscribe(&kind_filter(EventKind::JobOutput), 10);
+events::subscribe(&kind_filter(EventKind::JobFinished), 10);
+let started = host_services::spawn_interactive(command, &args, "");
+```
+
 ### `spawn-process`
 
 ```wit
@@ -757,10 +879,13 @@ Run the program `command` with `args`, in `cwd` (`""` for the editor's
 own). **A job** (see `cancel-job`): returns its id; what the process
 writes arrives as `job-output`, and its exit as `job-finished`.
 
-**Gated on `proc:spawn`, which only a bundled plugin is ever granted.**
-The process is not sandboxed — it runs as the user, with the user's
-environment and reach — so this is full trust, and a user-installed
-plugin is refused here whatever its manifest asks for.
+**Gated on `proc:spawn`.** The process is not sandboxed — it runs as the
+user, with the user's environment and reach. The unbound form, any
+program, is granted only to a bundled plugin. The option-bound form,
+`proc:spawn:{<option>:<field>}` (OB.2), is granted at either tier and
+permits exactly the programs the user listed in that option, compared
+as written (`sh` is not `/bin/sh`); a program not listed is refused
+with an `err` naming the option to add it to.
 
 `command` is a program, found on `PATH` or named by path; `args` are
 passed to it as given. **No shell is involved**: nothing is split,
@@ -1023,6 +1148,33 @@ let outcome = match host_services::watch(target) {
     Err(e) => format!("watch:err({e})"),
 };
 record(&outcome);
+```
+
+### `write-job-stdin`
+
+```wit
+write-job-stdin: func(id: u64, data: list<u8>) -> result<_, string>
+```
+
+Queue `data` for the stdin of job `id`. Returns at once: a writer
+thread delivers it, so a process that is not reading never blocks the
+caller.
+
+`err` for a job that has finished, whose input was closed, that was
+started with `spawn-process`, that belongs to another plugin, or that
+never existed, all with one message, so another plugin's ids cannot be
+probed. Any instance of the spawning plugin may write, as for
+`cancel-job`. `ok` means queued, not read: a process that exits first
+never sees it.
+
+At most 4 MiB may wait, queued and not yet read, per job. A write that
+would pass that is `err` (naming how much is waiting) and queues
+nothing: the process is not keeping up, and what it reads makes room.
+
+**Example — Write to an interactive job's stdin; it is queued, never blocking** · [`crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs`](../../../../crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs)
+
+```rust
+let wrote = host_services::write_job_stdin(id, b"hello\n");
 ```
 
 ## Types (5)

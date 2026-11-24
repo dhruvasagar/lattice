@@ -1,4 +1,4 @@
-package lattice:plugin-host@0.5.0;
+package lattice:plugin-host@0.6.0;
 
 /// AT.5: tools a plugin offers to the LLM assistant.
 ///

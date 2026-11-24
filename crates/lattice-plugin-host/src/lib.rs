@@ -156,6 +156,7 @@ pub use download_host::{Hosts, Limits as DownloadLimits, download_to_file, fetch
 pub use llm_tools_task::{LlmToolsActor, LlmToolsClient};
 pub use manifest::{
     Capability, CapabilityParseError, ManifestError, OptionPath, PluginManifest, PluginSeam,
+    SpawnOption,
 };
 pub use picker_source::WasmPickerSource;
 pub use picker_task::{PickerActor, PickerClient};
@@ -1041,13 +1042,63 @@ pub struct GrantGuard {
     /// grant moved again, and the plugin reloaded forever (seen with org on
     /// every boot, 2026-10-19). Resolving an unregistered option to the value
     /// it last had ends that after one reload.
-    remembered: std::collections::HashMap<String, String>,
+    ///
+    /// OB.2: each value carries whether the USER wrote it (`true`) or it was
+    /// still the default the plugin registered (`false`). A process grant
+    /// follows only the first — otherwise a directory grant bound to the same
+    /// option would remember the plugin's default and launder it into a
+    /// program the plugin may run.
+    remembered: std::collections::HashMap<String, (lattice_config::ConfigValue, bool)>,
+    /// D2: which plugin (manifest id) each grammar instance belongs to, by the
+    /// host-issued id its commands carry (`SourceLayer::Plugin(id)`). Ids are
+    /// never reused, so an unloaded plugin's entry cannot misattribute.
+    command_owners: std::collections::HashMap<u32, String>,
+    /// D2: each plugin's `exported_commands`, by manifest id.
+    exported_commands: std::collections::HashMap<String, std::collections::HashSet<String>>,
 }
 
 /// Shared between the host and every plugin instance it creates.
 pub type GrantGuardHandle = Arc<std::sync::RwLock<GrantGuard>>;
 
+/// OB.3: where `post-effects` delivers. One call per post, carrying the
+/// already-authorised batch (an [`lattice_grammar::Effect::Many`] for more
+/// than one). The editor wires an inbound bus here; a test, a collector.
+pub type PluginEffectSinkHandle = Arc<dyn Fn(lattice_grammar::Effect) + Send + Sync>;
+
+/// OB.3c: mode id → the id of the plugin that registered it.
+///
+/// The mode registry keeps no provenance, and `buffer-text` needs exactly one
+/// fact it would have held: whether a mode active on a buffer is the
+/// caller's. Recorded only for a mode the registry ACCEPTED, so a plugin that
+/// declares another's id gains nothing — the registry refused the duplicate.
+pub type ModeOwnersHandle = Arc<std::sync::Mutex<std::collections::HashMap<String, String>>>;
+
+/// OB.3c: whether any of `active` was registered by `plugin` — the
+/// `buffer-text` gate, as a pure function so the rule is tested on its own.
+pub fn owns_an_active_mode(
+    owners: &std::collections::HashMap<String, String>,
+    plugin: &str,
+    active: &[lattice_mode::ModeId],
+) -> bool {
+    active
+        .iter()
+        .any(|m| owners.get(m.as_str()).is_some_and(|p| p == plugin))
+}
+
 impl PluginState {
+    /// OB.3a: the gate for what this plugin names — commands, options,
+    /// programs — built from the instance's own grant and the editor's
+    /// registries.
+    fn command_gate(&self) -> effect_authorizer::CommandGate {
+        effect_authorizer::CommandGate::new(
+            self.plugin_name.clone().unwrap_or_default(),
+            &self.grant,
+            self.command_registry.clone(),
+            self.grant_guard.clone(),
+            self.config_registry.clone(),
+        )
+    }
+
     /// PMF.15: is this instance the user's `init.rs`?
     fn is_config_authority(&self) -> bool {
         let guard = self
@@ -1063,6 +1114,29 @@ impl GrantGuard {
     /// PMF.6: `plugin`'s option-bound grants as last resolved.
     pub fn bound_for(&self, plugin: &str) -> Vec<crate::capability::OptionBoundGrant> {
         self.bound.get(plugin).cloned().unwrap_or_default()
+    }
+
+    /// D2: record that grammar instance `instance` is `manifest`'s, and what
+    /// it exports.
+    pub(crate) fn record_commands(&mut self, instance: u32, manifest: &PluginManifest) {
+        self.command_owners.insert(instance, manifest.id.clone());
+        self.exported_commands.insert(
+            manifest.id.clone(),
+            manifest.exported_commands.iter().cloned().collect(),
+        );
+    }
+
+    /// D2: may plugin `caller` name `command`, which grammar instance
+    /// `instance` registered? Its own, or one its owner exports. An instance
+    /// with no recorded owner is nobody's to call.
+    pub(crate) fn may_invoke(&self, instance: u32, caller: &str, command: &str) -> bool {
+        self.command_owners.get(&instance).is_some_and(|owner| {
+            owner == caller
+                || self
+                    .exported_commands
+                    .get(owner)
+                    .is_some_and(|exports| exports.contains(command))
+        })
     }
 
     fn refuses(&self, option: &str, writer: Option<&str>) -> bool {
@@ -1187,9 +1261,24 @@ struct PluginState {
     /// OA.30: the counter `refresh-decorations` bumps. `None` in a harness that
     /// wired no editor, where the call is a no-op.
     decoration_epoch: Option<lattice_mode::DecorationEpochHandle>,
+    /// OB.3: where `post-effects` sends what a plugin posts — the editor's
+    /// inbound path. `None` in a harness that wired no editor, where the call
+    /// refuses so the plugin knows its effects went nowhere.
+    effect_sink: Option<PluginEffectSinkHandle>,
+    /// OB.3a: the editor's commands, for the command gate
+    /// ([`effect_authorizer::CommandGate`]) — a plugin may name only one a
+    /// plugin registered or one opened to plugins. `None` in a harness that
+    /// wired no editor, where every command a plugin names is refused.
+    command_registry: Option<lattice_grammar::CommandRegistryHandle>,
     /// CD.6b: the buffers `clamp-position` measures. `None` in a harness that
     /// wired no editor, where every buffer reads as absent.
     buffers: Option<lattice_mode::BufferStoreHandle>,
+    /// OB.3c: which modes are active on a buffer, for `buffer-text`'s gate.
+    /// `None` in a harness that wired no editor, where every read is refused.
+    active_modes: Option<lattice_mode::ActiveModesQueryHandle>,
+    /// OB.3c: which plugin registered each mode, shared by every store of
+    /// every plugin ([`PluginHost::mode_owners`]).
+    mode_owners: ModeOwnersHandle,
     /// PH7.8c: events emitted while `register-events` is still running, held
     /// until this plugin's subscriptions are on the bus.
     ///
@@ -1431,6 +1520,32 @@ impl crate::lattice::plugin_host::host_services::Host for PluginState {
             .source_line(lattice_core::BufferId(buffer), line)
     }
 
+    /// OB.3c `buffer-text`: the buffer's text, if one of this plugin's modes is
+    /// active on it. Every refusal is `none` — the WIT's contract — and logged
+    /// at debug, since a plugin asking about a buffer it has left is ordinary.
+    fn buffer_text(&mut self, buffer: u32) -> Option<String> {
+        let id = lattice_core::BufferId(buffer);
+        let plugin = self.plugin_name.as_deref()?;
+        let active = self.active_modes.as_ref()?.active_on(id);
+        let owned = match self.mode_owners.lock() {
+            Ok(owners) => owns_an_active_mode(&owners, plugin, &active),
+            Err(_) => {
+                tracing::warn!("buffer-text: mode-owner table poisoned; refusing");
+                false
+            }
+        };
+        if !owned {
+            tracing::debug!(
+                plugin,
+                buffer,
+                "buffer-text refused: none of this plugin's modes is active there"
+            );
+            return None;
+        }
+        let handle = self.buffers.as_ref()?.handle_for(id)?;
+        Some(handle.snapshot().buffer.as_string())
+    }
+
     /// OA.27 `view-args`: forwards to the wired resolver.
     ///
     /// An EMPTY LIST rather than an `option` on the wire, and the WIT says why:
@@ -1538,6 +1653,42 @@ impl crate::lattice::plugin_host::host_services::Host for PluginState {
                 );
             }
         }
+    }
+
+    /// OB.3 `post-effects`: effects from a seam that cannot return them,
+    /// converted and authorised exactly as returned ones are
+    /// ([`grammar_trampoline::effect_from_guest`]), then handed to the
+    /// editor's sink as one batch.
+    fn post_effects(
+        &mut self,
+        effects: Vec<crate::lattice::plugin_host::types::Effect>,
+    ) -> Result<(), String> {
+        let Some(sink) = self.effect_sink.clone() else {
+            tracing::warn!(
+                plugin = ?self.plugin_name,
+                "post-effects refused: no effect sink wired on this seam"
+            );
+            return Err("post-effects: this editor wired nowhere to post effects to".to_string());
+        };
+        let plugin = self.plugin_name.clone().unwrap_or_default();
+        let bound = self
+            .grant_guard
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .bound_for(&plugin);
+        let authorizer = std::sync::Arc::new(
+            EffectAuthorizer::new(&self.grant, plugin.clone())
+                .with_option_bound(bound)
+                .with_range_space(self.range_space)
+                .with_command_gate(self.command_gate()),
+        );
+        let native = grammar_trampoline::effect_from_guest(&authorizer, effects).map_err(|e| {
+            tracing::warn!(plugin = %plugin, error = %e, "post-effects: unreadable effect");
+            format!("post-effects: {e}")
+        })?;
+        // OB.3a: and then held to what a background post may carry.
+        sink(authorizer.restrict_posted(native));
+        Ok(())
     }
 
     /// OC.4 `local-utc-offset-seconds`: the host's current offset from UTC.
@@ -1683,8 +1834,56 @@ impl crate::lattice::plugin_host::host_services::Host for PluginState {
             &command,
             args,
             &cwd,
+            false,
         )?;
         Ok(self.launch_job(pending))
+    }
+
+    /// OB.14 `spawn-interactive`: `spawn-process` with stdin left open.
+    /// The same gate, the same job; only the pipe differs.
+    fn spawn_interactive(
+        &mut self,
+        command: String,
+        args: Vec<String>,
+        cwd: String,
+    ) -> Result<u64, String> {
+        let Some(ctx) = &self.event_emit else {
+            tracing::warn!(
+                command = %command,
+                "spawn-interactive refused: plugin has no event bus wired on this seam"
+            );
+            return Err(format!(
+                "spawn denied: '{command}' — this seam has no event bus, so the outcome \
+                 could never be delivered"
+            ));
+        };
+        let pending = process_host::prepare(
+            &self.grant,
+            Arc::clone(&ctx.bus),
+            ctx.job_owner,
+            &command,
+            args,
+            &cwd,
+            true,
+        )?;
+        Ok(self.launch_job(pending))
+    }
+
+    /// OB.14 `write-job-stdin`. Owned by the plugin as `cancel-job` is: by
+    /// `job_owner`, so any instance of the spawning plugin may write.
+    fn write_job_stdin(&mut self, id: u64, data: Vec<u8>) -> Result<(), String> {
+        let Some(ctx) = &self.event_emit else {
+            return Err(process_host::no_input(id));
+        };
+        process_host::write_stdin(ctx.job_owner, id, data)
+    }
+
+    /// OB.14 `close-job-stdin`.
+    fn close_job_stdin(&mut self, id: u64) -> Result<(), String> {
+        let Some(ctx) = &self.event_emit else {
+            return Err(process_host::no_input(id));
+        };
+        process_host::close_stdin(ctx.job_owner, id)
     }
 
     /// LH.0.4 `register-server`. Gated on `proc:spawn`: registering a command
@@ -3321,7 +3520,7 @@ impl crate::config_host::bindings::lattice::plugin_host::config::Host for Plugin
             tracing::warn!(
                 option = %target,
                 plugin = ?self.plugin_name,
-                "set-option-value refused: `{target}` decides which files a plugin may access, \
+                "set-option-value refused: `{target}` decides what a plugin may access or run, \
                  so only your configuration (`:set`, lattice.toml, init.rs) can change it"
             );
             return false;
@@ -3455,7 +3654,7 @@ impl crate::config_host::bindings::lattice::plugin_host::config::Host for Plugin
             tracing::warn!(
                 option = %target,
                 plugin = ?self.plugin_name,
-                "set-option refused: `{target}` decides which files a plugin may access, \
+                "set-option refused: `{target}` decides what a plugin may access or run, \
                  so only your configuration (`lattice.toml`, `init.rs`, `:set`) can change it"
             );
             return false;
@@ -3659,7 +3858,23 @@ impl PluginState {
     /// Shared body of `enable-mode` / `disable-mode` (CI.4): publish the
     /// host-internal enablement request onto the plugin's bus (the same
     /// `event_emit` handle `emit-event` uses).
+    ///
+    /// Only the user's `init.rs` may ask (review, 2026-11-23). This is the
+    /// user-enablement path, and from any other plugin it was a way to turn
+    /// a mode on that the user had switched off (`org.babel.enabled =
+    /// false`, which the grant guard keeps a plugin from setting), or to
+    /// turn another plugin's mode off.
     fn request_mode_enablement(&mut self, mode: String, enabled: bool) {
+        if !self.is_config_authority() {
+            // `info!`: one-shot and user-actionable, as a refused option is.
+            tracing::info!(
+                plugin = ?self.plugin_name,
+                %mode,
+                enabled,
+                "enable-mode/disable-mode refused: only init.rs may turn modes on or off"
+            );
+            return;
+        }
         match &self.event_emit {
             Some(ctx) => ctx
                 .bus
@@ -3891,8 +4106,17 @@ pub struct PluginHost {
     view_args: std::sync::OnceLock<lattice_core::ViewArgsResolverHandle>,
     /// OA.30: the decoration-refresh counter, for `refresh-decorations`.
     decoration_epoch: std::sync::OnceLock<lattice_mode::DecorationEpochHandle>,
+    /// OB.3: see [`PluginHost::set_effect_sink`].
+    effect_sink: std::sync::OnceLock<PluginEffectSinkHandle>,
+    /// OB.3a: see [`PluginHost::set_command_registry`].
+    commands: std::sync::OnceLock<lattice_grammar::CommandRegistryHandle>,
     /// CD.6b: the buffer store, for `clamp-position`.
     buffers: std::sync::OnceLock<lattice_mode::BufferStoreHandle>,
+    /// OB.3c: see [`PluginHost::set_active_modes_query`].
+    active_modes: std::sync::OnceLock<lattice_mode::ActiveModesQueryHandle>,
+    /// OB.3c: mode id → the plugin that registered it, recorded by
+    /// `spawn_mode_plugin` for each mode the registry accepted.
+    mode_owners: ModeOwnersHandle,
     // LH.0.4: the editor's language-server registrar, when it has one. Set-once
     // through the shared `Arc`, like its neighbours.
     language_servers: std::sync::OnceLock<lattice_mode::LanguageServerRegistrarHandle>,
@@ -4376,7 +4600,11 @@ impl PluginHost {
             excerpt_source: std::sync::OnceLock::new(),
             view_args: std::sync::OnceLock::new(),
             decoration_epoch: std::sync::OnceLock::new(),
+            effect_sink: std::sync::OnceLock::new(),
+            commands: std::sync::OnceLock::new(),
             buffers: std::sync::OnceLock::new(),
+            active_modes: std::sync::OnceLock::new(),
+            mode_owners: ModeOwnersHandle::default(),
             language_servers: std::sync::OnceLock::new(),
             output: std::sync::OnceLock::new(),
             ui: std::sync::OnceLock::new(),
@@ -4615,6 +4843,48 @@ impl PluginHost {
         self.buffers.get().is_some()
     }
 
+    /// OB.3c: hand the host the editor's active-modes query, which gates
+    /// `buffer-text`. Unset, every `buffer-text` is `none`.
+    pub fn set_active_modes_query(&self, query: lattice_mode::ActiveModesQueryHandle) {
+        let _ = self.active_modes.set(query);
+    }
+
+    /// OB.3c: whether [`Self::set_active_modes_query`] ran.
+    pub fn active_modes_query_wired(&self) -> bool {
+        self.active_modes.get().is_some()
+    }
+
+    /// OB.3c: which plugin registered each mode — shared, so a caller can see
+    /// what `buffer-text` will check.
+    pub fn mode_owners(&self) -> ModeOwnersHandle {
+        self.mode_owners.clone()
+    }
+
+    /// OB.3: hand the host the editor's sink for `post-effects` — normally an
+    /// inbound bus, whose send wakes the editor so posted effects are applied
+    /// without a keypress.
+    ///
+    /// Idempotent — a second call is ignored, like [`set_tracer`](Self::set_tracer).
+    pub fn set_effect_sink(&self, sink: PluginEffectSinkHandle) {
+        let _ = self.effect_sink.set(sink);
+    }
+
+    /// OB.3a: hand the host the editor's command registry, so the command
+    /// gate can tell which commands a plugin may name. Unwired, every one is
+    /// refused.
+    ///
+    /// Idempotent — a second call is ignored, like [`set_tracer`](Self::set_tracer).
+    pub fn set_command_registry(&self, registry: lattice_grammar::CommandRegistryHandle) {
+        let _ = self.commands.set(registry);
+    }
+
+    /// OB.3: whether a sink was ever wired. Pinned at boot for
+    /// `view_args_wired`'s reason: unwired, every `post-effects` refuses and a
+    /// job's result never reaches the screen.
+    pub fn effect_sink_wired(&self) -> bool {
+        self.effect_sink.get().is_some()
+    }
+
     /// OA.30: hand the host the counter `refresh-decorations` bumps.
     ///
     /// Idempotent — a second call is ignored, like [`set_tracer`](Self::set_tracer).
@@ -4658,6 +4928,19 @@ impl PluginHost {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let next = owners.len() as u32;
         *owners.entry(name.to_string()).or_insert(next)
+    }
+
+    /// D2: attribute the commands registered under `instance` to `manifest`'s
+    /// plugin, with what it exports — what [`Self::instantiate_grammar_plugin`]
+    /// records for every grammar instance it creates. Public for a harness
+    /// that registers a plugin's commands itself, without its grammar seam;
+    /// host code, so trusted. Without it those commands have no owner, and
+    /// the command gate lets no plugin name them.
+    pub fn attribute_commands(&self, instance: PluginId, manifest: &PluginManifest) {
+        self.grant_guard
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .record_commands(instance.0, manifest);
     }
 
     /// Allocate the next host-issued [`PluginId`]. Monotonic and unique for the
@@ -4864,10 +5147,22 @@ impl PluginHost {
             // to reach the GRAMMAR store above all — a mark is toggled by a
             // chord, and the chord is what has to say the gutter changed.
             decoration_epoch: self.decoration_epoch.get().cloned(),
+            // OB.3: stamped for every store. The EVENTS store is the one that
+            // needs it — `on-event` returns nothing — but a grammar store
+            // posting is harmless and refusing it there would be a trap.
+            effect_sink: self.effect_sink.get().cloned(),
+            // OB.3a: every store, since every seam that hands the host a
+            // command name is checked against it.
+            command_registry: self.commands.get().cloned(),
             // CD.6b: stamped for every store on `view_args`' reasoning. The
             // GRAMMAR store is the one that needs it: a capture commits from a
             // chord, and that is where the caller's extent is asked.
             buffers: self.buffers.get().cloned(),
+            // OB.3c: every store. The EVENTS store is the one that reads a
+            // buffer back — a job's result lands there — but the gate is the
+            // same wherever the call comes from.
+            active_modes: self.active_modes.get().cloned(),
+            mode_owners: self.mode_owners.clone(),
             language_servers: self.language_servers.get().cloned(),
             output: self.output.get().cloned(),
             server_registrations: Vec::new(),
@@ -4932,16 +5227,39 @@ impl PluginHost {
     /// reloads the plugin (PMF.4).
     pub fn grant_for(&self, manifest: &PluginManifest, tier: TrustTier) -> GrantOutcome {
         // PMF.5: once a grant follows an option, plugins may no longer set it.
+        // Review, 2026-11-23: nor may a project's config (D1) — the same
+        // options, named to the registry before anything below reads one.
         {
-            let mut guard = self
-                .grant_guard
-                .write()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            for cap in &manifest.requested {
-                if let Capability::FsReadOption(op) | Capability::FsWriteOption(op) = cap {
-                    guard.options.insert(op.option.clone());
+            let mut protected: Vec<String> = manifest
+                .requested
+                .iter()
+                .filter_map(|cap| match cap {
+                    Capability::FsReadOption(op) | Capability::FsWriteOption(op) => {
+                        Some(op.option.clone())
+                    }
+                    // OB.2: what a plugin may RUN is the user's to set, too.
+                    Capability::ProcSpawnOption(op) => Some(op.option.clone()),
+                    _ => None,
+                })
+                .collect();
+            // And whether its modes run at all. The switches the loader
+            // follows for a plugin's default modes are the user's way of
+            // turning a feature off; a plugin that could set them would turn
+            // itself back on.
+            if !manifest.default_modes.is_empty() {
+                protected.push(format!("{}.enabled", manifest.id));
+            }
+            protected.extend(manifest.mode_gates.iter().map(|(_, o)| o.clone()));
+            if let Some(registry) = self.config.get() {
+                for option in &protected {
+                    registry.refuse_from_project(option);
                 }
             }
+            self.grant_guard
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .options
+                .extend(protected);
         }
         let registry = self.config.get().cloned();
         let remembered = self
@@ -4951,20 +5269,35 @@ impl PluginHost {
             .remembered
             .clone();
         let live = std::cell::RefCell::new(Vec::new());
-        let outcome = crate::capability::grant_with(manifest, tier, &|name| {
+        let outcome = crate::capability::grant_with(manifest, tier, &|name, authorship| {
             match registry.as_ref().and_then(|r| r.lookup(name)) {
+                // OB.2: a value still at the default the PLUGIN registered is
+                // not the user's, so a process grant does not follow it. The
+                // plugin cannot set the option (PMF.5), so any other value is
+                // one the user wrote. Remembered with that bit, so a reload
+                // cannot resurrect the default for a process grant either.
                 Some(opt) => {
-                    let value = opt.get_formatted();
-                    live.borrow_mut().push((name.to_string(), value.clone()));
-                    Some(value)
+                    let user_authored = opt.get_formatted() != opt.default_formatted();
+                    let value = opt.get_value();
+                    live.borrow_mut()
+                        .push((name.to_string(), (value.clone(), user_authored)));
+                    (user_authored || authorship == crate::capability::Authorship::Any)
+                        .then_some(value)
                 }
                 // Not registered yet: what the user's configuration says it
                 // will be (PMF.15/16), else what it was while the plugin was last loaded
                 // (between instances; `GrantGuard::remembered`).
                 None => registry
                     .as_ref()
-                    .and_then(|r| r.held_value(name))
-                    .or_else(|| remembered.get(name).cloned()),
+                    .and_then(|r| r.held_config_value(name))
+                    .or_else(|| {
+                        remembered
+                            .get(name)
+                            .filter(|(_, user_authored)| {
+                                *user_authored || authorship == crate::capability::Authorship::Any
+                            })
+                            .map(|(value, _)| value.clone())
+                    }),
             }
         });
         let mut guard = self
@@ -5259,6 +5592,248 @@ mod held_options_tests {
         assert_eq!(granted(&rig), Some(base.join("from-init")));
     }
 
+    /// OB.1: a list written in `lattice.toml` for a grant-bearing option is in
+    /// the first grant, one directory per entry — not flattened to text and
+    /// lost, which is what a text-only held value did.
+    #[test]
+    fn a_held_list_is_in_the_first_grant_entry_by_entry() {
+        let rig = rig();
+        let base = rig._base.path();
+        let list = lattice_config::ConfigValue::List(vec![
+            lattice_config::ConfigValue::Str(base.join("a").display().to_string()),
+            lattice_config::ConfigValue::Str(base.join("b").display().to_string()),
+        ]);
+        rig.config.hold_tree(
+            "org.babel.tangle-directories",
+            list,
+            lattice_config::HeldSource::ConfigFile,
+        );
+        let manifest = PluginManifest::from_toml_str(
+            "id = \"org\"\ncapabilities = [\"fs:write:{org.babel.tangle-directories}\"]\n",
+        )
+        .unwrap();
+        let paths: Vec<_> = rig
+            .host
+            .grant_for(&manifest, TrustTier::UserInstalled)
+            .option_bound
+            .into_iter()
+            .map(|g| g.path)
+            .collect();
+        assert_eq!(paths, vec![Some(base.join("a")), Some(base.join("b"))]);
+    }
+
+    /// OB.1: a registered list option's live value decides the grant, and
+    /// changing one entry changes what the loader compares to decide a reload.
+    #[test]
+    fn a_registered_list_option_grants_its_entries_and_tracks_changes() {
+        let rig = rig();
+        let base = rig._base.path();
+        let item = |p: &str| lattice_config::ConfigValue::Str(base.join(p).display().to_string());
+        crate::config_host::register_structured_option(
+            &rig.config,
+            "org.babel.tangle-directories",
+            lattice_config::ConfigSchema::List(Box::new(lattice_config::ConfigSchema::Scalar(
+                lattice_config::ScalarKind::Str,
+            ))),
+            lattice_config::ConfigValue::List(vec![item("a")]),
+            "doc",
+        )
+        .unwrap();
+        let manifest = PluginManifest::from_toml_str(
+            "id = \"org\"\ncapabilities = [\"fs:write:{org.babel.tangle-directories}\"]\n",
+        )
+        .unwrap();
+        let before = rig
+            .host
+            .grant_for(&manifest, TrustTier::UserInstalled)
+            .option_bound;
+        assert_eq!(before.len(), 1);
+        assert_eq!(before[0].path, Some(base.join("a")));
+
+        rig.config
+            .lookup("org.babel.tangle-directories")
+            .unwrap()
+            .set_value(&lattice_config::ConfigValue::List(vec![
+                item("a"),
+                item("c"),
+            ]))
+            .unwrap();
+        let after = rig
+            .host
+            .grant_for(&manifest, TrustTier::UserInstalled)
+            .option_bound;
+        assert_ne!(before, after, "a moved entry is a moved grant (PMF.4)");
+        assert_eq!(after[1].path, Some(base.join("c")));
+    }
+
+    /// OB.1: PMF.5 covers a list-valued grant option like a scalar one.
+    #[test]
+    fn a_plugin_cannot_set_its_own_list_grant_option() {
+        let rig = rig();
+        let manifest = PluginManifest::from_toml_str(
+            "id = \"org\"\ncapabilities = [\"fs:write:{org.babel.tangle-directories}\"]\n",
+        )
+        .unwrap();
+        let _ = rig.host.grant_for(&manifest, TrustTier::UserInstalled);
+        let mut org = store(&rig, "org");
+        assert!(
+            !org.data_mut()
+                .set_option("org.babel.tangle-directories".into(), "/".into()),
+            "the plugin may not widen its own reach"
+        );
+    }
+
+    fn languages_schema() -> lattice_config::ConfigSchema {
+        lattice_config::ConfigSchema::List(Box::new(lattice_config::ConfigSchema::Record(vec![
+            lattice_config::SchemaField {
+                name: "command".into(),
+                schema: lattice_config::ConfigSchema::Scalar(lattice_config::ScalarKind::Str),
+                required: true,
+                doc: String::new(),
+            },
+        ])))
+    }
+
+    fn languages(commands: &[&str]) -> lattice_config::ConfigValue {
+        lattice_config::ConfigValue::List(
+            commands
+                .iter()
+                .map(|c| {
+                    lattice_config::ConfigValue::record([(
+                        "command".to_string(),
+                        lattice_config::ConfigValue::Str((*c).into()),
+                    )])
+                })
+                .collect(),
+        )
+    }
+
+    /// OB.2, the security property: what a plugin may RUN comes from the user,
+    /// never from the default the plugin itself registered for the option. A
+    /// plugin registering `org.babel.languages` with `sh` in its default would
+    /// otherwise grant itself a shell.
+    #[test]
+    fn a_plugins_own_default_never_grants_a_program() {
+        let rig = rig();
+        let manifest = PluginManifest::from_toml_str(
+            "id = \"org\"\ncapabilities = [\"proc:spawn:{org.babel.languages:command}\"]\n",
+        )
+        .unwrap();
+        crate::config_host::register_structured_option(
+            &rig.config,
+            "org.babel.languages",
+            languages_schema(),
+            languages(&["sh"]),
+            "doc",
+        )
+        .unwrap();
+        let granted = |rig: &Rig| {
+            rig.host
+                .grant_for(&manifest, TrustTier::UserInstalled)
+                .grant
+                .spawn_commands
+        };
+        assert!(
+            granted(&rig).is_empty(),
+            "the registered default grants nothing"
+        );
+
+        // The user writes the list: now it decides.
+        rig.config
+            .lookup("org.babel.languages")
+            .unwrap()
+            .set_value(&languages(&["python3"]))
+            .unwrap();
+        assert_eq!(granted(&rig), ["python3".to_string()].into_iter().collect());
+
+        // Across a reload (options dropped), the user's value is what is
+        // remembered — and the default never was.
+        assert!(rig.config.unregister("org.babel.languages"));
+        assert_eq!(granted(&rig), ["python3".to_string()].into_iter().collect());
+    }
+
+    /// OB.2: and a default that is never overridden is not remembered into a
+    /// grant across a reload either.
+    #[test]
+    fn a_default_is_not_remembered_into_a_spawn_grant() {
+        let rig = rig();
+        let manifest = PluginManifest::from_toml_str(
+            "id = \"org\"\ncapabilities = [\"proc:spawn:{org.babel.languages:command}\"]\n",
+        )
+        .unwrap();
+        crate::config_host::register_structured_option(
+            &rig.config,
+            "org.babel.languages",
+            languages_schema(),
+            languages(&["sh"]),
+            "doc",
+        )
+        .unwrap();
+        let _ = rig.host.grant_for(&manifest, TrustTier::UserInstalled);
+        assert!(rig.config.unregister("org.babel.languages"));
+        assert!(
+            rig.host
+                .grant_for(&manifest, TrustTier::UserInstalled)
+                .grant
+                .spawn_commands
+                .is_empty()
+        );
+    }
+
+    /// OB.2, laundering: one option bound to BOTH a directory grant (which
+    /// follows any value, default included, and remembers it across a reload)
+    /// and a process grant. The directory grant's remembered default must not
+    /// become a program the process grant permits once the option is gone.
+    #[test]
+    fn a_default_remembered_for_a_directory_grant_is_no_program() {
+        let rig = rig();
+        let manifest = PluginManifest::from_toml_str(
+            "id = \"org\"\ncapabilities = [\"fs:read:{org.tool}\", \"proc:spawn:{org.tool}\"]\n",
+        )
+        .unwrap();
+        let mut org = store(&rig, "org");
+        assert!(org.data_mut().register_option(
+            "tool".into(),
+            OptionType::String,
+            "sh".into(),
+            "doc".into()
+        ));
+        let first = rig.host.grant_for(&manifest, TrustTier::UserInstalled);
+        assert!(
+            first.grant.spawn_commands.is_empty(),
+            "the default is no program"
+        );
+        assert!(rig.config.unregister("org.tool"));
+        let after = rig.host.grant_for(&manifest, TrustTier::UserInstalled);
+        assert!(
+            after.grant.spawn_commands.is_empty(),
+            "nor once remembered: {:?}",
+            after.grant.spawn_commands
+        );
+    }
+
+    /// OB.2: a value the user's configuration holds is user-authored.
+    #[test]
+    fn a_held_languages_list_grants_its_programs() {
+        let rig = rig();
+        rig.config.hold_tree(
+            "org.babel.languages",
+            languages(&["sh", "ruby"]),
+            lattice_config::HeldSource::ConfigFile,
+        );
+        let manifest = PluginManifest::from_toml_str(
+            "id = \"org\"\ncapabilities = [\"proc:spawn:{org.babel.languages:command}\"]\n",
+        )
+        .unwrap();
+        assert_eq!(
+            rig.host
+                .grant_for(&manifest, TrustTier::UserInstalled)
+                .grant
+                .spawn_commands,
+            ["ruby".to_string(), "sh".to_string()].into_iter().collect()
+        );
+    }
+
     #[test]
     fn a_reloaded_plugin_gets_the_users_values_back() {
         let rig = rig();
@@ -5411,6 +5986,85 @@ mod held_options_tests {
 }
 
 #[cfg(test)]
+mod review_gate_tests {
+    //! Review, 2026-11-23, host functions driven on real stores with no
+    //! guest: `enable-mode` / `disable-mode` are the user's `init.rs`'s, and
+    //! job stdin refuses with one message whatever the reason.
+
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+    use crate::mode_host::bindings::lattice::plugin_host::modes::Host as ModesHost;
+    use lattice_protocol::EventKind;
+    use lattice_runtime::{EventFilter, SubscriptionTarget};
+
+    fn requests_from(plugin: &str) -> Vec<lattice_protocol::Event> {
+        let base = tempfile::tempdir().unwrap();
+        let host =
+            PluginHost::with_dirs(base.path().join("cache"), base.path().join("data")).unwrap();
+        host.set_config_authority("init");
+        let bus = Arc::new(EventBus::new());
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        bus.subscribe(
+            EventFilter::kind(EventKind::ModeEnablementRequested),
+            SubscriptionTarget::Channel(tx),
+        );
+        let mut store = host
+            .new_store(
+                WasiCtxBuilder::new().build(),
+                CapabilityGrant::default(),
+                PluginBudget::default(),
+                Some(plugin),
+            )
+            .unwrap();
+        store.data_mut().event_emit = Some(EventEmitCtx {
+            plugin_id: PluginId(1),
+            bus,
+            job_owner: 1,
+        });
+        ModesHost::enable_mode(store.data_mut(), "org-babel-mode".to_string());
+        ModesHost::disable_mode(store.data_mut(), "magit-mode".to_string());
+        std::iter::from_fn(|| rx.try_recv().ok()).collect()
+    }
+
+    /// Review: a seam with no bus refused stdin with its own message, which
+    /// told a caller something about the id. It is the missing-job one now.
+    #[test]
+    fn stdin_from_a_seam_with_no_jobs_reads_as_no_such_job() {
+        use crate::lattice::plugin_host::host_services::Host as HostServices;
+        let host = PluginHost::new().unwrap();
+        let mut store = host
+            .new_store(
+                WasiCtxBuilder::new().build(),
+                CapabilityGrant::default(),
+                PluginBudget::default(),
+                Some("org"),
+            )
+            .unwrap();
+        let missing = process_host::write_stdin(1, 7, b"x".to_vec()).unwrap_err();
+        let state = store.data_mut();
+        assert_eq!(
+            HostServices::write_job_stdin(state, 7, b"x".to_vec()),
+            Err(missing.clone())
+        );
+        assert_eq!(HostServices::close_job_stdin(state, 7), Err(missing));
+    }
+
+    #[test]
+    fn only_init_may_turn_a_mode_on_or_off() {
+        assert_eq!(
+            requests_from("init").len(),
+            2,
+            "init.rs is the user's config"
+        );
+        assert!(
+            requests_from("org").is_empty(),
+            "a plugin may not turn a mode on or off"
+        );
+    }
+}
+
+#[cfg(test)]
 mod grant_guard_tests {
     //! PMF.5: a plugin cannot set an option a plugin's file access follows —
     //! otherwise it could set `org.directory` to `/` and reload into a grant on
@@ -5512,6 +6166,35 @@ mod grant_guard_tests {
         );
     }
 
+    /// Review: `org.babel.enabled` turns babel off, and org must not be
+    /// able to turn it back on; nor `org.enabled`, the plugin's own switch.
+    #[test]
+    fn computing_a_grant_guards_the_switches_of_its_modes() {
+        let host = PluginHost::new().unwrap();
+        let manifest = PluginManifest::from_toml_str(
+            "id = \"org\"\ndefault_modes = [\"org-mode\", \"org-babel-mode\"]\n\
+             mode_gates = { \"org-babel-mode\" = \"org.babel.enabled\" }\n",
+        )
+        .unwrap();
+        let _ = host.grant_for(&manifest, TrustTier::UserInstalled);
+        let g = host.grant_guard.read().unwrap();
+        assert!(g.refuses("org.babel.enabled", Some("org")));
+        assert!(g.refuses("org.enabled", Some("org")));
+        assert!(!g.refuses("org.todo-keywords", Some("org")));
+
+        let none = PluginManifest::from_toml_str("id = \"plain\"\n").unwrap();
+        drop(g);
+        let _ = host.grant_for(&none, TrustTier::UserInstalled);
+        assert!(
+            !host
+                .grant_guard
+                .read()
+                .unwrap()
+                .refuses("plain.enabled", Some("plain")),
+            "no default mode, no switch to guard"
+        );
+    }
+
     #[test]
     fn computing_a_grant_is_what_guards_its_option() {
         let host = PluginHost::new().unwrap();
@@ -5543,5 +6226,30 @@ mod grant_guard_tests {
                 .unwrap()
                 .refuses("org.directory", Some("init"))
         );
+    }
+}
+
+#[cfg(test)]
+mod buffer_text_gate_tests {
+    use super::owns_an_active_mode;
+    use lattice_mode::ModeId;
+    use std::collections::HashMap;
+
+    #[test]
+    fn only_a_mode_the_caller_registered_opens_the_buffer() {
+        let owners: HashMap<String, String> = [
+            ("org-babel-mode".to_string(), "org".to_string()),
+            ("magit-mode".to_string(), "magit".to_string()),
+        ]
+        .into();
+        let on = |ids: &[&str]| ids.iter().map(|m| ModeId::new(m)).collect::<Vec<_>>();
+        assert!(owns_an_active_mode(
+            &owners,
+            "org",
+            &on(&["text-mode", "org-babel-mode"])
+        ));
+        assert!(!owns_an_active_mode(&owners, "org", &on(&["magit-mode"])));
+        assert!(!owns_an_active_mode(&owners, "org", &on(&["unowned-mode"])));
+        assert!(!owns_an_active_mode(&owners, "org", &[]));
     }
 }

@@ -81,10 +81,13 @@ struct Rig {
 }
 
 fn rig(base: &std::path::Path) -> Rig {
-    // The command the fixture's rows name, registered natively. The ghost row's
-    // command is deliberately NOT here, so the drop-a-row rule is exercised.
+    // The command the fixture's rows name, registered as a plugin's own — a
+    // native one would need opening to plugins (OB.3a's command gate), and a
+    // menu's rows name its plugin's commands. The ghost row's command is
+    // deliberately NOT here, so the drop-a-row rule is exercised.
     let mut cmd = CommandRegistry::new();
-    cmd.register_action(
+    cmd.register_plugin_action(
+        1,
         COMMAND,
         "fixture capture (test)",
         lattice_grammar::registry::ActionSpec {
@@ -103,6 +106,13 @@ fn rig(base: &std::path::Path) -> Rig {
     let host = Arc::new(
         lattice_plugin_host::PluginHost::with_dirs(base.join("cache"), base.join("data"))
             .expect("host builds"),
+    );
+    // D2: the command above stands in for the plugin's grammar seam, which
+    // would have attributed it to the plugin; say so, or no plugin may name it.
+    host.attribute_commands(
+        lattice_plugin_host::PluginId(1),
+        &lattice_plugin_host::PluginManifest::from_toml_str("id = \"transient-guest\"\n")
+            .expect("manifest"),
     );
     let loader = PluginLoader::with_services(
         host,

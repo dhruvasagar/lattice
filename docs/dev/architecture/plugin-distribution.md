@@ -134,7 +134,7 @@ There is no `grants` field: filesystem grants follow the plugin's own options
 
 ## 4. Compatibility is checked before the download
 
-The host knows its own generation (`lattice:plugin-host@0.5.x`) and builds the
+The host knows its own generation (`lattice:plugin-host@0.6.x`) and builds the
 asset name from it, so a release with no build for this editor is a **named**
 refusal in `:plugins` and `*messages*`:
 

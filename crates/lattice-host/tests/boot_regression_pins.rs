@@ -167,6 +167,35 @@ fn lsp_services_present_at_boot() {
     );
 }
 
+/// OB.3c: the active-modes query is a boot service, and it answers with what
+/// the editor itself holds once a publish has run. Unregistered, the plugin
+/// host refuses every `buffer-text`, which reads as a babel result that never
+/// lands rather than a missing wire.
+#[tokio::test]
+async fn active_modes_query_answers_from_the_published_state() {
+    let mut editor = boot();
+    let query = editor
+        .services
+        .get::<lattice_mode::ActiveModesQueryHandle>()
+        .expect("ActiveModesQueryHandle must be registered");
+    // A buffer whose major activates synchronously on open.
+    editor.open_synthetic_buffer("*plugins*", "plugins-mode");
+    let id = editor.buffers.by_name("*plugins*").expect("opened");
+    assert!(
+        query.active_on(id).is_empty(),
+        "before a publish the query has not seen it — the snapshot is the publish"
+    );
+    editor.publish_render_state();
+    let held: Vec<lattice_mode::ModeId> = editor
+        .active_modes
+        .get(&id)
+        .map(|a| a.ids().collect())
+        .unwrap_or_default();
+    assert!(!held.is_empty(), "the boot buffer has a mode to compare");
+    assert_eq!(query.active_on(id), held);
+    assert!(query.active_on(lattice_core::BufferId(u32::MAX)).is_empty());
+}
+
 /// The language registry is deliberately NOT a service.
 ///
 /// MG.26c registered `Arc<LangRegistry>` so magit could highlight a file at

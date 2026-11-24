@@ -158,6 +158,15 @@ async fn llm_with_a_profile_and_the_profile_switch() {
 
     // Overrides, then the switch clears them and says which.
     ex(&mut editor, "setlocal llm.temperature=0.9");
+    // The chat takes the override from the bus, off the keystroke: wait for
+    // it, or the switch can run first and find nothing to clear.
+    let overridden = settle(&mut editor, |e| {
+        chats(e)
+            .resolve_for(id)
+            .is_ok_and(|r| r.values.temperature == Some(0.9))
+    })
+    .await;
+    assert!(overridden, "the chat took the override");
     ex(&mut editor, "llm-profile writer");
     let m = message(&editor);
     assert!(

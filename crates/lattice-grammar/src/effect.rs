@@ -269,7 +269,10 @@ pub enum LspRequest {
 #[derive(Debug, Clone, PartialEq)]
 pub struct CommandRef {
     /// A registered command name; an action is dispatched with `args`, any
-    /// other command runs as an ex line.
+    /// other registered command with `args` parsed as its arguments. A name
+    /// that is not registered (an alias, `w`) runs as an ex line — for native
+    /// callers only: a plugin's name must be registered, and open to plugins
+    /// (OB.3a).
     pub id: String,
     /// The command's arguments.
     pub args: crate::Args,
@@ -375,6 +378,10 @@ pub enum FileAnchor {
     /// not read can legitimately be off, and refusing to file the text at all
     /// is worse than filing it at the end.
     Line(u32),
+    /// OB.9: replace the target's entire text, as one edit (one undo step in
+    /// the target). For a file the producer generates whole — babel's
+    /// `:tangle`. An unopened target is opened unlisted.
+    Whole,
 }
 
 impl FileAnchor {
@@ -391,6 +398,8 @@ impl FileAnchor {
             // Clamp, per the variant's doc. `>=` and not `>`: a `Line` equal
             // to the count already means "past the last line", which is End.
             FileAnchor::Line(n) => n.min(line_count),
+            // Where the replacement starts; the applier replaces to the end.
+            FileAnchor::Whole => 0,
         }
     }
 }
@@ -1079,8 +1088,12 @@ pub enum Effect {
     /// does not land stops the batch, so this does not run.
     InvokeCommand {
         /// A registered command name. If it names a `CommandKind::Action`
-        /// it is dispatched with `args`; otherwise `id` plus `args` is run
-        /// as an ex line.
+        /// it is dispatched with `args`; any other registered command runs
+        /// with `args` parsed as its arguments — never as a line of its own,
+        /// so the command that runs is the one named (OB.3a). A name that is
+        /// not registered (an alias, `w`) runs as an ex line; only native
+        /// callers reach that, since a plugin's name must be registered and
+        /// open to plugins.
         id: String,
         /// Arguments for the command (rendered onto the ex line in the
         /// ex-line case).

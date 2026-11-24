@@ -138,6 +138,20 @@ const EXTRACT_REQUEST: &str = "/data/extract-request";
 /// program, each further line one argument.
 const SPAWN_REQUEST: &str = "/data/spawn-request";
 
+/// OB.14. Present ⇒ run a process with stdin open from `register-events`,
+/// write `hello` to it and close it. Lines as for [`SPAWN_REQUEST`].
+const INTERACTIVE_REQUEST: &str = "/data/interactive-request";
+
+/// OB.3. Present ⇒ post effects from `on-event`. One line: `edit <buffer-id>`
+/// posts an `apply-edit` inserting `posted` at the start of that buffer;
+/// `write <host-path>` posts a `write-to-file` there. OB.3a adds
+/// `track <buffer-id> <range-id>`, `quit`, `set-option <spec>`,
+/// `set-global-option <spec>`, `invoke <id> [args]` and `terminal <cmd>` —
+/// the last five the effects the posted path refuses. The trigger is the
+/// plugin's own event, emitted from `register-events`, so the post happens on
+/// the events seam proper — the seam that returns nothing.
+const POST_REQUEST: &str = "/data/post-request";
+
 /// LH.0.4. Present ⇒ register a language server from `register-events`. Three
 /// lines: the server id, the command, and one file pattern.
 const SERVER_REQUEST: &str = "/data/server-request";
@@ -194,6 +208,10 @@ impl Guest for Component {
         if std::fs::metadata(EMIT_AT_REGISTER).is_ok() {
             events::subscribe(&kind_filter(EventKind::Plugin), 7);
             host_services::emit_event("fixture/registered", b"1");
+        }
+        if std::fs::metadata(POST_REQUEST).is_ok() {
+            events::subscribe(&kind_filter(EventKind::Plugin), 11);
+            host_services::emit_event("fixture/post", b"1");
         }
         // @example events.wake-every: Arm a periodic wake at registration and keep its id for `cancel-wake`
         // OC.2: arm a periodic wake from registration. 50 ms is the seam's
@@ -311,6 +329,37 @@ impl Guest for Component {
             };
             record(&outcome);
             // @end-example
+        }
+        // OB.14: a process fed through stdin, if the test asked for one.
+        if let Ok(request) = std::fs::read_to_string(INTERACTIVE_REQUEST) {
+            let mut lines = request.lines();
+            let command = lines.next().unwrap_or_default();
+            let args: Vec<String> = lines.map(str::to_string).collect();
+            // @example host-services.spawn-interactive: Start a program whose stdin stays open, and hear its output and exit
+            events::subscribe(&kind_filter(EventKind::JobOutput), 10);
+            events::subscribe(&kind_filter(EventKind::JobFinished), 10);
+            let started = host_services::spawn_interactive(command, &args, "");
+            // @end-example
+            match started {
+                Ok(id) => {
+                    record("interactive:started");
+                    // @example host-services.write-job-stdin: Write to an interactive job's stdin; it is queued, never blocking
+                    let wrote = host_services::write_job_stdin(id, b"hello\n");
+                    // @end-example
+                    record(&format!(
+                        "interactive:write:{}",
+                        if wrote.is_ok() { "ok" } else { "err" }
+                    ));
+                    // @example host-services.close-job-stdin: End an interactive job's input, so a program that reads to end of file exits
+                    let closed = host_services::close_job_stdin(id);
+                    // @end-example
+                    record(&format!(
+                        "interactive:close:{}",
+                        if closed.is_ok() { "ok" } else { "err" }
+                    ));
+                }
+                Err(e) => record(&format!("interactive:err({e})")),
+            }
         }
         // LH.0.4: register a language server, if the test asked for one.
         if let Ok(request) = std::fs::read_to_string(SERVER_REQUEST) {
@@ -451,6 +500,15 @@ impl Guest for Component {
             }
             return;
         }
+        // OB.3: post effects from the seam that returns nothing.
+        if handler == 11 {
+            if let Event::Plugin(p) = &ev {
+                if p.name == "fixture/post" {
+                    post_requested();
+                }
+            }
+            return;
+        }
         // LH.0.3: a process wrote something, or exited.
         if handler == 10 {
             match &ev {
@@ -566,3 +624,81 @@ impl Guest for Component {
 }
 
 export!(Component);
+
+/// OB.3: the effect `POST_REQUEST` asks for, posted with `post-effects`.
+fn post_requested() {
+    use lattice::plugin_host::types::{
+        ApplyEditPayload, Args, CommandRef, Edit, EditKind, Effect, FileAnchor, Position,
+        QuitPayload, QuitScope, Range, SpawnTerminalPayload, TrackRangePayload,
+        WriteToFilePayload,
+    };
+    let request = std::fs::read_to_string(POST_REQUEST).unwrap_or_default();
+    let request = request.trim();
+    let (kind, arg) = request.split_once(' ').unwrap_or((request, ""));
+    let origin = Position { line: 0, byte: 0 };
+    let effect = match kind {
+        "edit" => Effect::ApplyEdit(ApplyEditPayload {
+            target: arg.parse().unwrap_or(0),
+            edit: Edit {
+                range: Range {
+                    start: origin,
+                    end: origin,
+                },
+                kind: EditKind::Replace("posted".to_string()),
+            },
+            cursor: None,
+        }),
+        // OB.3a: `track <buffer-id> <range-id>`.
+        "track" => {
+            let (target, id) = arg.split_once(' ').unwrap_or((arg, "1"));
+            Effect::TrackRange(TrackRangePayload {
+                target: target.parse().unwrap_or(0),
+                id: id.parse().unwrap_or(1),
+                range: Range {
+                    start: origin,
+                    end: origin,
+                },
+                element: None,
+            })
+        }
+        // OB.3a: effects the posted path must refuse.
+        "quit" => Effect::QuitEditor(QuitPayload {
+            force: true,
+            scope: QuitScope::All,
+        }),
+        "set-option" => Effect::SetOption(arg.to_string()),
+        "set-global-option" => Effect::SetGlobalOption(arg.to_string()),
+        "invoke" => {
+            let (id, args) = arg.split_once(' ').unwrap_or((arg, ""));
+            Effect::InvokeCommand(CommandRef {
+                id: id.to_string(),
+                args: if args.is_empty() {
+                    Args::None
+                } else {
+                    Args::String(args.to_string())
+                },
+            })
+        }
+        "terminal" => Effect::SpawnTerminal(SpawnTerminalPayload {
+            cwd: None,
+            cmd_line: Some(arg.to_string()),
+            env: Vec::new(),
+            activate_minor: None,
+        }),
+        _ => Effect::WriteToFile(WriteToFilePayload {
+            path: arg.to_string(),
+            anchor: FileAnchor::End,
+            text: "posted\n".to_string(),
+            cut: None,
+            create_parents: false,
+            save: false,
+        }),
+    };
+    // @example host-services.post-effects: Turn a job's result into an edit from `on-event`, which returns nothing
+    let outcome = match host_services::post_effects(&[effect]) {
+        Ok(()) => "post:ok".to_string(),
+        Err(e) => format!("post:err({e})"),
+    };
+    record(&outcome);
+    // @end-example
+}

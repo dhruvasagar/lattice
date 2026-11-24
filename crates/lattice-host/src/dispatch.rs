@@ -4993,8 +4993,14 @@ impl Editor {
             );
             return;
         }
-        // Its diff against HEAD steps aside; teardown hands it back.
-        self.yield_head_diff(buffer_id);
+        // Its diff against HEAD steps aside; teardown hands it back. Held
+        // until this session is registered, so a HEAD session landing from
+        // the VCS drainer cannot slip in between.
+        let vcs = self.vcs_handle();
+        let mut hold = vcs.as_deref().and_then(crate::vcs::VcsSubsystem::hold);
+        if let Some(h) = hold.as_mut() {
+            h.yield_buffer(buffer_id, &self.diff_subsystem);
+        }
         let provider_text: std::sync::Arc<dyn crate::diff::subsystem::BufferTextProvider> =
             std::sync::Arc::new(crate::diff::subsystem::BufferRegistryTextProvider::new(
                 self.buffers.clone(),
@@ -5020,6 +5026,7 @@ impl Editor {
             lattice_diff::DiffAlgorithm::Histogram,
             descriptor,
         );
+        drop(hold);
         // Build the overlay provider and capture the cache
         // handle so the D.3.b refresh task can write to the
         // same `Mutex<DiffOverlayCache>` the provider reads
@@ -6130,12 +6137,12 @@ impl Editor {
         self.reclaim_head_diffs(&watch);
     }
 
-    /// Step `buffer`'s diff against HEAD (the gutter signs, VCS.2) aside
-    /// for an explicit diff. False when it has none.
-    fn yield_head_diff(&self, buffer: lattice_core::BufferId) -> bool {
+    /// The VCS subsystem (the gutter signs' diff against HEAD, VCS.2),
+    /// shared, so an explicit diff can hold it while it claims buffers.
+    fn vcs_handle(&self) -> Option<std::sync::Arc<crate::vcs::VcsSubsystem>> {
         self.vcs_subscription_guard
             .as_ref()
-            .is_some_and(|g| g.subsystem().yield_buffer(buffer, &self.diff_subsystem))
+            .map(|g| std::sync::Arc::clone(g.subsystem_handle()))
     }
 
     /// Re-arm the diff against HEAD of every buffer in `buffers` that
@@ -6603,11 +6610,19 @@ impl Editor {
             crate::diff::subsystem::ConflictLayout::Resolve => members[0].buffer,
         };
         // A file's diff against HEAD (the gutter signs) steps aside for the
-        // explicit diff, and is handed back on every failure below.
+        // explicit diff, and is handed back on every failure below. The
+        // VCS subsystem is held from here until the session is registered:
+        // `:diffsplit` has just opened its file, and the drainer registering
+        // that file's HEAD session in between would read as an overlap.
+        let vcs = self.vcs_handle();
+        let mut hold = vcs.as_deref().and_then(crate::vcs::VcsSubsystem::hold);
         let yielded: Vec<lattice_core::BufferId> = members
             .iter()
             .map(|m| m.buffer)
-            .filter(|b| self.yield_head_diff(*b))
+            .filter(|b| {
+                hold.as_mut()
+                    .is_some_and(|h| h.yield_buffer(*b, &self.diff_subsystem))
+            })
             .collect();
         if let Some(busy) = members
             .iter()
@@ -6617,7 +6632,11 @@ impl Editor {
                 "buffer {} already participates in a diff session",
                 busy.buffer.0
             );
-            self.reclaim_head_diffs(&yielded);
+            if let Some(h) = hold.as_mut() {
+                for b in &yielded {
+                    h.reclaim(*b, &self.diff_subsystem);
+                }
+            }
             return Err(msg);
         }
 
@@ -6652,6 +6671,7 @@ impl Editor {
             lattice_diff::DiffAlgorithm::Histogram,
             descriptor,
         );
+        drop(hold);
         session.set_conflict_layout(layout);
 
         let mapper: std::sync::Arc<dyn crate::pane_group::RowMapper> = if arity == 2 {
@@ -26813,6 +26833,15 @@ impl Editor {
         // (XF.2), but reading the source id first means this is correct even
         // if that ever changes.
         let source = self.active_pane_buffer_id();
+        // OB.9: whether the target was already open, read BEFORE resolving
+        // opens it. A `whole` write into a file the user had not opened
+        // leaves it unlisted.
+        let was_open = self
+            .find_document_by_real_path(&normalize_user_path_with_cwd(
+                &path,
+                self.current_dir.as_deref(),
+            ))
+            .is_some();
 
         let target = match self.resolve_path_to_buffer_creating(&path, create_parents) {
             Ok(id) => id,
@@ -26821,6 +26850,21 @@ impl Editor {
                 return false;
             }
         };
+        if anchor == lattice_grammar::FileAnchor::Whole
+            && !was_open
+            && let Some(flags) = self.buffers.flags_of(target)
+        {
+            // `nobuflisted`, as vim calls it: a tangle writing ten files did
+            // not ask for ten buffers in `:ls`. Still a buffer (`:b name`
+            // reaches it, `:w` saves it), so the write stays visible.
+            self.buffers.set_flags(
+                target,
+                lattice_core::BufferFlags {
+                    listed: false,
+                    ..flags
+                },
+            );
+        }
 
         let Some(handle) = self.buffers.document_handle(target) else {
             self.set_message(
@@ -26832,6 +26876,10 @@ impl Editor {
         let snap = handle.snapshot();
         let line_count = snap.buffer.content_line_count();
         let line = anchor.resolve_line(line_count);
+        let end_of_text = {
+            let last = snap.buffer.rope_line_count().saturating_sub(1);
+            lattice_protocol::position::Position::new(last, snap.buffer.line_byte_len(last))
+        };
 
         // `resolve_line` answers in LINES, which is all a producer can name
         // about a file it never read. Turning that into a position needs the
@@ -26841,10 +26889,10 @@ impl Editor {
         // NOT for `""` or `"a"` — where the insert would fail and, with a
         // `cut`, silently take the "insert failed, keep the source" branch on
         // a perfectly writable file.
-        let (at, text) = if line >= line_count {
-            let last = snap.buffer.rope_line_count().saturating_sub(1);
-            let end =
-                lattice_protocol::position::Position::new(last, snap.buffer.line_byte_len(last));
+        // `whole` takes the text as given: there is no line it is appended
+        // after, so no separator to supply.
+        let (at, text) = if anchor != lattice_grammar::FileAnchor::Whole && line >= line_count {
+            let end = end_of_text;
             // Appending to a file whose last line has no newline would splice
             // onto that line — `"notes"` + `"* Archived\n"` becomes
             // `"notes* Archived"`. "After the last line" means starting a new
@@ -26861,9 +26909,20 @@ impl Editor {
             (lattice_protocol::position::Position::new(line, 0), text)
         };
 
-        if let Err(err) =
-            self.apply_targeted_edit(target, lattice_protocol::edit::Edit::insert(at, text))
-        {
+        let edit = if anchor == lattice_grammar::FileAnchor::Whole {
+            // ONE replace over everything, so it is one undo step in the
+            // target — not a delete and an insert the user undoes twice.
+            lattice_protocol::edit::Edit::replace(
+                lattice_protocol::position::Range::new(
+                    lattice_protocol::position::Position::new(0, 0),
+                    end_of_text,
+                ),
+                text,
+            )
+        } else {
+            lattice_protocol::edit::Edit::insert(at, text)
+        };
+        if let Err(err) = self.apply_targeted_edit(target, edit) {
             // The cut deliberately does NOT run. This is the branch that
             // keeps the user's text where it was.
             tracing::debug!(
@@ -44251,11 +44310,25 @@ impl Editor {
                 .is_some_and(|m| matches!(m.kind, lattice_grammar::CommandKind::Action))
         });
         let mut inner = DispatchOutcome::default();
-        match action {
-            Some(cid) => self.dispatch_invocation(
+        if let Some(cid) = action {
+            self.dispatch_invocation(
                 lattice_grammar::CommandInvocation::of(cid).with_args(args),
                 &mut inner,
-            ),
+            );
+            return inner;
+        }
+        // OB.3a: a registered name runs THAT command, its args parsed as its
+        // args. Rendering `id args` as a line and parsing that let the line's
+        // own syntax choose the command — a plugin's `g` became `:global`,
+        // and a plugin's command is checked by name before it gets here.
+        let registry = self.registry.load_full();
+        let rest = ex_line_with_args("", &args);
+        match crate::excommand::parse_named(id, rest.trim(), &registry) {
+            Some(Ok(inv)) => self.dispatch_invocation(inv, &mut inner),
+            Some(Err(err)) => self.set_message(EchoLevel::Error, err.to_string()),
+            // Not a registered name: an alias (`w`) from a native caller, which
+            // the full line parser resolves. A plugin's never arrives here —
+            // the boundary refuses a name that is not registered.
             None => self.execute_ex_line(&ex_line_with_args(id, &args), &mut inner),
         }
         inner
@@ -57047,17 +57120,18 @@ mod tests {
         }
     }
     fn write_temp(contents: &str, tag: &str) -> TempFilePath {
+        // Several tests share a tag and start together, and the clock
+        // alone does not separate them: two equal names let one test's
+        // drop delete the file another is about to read. The counter
+        // makes each name unique within the process.
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let mut path = std::env::temp_dir();
-        // Cargo test nameserver: pid + tag keeps tests
-        // running in parallel from colliding.
         path.push(format!(
             "lattice-diffsplit-{}-{}-{}.tmp",
             std::process::id(),
             tag,
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0),
+            n,
         ));
         std::fs::write(&path, contents).expect("write temp file");
         TempFilePath(path)

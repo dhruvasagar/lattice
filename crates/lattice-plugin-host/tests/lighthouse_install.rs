@@ -317,12 +317,17 @@ impl Editor {
         self.output.snapshot("*lsp-servers*").unwrap_or_default()
     }
 
-    /// Wait until some row of the list contains `want`.
+    /// Wait until the list is fully drawn and some row contains `want`.
     async fn list_shows(&self, want: &str) -> OutputSnapshot {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
         loop {
             let snap = self.list();
-            if snap.lines.iter().any(|l| squeeze(l).contains(want))
+            // The plugin redraws by resetting the buffer, writing it a line
+            // at a time and setting the status last, and a reset clears the
+            // status: a list with no status is still being drawn, and its
+            // rows and line numbers are not yet the ones the plugin acts on.
+            let drawn = snap.status.is_some();
+            if drawn && snap.lines.iter().any(|l| squeeze(l).contains(want))
                 || tokio::time::Instant::now() >= deadline
             {
                 return snap;

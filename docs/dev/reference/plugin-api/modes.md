@@ -33,6 +33,7 @@ disable-mode: func(id: string)
 
 Disable a registered minor mode globally (CI.4) — the inverse of
 `enable-mode`; the Editor deactivates it on open buffers.
+Likewise only from the user's `init.rs`.
 
 ### `enable-mode`
 
@@ -47,6 +48,12 @@ turn it on. The host publishes a `mode-enablement-requested` signal and
 the Editor flips the enablement + re-activates open buffers (this call is
 the request, not the apply — the guest can't reach the activator). A
 no-bus / unknown-id case is a `warn` + drop (graceful), never a trap.
+
+**Only the user's `init.rs` may call it.** From any other plugin the
+call is dropped (and logged): a plugin turning modes on or off would
+override the user's choice, `<id>.enabled` and the `mode_gates`
+switches included. A plugin's own modes go on through its manifest's
+`default_mode`.
 
 **Example — Enable a plugin's mode and set its option once that plugin has loaded** · [`crates/lattice-plugin-host/tests/fixtures/init-guest/src/lib.rs`](../../../../crates/lattice-plugin-host/tests/fixtures/init-guest/src/lib.rs)
 

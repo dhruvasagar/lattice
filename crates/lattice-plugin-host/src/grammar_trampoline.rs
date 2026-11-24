@@ -346,7 +346,7 @@ fn build_motion_spec(
 /// The one place both halves happen, so a new effect-returning contribution
 /// cannot get the conversion and forget the gate — which would be an
 /// unchecked cross-file write reachable from any plugin.
-fn effect_from_guest(
+pub(crate) fn effect_from_guest(
     authorizer: &Arc<crate::EffectAuthorizer>,
     wit: Vec<crate::lattice::plugin_host::types::Effect>,
 ) -> GrammarResult<NativeEffect> {
@@ -845,6 +845,9 @@ impl PluginHost {
         // in the linker's import set — where it is one line, and testable.
         store.data_mut().ui = None;
         let id = self.alloc_id();
+        // D2: the commands this instance registers carry `id`; the gate maps
+        // it back to the plugin, for "its own" and "exported".
+        self.attribute_commands(id, manifest);
         // OC.1: wire the emit context, for the same reason and at the same point
         // in the sequence `spawn_event_plugin` does — BEFORE `register-grammar`
         // runs, since a guest may `register-event` from there and will
@@ -900,7 +903,8 @@ impl PluginHost {
         let authorizer = Arc::new(
             crate::EffectAuthorizer::new(&store.data().grant, manifest.id.clone())
                 .with_option_bound(option_bound)
-                .with_range_space(id.0),
+                .with_range_space(id.0)
+                .with_command_gate(store.data().command_gate()),
         );
         let guest = Arc::new(Mutex::new(GrammarGuest {
             store,

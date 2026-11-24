@@ -94,6 +94,11 @@ pub enum Capability {
     /// PMF.3: read + write access to the path one of the plugin's own options
     /// names (`fs:write:{org.directory|~/org}`). See [`OptionPath`].
     FsWriteOption(OptionPath),
+    /// OB.2: spawn exactly the programs an option of the plugin's own names
+    /// (`proc:spawn:{org.babel.languages:command}`). Unlike the unbound
+    /// [`Capability::ProcSpawn`] it is granted at either tier: what it permits
+    /// is what the user wrote, and the plugin cannot write it (PMF.5).
+    ProcSpawnOption(SpawnOption),
 }
 
 /// PMF.3: a filesystem grant that follows a configuration option rather than
@@ -140,6 +145,49 @@ impl OptionPath {
     }
 }
 
+/// OB.2: the option a `proc:spawn:{…}` grant follows, and the record field
+/// that names a program in each of its entries.
+///
+/// `{opt:field}` reads `field` from each record of a list-of-records option;
+/// `{opt}` reads a list of strings (or one string). A colon, not a dot,
+/// separates the field because option names already contain dots. There is no
+/// `|default`: a process grant the user never configured permits nothing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpawnOption {
+    /// The fully-qualified option name (`org.babel.languages`).
+    pub option: String,
+    /// The record field naming a program (`command`), if the option is a list
+    /// of records.
+    pub field: Option<String>,
+}
+
+impl SpawnOption {
+    fn parse(p: &str) -> Option<Self> {
+        let inner = p.strip_prefix('{')?.strip_suffix('}')?;
+        let word = |w: &str| !w.is_empty() && !w.contains(char::is_whitespace) && !w.contains('|');
+        let (option, field) = match inner.split_once(':') {
+            Some((o, f)) => (o.trim(), Some(f.trim())),
+            None => (inner.trim(), None),
+        };
+        if !word(option) || field.is_some_and(|f| !word(f) || f.contains(':')) {
+            return None;
+        }
+        Some(Self {
+            option: option.to_string(),
+            field: field.map(str::to_string),
+        })
+    }
+}
+
+impl std::fmt::Display for SpawnOption {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.field {
+            Some(field) => write!(f, "{{{}:{field}}}", self.option),
+            None => write!(f, "{{{}}}", self.option),
+        }
+    }
+}
+
 impl std::fmt::Display for OptionPath {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self.default {
@@ -152,7 +200,7 @@ impl std::fmt::Display for OptionPath {
 /// The string `s` was not a recognised capability form.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error(
-    "unrecognised capability `{0}` (expected `fs:read:<p>` / `fs:write:<p>` (a path, or `{{<option>|<default>}}`) / `net:http:<host>` / `proc:spawn` / `state:write` / `grammar:chord`)"
+    "unrecognised capability `{0}` (expected `fs:read:<p>` / `fs:write:<p>` (a path, or `{{<option>|<default>}}`) / `net:http:<host>` / `proc:spawn` (or `proc:spawn:{{<option>[:<field>]}}`) / `state:write` / `grammar:chord`)"
 )]
 pub struct CapabilityParseError(pub String);
 
@@ -191,6 +239,9 @@ impl FromStr for Capability {
                 Ok(Capability::NetHttp(h.to_string()))
             }
             (Some("proc"), Some("spawn"), None) => Ok(Capability::ProcSpawn),
+            (Some("proc"), Some("spawn"), Some(p)) => SpawnOption::parse(p)
+                .map(Capability::ProcSpawnOption)
+                .ok_or_else(|| CapabilityParseError(s.to_string())),
             (Some("state"), Some("write"), None) => Ok(Capability::StateWrite),
             (Some("grammar"), Some("chord"), None) => Ok(Capability::GrammarChord),
             _ => Err(CapabilityParseError(s.to_string())),
@@ -209,6 +260,7 @@ impl std::fmt::Display for Capability {
             Capability::GrammarChord => f.write_str("grammar:chord"),
             Capability::FsReadOption(op) => write!(f, "fs:read:{op}"),
             Capability::FsWriteOption(op) => write!(f, "fs:write:{op}"),
+            Capability::ProcSpawnOption(op) => write!(f, "proc:spawn:{op}"),
         }
     }
 }
@@ -505,6 +557,32 @@ pub struct PluginManifest {
     /// place that would have explained it. The singular `default_mode` key is
     /// still accepted and folds in here; a manifest may use either or both.
     pub default_modes: Vec<String>,
+    /// OB.3b: a default mode that the user can turn off on its own, as
+    /// `(mode, option)`: `mode_gates = { "org-babel-mode" = "org.babel.enabled" }`.
+    /// The mode is enabled only while `<id>.enabled` AND its option are both
+    /// true, and follows both. The loader registers the option (boolean,
+    /// default true) if the plugin has not.
+    ///
+    /// This is for a plugin carrying more than one feature set. `<id>.enabled`
+    /// turns the plugin on or off; this turns off one of its features (org's
+    /// babel, which runs programs) without the others. The plugin could not do
+    /// it itself: `modes.disable-mode` from the plugin races the loader's own
+    /// `<id>.enabled` gate, which re-enables every default mode it lists.
+    ///
+    /// Validated at parse: the mode must be one of `default_modes`, and the
+    /// option one of the plugin's own (`<id>.…`) and not `<id>.enabled`.
+    pub mode_gates: Vec<(String, String)>,
+    /// D2: the commands of this plugin that OTHER plugins may name for the
+    /// host to run (`exported_commands = ["org-capture"]`).
+    ///
+    /// A plugin's commands are its own by default. Another plugin naming one,
+    /// from an action, a picker row, a prompt or a transient, runs it with
+    /// the user's whole authority, so a command that writes, spawns or edits
+    /// for its owner would do so on a stranger's say-so. Listing a command
+    /// here is the owner saying it is safe to be called from outside: an
+    /// interface, the way a library's `pub` is. A name the plugin does not
+    /// register exports nothing.
+    pub exported_commands: Vec<String>,
     /// PMF.1: the oldest editor this plugin runs on (`min_lattice = "0.9.10"`),
     /// as `(major, minor, patch)`. A manifest-format change (an embedded
     /// manifest, an option-bound grant) is not a plugin-API change, so the WIT
@@ -540,9 +618,15 @@ struct RawManifest {
     /// on-by-default mode. Merged with `default_mode`; either key alone works.
     #[serde(default)]
     default_modes: Vec<String>,
+    /// OB.3b: mode → the option that gates it, beside `<id>.enabled`.
+    #[serde(default)]
+    mode_gates: std::collections::BTreeMap<String, String>,
     /// PMF.1: the oldest editor version the plugin runs on (`"0.9.10"`).
     #[serde(default)]
     min_lattice: Option<String>,
+    /// D2: the commands other plugins may name.
+    #[serde(default)]
+    exported_commands: Vec<String>,
 }
 
 /// Why a manifest failed to parse. Every failure is a value — the host logs +
@@ -587,6 +671,22 @@ pub enum ManifestError {
     /// PMF.1: `min_lattice` was not a `major.minor.patch` version.
     #[error("`min_lattice` `{0}` is not a version (expected `major.minor.patch`, e.g. `0.9.10`)")]
     MinLattice(String),
+
+    /// OB.3b: a `mode_gates` entry named a mode the manifest does not enable by
+    /// default, or an option that is not the plugin's own. A gate on a mode
+    /// that is not a default mode would never be consulted, and one on another
+    /// plugin's option would tie this plugin's feature to a setting the user
+    /// does not know is linked; both are refused rather than ignored, so the
+    /// author finds out at load and not from a switch that does nothing.
+    #[error("`mode_gates` entry `{mode}` = `{option}`: {why}")]
+    ModeGate {
+        /// The mode, as written.
+        mode: String,
+        /// The option, as written.
+        option: String,
+        /// What is wrong with it.
+        why: String,
+    },
 
     /// PMF.1: an embedded `lattice-manifest` section was not UTF-8 text.
     #[error("the component's embedded `lattice-manifest` section is not UTF-8 text")]
@@ -646,6 +746,8 @@ impl PluginManifest {
             provides: Vec::new(),
             doc: None,
             default_modes: Vec::new(),
+            mode_gates: Vec::new(),
+            exported_commands: Vec::new(),
             min_lattice: None,
         }
     }
@@ -671,12 +773,17 @@ impl PluginManifest {
         // PMF.3: an option-bound grant follows the plugin's own configuration.
         let own = format!("{}.", raw.id);
         for cap in &requested {
-            if let Capability::FsReadOption(op) | Capability::FsWriteOption(op) = cap
-                && !op.option.starts_with(&own)
+            let option = match cap {
+                Capability::FsReadOption(op) | Capability::FsWriteOption(op) => Some(&op.option),
+                Capability::ProcSpawnOption(op) => Some(&op.option),
+                _ => None,
+            };
+            if let Some(option) = option
+                && !option.starts_with(&own)
             {
                 return Err(ManifestError::ForeignOption {
                     id: raw.id.clone(),
-                    option: op.option.clone(),
+                    option: option.clone(),
                     capability: cap.to_string(),
                 });
             }
@@ -697,8 +804,55 @@ impl PluginManifest {
                 Some(parse_version(v).ok_or_else(|| ManifestError::MinLattice(v.to_string()))?)
             }
         };
+        let default_modes: Vec<String> = raw
+            .default_mode
+            .into_iter()
+            .chain(raw.default_modes)
+            .map(|m| m.trim().to_string())
+            .filter(|m| !m.is_empty())
+            .fold(Vec::new(), |mut acc, m| {
+                if !acc.contains(&m) {
+                    acc.push(m);
+                }
+                acc
+            });
+        let mut mode_gates = Vec::new();
+        for (mode, option) in raw.mode_gates {
+            let (mode, option) = (mode.trim().to_string(), option.trim().to_string());
+            let refuse = |why: &str| ManifestError::ModeGate {
+                mode: mode.clone(),
+                option: option.clone(),
+                why: why.to_string(),
+            };
+            if !default_modes.contains(&mode) {
+                return Err(refuse("the mode is not one of `default_modes`"));
+            }
+            let own = format!("{}.", raw.id);
+            if !option.starts_with(&own) || option.len() == own.len() {
+                return Err(refuse(&format!(
+                    "the option is not one of this plugin's own (`{own}…`)"
+                )));
+            }
+            if option == format!("{}.enabled", raw.id) {
+                return Err(refuse(&format!(
+                    "`{}.enabled` already gates every default mode",
+                    raw.id
+                )));
+            }
+            mode_gates.push((mode, option));
+        }
+        let mut exported_commands: Vec<String> = raw
+            .exported_commands
+            .into_iter()
+            .map(|c| c.trim().to_string())
+            .filter(|c| !c.is_empty())
+            .collect();
+        exported_commands.sort();
+        exported_commands.dedup();
         Ok(Self {
             min_lattice,
+            mode_gates,
+            exported_commands,
             id: raw.id,
             requested,
             editor_capabilities: editor,
@@ -708,18 +862,7 @@ impl PluginManifest {
             // then the list. Blanks dropped and duplicates collapsed: a
             // manifest that says the same mode both ways must not publish two
             // enablement requests for it.
-            default_modes: raw
-                .default_mode
-                .into_iter()
-                .chain(raw.default_modes)
-                .map(|m| m.trim().to_string())
-                .filter(|m| !m.is_empty())
-                .fold(Vec::new(), |mut acc, m| {
-                    if !acc.contains(&m) {
-                        acc.push(m);
-                    }
-                    acc
-                }),
+            default_modes,
         })
     }
 
@@ -1106,6 +1249,56 @@ mod tests {
     /// The blocker this fixes: a plugin with two on-by-default modes could
     /// name only one, and the other stayed registered, correct, and inert —
     /// the chord simply did nothing, with no message anywhere.
+    #[test]
+    fn mode_gates_parse_and_are_validated() {
+        let m = PluginManifest::from_toml_str(
+            "id = \"org\"\ndefault_modes = [\"org-mode-a\", \"org-babel-mode\"]\n\
+             mode_gates = { \"org-babel-mode\" = \"org.babel.enabled\" }\n",
+        )
+        .unwrap();
+        assert_eq!(
+            m.mode_gates,
+            vec![(
+                "org-babel-mode".to_string(),
+                "org.babel.enabled".to_string()
+            )]
+        );
+        let refused = |toml: &str| match PluginManifest::from_toml_str(toml) {
+            Err(ManifestError::ModeGate { why, .. }) => why,
+            other => panic!("expected a mode-gate refusal, got {other:?}"),
+        };
+        // Not a default mode: the gate would never be consulted.
+        assert!(refused(
+            "id = \"org\"\ndefault_modes = [\"a-mode\"]\nmode_gates = { \"b-mode\" = \"org.b\" }\n"
+        )
+        .contains("default_modes"));
+        // Another plugin's option, or the bare namespace.
+        for option in ["lsp.enabled", "org.", "orgx.enabled"] {
+            assert!(refused(&format!(
+                "id = \"org\"\ndefault_modes = [\"a-mode\"]\nmode_gates = {{ \"a-mode\" = \"{option}\" }}\n"
+            ))
+            .contains("own"));
+        }
+        // The plugin's own switch is not a second one.
+        assert!(refused(
+            "id = \"org\"\ndefault_modes = [\"a-mode\"]\nmode_gates = { \"a-mode\" = \"org.enabled\" }\n"
+        )
+        .contains("already gates"));
+    }
+
+    /// D2: `exported_commands` is read, trimmed, deduplicated, and empty when
+    /// absent.
+    #[test]
+    fn exported_commands_parse() {
+        let m = PluginManifest::from_toml_str(
+            "id = \"org\"\nexported_commands = [\" org-capture \", \"org-capture\", \"\", \"org-agenda\"]\n",
+        )
+        .unwrap();
+        assert_eq!(m.exported_commands, vec!["org-agenda", "org-capture"]);
+        let none = PluginManifest::from_toml_str("id = \"x\"\n").unwrap();
+        assert!(none.exported_commands.is_empty());
+    }
+
     #[test]
     fn parses_plural_default_modes_and_merges_them_with_the_singular() {
         let m = PluginManifest::from_toml_str(

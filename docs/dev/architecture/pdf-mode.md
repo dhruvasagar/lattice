@@ -22,7 +22,11 @@ lives in `lattice-mode` beside `image-mode` and claims `.pdf` through
 **The buffer's text is one line per page:** `Page 1 of 12`, `Page 2 of 12`, …
 Each line anchors one **media block**, the page, through the same
 `AsyncMediaSource` registry, pump, sizing and off-thread decode that
-`image-mode` and org's inline images use. Consequences, each of them free:
+`image-mode` and org's inline images use. A block names its page as
+`MediaSource::PdfPage { path, page }`, a second variant beside
+`MediaSource::Path`: the enum is already "what this block shows", and putting
+the page in the path (`paper.pdf#3`) would make every reader of a path strip
+it, and break on a file really named that. Consequences, each of them free:
 
 - **The line number is the page number.** `42G` goes to page 42, `gg` / `G`
   to the first and last, `j` / `k` move a page, and `` ` `` marks and the jump
@@ -43,21 +47,48 @@ nothing on screen.
 `implies` → `read-only-mode`, and `do_write`'s refusal, because writing the
 label text back would replace the PDF with a page list.
 
-## 2. Fitting, zooming, scrolling
+## 2. Navigating: the keymap
 
-| key | does | convention |
+Reading is the whole job of this buffer, so its keys are chosen for reading,
+not inherited by accident from text editing. Two sources, weighted the way
+the convention rule says: **vim** for anything that is already a line motion
+(pages *are* lines), and **zathura**, the vim world's reference viewer, for
+what a viewer adds. pdf-tools' emacs keys collide with vim motions and are not
+followed.
+
+| key | does | from |
 |---|---|---|
-| `j` / `k`, `J` / `K` | next / previous page | zathura: `J`/`K`; lines already move by page |
-| `<C-e>` / `<C-y>`, wheel | scroll within a page | GPUI's `sub_row_px` |
-| `s` | fit width | zathura |
-| `a` | fit page (whole page in the window) | zathura |
-| `+` / `-` / `=` | zoom in / out / reset | zathura, pdf-tools |
-| `r` | rotate 90° | zathura |
-| `o` | open in the system viewer (`open-external-uri`) | |
+| `j` / `k`, `J` / `K` | next / previous page; a count moves that many | vim lines; zathura `J`/`K` |
+| `gg` / `G` / `{n}G`, `:{n}` | first / last / page *n* | vim, zathura |
+| `<Space>` / `<S-Space>`, `<C-f>` / `<C-b>`, `<PageDown>` / `<PageUp>` | a screen down / up, continuing onto the next page | zathura, vim |
+| `<C-d>` / `<C-u>` | half a screen down / up | vim, zathura |
+| `<C-e>` / `<C-y>`, wheel | a step down / up | vim |
+| `h` / `l` | scroll left / right, when the page is wider than the window | zathura |
+| `s` / `a` | fit width / fit page | zathura |
+| `+` / `-` / `=` | zoom in / out / back to fit | zathura, pdf-tools |
+| `r` | rotate 90° clockwise | zathura |
+| `R` | reload from disk (it also reloads by itself, §5) | zathura |
+| `gx` | open in the system viewer | vim's "open with the system handler" |
+| `q` | close the PDF's buffer | zathura, magit |
+| `<C-o>` / `<C-i>`, `m{a-z}` / `` `{a-z} `` | jump list and marks | vim, unchanged |
 
-The keys follow **zathura**, the vim world's reference viewer: users carry
-that muscle memory, and pdf-tools' emacs keys collide with vim motions.
-They live on `pdf-mode`'s major layer.
+They live on `pdf-mode`'s major layer, with their handler bodies, so none of
+them reaches a text buffer. The modeline shows `page 3/12` for the page under
+the cursor.
+
+**`j` / `k` move by page, not by a scroll step.** zathura's `j` / `k` scroll a
+step, and that is the one place this table departs from it. Pages are lines
+here, so `5j`, `dj`-style counts, `:{n}` and the jump list all mean pages, and
+making `j` scroll would break that for one viewer's muscle memory. In fit
+page (the default) the two are the same keystroke anyway. The step scroll is
+on `<C-e>` / `<C-y>` and the wheel; screen and half-screen scrolls cross page
+boundaries the way zathura's continuous mode does.
+
+**The scroll keys are peer-local in GPUI** (`sub_row_px`, below). In the TUI a
+page is one row, so a screen or half-screen there is one page, and `h` / `l`
+do nothing.
+
+### Fitting and zooming
 
 **Fit page is the default.** A page sized to the window is the `image-mode`
 rule (`MediaFit::Window`, never upscaling), and one page per screen makes
@@ -96,9 +127,14 @@ The pipeline is inline-media §5's, unchanged in shape:
    vetoes.
 
 **Memory is bounded.** A US-letter page at 1600 px wide and 2× scale is
-~52 MB of BGRA. The page cache is an LRU **by bytes**, `pdf.cache-mb`
-(default 256), and holds rasters only, never parsed documents beyond the one
-open per buffer. Pages scrolled far away are evicted and re-rendered on
+~52 MB of BGRA. GPUI's decoded-media cache becomes an LRU **by bytes**,
+`media.cache-mb` (default 256), keyed by `MediaSource`, so pictures and pages
+share one budget. That cache held every decoded picture forever, so an org
+file full of large images grew without bound too: one mechanism fixes both,
+where a page-only cache beside it would leave that and give the peer two
+caches with different rules. It holds rasters only. Parsed documents are
+cached separately in `lattice-media`, one per path and `mtime`, shared by all
+of a document's pages. Pages scrolled far away are evicted and re-rendered on
 return.
 
 **A page that fails to render is an answer** (inline-media §7.1): its block
@@ -120,8 +156,8 @@ feature enables it.
 - **Feature-gated** because it is the largest new thing in the tree, and a
   TUI-only build would compile it for nothing. Without the feature,
   `pdf-mode` still claims `.pdf` (a PDF must never be read into a rope),
-  and the buffer is one line: `paper.pdf — PDF pages are drawn by the GUI;
-  o opens it in the system viewer`.
+  and the buffer is one line: `paper.pdf: this build of lattice does not read PDFs; the GUI build
+  does` (PF.2's wording).
 
 **Its known weakness is youth.** Uncommon fonts, shadings and blend modes may
 render imperfectly where pdfium would not. PF.0 measures this against a
@@ -137,6 +173,31 @@ that path (the cache key carries `mtime`), keeps the cursor's line (its
 page), and leaves the old rasters as placeholders until the new ones land.
 If the page count drops below the cursor's page, the cursor clamps to the
 last page. This is the `l o`-then-edit loop, and it must not jump.
+
+## 5a. Lattice as the system's PDF viewer
+
+Opening a PDF from the file manager or a browser should be able to land in
+lattice. **Opt-in, never taken.** Installing lattice must not change which
+program the user's PDFs open in.
+
+- **Linux** (the `.deb` and the AppImage, the native bundles v1 ships): the
+  desktop entry declares `application/pdf` among its `MimeType`s, which makes
+  lattice a *candidate*: it appears under "Open with", and nothing else
+  changes. Becoming the default is the user's
+  `xdg-mime default com.lattice-editor.lattice.desktop application/pdf`, which
+  `:help pdf-mode` gives verbatim.
+- **macOS**: needs a `.app` whose `Info.plist` declares the PDF document
+  type. v1 ships no `.app` (release-pipeline: the native apps are the Linux
+  bundles), so this waits for one. ⛔
+- **Windows**: a per-user file association (`HKCU\Software\Classes`) makes
+  lattice a candidate without admin rights; Windows 10 and later then let
+  only the user pick the default, in Settings. It waits for an installer that
+  writes it. ⛔
+
+**Each open is a new window.** lattice has no single-instance handoff, so a
+second PDF opened from the file manager starts a second process rather than a
+tab in the first. That is acceptable for a viewer, and noted, because it is
+the first thing a user doing this will see.
 
 ## 6. Not built, and why
 
@@ -177,7 +238,7 @@ last page. This is the `l o`-then-edit loop, and it must not jump.
 Both peers run the same mode, the same buffer and the same keys; they
 differ only in what a media block paints, as for images. **GPUI** paints
 the page. **The TUI** paints the label line and the block's alt text, and
-`o` hands the file to the system viewer. Scroll-within-a-page is GPUI's
+`gx` hands the file to the system viewer. Scroll-within-a-page is GPUI's
 peer-local `sub_row_px`; in the TUI a page is one row, and `j` / `k` still
 move by page.
 

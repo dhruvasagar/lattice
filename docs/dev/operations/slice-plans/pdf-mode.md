@@ -17,13 +17,15 @@ text (design §8).
 | PF.1  | `lattice-media` `pdf` feature: probe and render a page               | ✅     |
 | PF.2  | `pdf-mode`: presents `.pdf`, one label line per page, read-only      | ✅     |
 | PF.3  | A media block per page, rendered near the viewport, byte-bounded cache | 📝   |
-| PF.4  | Fit, zoom, rotate; scroll within a page                              | 📝     |
+| PF.4  | The keymap: page, screen and step navigation; fit, zoom, rotate      | 📝     |
 | PF.5  | Reload in place on change                                            | 📝     |
 | PF.6  | System viewer, docs, benchmarks                                      | 📝     |
+| PF.11 | Lattice as a candidate PDF viewer (Linux desktop entry)              | 📝     |
 | PF.7  | Text: search, selection, copy                                        | ⛔     |
 | PF.8  | Links and the outline                                                | ⛔     |
 | PF.9  | Inline PDFs in org (first page)                                      | ⛔     |
 | PF.10 | Recolour for dark themes                                             | ⛔     |
+| PF.12 | Default-viewer registration on macOS and Windows                     | ⛔     |
 
 ## Ordering
 
@@ -152,8 +154,11 @@ the probe they open files with is the real one.
 
 ### PF.3 — pages 📝
 
-One media block per label line; render only the pages in the viewport plus one
-either side; the byte-bounded LRU (`pdf.cache-mb`); every block sized from the
+One media block per label line, named `MediaSource::PdfPage { path, page }`
+(design §1); render only the pages in the viewport plus one either side, in
+two passes, 1× then the display scale (design §3); one parsed document per
+path and `mtime`, cached in `lattice-media`; the byte-bounded LRU (`media.cache-mb`, one cache for pictures and
+pages, keyed by `MediaSource`); every block sized from the
 probe before its raster exists; the previous raster kept as the placeholder.
 
 Tests: scrolling a 200-page file renders only nearby pages (counted at the
@@ -162,16 +167,26 @@ is the same before and after the pages land (no reflow); a page that fails
 shows its alt text and error while its neighbours render. GPUI and TUI updated
 together (the TUI's labels and alt, by snapshot).
 
-### PF.4 — fit, zoom, rotate 📝
+### PF.4 — the keymap 📝
 
-`s`, `a`, `+`, `-`, `=`, `r`, `J`, `K` on the major's layer; `pdf.zoom` as a
-buffer-local option in the media refresh key; fit width scrolls within a page
-through `sub_row_px`.
+Design §2's table, on `pdf-mode`'s major layer with its handler bodies in
+`lattice-mode`: `J` / `K`; `<Space>` / `<S-Space>`, `<C-f>` / `<C-b>`,
+`<PageDown>` / `<PageUp>` and `<C-d>` / `<C-u>`, which scroll by screen and
+half screen and continue onto the next page; `h` / `l`; `s`, `a`, `+`, `-`,
+`=`, `r`, `R`, `q`; and the modeline's `page 3/12`. `j` / `k`, `gg` / `G`,
+counts, `:{n}`, marks and the jump list need nothing: pages are lines.
+`pdf.zoom` is a buffer-local option in the media refresh key; fit width
+scrolls within a page through `sub_row_px`. Before binding `q`, check
+whether a shared minor already owns "close this view" (the shared-behaviour
+rule), and use it rather than declaring `q` again.
 
-Tests: each key changes the option and re-renders at the new size; zoom
-keeps the old raster on screen until the new one lands (no blank frame); in
-fit width, `<C-e>` scrolls inside a page taller than the window and `j`
-still moves to the next page.
+Tests: every key in the table does what the table says, in both fits; a
+screen scroll in fit width crosses from the bottom of one page to the top of
+the next; each zoom key changes the option and re-renders at the new size;
+zoom keeps the old raster on screen until the new one lands (no blank frame);
+in fit width, `<C-e>` scrolls inside a page taller than the window and `j`
+still moves to the next page; in the TUI, a screen scroll is one page; the
+modeline shows the cursor's page.
 
 ### PF.5 — reload 📝
 
@@ -185,10 +200,24 @@ never shows a blank page.
 
 ### PF.6 — finish 📝
 
-`o` (`open-external-uri`); `:help pdf-mode`; `docs/user/` page; CHANGELOG
+`gx` (`open-external-uri`); `:help pdf-mode`, with the keymap and the
+default-viewer commands of design §5a; `docs/user/` page; CHANGELOG
 Added; probe and render benches recorded in
 [`benchmarks.md`](../benchmarks.md); `inline-media.md` §8.1 points to
 `pdf-mode.md`.
+
+### PF.11 — a candidate PDF viewer on Linux 📝
+
+`application/pdf` added to the desktop entry's `MimeType`, so the `.deb` and
+the AppImage put lattice under "Open with" and change no default (design
+§5a). `:help pdf-mode` gives the `xdg-mime` line that makes it the default.
+The `dist` leg's `.deb` assertions check the MIME type is present.
+
+### PF.12 — macOS and Windows ⛔
+
+Waits for a `.app` (macOS: an `Info.plist` document type) and an installer
+(Windows: a per-user association, with the default left to Settings).
+Neither exists in v1.
 
 ### PF.7–PF.10 — deferred ⛔
 

@@ -1274,6 +1274,15 @@ impl Editor {
         // created; the producer itself lives with the mode, so the major and
         // the thing that renders its buffers stay one surface.
         lattice_mode::modes::register_image_media_source(&media_registry);
+        // PF.2: `pdf-mode` reads page counts through the host, which can reach
+        // `lattice-media` and `lattice-mode` cannot. Registered only in a build
+        // that reads PDFs; without it the mode says the build is the reason.
+        if let Some(probe) = crate::pdf_probe::pdf_probe() {
+            boot.register_service::<lattice_mode::modes::PdfProbeHandle>(probe);
+        }
+        // Its labels land off the actor, so they need a wake to reach the
+        // screen without a keypress.
+        boot.wake_on_event::<lattice_mode::modes::PdfPagesLabelled>();
 
         // OM.A1: the sibling registry for agenda-row producers. Same shape and
         // the same reason — RCU-registered by the loader, read wait-free by

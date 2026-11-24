@@ -15,7 +15,7 @@ text (design §8).
 |-------|---------------------------------------------------------------------|--------|
 | PF.0  | Spike: hayro against a corpus — fidelity, time per page, memory      | ✅     |
 | PF.1  | `lattice-media` `pdf` feature: probe and render a page               | ✅     |
-| PF.2  | `pdf-mode`: presents `.pdf`, one label line per page, read-only      | 📝     |
+| PF.2  | `pdf-mode`: presents `.pdf`, one label line per page, read-only      | ✅     |
 | PF.3  | A media block per page, rendered near the viewport, byte-bounded cache | 📝   |
 | PF.4  | Fit, zoom, rotate; scroll within a page                              | 📝     |
 | PF.5  | Reload in place on change                                            | 📝     |
@@ -110,7 +110,7 @@ alpha directions, as for SVG); a corrupt file and an out-of-range page are
 errors, not panics; a TUI-only build compiles without hayro in the tree
 (`cargo tree -p lattice-cli` check). A bench for probe and render.
 
-### PF.2 — `pdf-mode` 📝
+### PF.2 — `pdf-mode` ✅
 
 A major in `lattice-mode` beside `image-mode`: `presents_extensions = ["pdf"]`,
 the three read-only gates, the probe through the mode's `AsyncMediaSource` on
@@ -122,6 +122,33 @@ Tests: `:e x.pdf` never reads the file into a rope; the buffer passes
 `:bd`, modeline); `dd`, `x`, insert and `:w` are refused, and `:w other.pdf`
 is allowed; the label lines land without a keypress; page 1's line is on the
 first frame.
+
+**As built.** `lattice_mode::modes::PdfMode`, registered with the foundation
+modes. The probe is a service, `PdfProbeHandle`: `lattice-mode` cannot depend
+on `lattice-media` (the codec and PDF graph that crate keeps out of nearly
+every build), so the host implements it over `lattice_media::pdf_page_sizes`
+(`lattice-host/src/pdf_probe.rs`). The host registers it only when
+`lattice_media::PDF_SUPPORTED`. `pdf_page_sizes` exists in every build, so the
+host needs no feature of its own. `on_activate` returns at once. A task on
+the LSP runtime reads the sizes on a blocking thread, replaces the buffer's
+text, `mark_clean`s it (or every PDF would open modified and `:q` would
+refuse) and publishes `PdfPagesLabelled`, whose boot-registered wake puts the
+labels on screen. No probe service gives one line naming the build; a broken
+file gives one line naming the file and the reason.
+
+Tests changed from the list above. `:w other.pdf` is not "allowed": it would
+write the page list into a file named `.pdf`, and the read-only refusal
+covers it, as it does for `image-mode`. Counted `G` is not tested at the
+host: counts are attached by the renderer peer's keymap before a chord
+reaches `Editor`, and `G` / `gg` / `j` / `k` already show that pages are
+lines. "Page 1's line on the first frame" is line 0, which the presented
+buffer has before anything is read. Its *label* lands with the others.
+The labels-without-a-keypress test was checked against a build with the
+wake removed, and **still passed**, because boot's other wakes covered it. So a
+second test pins the wake alone: the write announces itself, and the
+announcement wakes a quiet editor. That one fails without the wake.
+`lattice-host`'s tests enable `lattice-media/pdf` through a dev-dependency, so
+the probe they open files with is the real one.
 
 ### PF.3 — pages 📝
 

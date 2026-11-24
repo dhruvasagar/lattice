@@ -38,6 +38,7 @@ pub mod help;
 pub mod hover;
 pub mod image;
 pub mod messages;
+pub mod pdf;
 pub mod surround;
 pub mod table;
 pub mod text;
@@ -56,6 +57,7 @@ pub use help::{HelpMode, register_help_mode_actions};
 pub use hover::HoverMode;
 pub use image::{ImageFileMediaSource, ImageMode, is_image_path, register_image_media_source};
 pub use messages::MessagesMode;
+pub use pdf::{PdfMode, PdfPagesLabelled, PdfProbe, PdfProbeHandle, is_pdf_path};
 pub use text::TextMode;
 pub use version::{VersionMode, VersionReport, VersionSection, set_version_report};
 pub use which_key::{
@@ -100,6 +102,12 @@ pub fn register_foundation_modes(registry: &mut ModeRegistry) {
     registry
         .register(ImageMode)
         .expect("image-mode must register without conflict");
+    // `pdf-mode`: image-mode's shape with one block per page. It presents
+    // `.pdf` in every build, so a PDF is never read into a rope even where
+    // nothing draws its pages.
+    registry
+        .register(PdfMode)
+        .expect("pdf-mode must register without conflict");
     // `repl-mode`: the REPL input surface (i/a/o/… → jump-to-prompt+Insert).
     // A `Manual` minor mode; REPL majors (`ai-conversation`, terminal, claude)
     // pull it in via `implies()`, so it never touches an ordinary buffer.

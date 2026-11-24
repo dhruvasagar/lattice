@@ -59,6 +59,34 @@ use std::sync::{Arc, Mutex};
 #[cfg(feature = "pdf")]
 pub mod pdf;
 
+/// True when this build reads PDFs: the `pdf` feature, which only the GUI
+/// build turns on.
+///
+/// A constant rather than a `cfg` the caller writes, because a caller
+/// cannot test another crate's feature: `lattice-host` links whichever
+/// `lattice-media` the build resolved, and this is how it finds out which.
+pub const PDF_SUPPORTED: bool = cfg!(feature = "pdf");
+
+/// Every page's size of the PDF at `path`, in points, as it is displayed
+/// (PF.2). Blocking: a file read and a parse, for `spawn_blocking`.
+///
+/// Present in every build so its callers need no `cfg` of their own. Without
+/// the `pdf` feature it reads nothing and says so; check [`PDF_SUPPORTED`]
+/// first to tell "this build cannot" from "this file is broken".
+pub fn pdf_page_sizes(path: &Path) -> Result<Vec<(f32, f32)>, MediaError> {
+    #[cfg(feature = "pdf")]
+    {
+        pdf::PdfDocument::open(path).map(|doc| doc.info().pages.clone())
+    }
+    #[cfg(not(feature = "pdf"))]
+    {
+        let _ = path;
+        Err(MediaError::Undecodable(
+            "this build does not read PDFs".into(),
+        ))
+    }
+}
+
 /// The byte layout a consumer needs.
 ///
 /// A parameter rather than a fixed output, and that is not speculative

@@ -359,6 +359,10 @@ WASM is a paramount-#1 violation).
 
 ## 8.1 The image file itself (`image-mode`)
 
+*A PDF is the same shape with one block per page:
+[`pdf-mode.md`](pdf-mode.md). The keys the two share (`q`, `R`, `gx`) are on
+`viewer-mode`.*
+
 An `[[file:diagram.png]]` link drew before `:e diagram.png` did, which is
 backwards: the same picture, and opening it directly was the failing case.
 `Document::open` is `read_to_string`, so a PNG never became a buffer at

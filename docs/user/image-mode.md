@@ -1,6 +1,6 @@
 ---
 summary: "image-mode: the major mode for a buffer whose file is a picture — `:e diagram.png` shows the image."
-related: [buffers, read-only-mode, display]
+related: [buffers, read-only-mode, viewer-mode, pdf-mode, display]
 ---
 
 # image-mode
@@ -15,7 +15,7 @@ on bytes that are not text.
 | | |
 |---|---|
 | Activates on | `png`, `jpg`, `jpeg`, `gif`, `webp`, `svg`, `bmp` |
-| Implies | [`read-only-mode`](help:read-only-mode) |
+| Implies | [`read-only-mode`](help:read-only-mode), [`viewer-mode`](help:viewer-mode) |
 | Contributes | ``ReadOnly`` |
 
 ## It is an ordinary buffer
@@ -43,8 +43,10 @@ That is why every way of changing it is refused:
 - the operators — `x`, `dd`, `cw`, `p`,
 - `:w` with no argument, which answers *buffer is read-only*.
 
-To change an image, edit it in an image editor; Lattice picks the file
-up again when you reopen it.
+To change an image, edit it in an image editor (`gx` opens it in the
+system's viewer). When the file changes on disk, the buffer reloads by
+itself and draws the new picture, with the old one shown until it is
+ready; `R` reloads by hand.
 
 ## In the terminal
 
@@ -55,7 +57,9 @@ it just isn't drawn.
 
 ## Keybindings
 
-None of its own. Motions, splits, and buffer commands are the usual
+None of its own. [`viewer-mode`](help:viewer-mode) brings the ones every
+viewer shares: `q` closes the picture, `R` reloads it, `gx` opens it in
+the system's viewer. Motions, splits, and buffer commands are the usual
 ones.
 
 ## See also
@@ -63,4 +67,6 @@ ones.
 - [`buffers`](help:buffers) — listing, switching and closing buffers.
 - [`read-only-mode`](help:read-only-mode) — the minor that refuses the
   operators here.
+- [`viewer-mode`](help:viewer-mode) — `q`, `R` and `gx`.
+- [`pdf-mode`](help:pdf-mode) — the same shape, one page per line.
 - [`display`](help:display) — display options, per buffer.

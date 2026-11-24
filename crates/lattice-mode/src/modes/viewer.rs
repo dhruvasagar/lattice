@@ -1,8 +1,8 @@
 //! `viewer-mode` — what every buffer that PRESENTS a file shares (PF.4).
 //!
 //! `image-mode` and `pdf-mode` show a file rather than edit it, and a viewer
-//! has keys of its own that are not about the file type: `q` closes it and
-//! `R` reads it again.
+//! has keys of its own that are not about the file type: `q` closes it, `R`
+//! reads it again and `gx` hands it to the system's own viewer.
 //! Those keys live here, on one minor both majors imply, rather than
 //! declared again on each major — the shared-behaviour rule
 //! (`prefer-minor-modes-over-duplication`), whose failure mode is a copied
@@ -26,6 +26,9 @@ pub const VIEWER_CLOSE_ACTION: &str = "action:viewer-close";
 
 /// The action `R` runs in a viewer.
 pub const VIEWER_RELOAD_ACTION: &str = "action:viewer-reload";
+
+/// The action `gx` runs in a viewer.
+pub const VIEWER_OPEN_EXTERNALLY_ACTION: &str = "action:viewer-open-externally";
 
 /// Minor mode carrying the keys every file viewer shares. Activated through
 /// [`Mode::implies`] by the majors that present a file.
@@ -56,7 +59,9 @@ impl Mode for ViewerMode {
     /// `q` closes the view, as in zathura, feh and magit. In a buffer that
     /// cannot be edited, vim's `q` (start recording a macro) records nothing
     /// worth replaying. `R` reloads it, as zathura's does; vim's `R` (Replace
-    /// mode) has nothing to replace here.
+    /// mode) has nothing to replace here. `gx` opens the file in the system
+    /// viewer, as vim's `gx` opens the path under the cursor: here the file
+    /// is what is under the cursor. It is also the TUI's way to see a page.
     fn keymap(&self) -> Keymap {
         Keymap::from_entries(viewer_keymap_entries())
     }
@@ -79,6 +84,11 @@ fn viewer_keymap_entries() -> &'static [KeymapEntry] {
                 mode: Normal, chord: "R",
                 doc: "viewer: read the file again, as :e!",
                 cmd: "action:viewer-reload"
+            },
+            keymap_entry! {
+                mode: Normal, chord: "gx",
+                doc: "viewer: open the file in the system's viewer",
+                cmd: "action:viewer-open-externally"
             },
         ]
     })
@@ -116,6 +126,30 @@ pub fn register_viewer_mode_actions(registry: &mut lattice_grammar::CommandRegis
             args_schema: vec![],
         },
     );
+    registry.register_action(
+        VIEWER_OPEN_EXTERNALLY_ACTION,
+        "viewer: open the file in the system's viewer (mode-owned).",
+        ActionSpec {
+            apply: Arc::new(|ctx| Ok(open_externally(ctx.path.as_deref().map(|p| p.as_path())))),
+            args_schema: vec![],
+        },
+    );
+}
+
+/// `gx`'s effect for a viewer backed by `path`: the OS handler (`xdg-open`,
+/// `open`, `explorer`), which takes a plain path as readily as a URI. A
+/// viewer always has a file, but an action can fire anywhere its key is
+/// bound, so the case without one says so instead of doing nothing.
+fn open_externally(path: Option<&std::path::Path>) -> Effect {
+    match path {
+        Some(path) => Effect::OpenExternalUri {
+            uri: path.to_string_lossy().into_owned(),
+        },
+        None => Effect::Echo {
+            level: lattice_grammar::EchoLevel::Warn,
+            text: "gx: this buffer has no file to open".to_string(),
+        },
+    }
 }
 
 #[cfg(test)]
@@ -128,7 +162,21 @@ mod tests {
         let bound: Vec<_> = km.entries.iter().map(|e| e.command).collect();
         assert_eq!(
             bound,
-            [Some(VIEWER_CLOSE_ACTION), Some(VIEWER_RELOAD_ACTION)]
+            [
+                Some(VIEWER_CLOSE_ACTION),
+                Some(VIEWER_RELOAD_ACTION),
+                Some(VIEWER_OPEN_EXTERNALLY_ACTION)
+            ]
         );
+    }
+
+    #[test]
+    fn gx_hands_the_file_to_the_system_viewer() {
+        let path = std::path::Path::new("/papers/a b.pdf");
+        assert!(matches!(
+            open_externally(Some(path)),
+            Effect::OpenExternalUri { uri } if uri == "/papers/a b.pdf"
+        ));
+        assert!(matches!(open_externally(None), Effect::Echo { .. }));
     }
 }

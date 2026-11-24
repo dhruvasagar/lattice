@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Added
+- **`gx` in a PDF or a picture opens it in the system's viewer.** `:help pdf-mode` and `:help viewer-mode` describe the reading keys, reloading, and making lattice your PDF viewer.
 - **Open PDFs with lattice on Linux.** The `.deb` and the AppImage list lattice under "Open with" for PDF files, and change nothing else. `xdg-mime default com.lattice-editor.lattice.desktop application/pdf` makes it the default.
 - **`R` reloads a PDF or a picture**, as `:e!` does, at the page you were on.
 - **Reading keys in a PDF.** `J` / `K` turn pages, and `<Space>` / `<S-Space>`, `<C-f>` / `<C-b>` and `<PageDown>` / `<PageUp>` turn one page with that page at the top. `q` closes the PDF, or a picture, as `:bd` does. The modeline shows `page 3/12`.

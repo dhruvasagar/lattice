@@ -21,7 +21,8 @@ text (design §8).
 | PF.4a | The keymap: page, screen and step navigation; `q`; `page N/M`      | ✅     |
 | PF.4b | Fit width, zoom, rotate, `h` / `l`: scrolling inside a page        | ⛔     |
 | PF.5  | Reload in place on change                                            | ✅     |
-| PF.6  | System viewer, docs, benchmarks                                      | 📝     |
+| PF.6a | `gx`, `:help pdf-mode` / `viewer-mode`, user docs                    | ✅     |
+| PF.6b | Benchmarks: scrolling a long PDF, the pixel cache under scrolling    | 📝     |
 | PF.11 | Lattice as a candidate PDF viewer (Linux desktop entry)              | ✅     |
 | PF.7  | Text: search, selection, copy                                        | ⛔     |
 | PF.8  | Links and the outline                                                | ⛔     |
@@ -321,13 +322,28 @@ pixel cache, and `R` on `viewer-mode`. Pictures share all of it.
   PDF tests drive the reload with `R` because the watcher is a real
   filesystem watch.
 
-### PF.6 — finish 📝
+### PF.6 — finish (PF.6a ✅, PF.6b 📝)
 
 `gx` (`open-external-uri`); `:help pdf-mode`, with the keymap and the
 default-viewer commands of design §5a; `docs/user/` page; CHANGELOG
 Added; probe and render benches recorded in
 [`benchmarks.md`](../benchmarks.md); `inline-media.md` §8.1 points to
 `pdf-mode.md`.
+
+**PF.6a ✅.** `gx` is on `viewer-mode` beside `q` and `R`, so pictures
+have it too: `Effect::OpenExternalUri` with the buffer's path, read from
+`ActionContext::path` (the dispatcher fills it; OM.6b). A plain path, not a
+`file://` URI: `xdg-open`, `open` and `explorer` all take one, and it needs
+no percent-encoding. Pages: `docs/user/pdf-mode.md` (keys, reload, the
+terminal, the `xdg-mime` line, what is not built), `viewer-mode.md`, and
+`image-mode.md` brought up to date (it implies `viewer-mode`, and reloads).
+**`every_mode_has_a_help_page` had been red since PF.2** for `pdf-mode`, and
+since PF.4a for `viewer-mode`: neither slice ran it. Green now. The probe
+and render benches were already recorded in PF.1.
+
+**PF.6b 📝.** The benches PF.3 deferred: the scroll walks over a long PDF
+(`<C-f>` now charges media rows per line, PF.4a) and the GPUI pixel cache's
+per-frame claim and get under scrolling.
 
 ### PF.11 — a candidate PDF viewer on Linux ✅
 

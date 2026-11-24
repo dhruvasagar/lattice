@@ -1274,6 +1274,8 @@ impl Editor {
         // created; the producer itself lives with the mode, so the major and
         // the thing that renders its buffers stay one surface.
         lattice_mode::modes::register_image_media_source(&media_registry);
+        // PF.3: and `pdf-mode`'s, one block per page.
+        lattice_mode::modes::register_pdf_media_source(&media_registry);
         // PF.2: `pdf-mode` reads page counts through the host, which can reach
         // `lattice-media` and `lattice-mode` cannot. Registered only in a build
         // that reads PDFs; without it the mode says the build is the reason.

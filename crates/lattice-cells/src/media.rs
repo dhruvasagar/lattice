@@ -48,14 +48,34 @@ use std::sync::Arc;
 
 /// Where a block's pixels come from.
 ///
-/// A single variant today. It is an enum rather than a bare `PathBuf` because
-/// the producers already in view — an org `[[http://…]]` link, a generated
-/// chart, a rendered LaTeX fragment — are not files on disk, and widening a
-/// struct field later is a breaking change for every construction site.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// An enum rather than a bare `PathBuf` because not every block is a picture
+/// file: a PDF page is one page of a file, and the producers in view after it
+/// (an org `[[http://…]]` link, a generated chart, a rendered LaTeX fragment)
+/// are not files on disk at all. It is also the cache key, on both the host
+/// and the drawing peer, so two pages of one PDF are two entries.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum MediaSource {
-    /// A file on disk, already resolved to an absolute path by the producer.
+    /// A picture file on disk, already resolved to an absolute path by the
+    /// producer.
     Path(PathBuf),
+    /// One page of a PDF on disk (PF.3, `pdf-mode.md` §1), 0-based. A page
+    /// is vector: it has no natural pixel size, so it is measured in points
+    /// and drawn at whatever size its block is (see [`MediaFit::Page`]).
+    PdfPage {
+        /// The PDF, already resolved to an absolute path.
+        path: PathBuf,
+        /// 0-based page index.
+        page: u32,
+    },
+}
+
+impl MediaSource {
+    /// The file the pixels are read from, whatever the variant.
+    pub fn file(&self) -> &std::path::Path {
+        match self {
+            MediaSource::Path(p) | MediaSource::PdfPage { path: p, .. } => p.as_path(),
+        }
+    }
 }
 
 /// How the intrinsic size maps into the block's box.
@@ -77,6 +97,13 @@ pub enum MediaFit {
     /// block sits among text, and sizing one to the window would let a
     /// single diagram crowd out the document around it.
     Window,
+    /// Fit the pane's width AND height, preserving aspect ratio, scaling UP
+    /// as well as down. For a PDF page (`pdf-mode`'s default, "fit page"): a
+    /// page is vector and is rendered at the size it is shown, so the
+    /// never-upscale rule that protects a small raster does not apply, and a
+    /// page drawn at its point size would be a postage stamp on a large
+    /// monitor. Not on the WIT surface, for [`MediaFit::Window`]'s reason.
+    Page,
 }
 
 /// An inline media block: what to draw, how big, and what to say instead.
@@ -118,14 +145,26 @@ impl MediaBlock {
     /// A block for `path`, with `alt` defaulting to the file's name when the
     /// producer has nothing better.
     pub fn new(path: impl Into<PathBuf>, alt: Option<String>) -> Self {
-        let path = path.into();
-        let alt = alt.filter(|a| !a.trim().is_empty()).unwrap_or_else(|| {
-            path.file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| "image".to_string())
-        });
+        Self::from_source(MediaSource::Path(path.into()), alt)
+    }
+
+    /// A block for any `source`, with `alt` defaulting to what the source
+    /// names: the file's name for a picture, `page N of name.pdf` for a page.
+    pub fn from_source(source: MediaSource, alt: Option<String>) -> Self {
+        let name = source
+            .file()
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned());
+        let fallback = match &source {
+            MediaSource::Path(_) => name.unwrap_or_else(|| "image".to_string()),
+            MediaSource::PdfPage { page, .. } => match name {
+                Some(name) => format!("page {} of {name}", page + 1),
+                None => format!("page {}", page + 1),
+            },
+        };
+        let alt = alt.filter(|a| !a.trim().is_empty()).unwrap_or(fallback);
         Self {
-            source: MediaSource::Path(path),
+            source,
             intrinsic: None,
             fit: MediaFit::default(),
             alt,
@@ -133,10 +172,13 @@ impl MediaBlock {
         }
     }
 
-    /// The path, when the source is one.
+    /// The path, when the source is a picture file. `None` for a PDF page:
+    /// a reader that decodes pictures must not be handed a PDF. Use
+    /// [`MediaSource::file`] for "which file", whatever the variant.
     pub fn path(&self) -> Option<&std::path::Path> {
         match &self.source {
             MediaSource::Path(p) => Some(p.as_path()),
+            MediaSource::PdfPage { .. } => None,
         }
     }
 
@@ -230,6 +272,22 @@ mod tests {
             b.path().unwrap(),
             std::path::Path::new("/tmp/docs/diagram.png")
         );
+    }
+
+    /// A page's fallback names the page as well as the file, and a page is
+    /// never mistaken for a picture by a reader that decodes pictures.
+    #[test]
+    fn a_pdf_page_names_its_page_and_is_not_a_picture_path() {
+        let b = MediaBlock::from_source(
+            MediaSource::PdfPage {
+                path: "/d/paper.pdf".into(),
+                page: 2,
+            },
+            None,
+        );
+        assert_eq!(b.alt, "page 3 of paper.pdf");
+        assert_eq!(b.path(), None);
+        assert_eq!(b.source.file(), std::path::Path::new("/d/paper.pdf"));
     }
 
     /// A blank alt is the same as no alt: an empty box tells the user nothing

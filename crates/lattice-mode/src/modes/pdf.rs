@@ -224,6 +224,84 @@ async fn write_owned_text(handle: &dyn lattice_runtime::Document, text: String) 
     }
 }
 
+/// The media producer that draws a `pdf-mode` buffer's pages (PF.3).
+///
+/// One block per page, each anchored to its label line, through the same
+/// registry, sizing and off-thread decode as `image-mode`'s picture. Sizes
+/// come from the host's measure of the page in points; pixels from the
+/// drawing peer, which renders only the pages it shows.
+#[derive(Debug)]
+pub struct PdfPagesMediaSource;
+
+/// This producer's teardown key, far from any sequential `PluginId` (see
+/// [`IMAGE_FILE_SOURCE_ID`](super::image::IMAGE_FILE_SOURCE_ID)).
+pub const PDF_PAGES_SOURCE_ID: u64 = 0x5044_4650_4147_0001; // "PDFPAG"
+
+impl crate::media_source::AsyncMediaSource for PdfPagesMediaSource {
+    fn source_id(&self) -> u64 {
+        PDF_PAGES_SOURCE_ID
+    }
+
+    fn produce(
+        &self,
+        _buffer_id: u64,
+        path: Option<PathBuf>,
+        line_count: u32,
+        text: String,
+    ) -> crate::media_source::MediaFuture<'_> {
+        let blocks = path
+            .filter(|p| is_pdf_path(p))
+            .map(|p| page_blocks(&p, line_count, &text))
+            .unwrap_or_default();
+        Box::pin(async move { Ok(blocks) })
+    }
+}
+
+/// One block per page, once the labels are written.
+///
+/// Nothing before then, and nothing for the one line that stands in for an
+/// unreadable file: a block per line of THAT would be a page that does not
+/// exist. The labels are recognised by their first line, which names the
+/// count, so a buffer whose text is not a page list for exactly its own line
+/// count draws nothing. Every ordinary buffer pays one extension comparison.
+fn page_blocks(
+    path: &Path,
+    line_count: u32,
+    text: &str,
+) -> Vec<crate::media_source::MediaBlockRequest> {
+    let first = text.lines().next().unwrap_or_default();
+    if line_count == 0 || first != format!("Page 1 of {line_count}") {
+        return Vec::new();
+    }
+    (0..line_count)
+        .map(|page| crate::media_source::MediaBlockRequest {
+            anchor_line: page,
+            source: lattice_cells::MediaSource::PdfPage {
+                path: path.to_path_buf(),
+                page,
+            },
+            // `None`: `page N of name.pdf` is the fallback, and is what a
+            // page that cannot be drawn should say.
+            alt: None,
+            // Fit page, design §2's default. PF.4 makes it the buffer's
+            // `pdf.zoom`.
+            fit: lattice_cells::MediaFit::Page,
+        })
+        .collect()
+}
+
+/// Register [`PdfPagesMediaSource`] against the boot-time media registry.
+/// Here, with the mode, for `image-mode`'s reason: the major and the producer
+/// that draws its buffers are one surface.
+pub fn register_pdf_media_source(registry: &crate::media_source::MediaSourceRegistryHandle) {
+    let producer: Arc<dyn crate::media_source::AsyncMediaSource> = Arc::new(PdfPagesMediaSource);
+    registry.rcu(|current| {
+        let mut next = (**current).clone();
+        next.register(producer.clone());
+        Arc::new(next)
+    });
+}
+
 /// True when `path` is a file `pdf-mode` presents.
 pub fn is_pdf_path(path: &Path) -> bool {
     path.extension()
@@ -281,6 +359,48 @@ mod tests {
 
     fn probe(r: Result<Vec<(f32, f32)>, String>) -> Option<PdfProbeHandle> {
         Some(Arc::new(Fixed(r)))
+    }
+
+    /// A block per labelled line, each naming its own page, and nothing for a
+    /// buffer that is not (yet) a page list: before the labels land, the
+    /// one-line error, or any other file.
+    #[tokio::test]
+    async fn the_producer_draws_one_page_per_label_and_nothing_else() {
+        use crate::media_source::AsyncMediaSource;
+        let src = PdfPagesMediaSource;
+        let path: PathBuf = "/a/paper.pdf".into();
+
+        let blocks = src
+            .produce(1, Some(path.clone()), 3, page_labels(3))
+            .await
+            .unwrap();
+        assert_eq!(blocks.len(), 3);
+        for (i, b) in blocks.iter().enumerate() {
+            assert_eq!(b.anchor_line, i as u32, "page N hangs below line N");
+            assert_eq!(
+                b.source,
+                lattice_cells::MediaSource::PdfPage {
+                    path: path.clone(),
+                    page: i as u32
+                }
+            );
+            assert_eq!(b.fit, lattice_cells::MediaFit::Page);
+        }
+
+        for (p, lines, text) in [
+            (Some(path.clone()), 1, String::new()),
+            (
+                Some(path.clone()),
+                1,
+                "paper.pdf: not a readable PDF (bad xref)".to_string(),
+            ),
+            (Some(path.clone()), 2, page_labels(3)),
+            (Some("/a/notes.org".into()), 3, page_labels(3)),
+            (None, 3, page_labels(3)),
+        ] {
+            let blocks = src.produce(1, p, lines, text).await.unwrap();
+            assert!(blocks.is_empty(), "{blocks:?}");
+        }
     }
 
     #[tokio::test]

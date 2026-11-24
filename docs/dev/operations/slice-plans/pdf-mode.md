@@ -16,7 +16,8 @@ text (design §8).
 | PF.0  | Spike: hayro against a corpus — fidelity, time per page, memory      | ✅     |
 | PF.1  | `lattice-media` `pdf` feature: probe and render a page               | ✅     |
 | PF.2  | `pdf-mode`: presents `.pdf`, one label line per page, read-only      | ✅     |
-| PF.3  | A media block per page, rendered near the viewport, byte-bounded cache | 📝   |
+| PF.3a | A media block per page, sized from its points before it is drawn    | ✅     |
+| PF.3b | GPUI draws the pages: near the viewport, two passes, byte-bounded cache | 📝   |
 | PF.4  | The keymap: page, screen and step navigation; fit, zoom, rotate      | 📝     |
 | PF.5  | Reload in place on change                                            | 📝     |
 | PF.6  | System viewer, docs, benchmarks                                      | 📝     |
@@ -152,7 +153,7 @@ announcement wakes a quiet editor. That one fails without the wake.
 `lattice-host`'s tests enable `lattice-media/pdf` through a dev-dependency, so
 the probe they open files with is the real one.
 
-### PF.3 — pages 📝
+### PF.3 — pages (PF.3a ✅, PF.3b 📝)
 
 One media block per label line, named `MediaSource::PdfPage { path, page }`
 (design §1); render only the pages in the viewport plus one either side, in
@@ -166,6 +167,22 @@ render seam); the cache never exceeds its budget; the document's total height
 is the same before and after the pages land (no reflow); a page that fails
 shows its alt text and error while its neighbours render. GPUI and TUI updated
 together (the TUI's labels and alt, by snapshot).
+
+Split in two, each landing green. **PF.3a ✅** is the substrate, and needs no
+renderer code. `MediaSource::PdfPage { path, page }` and `MediaFit::Page` are
+`Window`, scaling up as well as down. `MediaBlockRequest` now carries a
+`source` instead of a `path`, the same type the sized block holds.
+`MediaBlock::from_source` falls back to `page N of name.pdf` for its alt text,
+and `MediaBlock::path()` is `None` for a page, so the picture decoder is
+never handed a PDF. `pdf-mode`'s `PdfPagesMediaSource` produces one block
+per labelled line, and nothing before the labels or for the one-line error.
+The host's sizing pass measures pages in points, through one parse per PDF
+per pass. **A page reserves no rows on a peer that draws no pixels**: the
+TUI's rendering is the label line, and a picture-style alt row under every
+label would make the list twice as long or more. So the TUI shows exactly
+what PF.2 showed. Until PF.3b, GPUI shows each page's box with its alt text.
+**PF.3b 📝** is the GPUI peer: decode by `MediaSource`, the page renderer,
+the viewport ±1, two passes and `media.cache-mb`.
 
 ### PF.4 — the keymap 📝
 

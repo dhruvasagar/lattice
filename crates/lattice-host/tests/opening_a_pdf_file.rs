@@ -266,3 +266,98 @@ async fn the_labels_announce_themselves_and_the_announcement_wakes_the_editor() 
         "PdfPagesLabelled must wake the editor, or the labels wait for a keypress"
     );
 }
+
+/// Publish a drawing peer's cell metrics: `cols` columns of `col_px`, rows of
+/// `row_px`. The GPUI peer does this; the TUI never does.
+fn with_metrics(editor: &mut Editor, row_px: f32, col_px: f32, cols: u32) {
+    editor.pane_tree.active_mut().viewport_width = cols;
+    editor.dispatch(lattice_host::action::Action::SetCellMetrics { row_px, col_px });
+}
+
+/// `(source, anchor, rows, height_lh, intrinsic)` for each media block the
+/// buffer's cache holds.
+type Sized = (
+    lattice_cells::MediaSource,
+    u32,
+    u16,
+    Option<f32>,
+    Option<(u32, u32)>,
+);
+
+fn sized_blocks(editor: &Editor, id: lattice_core::BufferId) -> Option<Vec<Sized>> {
+    use lattice_host::per_buffer_cache::PerBufferCacheExt;
+    let cache = editor.wasm_media.cache.get_for(id)?;
+    Some(
+        cache
+            .blocks
+            .iter()
+            .map(|(b, anchor, rows)| (b.source.clone(), *anchor, *rows, b.height_lh, b.intrinsic))
+            .collect(),
+    )
+}
+
+/// PF.3: in a peer that draws, every page is a block below its own label,
+/// sized from its points to fill the pane (fit page scales UP, unlike a
+/// picture), before any pixel exists. That is what keeps the document's
+/// height fixed while pages render.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn each_page_is_a_block_below_its_label_sized_to_fill_the_pane() {
+    let dir = tempfile::tempdir().unwrap();
+    let pdf = write(dir.path(), "paper.pdf", &pdf_bytes(3));
+    let mut editor = Editor::boot(CoreDocument::from_text("x\n"));
+    // 80 columns of 10 px and 41 rows of 20 px: an 800 × 800 px area below
+    // the anchor line, larger than a 612 × 792 pt page.
+    editor.viewport_height = 41;
+    with_metrics(&mut editor, 20.0, 10.0, 80);
+
+    let id = open_and_label(&mut editor, &pdf).await;
+    assert!(
+        settle_woken(&mut editor, |e| sized_blocks(e, id)
+            .is_some_and(|b| b.len() == 3))
+        .await,
+        "the pages never became blocks: {:?}",
+        sized_blocks(&editor, id)
+    );
+    let blocks = sized_blocks(&editor, id).unwrap();
+    for (i, (source, anchor, rows, height_lh, intrinsic)) in blocks.into_iter().enumerate() {
+        assert_eq!(
+            source,
+            lattice_cells::MediaSource::PdfPage {
+                path: pdf.clone(),
+                page: i as u32
+            }
+        );
+        assert_eq!(anchor, i as u32, "page N hangs below line N");
+        assert_eq!(intrinsic, Some((612, 792)), "measured in points");
+        // Bound by the height: 800 px is 40 line-heights, scaled up from 792.
+        let h = height_lh.expect("measured");
+        assert!((h - 40.0).abs() < 1e-3, "{h}");
+        assert_eq!(rows, 40);
+    }
+}
+
+/// In a peer that draws no pixels (the TUI), a page reserves nothing: its
+/// label line already says what an alt row would.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn without_a_drawing_peer_the_pages_reserve_no_rows() {
+    let dir = tempfile::tempdir().unwrap();
+    let pdf = write(dir.path(), "paper.pdf", &pdf_bytes(3));
+    let mut editor = Editor::boot(CoreDocument::from_text("x\n"));
+
+    let id = open_and_label(&mut editor, &pdf).await;
+    let version = editor.buffers.document_handle(id).unwrap().version();
+    // Wait for a refresh against the labelled text to have landed.
+    let refreshed = |e: &Editor| {
+        use lattice_host::per_buffer_cache::PerBufferCacheExt;
+        e.wasm_media
+            .cache
+            .get_for(id)
+            .is_some_and(|c| c.document_version == version)
+    };
+    editor.run_tick_pending();
+    assert!(
+        settle_woken(&mut editor, refreshed).await,
+        "no refresh landed"
+    );
+    assert_eq!(sized_blocks(&editor, id), Some(vec![]));
+}

@@ -57,7 +57,10 @@ pub use help::{HelpMode, register_help_mode_actions};
 pub use hover::HoverMode;
 pub use image::{ImageFileMediaSource, ImageMode, is_image_path, register_image_media_source};
 pub use messages::MessagesMode;
-pub use pdf::{PdfMode, PdfPagesLabelled, PdfProbe, PdfProbeHandle, is_pdf_path};
+pub use pdf::{
+    PdfMode, PdfPagesLabelled, PdfPagesMediaSource, PdfProbe, PdfProbeHandle, is_pdf_path,
+    register_pdf_media_source,
+};
 pub use text::TextMode;
 pub use version::{VersionMode, VersionReport, VersionSection, set_version_report};
 pub use which_key::{

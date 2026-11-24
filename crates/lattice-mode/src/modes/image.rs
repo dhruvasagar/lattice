@@ -128,7 +128,7 @@ impl crate::media_source::AsyncMediaSource for ImageFileMediaSource {
             path.filter(|p| is_image_path(p))
                 .map(|p| crate::media_source::MediaBlockRequest {
                     anchor_line: 0,
-                    path: p,
+                    source: lattice_cells::MediaSource::Path(p),
                     // `None`, so `MediaBlock::new` falls back to the file name.
                     // That name is what shows if the picture cannot be decoded,
                     // and for a buffer whose whole content IS the file, the file
@@ -215,7 +215,10 @@ mod tests {
             .expect("an image buffer is not an error");
         assert_eq!(blocks.len(), 1);
         assert_eq!(blocks[0].anchor_line, 0, "the block hangs below line 0");
-        assert_eq!(blocks[0].path, std::path::Path::new("/a/shot.png"));
+        assert_eq!(
+            blocks[0].source,
+            lattice_cells::MediaSource::Path("/a/shot.png".into())
+        );
         assert_eq!(blocks[0].alt, None, "so the file-name fallback applies");
 
         for other in [Some("/a/notes.org".into()), None] {

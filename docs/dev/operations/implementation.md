@@ -7563,6 +7563,19 @@ Design: [`../architecture/refactor.md`](../architecture/refactor.md);
 [`../architecture/lsp-architecture.md`](../architecture/lsp-architecture.md) §16.
 Slice plan (archived 2026-11-17, every slice ✅ or ❌): [`slice-plans/archive/refactor.md`](slice-plans/archive/refactor.md).
 
+## PDF mode (PF, 2026-11-24 — 📝 designed, not built)
+
+`:e paper.pdf` reads the paper in the GUI. `pdf-mode` is an ordinary major
+beside `image-mode` in `lattice-mode`, claiming `.pdf` through
+`presents_extensions`; its buffer is one label line per page, and each line
+anchors one media block on the inline-media substrate, so `42G` is page 42.
+Pages render off-thread with hayro (pure Rust, Apache-2.0 OR MIT) behind
+`lattice-media`'s `pdf` feature, which `gui` enables; the TUI shows the
+labels and alt text, as it does for images. PF.0 is a go / no-go on hayro's
+fidelity, with pdfium as the recorded fallback.
+Design: [`../architecture/pdf-mode.md`](../architecture/pdf-mode.md); slice
+plan: [`slice-plans/pdf-mode.md`](slice-plans/pdf-mode.md).
+
 ---
 
 ## Conventions for updating this doc

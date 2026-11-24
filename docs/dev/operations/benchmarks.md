@@ -4343,6 +4343,28 @@ it now takes ownership and converts in place (21.0 → 15.0 ms at 1×, 76.6 →
 forces (design §4), cost 1–5 ms per page in the spike: not worth working
 around.
 
+### Scrolling a long PDF (`crates/lattice-host/benches/pdf_scroll.rs`, PF.6b)
+
+⚠️ **AMD Ryzen 7 9700X, WSL2 (Linux 6.18), rustc 1.94.0, 2026-11-25.**
+
+Since PF.4a a screen scroll charges each line the rows its media reserves,
+so `<C-f>` in a PDF looks up the buffer's media cache once per line it walks.
+Each row is a PAIR of keystrokes (forward, then back), through
+`dispatch_chord`, on a peer that publishes cell metrics.
+
+| Case | Median (pair) |
+|---|---|
+| `<C-f>` `<C-b>` in a 500-page PDF | 272 µs |
+| `<C-d>` `<C-u>` in a 500-page PDF | 273 µs |
+| `<C-f>` `<C-b>` in a 2000-line text file (baseline) | 278 µs |
+
+**The media lookups cost nothing measurable.** The PDF rows are within noise
+of the text baseline; both are the keystroke dispatch path, about 136 µs a key.
+
+The GPUI pixel cache's per-frame cost (`crates/lattice-ui-gpui/benches/media_pixels.rs`)
+is built but not yet recorded: the run was cut short twice by memory pressure
+on the dev box.
+
 ---
 
 ## What's NOT here

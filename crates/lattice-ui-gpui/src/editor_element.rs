@@ -566,8 +566,11 @@ pub(crate) struct EditorElement {
 /// and its claim with it, so it is decoded again if it scrolls back. What was
 /// drawn in this frame or the last is never evicted: a budget smaller than a
 /// screenful is exceeded rather than made to flicker.
+///
+/// `pub` for the `media_pixels` bench (PF.6b); outside `bench-internals`
+/// the module is crate-private, so it reaches no further than before.
 #[derive(Default)]
-pub(crate) struct MediaPixels {
+pub struct MediaPixels {
     /// Interior mutability because the two sides run on different threads:
     /// `paint` reads on the UI thread every frame, a background decode writes
     /// when it finishes. A `Mutex` rather than RCU because the map is small
@@ -616,10 +619,7 @@ const DEFAULT_MEDIA_BUDGET: usize = 256 * 1024 * 1024;
 impl MediaPixels {
     /// Pixels for `block`, if they have been decoded. Never loads. Marks the
     /// entry drawn this frame, which is what protects it from eviction.
-    pub(crate) fn get(
-        &self,
-        block: &lattice_cells::MediaBlockRef,
-    ) -> Option<Arc<gpui::RenderImage>> {
+    pub fn get(&self, block: &lattice_cells::MediaBlockRef) -> Option<Arc<gpui::RenderImage>> {
         let mut inner = self.inner.lock().ok()?;
         let frame = inner.frame;
         let entry = inner.ready.get_mut(&block.source)?;
@@ -628,14 +628,14 @@ impl MediaPixels {
     }
 
     /// Start a frame. Called once from prepaint, before any `get`.
-    pub(crate) fn begin_frame(&self) {
+    pub fn begin_frame(&self) {
         if let Ok(mut inner) = self.inner.lock() {
             inner.frame += 1;
         }
     }
 
     /// Set the byte budget (`media.cache-mb`), evicting at once if it shrank.
-    pub(crate) fn set_budget(&self, bytes: usize) {
+    pub fn set_budget(&self, bytes: usize) {
         if let Ok(mut inner) = self.inner.lock()
             && inner.budget != bytes
         {
@@ -651,12 +651,7 @@ impl MediaPixels {
     ///
     /// Called from prepaint, on the UI thread, so it does nothing but a hash
     /// lookup — the decode itself is spawned by the caller.
-    pub(crate) fn claim(
-        &self,
-        source: &lattice_cells::MediaSource,
-        target_h: u32,
-        revision: u64,
-    ) -> bool {
+    pub fn claim(&self, source: &lattice_cells::MediaSource, target_h: u32, revision: u64) -> bool {
         let Ok(mut inner) = self.inner.lock() else {
             return false;
         };
@@ -675,7 +670,7 @@ impl MediaPixels {
     /// Record a finished decode, replacing any earlier one for the same
     /// source (a page's sharp pass replaces its soft one). Called from the
     /// landing, never from paint.
-    pub(crate) fn insert(
+    pub fn insert(
         &self,
         source: lattice_cells::MediaSource,
         image: Arc<gpui::RenderImage>,

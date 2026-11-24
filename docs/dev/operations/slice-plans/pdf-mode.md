@@ -22,7 +22,7 @@ text (design §8).
 | PF.4b | Fit width, zoom, rotate, `h` / `l`: scrolling inside a page        | ⛔     |
 | PF.5  | Reload in place on change                                            | ✅     |
 | PF.6a | `gx`, `:help pdf-mode` / `viewer-mode`, user docs                    | ✅     |
-| PF.6b | Benchmarks: scrolling a long PDF, the pixel cache under scrolling    | 📝     |
+| PF.6b | Benchmarks: scrolling a long PDF, the pixel cache under scrolling    | 🚧     |
 | PF.11 | Lattice as a candidate PDF viewer (Linux desktop entry)              | ✅     |
 | PF.7  | Text: search, selection, copy                                        | ⛔     |
 | PF.8  | Links and the outline                                                | ⛔     |
@@ -322,7 +322,7 @@ pixel cache, and `R` on `viewer-mode`. Pictures share all of it.
   PDF tests drive the reload with `R` because the watcher is a real
   filesystem watch.
 
-### PF.6 — finish (PF.6a ✅, PF.6b 📝)
+### PF.6 — finish (PF.6a ✅, PF.6b 🚧)
 
 `gx` (`open-external-uri`); `:help pdf-mode`, with the keymap and the
 default-viewer commands of design §5a; `docs/user/` page; CHANGELOG
@@ -341,9 +341,19 @@ terminal, the `xdg-mime` line, what is not built), `viewer-mode.md`, and
 since PF.4a for `viewer-mode`: neither slice ran it. Green now. The probe
 and render benches were already recorded in PF.1.
 
-**PF.6b 📝.** The benches PF.3 deferred: the scroll walks over a long PDF
+**PF.6b 🚧.** The benches PF.3 deferred: the scroll walks over a long PDF
 (`<C-f>` now charges media rows per line, PF.4a) and the GPUI pixel cache's
 per-frame claim and get under scrolling.
+- `pdf_scroll` (host) ✅, recorded: a `<C-f>`/`<C-b>` pair is 272 µs in a
+  500-page PDF against 278 µs in a 2000-line file. The per-line media lookup
+  is noise next to dispatch.
+- `media_pixels` (GPUI) built and type-checked, **not yet run**: twice the
+  bench build was cut short by memory pressure on the dev box. `MediaPixels`
+  and the methods a frame calls are `pub` for it; the module stays
+  crate-private outside `bench-internals`.
+- **Found, not ours:** `editor_element_frame` (the X5 bench) does not compile
+  on clean HEAD (6 `E0308`, `&Vec<(u32, u32)>` where `&RowCoords` is now
+  expected). Left for its owner; `cargo bench --benches` fails until then.
 
 ### PF.11 — a candidate PDF viewer on Linux ✅
 

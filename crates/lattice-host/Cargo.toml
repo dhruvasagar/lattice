@@ -332,6 +332,13 @@ harness = false
 name = "modeline"
 harness = false
 
+# PF.6b: a screen scroll in a 500-page PDF, where the walk charges every
+# line its media rows, against the same keys in a text file. See
+# `benches/pdf_scroll.rs`.
+[[bench]]
+name = "pdf_scroll"
+harness = false
+
 # IC.3: re-ranking an open insert-completion popup — the one match / rank /
 # dedup path its open, each keystroke and each async landing all run. On
 # the keystroke path. See `benches/insert_completion.rs`.

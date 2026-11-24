@@ -166,6 +166,13 @@ name = "editor_element_frame"
 harness = false
 required-features = ["window", "bench-internals"]
 
+# PF.6b: the pixel cache's per-frame claim / get for a screenful of PDF
+# pages, near and deep in a 500-page document. See `benches/media_pixels.rs`.
+[[bench]]
+name = "media_pixels"
+harness = false
+required-features = ["window", "bench-internals"]
+
 [dev-dependencies]
 # The peer conformance scenarios live in the host and run here, through this
 # peer's own key and dispatch entry points (`lattice_host::peer_conformance`).

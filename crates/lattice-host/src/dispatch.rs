@@ -8474,6 +8474,17 @@ impl Editor {
         }
     }
 
+    /// The next (`down`) or previous visible line from the cursor, fold-aware:
+    /// the least a screen or half-screen scroll moves.
+    fn one_visible_line(&self, down: bool, total: u32) -> u32 {
+        let fold_idx = crate::folds::FoldIndex::from_folds(&self.folds, self.foldenable());
+        if down {
+            crate::folds::nth_visible_line_forward(&fold_idx, self.cursor.line, 1, total)
+        } else {
+            crate::folds::nth_visible_line_backward(&fold_idx, self.cursor.line, 1)
+        }
+    }
+
     /// The backward twin of [`Self::line_forward_by_budget`], mirroring
     /// `folds::nth_visible_line_backward`.
     fn line_backward_by_budget(&self, from: u32, budget: f32) -> u32 {
@@ -8523,6 +8534,13 @@ impl Editor {
         if let Some(w) = self.row_weights.get(line) {
             return w;
         }
+        // PF.4: the third kind of tall row, a line with media below it (a
+        // picture, a PDF page), costs its own row plus the rows its blocks
+        // reserve. Without this `<C-f>` counted a PDF page as one line and
+        // turned a screenful of pages at once.
+        if let Some(rows) = self.media_rows_below(line) {
+            return 1.0 + rows as f32;
+        }
         let Some(headings) = self.heading_heights() else {
             return 1.0;
         };
@@ -8534,6 +8552,32 @@ impl Editor {
         } else {
             1.0
         }
+    }
+
+    /// The rows media reserves below `line` in the active buffer, when a peer
+    /// that draws pixels is attached.
+    ///
+    /// Gated on [`Editor::cell_metrics`] as headings are: the terminal draws
+    /// a picture as alt text in rows that are one line tall each, and its
+    /// walks keep costing what they always did. A PDF page reserves nothing
+    /// there at all.
+    fn media_rows_below(&self, line: u32) -> Option<u32> {
+        self.cell_metrics?;
+        use crate::per_buffer_cache::PerBufferCacheExt;
+        let cache = self.wasm_media.cache.get_for(self.active_buffer_id())?;
+        cache.rows_by_anchor.get(&line).copied()
+    }
+
+    /// True when any line of the active buffer carries media rows the walks
+    /// charge (see [`Self::media_rows_below`]).
+    fn has_weighted_media(&self) -> bool {
+        use crate::per_buffer_cache::PerBufferCacheExt;
+        self.cell_metrics.is_some()
+            && self
+                .wasm_media
+                .cache
+                .get_for(self.active_buffer_id())
+                .is_some_and(|c| !c.rows_by_anchor.is_empty())
     }
 
     /// GD.7c: the reader the scroll walks ask "is this line a scaled
@@ -26342,7 +26386,29 @@ impl Editor {
         // The topmost line that still fills the window; scrolling past it would
         // leave blank rows below the buffer.
         let top_max = last.saturating_sub(height.saturating_sub(1));
-        if down {
+        // PF.4: with media below some lines, `n` lines is not half a screen:
+        // a PDF page is one line. Walk half a screen's rows instead, at least
+        // one line, and move the view by as many lines. Without media the
+        // arm below is unchanged, so text keeps vim's exact `<C-d>`.
+        if self.has_weighted_media() {
+            let total = buffer.content_line_count();
+            let from = self.cursor.line;
+            let mut to = if down {
+                self.line_forward_by_budget(from, n as f32, total)
+            } else {
+                self.line_backward_by_budget(from, n as f32)
+            };
+            if to == from {
+                to = self.one_visible_line(down, total);
+            }
+            let to = to.min(last);
+            self.cursor.line = to;
+            self.scroll = if down {
+                self.scroll.saturating_add(to - from).min(last)
+            } else {
+                self.scroll.saturating_sub(from - to)
+            };
+        } else if down {
             self.cursor.line = self.cursor.line.saturating_add(n).min(last);
             self.scroll = self.scroll.saturating_add(n).min(top_max);
         } else {
@@ -26368,12 +26434,24 @@ impl Editor {
         // IM.1b: `step` is a budget in line-heights, not a line count — a
         // page moves by as much of the viewport as fits, and with a tall row
         // in the way that is fewer lines.
-        let new_line = if down {
+        let mut new_line = if down {
             self.line_forward_by_budget(self.cursor.line, step as f32, total)
         } else {
             self.line_backward_by_budget(self.cursor.line, step as f32)
         }
         .min(last);
+        // A line taller than the screen (a PDF page, a large picture) would
+        // leave the walk where it started; vim's `<C-f>` always moves.
+        if new_line == self.cursor.line {
+            new_line = self.one_visible_line(down, total).min(last);
+        }
+        // With media rows, put the line turned to at the top, as zathura's
+        // page scroll does. Left to `ensure_cursor_visible`, which counts
+        // lines, a PDF page turned to sits below the screen. Text keeps vim's
+        // cursor-led placement.
+        if self.has_weighted_media() {
+            self.scroll = new_line;
+        }
         // VM.3j-1: vim's `<C-f>` / `<C-b>` land on the first non-blank under
         // `startofline` (9.2: `<C-f>` from 3,6 → 21,3; 21,6 with the option
         // off). The line this walks to is unchanged — only the column is.

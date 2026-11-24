@@ -361,3 +361,47 @@ async fn without_a_drawing_peer_the_pages_reserve_no_rows() {
     );
     assert_eq!(sized_blocks(&editor, id), Some(vec![]));
 }
+
+/// Press a chord sequence spelled as in a keymap: `"<C-f>"`, `"3J"`.
+fn keys(editor: &mut Editor, spelling: &str) {
+    let mut partial = Vec::new();
+    for chord in lattice_protocol::chord::parse_chord_sequence(spelling).unwrap() {
+        let _ = editor.dispatch_chord(chord, &mut partial);
+    }
+}
+
+/// A drawing peer's geometry with an 800 px tall pane, and a PDF of `pages`
+/// pages opened and drawn in it: each page fills the pane (fit page).
+async fn open_drawn(pages: usize) -> (tempfile::TempDir, Editor, lattice_core::BufferId) {
+    let dir = tempfile::tempdir().unwrap();
+    let pdf = write(dir.path(), "paper.pdf", &pdf_bytes(pages));
+    let mut editor = Editor::boot(CoreDocument::from_text("x\n"));
+    editor.viewport_height = 41;
+    with_metrics(&mut editor, 20.0, 10.0, 80);
+    let id = open_and_label(&mut editor, &pdf).await;
+    assert!(
+        settle_woken(&mut editor, |e| sized_blocks(e, id)
+            .is_some_and(|b| b.len() == pages))
+        .await,
+        "the pages never became blocks"
+    );
+    (dir, editor, id)
+}
+
+/// vim's screen and step scrolls charge a line the rows its media reserves,
+/// so in a PDF (a page per line, each filling the pane) each turns one page.
+/// Before, `<C-f>` counted every page as one line and jumped to the end.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn vims_scroll_keys_turn_one_page_in_fit_page() {
+    let (_dir, mut editor, _id) = open_drawn(6).await;
+    keys(&mut editor, "<C-f>");
+    assert_eq!(editor.cursor.line, 1, "<C-f>");
+    keys(&mut editor, "<C-b>");
+    assert_eq!(editor.cursor.line, 0, "<C-b>");
+    keys(&mut editor, "gg");
+    keys(&mut editor, "<C-e>");
+    assert_eq!(editor.scroll, 1, "<C-e> scrolls a page off the top");
+    assert_eq!(editor.cursor.line, 1, "and the cursor goes with it");
+    keys(&mut editor, "<C-y>");
+    assert_eq!(editor.scroll, 0);
+}

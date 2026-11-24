@@ -66,6 +66,30 @@ pub struct WasmMediaCache {
     pub geometry: Option<MediaGeometry>,
     /// One entry per block: the descriptor plus the rows it reserves.
     pub blocks: Vec<(Arc<lattice_cells::MediaBlock>, u32, u16)>,
+    /// The rows reserved below each anchor line, summed over its blocks.
+    /// What the scroll walks charge a line that carries media (PF.4): a PDF
+    /// page is one line and a screen of rows, and `<C-f>` must know it.
+    pub rows_by_anchor: std::collections::HashMap<u32, u32>,
+}
+
+impl WasmMediaCache {
+    /// A cache entry for `blocks`, with its anchor index built.
+    pub fn new(
+        document_version: u64,
+        geometry: Option<MediaGeometry>,
+        blocks: Vec<(Arc<lattice_cells::MediaBlock>, u32, u16)>,
+    ) -> Self {
+        let mut rows_by_anchor = std::collections::HashMap::new();
+        for (_, anchor, rows) in &blocks {
+            *rows_by_anchor.entry(*anchor).or_insert(0) += u32::from(*rows);
+        }
+        Self {
+            document_version,
+            geometry,
+            blocks,
+            rows_by_anchor,
+        }
+    }
 }
 
 /// The [`Editor`]'s cohesive WASM-media wiring. Defaults to inert, so
@@ -292,14 +316,7 @@ impl Editor {
                 let unchanged = cache_slot
                     .get_for(buffer_id)
                     .is_some_and(|prior| same_blocks(&prior.blocks, &blocks));
-                cache_slot.insert_for(
-                    buffer_id,
-                    WasmMediaCache {
-                        document_version: version,
-                        geometry,
-                        blocks,
-                    },
-                );
+                cache_slot.insert_for(buffer_id, WasmMediaCache::new(version, geometry, blocks));
                 unchanged
             };
             if !unchanged {
@@ -593,14 +610,7 @@ mod tests {
         blocks: Vec<(Arc<lattice_cells::MediaBlock>, u32, u16)>,
     ) -> MediaVirtualRowProvider {
         let cache: PerBufferCache<WasmMediaCache> = Default::default();
-        cache.insert_for(
-            BufferId(1),
-            WasmMediaCache {
-                document_version: 1,
-                geometry: None,
-                blocks,
-            },
-        );
+        cache.insert_for(BufferId(1), WasmMediaCache::new(1, None, blocks));
         MediaVirtualRowProvider::new(99, BufferId(1), cache, Arc::new(AtomicU64::new(7)), 40)
     }
 

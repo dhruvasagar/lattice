@@ -20389,6 +20389,16 @@ impl Editor {
         // adopted at its start and recorded its own write.
         let before = self.cursor;
         self.maybe_adopt_owner_write();
+        // PF.5: a bulk owner rewrite is deliberately NOT adopted (the
+        // dashboard case above `should_adopt_owner_write`), so one that SHRANK
+        // the buffer left the caret on a line that no longer exists: a PDF
+        // reloaded with fewer pages kept the cursor on page 12 of 3, and the
+        // modeline said so. vim keeps the cursor on a real line whatever
+        // changed the text. Only a caret past the end moves; one still inside
+        // the text is the user's and stays exactly where it is.
+        if self.cursor.line > last_addressable_line(&self.active_text()) {
+            self.clamp_cursor_to_active_buffer();
+        }
         if self.cursor != before {
             self.ensure_cursor_visible();
         }

@@ -20,7 +20,7 @@ text (design §8).
 | PF.3b | GPUI draws the pages: near the viewport, two passes, byte-bounded cache | ✅     |
 | PF.4a | The keymap: page, screen and step navigation; `q`; `page N/M`      | ✅     |
 | PF.4b | Fit width, zoom, rotate, `h` / `l`: scrolling inside a page        | ⛔     |
-| PF.5  | Reload in place on change                                            | 📝     |
+| PF.5  | Reload in place on change                                            | ✅     |
 | PF.6  | System viewer, docs, benchmarks                                      | 📝     |
 | PF.11 | Lattice as a candidate PDF viewer (Linux desktop entry)              | 📝     |
 | PF.7  | Text: search, selection, copy                                        | ⛔     |
@@ -307,6 +307,13 @@ pixel cache, and `R` on `viewer-mode`. Pictures share all of it.
   the fresh buffer before the cursor is restored, so the PDF test passes
   with or without the carry-over; the picture test is the one that pins it.
   A long PDF loses that race, which is what the carry-over is for.
+- **Found after: a shrinking rewrite left the caret past the end.** With
+  the carry-over the cursor is restored on line 11 of the old 12 labels;
+  when the 3-page labels then land, nothing clamped it, because a bulk owner
+  write is deliberately not adopted (the dashboard rule). `run_tick_pending`
+  now clamps a caret that is past the last line, and only then. Pinned in
+  `anchored_append_caret.rs` (deterministic); the PDF clamp test only hit it
+  when it lost the label race.
 - **Not built: skipping an identical relabel.** Replacing the labels with
   themselves after a same-count reload moved nothing the tests could see,
   so the check was dropped rather than shipped unproven.

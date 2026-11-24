@@ -369,3 +369,47 @@ async fn the_key_after_an_undo_still_follows_an_append() {
     key(&mut editor, Action::Insert("X".to_string()));
     assert_eq!(text(&editor), "ab\nnew\nXcd\n");
 }
+
+/// Replace the active document's whole text, as a buffer's owner does (a
+/// PDF's labels, a dashboard's body). Not an append, so never adopted.
+async fn owner_rewrite(editor: &Editor, to: &str) {
+    let snap = editor.document.snapshot();
+    let last = snap.buffer.rope_line_count().saturating_sub(1);
+    let len = snap.buffer.line(last).unwrap_or_default().len() as u32;
+    editor
+        .document
+        .apply_edit_batch(vec![lattice_protocol::edit::Edit::replace(
+            lattice_protocol::Range::new(Position::new(0, 0), Position::new(last, len)),
+            to.to_string(),
+        )])
+        .await
+        .unwrap();
+}
+
+/// PF.5: a rewrite that SHRINKS the buffer under the caret puts it on the
+/// last line that still exists, on the wake, with no key. A bulk rewrite is
+/// not adopted (the dashboard rule), and before this nothing else clamped:
+/// a PDF reloaded with fewer pages left the cursor on a page that was gone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_rewrite_that_shrinks_the_buffer_leaves_the_caret_on_a_real_line() {
+    let mut editor = boot("a\nb\nc\nd\ne\n");
+    editor.set_cursor_clamped(Position::new(4, 0));
+    key(&mut editor, Action::None);
+    owner_rewrite(&editor, "x\ny\n").await;
+    editor.run_tick_pending();
+    assert_eq!(text(&editor), "x\ny\n");
+    assert_eq!(editor.cursor, Position::new(1, 0), "on the new last line");
+}
+
+/// …and a rewrite that keeps the caret's line moves nothing: the caret is
+/// the user's, and the dashboard rule that a bulk write is not adopted
+/// stands.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_rewrite_that_keeps_the_carets_line_does_not_move_it() {
+    let mut editor = boot("a\nbb\nc\nd\ne\n");
+    editor.set_cursor_clamped(Position::new(1, 1));
+    key(&mut editor, Action::None);
+    owner_rewrite(&editor, "x\nyy\nz\n").await;
+    editor.run_tick_pending();
+    assert_eq!(editor.cursor, Position::new(1, 1));
+}

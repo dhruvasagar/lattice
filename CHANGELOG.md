@@ -24,6 +24,7 @@
 - **A plugin can no longer type into your terminal without `proc:spawn`.** Any plugin could send keystrokes to the focused terminal, which in a shell is running a command, and could open a shell with environment variables of its choosing (`BASH_ENV`, `PROMPT_COMMAND`) that run code as it starts. Both now need the `proc:spawn` capability, as running a command already did. Opening a plain shell, as `:project-shell` does, still needs nothing.
 
 ### Fixed
+- **The cursor no longer sits past the end of a buffer rewritten shorter.** A view whose contents are replaced with fewer lines, such as a PDF reloaded with fewer pages, left the cursor on a line that no longer existed. It now moves to the last line. A cursor on a line that still exists is not moved.
 - **A PDF or a picture rewritten on disk reloads where you were reading it.** It used to say the file was "no longer available on disk", and in the GUI it kept drawing the old pages. Now it reloads on its own, keeps the page and the scroll, shows the old pages until the new ones are drawn, and moves to the last page if pages were removed.
 - **`<C-f>`, `<C-b>` and `<C-d>` in the GUI no longer overshoot a document with pictures.** A line with a picture below it counted as one line, so a screen scroll skipped every picture on the way and landed a screenful of lines later.
 - **`:bd` returns the pane to the buffer it showed before**, as vim's does. It went to whichever open buffer had been opened first.

@@ -17661,28 +17661,16 @@ impl Editor {
         // The placeholder is what makes `:w` dangerous rather than merely
         // useless, which is why the major declares read-only twice and
         // `do_write` refuses a third time.
-        let presented = self
-            .mode_registry
-            .load()
-            .presenting_major_for_path(&target)
-            .is_some();
+        //
         // CD.2: a path with nothing on disk opens an empty buffer that the
         // first `:w` creates — vim's `:e newfile`. This refused before, and so
-        // did `lattice newfile`.
-        let (mut new_doc, is_new) = if presented {
-            (
-                lattice_core::DocumentBuilder::default()
-                    .with_path(target.clone())
-                    .build(),
-                false,
-            )
-        } else {
-            match lattice_core::Document::open_or_new(&target) {
-                Ok(opened) => opened,
-                Err(e) => {
-                    self.set_message(EchoLevel::Error, format!("open error: {e}"));
-                    return DoEditOutcome::Failed;
-                }
+        // did `lattice newfile`. `open_document` is shared with the command
+        // line, so the two cannot disagree about either rule.
+        let (mut new_doc, is_new) = match self.mode_registry.load().open_document(&target) {
+            Ok(opened) => opened,
+            Err(e) => {
+                self.set_message(EchoLevel::Error, format!("open error: {e}"));
+                return DoEditOutcome::Failed;
             }
         };
         // Seeded BEFORE the actor spawns, so syntax is built from the real

@@ -411,6 +411,30 @@ impl ModeRegistry {
         self.presents_index.get(&ext).copied()
     }
 
+    /// Open `path` as a buffer's document: an empty, path-bearing document
+    /// for a file type some major PRESENTS, otherwise the file read as text
+    /// (or an empty new file when nothing is on disk, vim's `:e newfile`).
+    /// The bool is "new file".
+    ///
+    /// The one place that decision is made, for `:e` and for the file named
+    /// on the command line alike. They made it separately before, and the
+    /// command line never asked: `lattice diagram.png` failed on the UTF-8
+    /// read that `:e diagram.png` knew to skip.
+    pub fn open_document(
+        &self,
+        path: &std::path::Path,
+    ) -> lattice_core::CoreResult<(lattice_core::Document, bool)> {
+        if self.presenting_major_for_path(path).is_some() {
+            return Ok((
+                lattice_core::DocumentBuilder::default()
+                    .with_path(path.to_path_buf())
+                    .build(),
+                false,
+            ));
+        }
+        lattice_core::Document::open_or_new(path)
+    }
+
     /// Iterate every registered mode's `(id, kind)`.
     pub fn iter_meta(&self) -> impl Iterator<Item = (ModeId, ModeKind)> + '_ {
         self.modes.iter().map(|(id, mode)| (*id, mode.kind()))

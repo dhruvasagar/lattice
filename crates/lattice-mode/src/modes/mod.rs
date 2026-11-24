@@ -226,4 +226,36 @@ mod tests {
         assert!(registry.is_registered(WhitespaceShowMode::mode_id()));
         assert!(registry.is_registered(CurrentLineHighlightMode::mode_id()));
     }
+
+    /// `lattice paper.pdf` and `:e paper.pdf` open through one decision. A
+    /// presented file type is never read (its bytes are not UTF-8, and the
+    /// read fails), an ordinary file is read as text, and a missing one is a
+    /// new file. Without `open_document`, the command line called
+    /// `Document::open_or_new` directly and failed on the first case.
+    #[test]
+    fn the_foundation_set_opens_a_presented_file_without_reading_it() {
+        let dir = std::env::temp_dir().join(format!("lattice-open-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut registry = ModeRegistry::new();
+        register_foundation_modes(&mut registry);
+
+        for name in ["paper.pdf", "diagram.PNG"] {
+            let path = dir.join(name);
+            std::fs::write(&path, [0x25, 0x50, 0xff, 0xfe, 0x00, 0x80]).unwrap();
+            let (doc, is_new) = registry.open_document(&path).unwrap();
+            assert!(!is_new, "{name}");
+            assert_eq!(doc.path(), Some(path.as_path()), "{name}");
+            assert_eq!(doc.text(), "", "{name} was not read");
+        }
+
+        let text = dir.join("notes.txt");
+        std::fs::write(&text, "hello\n").unwrap();
+        let (doc, is_new) = registry.open_document(&text).unwrap();
+        assert!(!is_new);
+        assert_eq!(doc.text(), "hello\n");
+
+        let (_, is_new) = registry.open_document(&dir.join("new.txt")).unwrap();
+        assert!(is_new, "nothing on disk is a new file");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

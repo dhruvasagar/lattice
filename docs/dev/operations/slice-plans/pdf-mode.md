@@ -14,7 +14,7 @@ text (design §8).
 | Slice | Description                                                         | Status |
 |-------|---------------------------------------------------------------------|--------|
 | PF.0  | Spike: hayro against a corpus — fidelity, time per page, memory      | ✅     |
-| PF.1  | `lattice-media` `pdf` feature: probe and render a page               | 📝     |
+| PF.1  | `lattice-media` `pdf` feature: probe and render a page               | ✅     |
 | PF.2  | `pdf-mode`: presents `.pdf`, one label line per page, read-only      | 📝     |
 | PF.3  | A media block per page, rendered near the viewport, byte-bounded cache | 📝   |
 | PF.4  | Fit, zoom, rotate; scroll within a page                              | 📝     |
@@ -83,13 +83,27 @@ document per buffer can be shared across blocking threads. `RenderCache` holds
 `Rc`s and is not `Send`, so it lives on the thread that renders and is
 never shared.
 
-### PF.1 — the renderer (`lattice-media`) 📝
+### PF.1 — the renderer (`lattice-media`) ✅
 
 A `pdf` cargo feature on `lattice-media` (off by default), enabled by
 `lattice-cli`'s `gui`. Two functions behind it: `probe(path) -> PdfInfo { pages:
 Vec<Size<pt>> }` and `render(path, page, target_px, rotation) -> Raster`,
 both blocking, both for `spawn_blocking`. Outputs the same pixel formats as the
 SVG route, with the same premultiplied-alpha handling.
+
+**As built.** `lattice_media::pdf::PdfDocument`: `open` / `from_bytes` parse
+and measure (`info().pages`, points), and `render_page(page, target, format)`
+draws one page on white. A handle rather than a path per call, because the
+parse is shared across pages and threads (`Pdf` is `Send + Sync`). The
+handle is what PF.3 keeps per buffer. `page_fit` scales up as well as down: a
+page has no natural pixel size, so the picture route's never-upscale rule
+does not apply. It refuses past `MAX_PIXELS` and 65 535 px a side. A panic
+in the parser or on a page is caught and becomes `Undecodable`, that page's
+alt text. **Rotation moved to PF.4**, with the `r` key that is its only
+user. The pixmap is taken, not copied (28% faster, see
+[`benchmarks.md`](../benchmarks.md)). The feature is implied by
+`lattice-ui-gpui`'s `window`, as `system-clipboard` is, so `gui` gets it and a
+TUI-only `lattice-cli` has no hayro in its tree. Checked with `cargo tree`.
 
 Tests: probe a fixture's page count and sizes; render a known pixel (both
 alpha directions, as for SVG); a corrupt file and an out-of-range page are

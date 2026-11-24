@@ -134,7 +134,13 @@ default = []
 # Phase 5.8.M: the previous `lattice-gpui` shim binary was removed
 # in favour of the single `lattice` entry in lattice-cli; this
 # crate now ships only as a lib.
-window = ["dep:gpui", "system-clipboard"]
+window = ["dep:gpui", "system-clipboard", "pdf"]
+# PF.1 (docs/dev/architecture/pdf-mode.md §4): PDF pages, rendered by
+# `lattice-media` with hayro. Implied by `window` for the reason
+# `system-clipboard` is: a real GUI build always wants it, and it is the
+# GPUI peer that draws pages. Kept distinct so a TUI-only build, which
+# draws none, never compiles the rasteriser.
+pdf = ["lattice-media/pdf"]
 # CB.4 (docs/dev/architecture/clipboard.md): native OS clipboard via the
 # shared `lattice-host` `ArboardClipboard`. Implied by `window` (a real
 # GUI build always links display libs, so arboard is always available and

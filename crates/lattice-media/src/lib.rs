@@ -52,6 +52,13 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+// PDF pages, behind the `pdf` feature (PF.1). A document rather than a
+// picture, so it has its own route: see the module's own docs. A plain
+// comment, not `///`: outer docs on a module merge with its inner docs and
+// resolve the module's intra-doc links from HERE, where they do not exist.
+#[cfg(feature = "pdf")]
+pub mod pdf;
+
 /// The byte layout a consumer needs.
 ///
 /// A parameter rather than a fixed output, and that is not speculative

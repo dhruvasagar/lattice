@@ -4313,6 +4313,38 @@ an order of magnitude and a ranking, not exact figures.
 
 ---
 
+## PDF pages (`crates/lattice-media/benches/pdf.rs`, PF.1)
+
+⚠️ **AMD Ryzen 7 9700X, WSL2 (Linux 6.18), rustc 1.94.0, 2026-11-24.**
+
+What [`pdf-mode`](../architecture/pdf-mode.md) pays to open a document and
+to draw a page, with hayro 0.9, on a blocking thread, never the UI's. The
+page is US letter, 60 full lines of hinted Helvetica: denser than most pages,
+so the render rows are pessimistic for text. Figure-heavy pages were measured
+in the PF.0 spike instead ([slice plan](slice-plans/pdf-mode.md)): up to
+75 ms at 1× and 330 ms at 2×.
+
+| Case | Median |
+|---|---|
+| open a 500-page PDF (parse and measure every page) | 0.37 ms |
+| render a text page at 1600 px (1×) | 15.0 ms |
+| render a text page at 3200 px (2×) | 55.2 ms |
+
+**Opening is free; drawing is per page.** Every page's size is known in well
+under a millisecond, which is what lets every page be sized before its pixels
+exist, so the document never reflows. A page costs one render, and only pages
+near the viewport are drawn. The 1× pass is what appears first; the 2× pass
+replaces it (design §3).
+
+**Taking the pixmap rather than copying it** was worth 28% at both sizes. The
+first version copied the rasteriser's buffer before converting it, 53 MB at 2×;
+it now takes ownership and converts in place (21.0 → 15.0 ms at 1×, 76.6 →
+55.2 ms at 2×). A fresh `RenderCache` per render, which the threading model
+forces (design §4), cost 1–5 ms per page in the spike: not worth working
+around.
+
+---
+
 ## What's NOT here
 
 Benches we'd want before claiming §8.2 coverage but haven't built

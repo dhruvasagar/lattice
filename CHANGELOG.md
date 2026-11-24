@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.10.3 — 2026-11-24
 
 ### Added
 - **A plugin's options can say which programs it may run.** A plugin asking for `proc:spawn:{org.babel.languages:command}` may run exactly the `command` of each entry you put in that option, and nothing until you add one: not even a default the plugin ships counts. Changing the list restarts that plugin, the plugin cannot change it itself, and a refused run names the option. User-installed plugins could not run programs at all before; bundled ones still may hold the unbound `proc:spawn`. See "What a plugin may run" in `docs/user/plugins.md`.

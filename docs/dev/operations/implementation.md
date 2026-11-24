@@ -7563,7 +7563,7 @@ Design: [`../architecture/refactor.md`](../architecture/refactor.md);
 [`../architecture/lsp-architecture.md`](../architecture/lsp-architecture.md) §16.
 Slice plan (archived 2026-11-17, every slice ✅ or ❌): [`slice-plans/archive/refactor.md`](slice-plans/archive/refactor.md).
 
-## PDF mode (PF, 2026-11-24 — 📝 designed, not built)
+## PDF mode (PF, 2026-11-24 — 🚧 PF.0–PF.2 ✅, PF.3 next)
 
 `:e paper.pdf` reads the paper in the GUI. `pdf-mode` is an ordinary major
 beside `image-mode` in `lattice-mode`, claiming `.pdf` through
@@ -7575,6 +7575,25 @@ labels and alt text, as it does for images. PF.0 is a go / no-go on hayro's
 fidelity, with pdfium as the recorded fallback.
 Design: [`../architecture/pdf-mode.md`](../architecture/pdf-mode.md); slice
 plan: [`slice-plans/pdf-mode.md`](slice-plans/pdf-mode.md).
+
+---
+
+## GUI zoom (2026-11-24 — 📝 queued after PDF mode and org export, not designed)
+
+Dhruva's ask: zoom the whole GUI in and out, text and media together, the
+way every GUI editor and browser does (`<C-=>` / `<C-->` / `<C-0>` in Zed,
+VS Code and browsers; `<D-=>` on macOS). What exists: `ui.font_size` is read
+live by the GPUI peer, so `:set` already resizes text on the next frame. What
+does not: keys for it, a reset to the configured size, and media following
+it. Inline images and PDF pages are sized in line heights
+(`block_geometry`), so their *rows* follow the font, but GPUI's decode
+targets and `MediaGeometry` must re-key on the zoom, or a zoomed picture is
+upscaled rather than re-rendered. PDF pages already re-render at the target
+(design §3), so they are the easy half. Open questions for its design: a
+per-window zoom or the global option; whether the UI chrome (modeline,
+tabline, popups) scales with it; and that the TUI has no equivalent (the
+terminal owns its font), so the keys are GPUI-peer-only. Needs its own design
+fragment and slice plan when it starts.
 
 ---
 

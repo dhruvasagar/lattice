@@ -63,10 +63,10 @@ followed.
 | `<Space>` / `<S-Space>`, `<C-f>` / `<C-b>`, `<PageDown>` / `<PageUp>` | a screen down / up, continuing onto the next page | zathura, vim |
 | `<C-d>` / `<C-u>` | half a screen down / up | vim, zathura |
 | `<C-e>` / `<C-y>`, wheel | a step down / up | vim |
-| `h` / `l` | scroll left / right, when the page is wider than the window | zathura |
-| `s` / `a` | fit width / fit page | zathura |
-| `+` / `-` / `=` | zoom in / out / back to fit | zathura, pdf-tools |
-| `r` | rotate 90° clockwise | zathura |
+| `h` / `l` | scroll left / right, when the page is wider than the window | zathura (deferred, PF.4b) |
+| `s` / `a` | fit width / fit page | zathura (deferred, PF.4b) |
+| `+` / `-` / `=` | zoom in / out / back to fit | zathura, pdf-tools (deferred, PF.4b) |
+| `r` | rotate 90° clockwise | zathura (deferred, PF.4b) |
 | `R` | reload from disk (it also reloads by itself, §5) | zathura |
 | `gx` | open in the system viewer | vim's "open with the system handler" |
 | `q` | close the PDF's buffer, as `:bd` | zathura, magit |
@@ -108,7 +108,9 @@ taller than the window. Fit width, zoom past the window and `h` / `l` all
 make a page larger than the window, and something has to scroll *inside* it.
 The `sub_row_px` this section first named cannot be that something: it is
 peer-local, and the keys that would drive it are dispatched in the core. See
-the slice plan's PF.4b for the decision this needs.
+the slice plan's PF.4b for the decision this needs. Until then the mode is
+fit page only (deferred, 2026-11-24), and so is rotation, whose `r` row in
+the table above is the intended key.
 
 ### Fitting and zooming
 

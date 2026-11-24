@@ -7563,7 +7563,7 @@ Design: [`../architecture/refactor.md`](../architecture/refactor.md);
 [`../architecture/lsp-architecture.md`](../architecture/lsp-architecture.md) §16.
 Slice plan (archived 2026-11-17, every slice ✅ or ❌): [`slice-plans/archive/refactor.md`](slice-plans/archive/refactor.md).
 
-## PDF mode (PF, 2026-11-24 — 🚧 PF.0–PF.3, PF.4a ✅; PF.4b needs a decision)
+## PDF mode (PF, 2026-11-24 — 🚧 PF.0–PF.3, PF.4a ✅; PF.4b ⛔ deferred; PF.5 next)
 
 `:e paper.pdf` reads the paper in the GUI. `pdf-mode` is an ordinary major
 beside `image-mode` in `lattice-mode`, claiming `.pdf` through

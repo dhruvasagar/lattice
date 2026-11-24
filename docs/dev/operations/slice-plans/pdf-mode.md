@@ -19,7 +19,7 @@ text (design §8).
 | PF.3a | A media block per page, sized from its points before it is drawn    | ✅     |
 | PF.3b | GPUI draws the pages: near the viewport, two passes, byte-bounded cache | ✅     |
 | PF.4a | The keymap: page, screen and step navigation; `q`; `page N/M`      | ✅     |
-| PF.4b | Fit width, zoom, rotate, `h` / `l`: scrolling inside a page        | 📝     |
+| PF.4b | Fit width, zoom, rotate, `h` / `l`: scrolling inside a page        | ⛔     |
 | PF.5  | Reload in place on change                                            | 📝     |
 | PF.6  | System viewer, docs, benchmarks                                      | 📝     |
 | PF.11 | Lattice as a candidate PDF viewer (Linux desktop entry)              | 📝     |
@@ -210,7 +210,7 @@ what PF.2 showed. Until PF.3b, GPUI shows each page's box with its alt text.
 - **Deferred to PF.6.** No bench yet for the virtual-row cost of a long
   document, nor for the cache under scrolling.
 
-### PF.4 — the keymap (PF.4a ✅, PF.4b 📝)
+### PF.4 — the keymap (PF.4a ✅, PF.4b ⛔)
 
 **PF.4a ✅** is the navigation half, and needs nothing new from the core's
 scroll model.
@@ -247,10 +247,20 @@ scroll model.
   (`lattice_host::input::translate_normal` → `attach_count`). `J` names the
   same command as `j`.
 
-**PF.4b 📝** is blocked on one decision: how a page larger than the window
-scrolls (design §2, "Open: scrolling inside a page"). Fit width, `+` / `-` /
-`=`, `s` / `a`, `h` / `l` and rotation (`r`, which swaps a page's aspect) all
-produce one. `R` moves to PF.5 (reload), `gx` stays PF.6.
+**PF.4b ⛔ deferred** (Dhruva, 2026-11-24: fit page only for now). Fit
+width, `+` / `-` / `=`, `s` / `a` and `h` / `l` all make a page larger than
+the window, and the core cannot scroll inside one line. The decision this
+needs when it comes back: the recommended answer was a core sub-line row
+offset (vim's `skipcol` / `smoothscroll`, in rows, so the TUI shares it),
+against a GPUI-local offset driven by an effect (split state between core and
+peer) or tiling a page into several lines (pages stop being lines).
+**Rotation (`r`) is deferred with it.** It needs no sub-line scrolling, but
+the page producer sees only the buffer's text, so the rotation must reach the
+host's media refresh. The recommended shape was a generic per-buffer
+`media.rotation` with `r` on `viewer-mode`, rotating pictures too, against a
+pdf-only option the host would have to know by name. It comes back with GUI
+zoom, which the same refresh-key and pixel-cache-key work serves. `R` moves
+to PF.5 (reload), `gx` stays PF.6.
 
 The original PF.4 text, kept for the test list it set:
 

@@ -1,7 +1,8 @@
 //! `viewer-mode` — what every buffer that PRESENTS a file shares (PF.4).
 //!
 //! `image-mode` and `pdf-mode` show a file rather than edit it, and a viewer
-//! has keys of its own that are not about the file type: `q` closes it. Those keys live here, on one minor both majors imply, rather than
+//! has keys of its own that are not about the file type: `q` closes it.
+//! Those keys live here, on one minor both majors imply, rather than
 //! declared again on each major — the shared-behaviour rule
 //! (`prefer-minor-modes-over-duplication`), whose failure mode is a copied
 //! key set that quietly drifts. `pdf-mode`'s page keys stay on `pdf-mode`:

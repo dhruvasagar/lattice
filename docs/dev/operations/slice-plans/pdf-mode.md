@@ -351,9 +351,10 @@ per-frame claim and get under scrolling.
   bench build was cut short by memory pressure on the dev box. `MediaPixels`
   and the methods a frame calls are `pub` for it; the module stays
   crate-private outside `bench-internals`.
-- **Found, not ours:** `editor_element_frame` (the X5 bench) does not compile
-  on clean HEAD (6 `E0308`, `&Vec<(u32, u32)>` where `&RowCoords` is now
-  expected). Left for its owner; `cargo bench --benches` fails until then.
+- **Found along the way:** `editor_element_frame` (the X5 bench) had not
+  compiled since H.3 (`0536109e`) made the caret and range maths take a
+  `RowCoords`. Fixed in its own commit: the bench wraps each row's inlays in
+  one, with no conceals.
 
 ### PF.11 — a candidate PDF viewer on Linux ✅
 

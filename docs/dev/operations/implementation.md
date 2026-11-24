@@ -6941,13 +6941,23 @@ No host slice: it is guest-side throughout. Design:
 slice plan:
 [`slice-plans/org-capture-templates.md`](slice-plans/org-capture-templates.md).
 
-**Org babel — designed, not built (OB.1–OB.15 📝).** Running src blocks,
+**Org babel (OB.1–OB.15 ✅; shipped in org 0.5.0 on plugin API 0.6.0).** Running src blocks,
 tangling, `:var` / noweb, and `:session`, all inside one `org-babel-mode`
 minor in the plugin. Reverses the original babel cut: the host lends five
 generic mechanisms (list-valued and process option-bound grants,
 `post-effects`, a `whole` write anchor, job stdin) and nothing babel-shaped.
 Design: [`../architecture/org-babel.md`](../architecture/org-babel.md); slice
 plan: [`slice-plans/org-babel.md`](slice-plans/org-babel.md).
+
+**Org export — designed, not built (EX.0–EX.11 📝).** HTML, GitHub-flavoured
+Markdown and LaTeX/PDF from an org file, through emacs's `C-c C-e`
+dispatcher, all inside one `org-export-mode` minor in the plugin. A pure-Rust
+org-element parser and one IR feed three transcoders on the plugin's events
+actor; babel blocks run on a copy, as emacs runs them. Reverses the export
+cut. The host lends one generic service, `host-services.write-file` (EX.1,
+plugin API 0.7.0), so a PDF compiler never starts before its `.tex` is on
+disk. Design: [`../architecture/org-export.md`](../architecture/org-export.md);
+slice plan: [`slice-plans/org-export.md`](slice-plans/org-export.md).
 
 **Captures are draft files (CD.1–CD.8 ✅; CD.9 ⛔ deferred).** Any number at
 once, saved with `:w`, resumed from `<leader>oC`, filed back to where they were

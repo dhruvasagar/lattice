@@ -259,6 +259,7 @@ docs = [
   "architecture/org-agenda",
   "architecture/org-habits",
   "architecture/org-babel",
+  "architecture/org-export",
   "architecture/org-roam",
 ]
 

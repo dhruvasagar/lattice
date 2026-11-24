@@ -18,7 +18,8 @@ text (design §8).
 | PF.2  | `pdf-mode`: presents `.pdf`, one label line per page, read-only      | ✅     |
 | PF.3a | A media block per page, sized from its points before it is drawn    | ✅     |
 | PF.3b | GPUI draws the pages: near the viewport, two passes, byte-bounded cache | ✅     |
-| PF.4  | The keymap: page, screen and step navigation; fit, zoom, rotate      | 📝     |
+| PF.4a | The keymap: page, screen and step navigation; `q`; `page N/M`      | ✅     |
+| PF.4b | Fit width, zoom, rotate, `h` / `l`: scrolling inside a page        | 📝     |
 | PF.5  | Reload in place on change                                            | 📝     |
 | PF.6  | System viewer, docs, benchmarks                                      | 📝     |
 | PF.11 | Lattice as a candidate PDF viewer (Linux desktop entry)              | 📝     |
@@ -209,7 +210,49 @@ what PF.2 showed. Until PF.3b, GPUI shows each page's box with its alt text.
 - **Deferred to PF.6.** No bench yet for the virtual-row cost of a long
   document, nor for the cache under scrolling.
 
-### PF.4 — the keymap 📝
+### PF.4 — the keymap (PF.4a ✅, PF.4b 📝)
+
+**PF.4a ✅** is the navigation half, and needs nothing new from the core's
+scroll model.
+- **Keys.** `J` / `K`, `<Space>` / `<S-Space>` and `<PageDown>` / `<PageUp>`
+  are `pdf-mode` keymap entries naming existing commands (`motion:line-*`,
+  `action:page-*`), so none has a body. The builtin `<PageDown>` is a
+  10-line motion, which would be ten pages, so `pdf-mode` rebinds it.
+- **`q`** is on `viewer-mode`, a new minor that `image-mode` and `pdf-mode`
+  both imply (the shared-behaviour rule). It is `Effect::KillBuffer`, which
+  is `:bd!` for a buffer that is not an in-pane view; magit's
+  `BuryBuffer` is a no-op on a buffer opened with `:e`.
+- **`:bd`'s successor** is now the newest live listed buffer in the pane's
+  trail (vim walks the jumplist), then the old first-listed rule. Before
+  this, `:e notes.txt`, `:e paper.pdf`, `q` landed on whichever buffer had
+  the lowest id.
+- **`page N/M`** comes from a new option, `ui.modeline.position-format`
+  (vim's `'rulerformat'`, `{line}` / `{col}` / `{lines}`), which `pdf-mode`
+  overrides. No PDF code in the host's modeline.
+- **Screen scrolls charge media rows.** `weighted_doc_line_cost` now charges
+  a line the rows its media blocks reserve, through `WasmMediaCache`'s new
+  `rows_by_anchor`, when `cell_metrics` says a pixel peer is attached. This
+  fixes the GUI's `<C-f>` overshooting any document with pictures: IM.5
+  built `media_row_weights` and `Editor::row_weights`, but nothing ever set
+  the field. `do_page` moves at least one line, as vim's does, and with
+  media it puts the line turned to at the top. `do_half_page` walks half a
+  screen of rows when media is present, and is unchanged otherwise.
+- **Tests** (`opening_a_pdf_file.rs`): the page keys; vim's `<C-f>` /
+  `<C-b>`, `<PageDown>` / `<PageUp>`, `<C-e>` / `<C-y>` each turn one page in
+  fit page; `q` closes the buffer, returns to the text file, and leaves `J`
+  joining there; the modeline reads `page 3/12` and still `1:0` in text.
+- **Counts on `J` / `K` are not driven by a host test.** As PF.2 found for
+  `{n}G`, the peer's translate step attaches counts, and it does so for
+  every normal-mode binding whatever layer resolved it
+  (`lattice_host::input::translate_normal` → `attach_count`). `J` names the
+  same command as `j`.
+
+**PF.4b 📝** is blocked on one decision: how a page larger than the window
+scrolls (design §2, "Open: scrolling inside a page"). Fit width, `+` / `-` /
+`=`, `s` / `a`, `h` / `l` and rotation (`r`, which swaps a page's aspect) all
+produce one. `R` moves to PF.5 (reload), `gx` stays PF.6.
+
+The original PF.4 text, kept for the test list it set:
 
 Design §2's table, on `pdf-mode`'s major layer with its handler bodies in
 `lattice-mode`: `J` / `K`; `<Space>` / `<S-Space>`, `<C-f>` / `<C-b>`,

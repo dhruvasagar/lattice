@@ -810,6 +810,7 @@ impl Editor {
         // for the help buffer's display (close split pane / dismiss popup /
         // restore active-pane). Without this the binding drops with a warn.
         lattice_mode::register_help_mode_actions(boot.commands_mut());
+        lattice_mode::modes::register_viewer_mode_actions(boot.commands_mut());
 
         // RV.1: same shape for `refreshable-view-mode`'s
         // `action:view-refresh` — the generic target the shared `gr`

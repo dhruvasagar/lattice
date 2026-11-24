@@ -370,6 +370,26 @@ fn keys(editor: &mut Editor, spelling: &str) {
     }
 }
 
+/// What the active pane's modeline position element shows.
+fn modeline_position(editor: &mut Editor) -> String {
+    editor.publish_render_state();
+    let rs = editor.render_state.load();
+    let pane = *rs
+        .panes
+        .tree
+        .leaves()
+        .iter()
+        .find(|p| p.buffer_id == editor.active_pane_buffer_id())
+        .unwrap();
+    let content = lattice_host::modeline::resolve_builtin_content(
+        lattice_host::modeline::CORE_POSITION,
+        &pane,
+        true,
+        &rs,
+    );
+    content.spans.iter().map(|s| s.text.as_str()).collect()
+}
+
 /// A drawing peer's geometry with an 800 px tall pane, and a PDF of `pages`
 /// pages opened and drawn in it: each page fills the pane (fit page).
 async fn open_drawn(pages: usize) -> (tempfile::TempDir, Editor, lattice_core::BufferId) {
@@ -388,20 +408,96 @@ async fn open_drawn(pages: usize) -> (tempfile::TempDir, Editor, lattice_core::B
     (dir, editor, id)
 }
 
-/// vim's screen and step scrolls charge a line the rows its media reserves,
-/// so in a PDF (a page per line, each filling the pane) each turns one page.
-/// Before, `<C-f>` counted every page as one line and jumped to the end.
+/// PF.4: zathura's `J` / `K` turn pages, and `<Space>` /
+/// `<S-Space>` scroll a screen, which in fit page is exactly one page, with
+/// that page at the top.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn page_keys_turn_pages() {
+    let (_dir, mut editor, _id) = open_drawn(6).await;
+    keys(&mut editor, "J");
+    assert_eq!(editor.cursor.line, 1);
+    keys(&mut editor, "JJJ");
+    assert_eq!(editor.cursor.line, 4);
+    keys(&mut editor, "K");
+    assert_eq!(editor.cursor.line, 3);
+
+    keys(&mut editor, "gg");
+    keys(&mut editor, "<Space>");
+    assert_eq!(editor.cursor.line, 1, "a screen is a page");
+    editor.ensure_cursor_visible();
+    assert_eq!(editor.scroll, 1, "the page turned to is at the top");
+    keys(&mut editor, "<Space>");
+    assert_eq!(editor.cursor.line, 2);
+    keys(&mut editor, "<S-Space>");
+    assert_eq!(editor.cursor.line, 1);
+}
+
+/// vim's own screen, half-screen and step scrolls need no binding in a PDF:
+/// a page is a line no taller than the pane, so each turns one page.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn vims_scroll_keys_turn_one_page_in_fit_page() {
     let (_dir, mut editor, _id) = open_drawn(6).await;
-    keys(&mut editor, "<C-f>");
-    assert_eq!(editor.cursor.line, 1, "<C-f>");
-    keys(&mut editor, "<C-b>");
-    assert_eq!(editor.cursor.line, 0, "<C-b>");
+    for (forward, back) in [("<C-f>", "<C-b>"), ("<PageDown>", "<PageUp>")] {
+        keys(&mut editor, "gg");
+        keys(&mut editor, forward);
+        assert_eq!(editor.cursor.line, 1, "{forward}");
+        keys(&mut editor, back);
+        assert_eq!(editor.cursor.line, 0, "{back}");
+    }
     keys(&mut editor, "gg");
     keys(&mut editor, "<C-e>");
     assert_eq!(editor.scroll, 1, "<C-e> scrolls a page off the top");
     assert_eq!(editor.cursor.line, 1, "and the cursor goes with it");
     keys(&mut editor, "<C-y>");
     assert_eq!(editor.scroll, 0);
+}
+
+/// `q` closes the PDF's buffer and the pane shows what it showed before. It
+/// is `viewer-mode`'s, so a text buffer keeps vim's `J` (join).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn q_puts_the_pdf_away_and_neither_q_nor_j_leaks_into_text() {
+    let dir = tempfile::tempdir().unwrap();
+    let pdf = write(dir.path(), "paper.pdf", &pdf_bytes(2));
+    let txt = write(dir.path(), "notes.txt", b"one\ntwo\n");
+    let mut editor = Editor::boot(CoreDocument::from_text("x\n"));
+    editor.do_edit(Some(txt.clone()), false);
+    editor.run_tick_pending();
+    let text_id = editor.active_pane_buffer_id();
+    let pdf_id = open_and_label(&mut editor, &pdf).await;
+
+    // `KillBuffer` is applied by the peer (both call `kill_buffer` from
+    // their effect tail), so the host hands it back in the outcome.
+    let mut partial = Vec::new();
+    let q = lattice_protocol::chord::parse_chord_sequence("q").unwrap()[0];
+    let (_, outcome) = editor.dispatch_chord_with_outcome(q, &mut partial);
+    let queued = outcome.effects;
+    assert!(
+        queued
+            .iter()
+            .any(|e| matches!(e, lattice_grammar::Effect::KillBuffer)),
+        "q asked to close the buffer: {queued:?}"
+    );
+    editor.kill_buffer();
+    editor.run_tick_pending();
+    assert_eq!(editor.active_pane_buffer_id(), text_id, "back to the text");
+    assert!(
+        editor.buffers.document_handle(pdf_id).is_none(),
+        "the PDF's buffer is closed, as :bd closes it"
+    );
+
+    keys(&mut editor, "J");
+    editor.run_tick_pending();
+    assert_eq!(text_of(&editor, text_id), "one two\n", "J still joins");
+}
+
+/// The modeline counts pages in a PDF and keeps `line:col` elsewhere.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_modeline_shows_the_cursors_page() {
+    let dir = tempfile::tempdir().unwrap();
+    let pdf = write(dir.path(), "paper.pdf", &pdf_bytes(12));
+    let mut editor = Editor::boot(CoreDocument::from_text("x\n"));
+    assert_eq!(modeline_position(&mut editor), "1:0");
+    open_and_label(&mut editor, &pdf).await;
+    keys(&mut editor, "JJ");
+    assert_eq!(modeline_position(&mut editor), "page 3/12");
 }

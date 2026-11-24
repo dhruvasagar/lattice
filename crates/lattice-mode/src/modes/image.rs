@@ -80,7 +80,13 @@ impl Mode for ImageMode {
     /// shared minor looks tidier and does not fire.
     fn implies(&self) -> &[ModeId] {
         static IMPLIED: std::sync::OnceLock<Vec<ModeId>> = std::sync::OnceLock::new();
-        IMPLIED.get_or_init(|| vec![crate::modes::ReadOnlyMode::mode_id()])
+        IMPLIED.get_or_init(|| {
+            vec![
+                crate::modes::ReadOnlyMode::mode_id(),
+                // PF.4: `q` and the other keys every viewer shares.
+                crate::modes::ViewerMode::mode_id(),
+            ]
+        })
     }
 
     fn on_activate(&self, _ctx: ModeContext) -> LifecycleFuture<'_, ()> {

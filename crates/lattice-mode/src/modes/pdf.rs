@@ -118,11 +118,23 @@ impl Mode for PdfMode {
         PDF_EXTENSIONS
     }
 
-    /// Read-only, half one: this gates insert-mode typing.
+    /// Read-only, half one: this gates insert-mode typing. And the
+    /// modeline's position reads as pages, because the lines are pages.
     fn options(&self) -> OptionOverrideSet {
         lattice_config::overrides! {
             lattice_config::ReadOnly = true,
+            lattice_config::ModelinePositionFormat = "page {line}/{lines}".to_string(),
         }
+    }
+
+    /// The reading keys of design §2 that a picture would not want; the
+    /// shared ones (`q`) are on the implied `viewer-mode`. Most of the table
+    /// needs no entry: `j` / `k`, `gg` / `G`, counts, `:{n}`, marks and the
+    /// jump list are vim's line motions, and the lines are pages. `<C-f>`,
+    /// `<C-d>`, `<C-e>` and their twins are vim's too, and turn pages because
+    /// a page is a line at most a screen tall.
+    fn keymap(&self) -> crate::Keymap {
+        crate::Keymap::from_entries(pdf_keymap_entries())
     }
 
     /// Read-only, half two: `read-only-mode` carries the invocation runner
@@ -130,7 +142,12 @@ impl Mode for PdfMode {
     /// followed from the mode being activated.
     fn implies(&self) -> &[ModeId] {
         static IMPLIED: std::sync::OnceLock<Vec<ModeId>> = std::sync::OnceLock::new();
-        IMPLIED.get_or_init(|| vec![crate::modes::ReadOnlyMode::mode_id()])
+        IMPLIED.get_or_init(|| {
+            vec![
+                crate::modes::ReadOnlyMode::mode_id(),
+                crate::modes::ViewerMode::mode_id(),
+            ]
+        })
     }
 
     /// Start the probe and return at once: the labels land later, off the
@@ -222,6 +239,48 @@ async fn write_owned_text(handle: &dyn lattice_runtime::Document, text: String) 
     if let Err(e) = handle.mark_clean().await {
         tracing::debug!(error = %e, "pdf-mode: marking the labels clean failed");
     }
+}
+
+/// `pdf-mode`'s own keys (PF.4). Each names a command that already exists:
+/// zathura's keys for what vim's already do, so nothing here has a body.
+fn pdf_keymap_entries() -> &'static [crate::KeymapEntry] {
+    static ENTRIES: std::sync::OnceLock<Vec<crate::KeymapEntry>> = std::sync::OnceLock::new();
+    ENTRIES.get_or_init(|| {
+        vec![
+            crate::keymap_entry! {
+                mode: Normal, chord: "J",
+                doc: "pdf: next page (a count moves that many)",
+                cmd: "motion:line-down"
+            },
+            crate::keymap_entry! {
+                mode: Normal, chord: "K",
+                doc: "pdf: previous page (a count moves that many)",
+                cmd: "motion:line-up"
+            },
+            crate::keymap_entry! {
+                mode: Normal, chord: "<Space>",
+                doc: "pdf: a screen down, onto the next page",
+                cmd: "action:page-down"
+            },
+            crate::keymap_entry! {
+                mode: Normal, chord: "<S-Space>",
+                doc: "pdf: a screen up, onto the previous page",
+                cmd: "action:page-up"
+            },
+            // vim's `<PageDown>` is `<C-f>`; the builtin binding here is a
+            // 10-line motion, which in a PDF is ten pages.
+            crate::keymap_entry! {
+                mode: Normal, chord: "<PageDown>",
+                doc: "pdf: a screen down, onto the next page",
+                cmd: "action:page-down"
+            },
+            crate::keymap_entry! {
+                mode: Normal, chord: "<PageUp>",
+                doc: "pdf: a screen up, onto the previous page",
+                cmd: "action:page-up"
+            },
+        ]
+    })
 }
 
 /// The media producer that draws a `pdf-mode` buffer's pages (PF.3).

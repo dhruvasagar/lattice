@@ -43,6 +43,7 @@ pub mod surround;
 pub mod table;
 pub mod text;
 pub mod version;
+pub mod viewer;
 pub mod which_key;
 
 pub use completion::{
@@ -63,6 +64,7 @@ pub use pdf::{
 };
 pub use text::TextMode;
 pub use version::{VersionMode, VersionReport, VersionSection, set_version_report};
+pub use viewer::{ViewerMode, register_viewer_mode_actions};
 pub use which_key::{
     WhichKeyGrid, WhichKeyMode, install as install_which_key, wire as wire_which_key,
 };
@@ -182,6 +184,11 @@ pub fn register_foundation_modes(registry: &mut ModeRegistry) {
     registry
         .register(ReadOnlyMode)
         .expect("read-only-mode must register without conflict");
+    // PF.4: the keys every file viewer shares (`q`), implied by `image-mode`
+    // and `pdf-mode`.
+    registry
+        .register(ViewerMode)
+        .expect("viewer-mode must register without conflict");
     // M.7.2: whitespace + current-line-highlight modes. Their
     // backing typed options exist; the renderer's painting hooks
     // land in M.7.3.

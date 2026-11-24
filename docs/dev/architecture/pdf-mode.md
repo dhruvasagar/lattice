@@ -69,12 +69,22 @@ followed.
 | `r` | rotate 90° clockwise | zathura |
 | `R` | reload from disk (it also reloads by itself, §5) | zathura |
 | `gx` | open in the system viewer | vim's "open with the system handler" |
-| `q` | close the PDF's buffer | zathura, magit |
+| `q` | close the PDF's buffer, as `:bd` | zathura, magit |
 | `<C-o>` / `<C-i>`, `m{a-z}` / `` `{a-z} `` | jump list and marks | vim, unchanged |
 
-They live on `pdf-mode`'s major layer, with their handler bodies, so none of
-them reaches a text buffer. The modeline shows `page 3/12` for the page under
-the cursor.
+The page keys live on `pdf-mode`'s major layer, so none of them reaches a
+text buffer. Most need no body: `J` / `K` name vim's `j` / `k`, and `<Space>`,
+`<S-Space>`, `<PageDown>` and `<PageUp>` name `<C-f>` / `<C-b>`. The keys a
+picture would want too (`q` today; `gx` and `R` when they land) are on
+**`viewer-mode`**, a minor both `image-mode` and `pdf-mode` imply, for the
+shared-behaviour rule: one declaration, not one per viewer. `q` is `:bd` (a
+PDF opened with `:e` is an ordinary buffer, so magit's bury would be a no-op),
+and `:bd` now returns the pane to the buffer it showed before, as vim's does.
+
+The modeline shows `page 3/12` without a line of PDF code in the host. The
+position element's text is the option `ui.modeline.position-format`, vim's
+`'rulerformat'` (`{line}:{col}` by default, with `{lines}` for the count), and
+`pdf-mode` sets it buffer-locally to `page {line}/{lines}`.
 
 **`j` / `k` move by page, not by a scroll step.** zathura's `j` / `k` scroll a
 step, and that is the one place this table departs from it. Pages are lines
@@ -84,19 +94,29 @@ page (the default) the two are the same keystroke anyway. The step scroll is
 on `<C-e>` / `<C-y>` and the wheel; screen and half-screen scrolls cross page
 boundaries the way zathura's continuous mode does.
 
-**The scroll keys are peer-local in GPUI** (`sub_row_px`, below). In the TUI a
-page is one row, so a screen or half-screen there is one page, and `h` / `l`
-do nothing.
+**Screen scrolls know a page is tall.** The scroll walks charge a line the
+rows its media reserves, when a peer that draws pixels is attached, so
+`<C-f>` and `<Space>` turn one page in fit page rather than a screenful of
+lines. A page turned to lands at the top, as in zathura. A walk that would
+not move because the next line is taller than the screen moves one line, as
+vim's `<C-f>` always moves. In the TUI a page is one label line and these
+keys keep their meaning for lines, and `h` / `l` do nothing.
+
+**Open: scrolling inside a page.** The core's scroll is a line index, and a
+page is one line. In fit page that is exactly right, because a page is never
+taller than the window. Fit width, zoom past the window and `h` / `l` all
+make a page larger than the window, and something has to scroll *inside* it.
+The `sub_row_px` this section first named cannot be that something: it is
+peer-local, and the keys that would drive it are dispatched in the core. See
+the slice plan's PF.4b for the decision this needs.
 
 ### Fitting and zooming
 
-**Fit page is the default.** A page sized to the window is the `image-mode`
-rule (`MediaFit::Window`, never upscaling), and one page per screen makes
-`j` / `k` behave like page turns. **Fit width** makes a portrait page taller
-than the window; the block is then taller than the viewport and scrolls
-smoothly *within* itself through GPUI's peer-local `sub_row_px`
-(inline-media §4). No core change: the core's unit is still the row, and a
-page is one row however tall it is.
+**Fit page is the default.** A page sized to fill the window
+(`MediaFit::Page`: `image-mode`'s `Window` without its never-upscale clamp,
+because a page is vector), and one page per screen makes `j` / `k` behave
+like page turns. **Fit width** makes a portrait page taller than the window,
+which needs scrolling inside a page (above, open).
 
 Zoom is a buffer-local option, `pdf.zoom` (a fit or a percentage), so it
 survives a reload and `:setlocal` reaches it. It is in the media refresh key
@@ -238,9 +258,8 @@ the first thing a user doing this will see.
 Both peers run the same mode, the same buffer and the same keys; they
 differ only in what a media block paints, as for images. **GPUI** paints
 the page. **The TUI** paints the label line and the block's alt text, and
-`gx` hands the file to the system viewer. Scroll-within-a-page is GPUI's
-peer-local `sub_row_px`; in the TUI a page is one row, and `j` / `k` still
-move by page.
+`gx` hands the file to the system viewer. In the TUI a page is one label
+line and reserves no rows (PF.3a), and `j` / `k` still move by page.
 
 ## 9. Paramount-goal alignment
 

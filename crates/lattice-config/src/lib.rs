@@ -213,12 +213,12 @@ pub use core_options::{
     FormatReformatChain, HelpAproposDisplay, HelpDescribeDisplay, HelpListDisplay,
     HelpTopicDisplay, HoverDisplay, IgnoreCase, IndentMethodOption, LspLogDisplay,
     LspStatusDisplay, MessagesDisplay, MessagesFilter, ModelineCenter, ModelineLeft,
-    ModelinePadding, ModelineRight, ModelineSeparator, MouseEnabled, NoFile, Number,
-    PickerResultDisplay, ProjectRootMarkers, ReadOnly, RelativeNumber, Scroll, Scrollbind,
-    Scrolloff, Shiftwidth, Sidescroll, Sidescrolloff, SignColumnOption, SignatureDisplay,
-    StartOfLine, TablineShowOption, Tabstop, TerminalEscExits, TerminalScrollbackLines, TextWidth,
-    TransientMaxRows, UiDimInactive, Whitespace, WhitespaceEol, WhitespaceLeading, WhitespaceSpace,
-    WhitespaceTab, WhitespaceTrailing, Wrap,
+    ModelinePadding, ModelinePositionFormat, ModelineRight, ModelineSeparator, MouseEnabled,
+    NoFile, Number, PickerResultDisplay, ProjectRootMarkers, ReadOnly, RelativeNumber, Scroll,
+    Scrollbind, Scrolloff, Shiftwidth, Sidescroll, Sidescrolloff, SignColumnOption,
+    SignatureDisplay, StartOfLine, TablineShowOption, Tabstop, TerminalEscExits,
+    TerminalScrollbackLines, TextWidth, TransientMaxRows, UiDimInactive, Whitespace, WhitespaceEol,
+    WhitespaceLeading, WhitespaceSpace, WhitespaceTab, WhitespaceTrailing, Wrap,
 };
 pub use erased::ErasedOption;
 pub use group::{

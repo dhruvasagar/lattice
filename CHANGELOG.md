@@ -3,6 +3,8 @@
 ## Unreleased
 
 ### Added
+- **Reading keys in a PDF.** `J` / `K` turn pages, and `<Space>` / `<S-Space>`, `<C-f>` / `<C-b>` and `<PageDown>` / `<PageUp>` turn one page with that page at the top. `q` closes the PDF, or a picture, as `:bd` does. The modeline shows `page 3/12`.
+- **`ui.modeline.position-format`** sets what the modeline's position shows, as vim's `'rulerformat'`: `{line}`, `{col}` and `{lines}`, default `{line}:{col}`. A mode can set its own, as PDF buffers do.
 - **`:e paper.pdf` opens the PDF as a list of its pages.** It used to fail, because the file was read as text. The buffer has one line per page, `Page 3 of 12`, so `G`, `gg`, `j`, `k`, marks and the jump list move between pages. It is read-only, and `:w` cannot replace the PDF with that list. A file that is not a readable PDF says why in one line. In the GUI, each page is drawn below its line, filling the window, sharp on a high-density display. Pages render in the background, the one being read and its neighbours first, and the terminal shows the page list. `media.cache-mb` (default 256) bounds the memory decoded pictures and pages may use; what is on screen is never dropped.
 - **A plugin's options can say which programs it may run.** A plugin asking for `proc:spawn:{org.babel.languages:command}` may run exactly the `command` of each entry you put in that option, and nothing until you add one: not even a default the plugin ships counts. Changing the list restarts that plugin, the plugin cannot change it itself, and a refused run names the option. User-installed plugins could not run programs at all before; bundled ones still may hold the unbound `proc:spawn`. See "What a plugin may run" in `docs/user/plugins.md`.
 - **A directory grant can follow a list**: `fs:write:{org.babel.tangle-directories}` lets a plugin write under each directory in that option, and `:plugins` lists each one.
@@ -22,6 +24,7 @@
 
 ### Fixed
 - **`<C-f>`, `<C-b>` and `<C-d>` in the GUI no longer overshoot a document with pictures.** A line with a picture below it counted as one line, so a screen scroll skipped every picture on the way and landed a screenful of lines later.
+- **`:bd` returns the pane to the buffer it showed before**, as vim's does. It went to whichever open buffer had been opened first.
 - **`lattice diagram.png` and `lattice paper.pdf` open from the command line.** They failed with "stream did not contain valid UTF-8": a file named on the command line was always read as text, while `:e` knew to skip that read for a picture or a PDF. Both now open through the same function.
 - **`#[derive(ConfigShape)]` compiles for a record with a field named `value` followed by others.** Each field was read into a variable named after it, so a `value` field took the place of the derive's own `value` argument, and the build failed for every field after it, with an error naming none of them. Fields are now read under names of their own.
 - **`:diffsplit <file>` no longer fails at random on a file in a git repository.** It opens `<file>` and then claims both buffers; the gutter signs' diff against HEAD for the newly opened file was registered on another thread and could land in between, so the split opened but the diff was refused as "already participates in a diff session". The claim and that registration now take turns, so each sees the other whole.

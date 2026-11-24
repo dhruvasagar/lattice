@@ -44525,9 +44525,26 @@ impl Editor {
         if matches!(self.modal, ModalState::Insert | ModalState::Replace) {
             self.enter_mode(ModalState::Normal);
         }
-        // Successor preference: another *listed* buffer if any,
-        // else any other buffer (including unlisted synthetics).
-        let mut successor = listed.iter().copied().find(|id| *id != to_remove);
+        // Successor preference, vim's: the buffer this pane showed most
+        // recently that is still open and listed (vim walks the jumplist,
+        // then the alternate buffer). Else another *listed* buffer, else any
+        // other buffer (including unlisted synthetics).
+        //
+        // The pane's own trail first, because "first listed by id" sent a
+        // closed buffer to whichever file happened to be opened first: `:e
+        // notes.txt`, `:e paper.pdf`, `:bd` landed on neither.
+        let from_trail = {
+            let history = self.active_pane_history_mut().clone();
+            history
+                .entries()
+                .iter()
+                .take(history.cursor().saturating_add(1))
+                .rev()
+                .map(|e| e.buffer)
+                .find(|id| *id != to_remove && listed.contains(id))
+        };
+        let mut successor =
+            from_trail.or_else(|| listed.iter().copied().find(|id| *id != to_remove));
         if successor.is_none() {
             successor = self
                 .buffers

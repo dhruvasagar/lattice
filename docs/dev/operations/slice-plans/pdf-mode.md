@@ -13,7 +13,7 @@ text (design §8).
 
 | Slice | Description                                                         | Status |
 |-------|---------------------------------------------------------------------|--------|
-| PF.0  | Spike: hayro against a corpus — fidelity, time per page, memory      | 📝     |
+| PF.0  | Spike: hayro against a corpus — fidelity, time per page, memory      | ✅     |
 | PF.1  | `lattice-media` `pdf` feature: probe and render a page               | 📝     |
 | PF.2  | `pdf-mode`: presents `.pdf`, one label line per page, read-only      | 📝     |
 | PF.3  | A media block per page, rendered near the viewport, byte-bounded cache | 📝   |
@@ -37,7 +37,7 @@ PF.7–PF.10 wait until reading works.
 
 ## Slices
 
-### PF.0 — spike 📝
+### PF.0 — spike ✅ (2026-11-24: go, with a two-pass render)
 
 Render every page of a small corpus with hayro 0.9 at 1600 px wide and 2×:
 
@@ -53,6 +53,35 @@ probe (count plus sizes) a 500-page file. **Go** if the export case and the
 deck render correctly and a page renders in under 100 ms p99 on the dev
 machine. Otherwise this plan switches to pdfium before PF.1, and the decision
 and the numbers are recorded here. Throwaway code.
+
+**Result.** The corpus was 10 public files: the *Attention* arXiv paper
+(pdflatex), pdf.js's `tracemonkey`, `alphatrans`, `160F-2019` (a form),
+`ArabicCIDTrueType` and `TAMReview`, the metropolis beamer demo and its
+manual, a JPEG scan made from a page, and the beamer user guide twice over
+(472 pages) for the probe. There was no TeX on the machine, so no CJK file,
+and no JBIG2 scan; both are gaps. The reference was poppler (`pdftoppm`), the
+renderer at hand, not pdfium.
+
+| measure | result |
+|---|---|
+| fidelity | no visible difference from poppler on any page compared (paper, attention-map figure, transparency, form, Arabic CID, beamer gradients and icons, scan); no page panicked |
+| probe | 0.1–0.4 ms per file; 3.3 ms for 472 pages |
+| render at 1600 px (1×) | text pages 1–9 ms; worst page 75 ms (dense vector figure) |
+| render at 3200 px (2×) | text pages 22–34 ms; three figure pages 108–330 ms |
+| poppler, same pages, 3200 px | 0.2–1.9 s, including process start and PNG encoding |
+| peak RSS | 59 MB at 1600 px; 191 MB over the corpus at 3200 px |
+
+The 100 ms p99 bar holds at 1× and fails at 2× on figure-heavy pages, so the
+go was conditional, and Dhruva's call: **go with hayro, rendering each page
+in two passes** (design §3), a 1× pass that lands in milliseconds and a 2×
+pass that replaces it. The slow page then shows as a soft page that
+sharpens, never as a wait. pdfium might be faster, but nothing here measured
+that, and its cost (a native library in every artefact) is permanent.
+
+Two facts for PF.1: `hayro_syntax::Pdf` is `Send + Sync`, so one parsed
+document per buffer can be shared across blocking threads. `RenderCache` holds
+`Rc`s and is not `Send`, so it lives on the thread that renders and is
+never shared.
 
 ### PF.1 — the renderer (`lattice-media`) 📝
 

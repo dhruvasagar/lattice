@@ -79,10 +79,15 @@ The pipeline is inline-media §5's, unchanged in shape:
    each page's media box, in points. Cheap, because no page is drawn. **Every
    page's size is known before any page's pixels**, so the document's height
    is right from the first frame and nothing reflows as pages render.
-2. **Render on demand.** Only pages in or next to the viewport are
-   rasterised, at the fitted size times the display scale, on
-   `spawn_blocking`. A page is vector: it is *rendered at the target*, like
+2. **Render on demand, in two passes.** Only pages in or next to the
+   viewport are rasterised, on `spawn_blocking`. Each is drawn first at the
+   fitted size at **1×**, then at the fitted size times the display scale,
+   which replaces it. A page is vector: it is *rendered at the target*, like
    SVG (inline-media §8.2), so zooming in is crisp rather than resampled.
+   The first pass exists because PF.0 measured figure-heavy pages at
+   108–330 ms at 2× and at most 75 ms at 1× (text pages: 22–34 ms and
+   1–9 ms). So a heavy page appears soft at once and sharpens, rather than
+   appearing late. On a 1× display the second pass is skipped.
 3. **Land through the inbound primitive**, so a page appears without a
    keypress.
 4. **Placeholder at the right size until it lands.** On a zoom or resize the
@@ -109,9 +114,9 @@ feature enables it.
 - **Pure Rust**, so CI and the release matrix build it on Linux, macOS and
   Windows with no native library to ship, pin or load.
 - **The same family as the SVG path.** hayro comes from resvg's circle and
-  renders through a tiny-skia-class rasteriser. The premultiplied-alpha rule
-  `lattice-media` already pins for SVG (§8.2) applies, and gets the same
-  known-pixel test.
+  rasterises through `vello_cpu`. Its pixmap's alpha convention is pinned the
+  way `lattice-media` already pins SVG's (§8.2): with a known-pixel test in
+  both directions, because the mistake reads as "slightly wrong colours".
 - **Feature-gated** because it is the largest new thing in the tree, and a
   TUI-only build would compile it for nothing. Without the feature,
   `pdf-mode` still claims `.pdf` (a PDF must never be read into a rope),

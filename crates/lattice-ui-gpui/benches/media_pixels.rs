@@ -48,8 +48,8 @@ fn holding(held: u32) -> MediaPixels {
     let pixels = MediaPixels::default();
     pixels.set_budget(usize::MAX);
     for n in 0..held {
-        assert!(pixels.claim(&page(n), 800, 1));
-        pixels.insert(page(n), raster(), 1, 800, 1);
+        assert!(pixels.claim(&page(n), (600, 800), 1));
+        pixels.insert(page(n), raster(), 1, (600, 800), 1);
     }
     pixels
 }
@@ -63,7 +63,7 @@ fn frame(pixels: &MediaPixels, blocks: &[lattice_cells::MediaBlockRef], first: u
             .into_iter()
             .flatten()
         {
-            black_box(pixels.claim(&page(p), 800, 1));
+            black_box(pixels.claim(&page(p), (600, 800), 1));
         }
         black_box(pixels.get(b));
     }

@@ -154,10 +154,21 @@ each green on its own, the version bump and re-pins last.
    (a real guest) and `lattice-host`'s `plugin_transient_flag_round_trips.rs`
    (default reaches the command, a key flips it, projected by name against a
    schema in the reverse order; both fail with the open-time seeding removed).
-3. 📝 **EX.1c `post-effects` carries `open-buffer` and `open-external-uri`** when the
+3. ✅ **EX.1c `post-effects` carries `open-buffer` and `open-external-uri`** when the
    path is inside the plugin's `fs` grants (read or write); outside, the
    effect is replaced by a warning naming the grant, as `write-to-file` is.
    A URI that is not a file path is refused when posted.
+   As built: a posted `open-buffer` becomes the host-applied
+   `open-buffer-at-column` with no column, because a post drains host-side
+   (`run_tick_pending` → `handle_effect`) where the peer-applied open is
+   dropped; `show_document_open_effect.rs` already pins that arm. A posted
+   open needs an absolute path (the host would resolve a relative one
+   against `:cd`, not where the grant was compared) and is never `force`d.
+   `open-external-uri` takes an absolute path or a `file://` URI; one with a
+   percent-escape is refused rather than decoded, since the check would read
+   `%2e%2e` where the OS handler opens `..`. Tests: `effect_authorizer.rs`
+   unit tests (inside, outside, each refused shape) and
+   `post_effects_seam.rs` through the events guest.
 4. 📝 **EX.1d `post-effects` carries `confirm`.**
 5. 📝 **EX.1e** the package to `@0.7.0`, the crates to 0.7.0, the bundled
    plugins and the `init.rs` world re-pinned, the breaking note.

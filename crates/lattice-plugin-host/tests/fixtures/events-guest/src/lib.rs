@@ -628,8 +628,8 @@ export!(Component);
 /// OB.3: the effect `POST_REQUEST` asks for, posted with `post-effects`.
 fn post_requested() {
     use lattice::plugin_host::types::{
-        ApplyEditPayload, Args, CommandRef, Edit, EditKind, Effect, FileAnchor, Position,
-        QuitPayload, QuitScope, Range, SpawnTerminalPayload, TrackRangePayload,
+        ApplyEditPayload, Args, CommandRef, Edit, EditKind, Effect, FileAnchor, OpenBufferPayload,
+        Position, QuitPayload, QuitScope, Range, SpawnTerminalPayload, TrackRangePayload,
         WriteToFilePayload,
     };
     let request = std::fs::read_to_string(POST_REQUEST).unwrap_or_default();
@@ -661,7 +661,13 @@ fn post_requested() {
                 element: None,
             })
         }
-        // OB.3a: effects the posted path must refuse.
+        // Showing the file a job made: `open <path>` / `open-uri <uri>`.
+        "open" => Effect::OpenBuffer(OpenBufferPayload {
+            path: Some(arg.to_string()),
+            force: false,
+        }),
+        "open-uri" => Effect::OpenExternalUri(arg.to_string()),
+        // Effects the posted path must refuse.
         "quit" => Effect::QuitEditor(QuitPayload {
             force: true,
             scope: QuitScope::All,

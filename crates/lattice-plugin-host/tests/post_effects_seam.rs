@@ -184,6 +184,84 @@ async fn a_posted_write_outside_the_grant_is_refused() {
     );
 }
 
+/// A job's output opens once it is made: a posted `open-buffer` of a file
+/// inside the plugin's grant crosses the WIT and arrives as the host-applied
+/// open, which the editor's host-side drain carries out with no keypress
+/// (`show_document_open_effect.rs` pins that arm). Outside the grant it
+/// arrives as a warning naming the path.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_posted_open_reaches_the_editor_only_inside_the_grant() {
+    let Some(wasm) = guest_wasm() else {
+        eprintln!("SKIP: events fixture guest not built");
+        return;
+    };
+    let granted = TempDir::new().unwrap();
+    let html = granted.path().join("notes.html");
+    let cap = format!("\"fs:write:{}\"", granted.path().display());
+
+    let h = start(wasm, &format!("open {}", html.display()), true, &cap).await;
+    wait_for(&h.data_dir, |l| l.starts_with("post:"))
+        .await
+        .expect("the guest posted");
+    let effects = posted(&h);
+    assert!(
+        matches!(effects.as_slice(), [Effect::OpenBufferAtColumn { path: Some(p), column: None, force: false }] if *p == html),
+        "{effects:?}"
+    );
+
+    let elsewhere = TempDir::new().unwrap();
+    let theirs = elsewhere.path().join("theirs.html");
+    let h = start(wasm, &format!("open {}", theirs.display()), true, &cap).await;
+    wait_for(&h.data_dir, |l| l.starts_with("post:"))
+        .await
+        .expect("the guest posted");
+    let effects = posted(&h);
+    assert!(
+        matches!(effects.as_slice(), [Effect::Echo { level: EchoLevel::Warn, text }]
+            if text.contains("open denied") && text.contains("theirs.html")),
+        "{effects:?}"
+    );
+}
+
+/// `open-external-uri` from the background: a granted file passes, a web
+/// page does not.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_posted_external_open_is_limited_to_granted_files() {
+    let Some(wasm) = guest_wasm() else {
+        eprintln!("SKIP: events fixture guest not built");
+        return;
+    };
+    let granted = TempDir::new().unwrap();
+    let pdf = granted.path().join("notes.pdf");
+    let cap = format!("\"fs:write:{}\"", granted.path().display());
+
+    let h = start(wasm, &format!("open-uri {}", pdf.display()), true, &cap).await;
+    wait_for(&h.data_dir, |l| l.starts_with("post:"))
+        .await
+        .expect("the guest posted");
+    let effects = posted(&h);
+    assert!(
+        matches!(effects.as_slice(), [Effect::OpenExternalUri { uri }] if *uri == pdf.to_string_lossy()),
+        "{effects:?}"
+    );
+
+    let h = start(wasm, "open-uri https://example.com/", true, &cap).await;
+    wait_for(&h.data_dir, |l| l.starts_with("post:"))
+        .await
+        .expect("the guest posted");
+    let effects = posted(&h);
+    assert!(
+        matches!(
+            effects.as_slice(),
+            [Effect::Echo {
+                level: EchoLevel::Warn,
+                ..
+            }]
+        ),
+        "a web page is not a background job's to open: {effects:?}"
+    );
+}
+
 /// Unwired, the plugin is told — nothing is silently dropped.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_unwired_sink_is_an_err_to_the_guest() {

@@ -74,6 +74,9 @@ pub struct EffectAuthorizer {
     /// write into it — `walk_within_grant` accepts read *or* write because a
     /// walk only reads, and this is the other half of that distinction.
     write_prefixes: Vec<PathBuf>,
+    /// Every `fs` prefix, read or write: what a posted open may reach. A
+    /// plugin may open in the editor only what it could already read.
+    fs_prefixes: Vec<PathBuf>,
     plugin: String,
     /// PMF.6: the option-bound write grants, for naming the option in a refusal.
     option_bound: Vec<crate::capability::OptionBoundGrant>,
@@ -344,6 +347,7 @@ impl EffectAuthorizer {
                 .filter(|g| g.write)
                 .map(|g| g.prefix.clone())
                 .collect(),
+            fs_prefixes: grant.fs.iter().map(|g| g.prefix.clone()).collect(),
             plugin: plugin.into(),
             option_bound: Vec::new(),
             range_space: UNASSIGNED_RANGE_SPACE,
@@ -388,9 +392,15 @@ impl EffectAuthorizer {
 
     /// The refusal text for a write to `path` outside every grant.
     fn refusal(&self, path: &Path) -> String {
+        self.refusal_to("write", path)
+    }
+
+    /// The refusal text for doing `verb` to `path` outside every grant,
+    /// naming the option that decides where when the grant follows one.
+    fn refusal_to(&self, verb: &str, path: &Path) -> String {
         if self.option_bound.is_empty() {
             return format!(
-                "{}: write denied — {} is outside the plugin's granted paths",
+                "{}: {verb} denied — {} is outside the plugin's granted paths",
                 self.plugin,
                 path.display()
             );
@@ -406,13 +416,95 @@ impl EffectAuthorizer {
             .collect::<Vec<_>>()
             .join(", ");
         format!(
-            "{}: write denied — {} is outside {} — set {} to change where {} may write",
+            "{}: {verb} denied — {} is outside {} — set {} to change where {} may {verb}",
             self.plugin,
             lattice_core::home::contract_tilde(path),
             where_,
             self.option_bound[0].option,
             self.plugin
         )
+    }
+
+    /// True when `path` lies within one of the plugin's `fs` prefixes, read or
+    /// write: [`Self::permits_write`]'s comparison over the wider set.
+    fn permits_open(&self, path: &Path) -> bool {
+        let real = resolve_for_compare(path);
+        self.fs_prefixes.iter().any(|prefix| {
+            let canon_prefix = std::fs::canonicalize(prefix).unwrap_or_else(|_| prefix.clone());
+            real.starts_with(&canon_prefix)
+        })
+    }
+
+    /// A posted open of `path`: the host-applied open when the plugin may
+    /// read there, otherwise the refusal.
+    ///
+    /// Only an absolute path: the host resolves a relative one against the
+    /// editor's working directory, which is not what the grant was compared
+    /// against. `force` (discard unsaved changes on reload) is never posted:
+    /// a background result must not throw away the user's edits.
+    ///
+    /// The open becomes [`NativeEffect::OpenBufferAtColumn`] with no column
+    /// because a post drains host-side (`run_tick_pending` →
+    /// `handle_effect`), where the peer-applied `OpenBuffer` is dropped.
+    fn posted_open(&self, path: Option<PathBuf>, force: bool) -> Result<NativeEffect, String> {
+        let Some(path) = path else {
+            return Err(format!(
+                "{}: refused OpenBuffer without a path — a post has no buffer to reload",
+                self.plugin
+            ));
+        };
+        if force {
+            return Err(format!(
+                "{}: refused a forced open of {} — a post may not discard unsaved changes",
+                self.plugin,
+                path.display()
+            ));
+        }
+        if !path.is_absolute() {
+            return Err(format!(
+                "{}: refused to open {} — a posted open needs an absolute path",
+                self.plugin,
+                path.display()
+            ));
+        }
+        if !self.permits_open(&path) {
+            return Err(self.refusal_to("open", &path));
+        }
+        Ok(NativeEffect::OpenBufferAtColumn {
+            path: Some(path),
+            column: None,
+            force: false,
+        })
+    }
+
+    /// A posted `open-external-uri`: kept when it names a file the plugin may
+    /// read, as an absolute path or a `file://` URI.
+    ///
+    /// Anything else (`https:`, `mailto:`) is refused: a background job has
+    /// no business sending the user to a web page. A `file://` URI with a
+    /// percent-escape is refused rather than decoded, because the check would
+    /// see `%2e%2e` while the OS handler opens `..`.
+    fn posted_external(&self, uri: String) -> Result<NativeEffect, String> {
+        let path = match uri.strip_prefix("file://") {
+            Some(rest) if !rest.contains('%') => PathBuf::from(rest),
+            Some(_) => {
+                return Err(format!(
+                    "{}: refused to open {uri} — post the path, not a percent-escaped URI",
+                    self.plugin
+                ));
+            }
+            None if Path::new(&uri).is_absolute() => PathBuf::from(&uri),
+            None => {
+                return Err(format!(
+                    "{}: refused to open {uri} — a plugin may post only a file it can read",
+                    self.plugin
+                ));
+            }
+        };
+        if !self.permits_open(&path) {
+            return Err(self.refusal_to("open", &path));
+        }
+        Ok(NativeEffect::OpenExternalUri { uri })
     }
 
     /// True when `path` lies within one of the plugin's `fs:write` prefixes.
@@ -573,7 +665,7 @@ impl EffectAuthorizer {
         }
     }
 
-    /// OB.3a: hold a POSTED batch to the effects a posting plugin may send.
+    /// Hold a POSTED batch to the effects a posting plugin may send.
     ///
     /// A returned effect answers something the user just did; a posted one
     /// (`host-services.post-effects`, from the events seam) can arrive at any
@@ -592,12 +684,17 @@ impl EffectAuthorizer {
     ///   in the plugin's own range space;
     /// - `open-synthetic-buffer` — the buffer a result goes to when there is
     ///   nowhere else (`*org-babel*`);
-    /// - `echo` — telling the user it finished, or why it did not.
+    /// - `echo` — telling the user it finished, or why it did not;
+    /// - `open-buffer` / `open-external-uri` — showing the file the job made
+    ///   (an export's HTML or PDF), only for a path inside the plugin's own
+    ///   `fs` grants, so it opens nothing the plugin could not already read.
+    ///   See [`Self::posted_open`] and [`Self::posted_external`].
     ///
     /// Anything else becomes a warning naming it, and ends the batch: what
-    /// followed may presume it happened (the CD.3c rule for a denied write).
+    /// followed may presume it happened, as after a denied write.
     /// Widen this only when a consumer needs it, with the reason recorded in
-    /// the org-babel slice plan's decision log.
+    /// that consumer's slice plan (org babel's for the result set, org
+    /// export's for the opens).
     pub fn restrict_posted(&self, effect: NativeEffect) -> NativeEffect {
         self.restrict_posted_batch(effect).0
     }
@@ -622,6 +719,13 @@ impl EffectAuthorizer {
             | NativeEffect::UntrackRange { .. }
             | NativeEffect::OpenSyntheticBuffer { .. }
             | NativeEffect::Echo { .. }) => (allowed, false),
+            NativeEffect::OpenBuffer { path, force }
+            | NativeEffect::OpenBufferAtColumn {
+                path,
+                column: None,
+                force,
+            } => self.posted_or_warn(self.posted_open(path, force)),
+            NativeEffect::OpenExternalUri { uri } => self.posted_or_warn(self.posted_external(uri)),
             refused => {
                 let name = match &refused {
                     NativeEffect::WriteToFile { cut: Some(_), .. } => {
@@ -642,6 +746,25 @@ impl EffectAuthorizer {
                             "{}: refused {name} — a plugin may not post it from the background",
                             self.plugin
                         ),
+                    },
+                    true,
+                )
+            }
+        }
+    }
+}
+
+impl EffectAuthorizer {
+    /// A checked posted effect, or its refusal as a warning that ends the batch.
+    fn posted_or_warn(&self, checked: Result<NativeEffect, String>) -> (NativeEffect, bool) {
+        match checked {
+            Ok(effect) => (effect, false),
+            Err(text) => {
+                tracing::info!(plugin = %self.plugin, "post-effects: {text}");
+                (
+                    NativeEffect::Echo {
+                        level: EchoLevel::Warn,
+                        text,
                     },
                     true,
                 )
@@ -1240,6 +1363,125 @@ mod tests {
             panic!("a warning: {parts:?}");
         };
         assert!(text.starts_with("org: refused QuitEditor"), "{text}");
+    }
+
+    /// The warning a refused post left, the batch having ended there.
+    fn refused_text(out: &NativeEffect) -> String {
+        match out {
+            NativeEffect::Echo {
+                level: EchoLevel::Warn,
+                text,
+            } => text.clone(),
+            other => panic!("a warning, not the effect: {other:?}"),
+        }
+    }
+
+    /// A posted open of a file inside the plugin's grant becomes the
+    /// host-applied open, the one a post's host-side drain carries out. A read
+    /// grant is enough: the plugin could already read what it opens.
+    #[test]
+    fn a_posted_open_inside_the_grant_becomes_the_host_applied_open() {
+        let dir = tmp("posted-open");
+        let html = dir.join("notes.html");
+        for write in [true, false] {
+            let auth = EffectAuthorizer::new(&grant(&dir, write), "org");
+            let out = auth.restrict_posted(NativeEffect::OpenBuffer {
+                path: Some(html.clone()),
+                force: false,
+            });
+            assert!(
+                matches!(&out, NativeEffect::OpenBufferAtColumn { path: Some(p), column: None, force: false } if *p == html),
+                "write grant {write}: {out:?}"
+            );
+        }
+    }
+
+    /// Outside every grant the open is refused with the path named, and the
+    /// rest of the batch is dropped.
+    #[test]
+    fn a_posted_open_outside_the_grant_is_refused_and_ends_the_batch() {
+        let dir = tmp("posted-open-in");
+        let other = tmp("posted-open-out");
+        let auth = EffectAuthorizer::new(&grant(&dir, true), "org");
+        let out = auth.restrict_posted(NativeEffect::Many(vec![
+            NativeEffect::OpenBuffer {
+                path: Some(other.join("secret.txt")),
+                force: false,
+            },
+            echo("after"),
+        ]));
+        let NativeEffect::Many(parts) = out else {
+            panic!("a batch: {out:?}");
+        };
+        assert_eq!(parts.len(), 1, "{parts:?}");
+        let text = refused_text(&parts[0]);
+        assert!(
+            text.contains("open denied") && text.contains("secret.txt"),
+            "{text}"
+        );
+    }
+
+    /// The shapes a background open may not take: no path (reload whatever
+    /// is focused), a forced reload (discards unsaved edits), and a relative
+    /// path (the host would resolve it somewhere the grant was not checked).
+    #[test]
+    fn a_posted_open_without_a_safe_target_is_refused() {
+        let dir = tmp("posted-open-shapes");
+        let auth = EffectAuthorizer::new(&grant(&dir, true), "org");
+        let cases = [
+            (None, false, "without a path"),
+            (Some(dir.join("a.html")), true, "unsaved changes"),
+            (Some(PathBuf::from("a.html")), false, "absolute path"),
+        ];
+        for (path, force, says) in cases {
+            let text =
+                refused_text(&auth.restrict_posted(NativeEffect::OpenBuffer { path, force }));
+            assert!(text.contains(says), "{says}: {text}");
+        }
+    }
+
+    /// `open-external-uri` posts only a file the plugin can read, as a path
+    /// or a `file://` URI, and is passed through unchanged.
+    #[test]
+    fn a_posted_external_open_of_a_granted_file_is_kept() {
+        let dir = tmp("posted-uri");
+        let pdf = dir.join("notes.pdf");
+        let auth = EffectAuthorizer::new(&grant(&dir, true), "org");
+        for uri in [
+            pdf.to_string_lossy().into_owned(),
+            format!("file://{}", pdf.display()),
+        ] {
+            let out = auth.restrict_posted(NativeEffect::OpenExternalUri { uri: uri.clone() });
+            assert!(
+                matches!(&out, NativeEffect::OpenExternalUri { uri: kept } if *kept == uri),
+                "{out:?}"
+            );
+        }
+    }
+
+    /// A web page, a file outside the grant, and a percent-escaped file URI
+    /// (which the check would read differently from the OS handler) are
+    /// refused.
+    #[test]
+    fn a_posted_external_open_of_anything_else_is_refused() {
+        let dir = tmp("posted-uri-in");
+        let other = tmp("posted-uri-out");
+        let auth = EffectAuthorizer::new(&grant(&dir, true), "org");
+        let cases = [
+            ("https://example.com/".to_string(), "only a file"),
+            (
+                other.join("x.pdf").to_string_lossy().into_owned(),
+                "open denied",
+            ),
+            (
+                format!("file://{}/%2e%2e/x.pdf", dir.display()),
+                "percent-escaped",
+            ),
+        ];
+        for (uri, says) in cases {
+            let text = refused_text(&auth.restrict_posted(NativeEffect::OpenExternalUri { uri }));
+            assert!(text.contains(says), "{says}: {text}");
+        }
     }
 
     /// OB.3a: the refusal names the variant and nothing of its payload,

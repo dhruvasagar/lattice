@@ -486,10 +486,13 @@ impl EffectAuthorizer {
     /// see `%2e%2e` while the OS handler opens `..`.
     fn posted_external(&self, uri: String) -> Result<NativeEffect, String> {
         let path = match uri.strip_prefix("file://") {
-            Some(rest) if !rest.contains('%') => PathBuf::from(rest),
+            // Only `file:///abs`: a host part (`file://localhost/abs`)
+            // would be checked as a relative path while the opener reads
+            // the absolute one.
+            Some(rest) if !rest.contains('%') && rest.starts_with('/') => PathBuf::from(rest),
             Some(_) => {
                 return Err(format!(
-                    "{}: refused to open {uri} — post the path, not a percent-escaped URI",
+                    "{}: refused to open {uri} — post the absolute path, not a URI with a host or escapes",
                     self.plugin
                 ));
             }
@@ -1498,7 +1501,12 @@ mod tests {
             ),
             (
                 format!("file://{}/%2e%2e/x.pdf", dir.display()),
-                "percent-escaped",
+                "not a URI with a host or escapes",
+            ),
+            // Checked as `localhost/…` against the cwd, opened as `/…`.
+            (
+                format!("file://localhost{}", dir.join("x.pdf").display()),
+                "not a URI with a host or escapes",
             ),
         ];
         for (uri, says) in cases {

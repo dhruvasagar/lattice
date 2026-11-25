@@ -24,7 +24,9 @@ of them inside `org-export-mode` (design §0). Viewing the PDF in the editor is
 | EX.2                      | `org-export-mode`: mode, layer, gate, options, dispatcher, event pipeline **(plugin)** | ✅ |
 | EX.3                      | Parser: elements, and the stepped pipeline **(plugin)**                     | ✅     |
 | EX.4                      | Parser: objects **(plugin)**                                                | ✅     |
-| EX.5                      | Options, filtering, macros, `#+INCLUDE`, link resolution **(plugin)**       | 📝     |
+| EX.5a                     | Options and filtering **(plugin)**                                          | ✅     |
+| EX.5b                     | `#+MACRO` expansion and `#+INCLUDE` **(plugin)**                            | 📝     |
+| EX.5c                     | Internal link resolution, `broken-links` **(plugin)**                       | 📝     |
 | **Phase 3 — backends**    |                                                                             |        |
 | EX.6                      | HTML: transcoder, stylesheet, file / buffer / open sinks **(plugin)**       | 📝     |
 | EX.7                      | Markdown (GFM) **(plugin)**                                                 | 📝     |
@@ -345,8 +347,10 @@ description, emphasis across a line break, unicode around markers.
   list. An unknown `\name` is a LaTeX fragment, as in org. The LaTeX
   backend passes most names through; the few that are not LaTeX commands
   (`\nbsp`, `\ndash`…) need a mapping in EX.8.
-- **Sub- and superscripts** follow `Context::subsup`, default `^:t`;
-  EX.5 sets it from `#+OPTIONS: ^:{}` / `^:nil`.
+- **Sub- and superscripts** are always read as `^:t`, and record whether
+  they were braced. The `#+OPTIONS:` line that governs them may come after
+  them, so EX.5a applies `^:{}` / `^:nil` after the parse (as ox does) by
+  putting the unwanted ones back as text.
 - **Linear in the line, measured.** The first cut was quadratic: an opener
   that never closes scanned to the end of its line, and a 60 KB line of
   ` *a` took 1.36 s natively, a fuel trap in the guest. Emphasis closes are
@@ -359,13 +363,83 @@ description, emphasis across a line break, unicode around markers.
   every place they live; the chunk-equivalence and render-walk tests run
   over it; no-panic over 5,000 generated strings; nesting bounds.
 
-### EX.5 — options and filtering (plugin) 📝
+### EX.5 — options, filtering, macros, includes, links (plugin)
 
 Design §3.3 in full: precedence, the v1 `#+OPTIONS` keys, keywords,
 `SELECT_TAGS` / `EXCLUDE_TAGS`, `COMMENT`, subtree export with `EXPORT_*`
 properties, `#+MACRO` expansion, `#+INCLUDE` through `read-file`, internal
 link resolution in `ox`'s order, `broken-links`. An unimplemented keyword is
 named in the echo, once per export.
+
+Carved in three: each is a mechanism of its own with its own failure modes,
+and EX.5c needs the tree EX.5b's includes and macros produce.
+
+#### EX.5a — options and filtering ✅
+
+- **`export/options.rs`.** `Options::resolve(keywords, subtree, file_stem)`
+  in ox's precedence: ox's defaults, then the file's keywords in file order
+  (`#+OPTIONS:` lines, `#+TITLE:` lines concatenated, the accumulating
+  `#+HTML_HEAD`, `#+LATEX_HEADER`, `#+FILETAGS`), then a subtree's
+  `EXPORT_*` properties. The `#+OPTIONS:` reader takes ox's lisp
+  spellings: `t`, `nil`, numbers, symbols (`not-in-toc`, `{}`, `mark`) and
+  lists (`d:("NOTES")`, `d:(not "LOGBOOK")`). Every key §3.3 lists is
+  read, with ox's default; `c:`, `prop:` and `stat:` too.
+- **The unsupported are named.** An unknown `#+OPTIONS:` key (or a value a
+  known key does not take), and an export keyword ox reads that this does
+  not (`#+SETUPFILE`, `#+BIND`, `#+EXPORT_FILE_NAME`, `#+LATEX_COMPILER`,
+  `#+LATEX_HEADER_EXTRA`…), are collected once each and the closing echo
+  becomes a warning: `Exported notes.md; not supported, so left out:
+  #+SETUPFILE, html-postamble:`. Keywords export never reads (`#+STARTUP`,
+  `#+TODO`) are not named: nothing is lost.
+- **The whole file is parsed, always.** A subtree export no longer parses
+  only the subtree's lines: the file's keywords apply to a subtree too, and
+  only the parse tells a keyword from a look-alike inside an example block.
+  The subtree is the innermost headline holding the cursor's line, taken
+  out of the assembled tree; its raw title is the default title. Keywords
+  are gathered from each chunk's sections as the parse steps run, from
+  anywhere in the file, as ox does.
+- **`export/filter.rs` — a view, not a rewrite.** The render walk asks
+  `visits(h)` for each headline and does not descend into one it skips
+  (`COMMENT`, an exclude tag, own or `#+FILETAGS`, or outside the select-tag
+  selection). The selection is one iterative pass over the headlines (not
+  their sections) after the parse. `own(h)` gives the visited headline's
+  parts pruned: planning (`p:`), properties (`prop:`), clocks (`c:`),
+  drawers (`d:`, default all but `LOGBOOK`), fixed-width (`::`), tables
+  (`|:`), footnotes (`f:`), LaTeX (`tex:nil`), comments and comment blocks
+  always. Objects: timestamps per `<:`, cookies per `stat:`, and `^:`,
+  `*:` and `e:` revert what they turn off to the text it was written as
+  (the IR now records `braced` scripts and `{}`-terminated entities so the
+  revert is exact). The pruning is per visited headline, so a step still
+  touches only its own headlines.
+- **`filter::plain`** gives an object list's text without markup, for the
+  `<title>` and, later, PDF metadata.
+- **No user-level defaults.** The defaults are ox's own; there is no
+  `org.export.*` option for, say, `toc`. A file that wants `toc:nil` says
+  so, as it would for emacs. Revisit if asked.
+- **Placeholder output** now opens with the resolved options, then the
+  filtered tree.
+- **Tests.** Options: defaults, every spelling, precedence including
+  `EXPORT_*`, the ignored list, file tags. Filter: `COMMENT` / `noexport`,
+  select tags with ancestors, file tags, each element and object rule, the
+  reverts. Pipeline: the render-walk test now compares against a plain
+  recursive filtered dump of all five corpora (it fails when the walk
+  descends into a skipped subtree; checked); the subtree test picks the
+  innermost headline. Integration: a file with `noexport`, `COMMENT`, an
+  `#+OPTIONS: ^:nil` after its text and two unsupported asks, end to end.
+
+#### EX.5b — `#+MACRO` and `#+INCLUDE` 📝
+
+`{{{name(args)}}}` expansion with `$1`… and the built-ins (`title`,
+`author`, `date`, `email`, `time`, `property`, `input-file`,
+`modification-time` where the host can say); `#+INCLUDE:` through
+`read-file`, with `:lines`, `:minlevel` and `src` / `example` wrapping,
+recursion-bounded, and stepped like the parse.
+
+#### EX.5c — links and `broken-links` 📝
+
+Internal link resolution in ox's order (`CUSTOM_ID`, target, radio target,
+headline text, `#+NAME`), giving each resolved target an id the backends
+emit; `broken-links:` as EX.5a reads it.
 
 ### EX.6 — HTML (plugin) 📝
 

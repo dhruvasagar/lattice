@@ -88,7 +88,10 @@ host transient (`open-transient`, magit's mechanism), not a bespoke buffer:
 | `C-b` | toggle: body only (no preamble/`<head>`) | `--body-only` |
 | | cancel a running export | `:org-export-cancel` |
 
-The letters are emacs's. The toggles stay set across exports in the session,
+`C-s` and `C-b` are transient **`flag` rows**, magit's switches: they flip in
+place, and the fired command reads them through its `args-schema`
+(`subtree`, `body-only`). A plugin menu could not carry a flag before 0.7.0
+(§6). The letters are emacs's. The toggles stay set across exports in the session,
 as emacs's do. Ex-commands are dashed and namespaced, per the naming rule.
 
 **Opening** (`h o`, `l o`, `m o`) goes through `org.export.open-with`:
@@ -266,7 +269,41 @@ compiler runs until the user names one, and PDF export says how to name one.
 A non-zero exit stops the list; the log is in `*org-export*`, and the echo
 names it.
 
-## 6. The host change: `write-file`
+## 6. The host changes: plugin API 0.7.0, one publish
+
+Everything export and pdf-mode need from the plugin API ships in **one**
+version, 0.7.0, audited against every slice before EX.1 starts (Dhruva,
+2026-11-25: "all updates to WIT for pdf / export are bundled together in the
+next version (0.7.0), I don't want multiple publishes for this"). Four
+changes:
+
+| change | why | ABI |
+|---|---|---|
+| `host-services.write-file` | the `.tex` on disk before the compiler starts (below) | additive |
+| `flag` arm on `transient-item-kind` | the dispatcher's `C-s` / `C-b` toggles (§2) | **breaking**: a type plugins return |
+| `post-effects` carries `open-buffer` and `open-external-uri`, for a path inside the plugin's own `fs` grants | `h o` / `m o` / `l o` open the output once the export lands on the events seam | behaviour |
+| `post-effects` carries `confirm` | babel's one consent, asked after the parse, when the count is exact (§4) | behaviour |
+
+**0.7.0 is therefore breaking**, as 0.4, 0.5 and 0.6 were: every plugin and
+every `init.rs` moves its pin to `lattice-wit = "0.7"` and rebuilds. The
+`flag` arm alone forces it; `write-file` would have been additive.
+
+**The open-effects stay narrow.** A posted open lands seconds after the
+command that caused it (a compile), so it cannot come from the command's
+return; but a background plugin opening anything at all would be a new
+surface. Limited to a path inside the plugin's `fs` grants, it opens only
+what the plugin could already have written.
+
+**A posted `confirm` can catch keys.** Any plugin may now raise a y/n prompt
+from the background, and a prompt that appears while the user types takes
+the next key. Export's lands milliseconds after the user's own chord. The
+alternative, counting blocks on the chord as `execute-buffer` does, puts an
+O(file) scan on the grammar seam's Reflex budget and miscounts: it cannot see
+`:noexport:`, `SELECT_TAGS` or `#+INCLUDE`.
+
+The pdf side needs nothing here: PF.5b is pdf-mode alone.
+
+### `write-file`
 
 The `.tex` must be **on disk before the compiler starts.** `write-to-file` is
 an *effect*: it is applied later, on the editor actor, and the guest learns
@@ -287,8 +324,8 @@ write-file: func(path: string, text: string) -> result<_, string>;
 
 Synchronous, because ordering is the point: when it returns `ok`, the file
 is there. It runs on `spawn_blocking` host-side like every file service, so
-the guest call never blocks the editor actor. Additive to the WIT world, so
-it ships as plugin API **0.7.0**, and a guest built against 0.6 is unaffected.
+the guest call never blocks the editor actor. Additive on its own; it ships
+in 0.7.0 with the rest of the table above.
 
 **Why not the alternatives.** Waiting for a `watch` event on the `.tex`
 before spawning: the same race, one hop later, plus a watcher per export.
@@ -342,8 +379,10 @@ open follows its write.
   caret's line needed one host *fix*, not a feature: returning to any
   buffer put the caret on line 1 (`a6d71dc5`).
 - **The fuel budget:** stepped (§7).
-- **The dispatcher's toggles** are not settled: the transient seam does not
-  carry `flag` rows yet (§2).
+- **The dispatcher's toggles: transient `flag` rows** (Dhruva, 2026-11-25),
+  crossed in 0.7.0 (§6).
+- **Consent: after the parse, through a posted `confirm`** (Dhruva,
+  2026-11-25; §6).
 
 ## 10. Rejected alternatives
 

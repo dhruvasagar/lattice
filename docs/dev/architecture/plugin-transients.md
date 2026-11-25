@@ -168,7 +168,7 @@ argument is for one open; an identity is for as long as the buffer exists.
 | `Dismiss` | ✅ | Free, and a menu without `q` is a trap. |
 | `Submenu` | 📝 | `Arc<TransientSpec>` is recursive; the WIT mirror needs the same care `Range`'s recursion needed. No consumer yet. |
 | `Argument` | ✅ (TR.3b) | The field mechanism — see §7. |
-| `Flag` | 📝 | Round-trips `TransientState` like `Argument`, but nothing needs a boolean toggle yet. |
+| `Flag` | 📝 0.7.0 | Round-trips `TransientState` like `Argument`. Deferred until something needed a boolean toggle; org export's dispatcher does (`C-s` subtree, `C-b` body only), so it crosses in plugin API 0.7.0 ([`org-export.md`](org-export.md) §6). |
 | `Variable` | 📝 | Prefetched external value + an action that prompts. Wants the config seam more than the transient one. |
 
 `TransientSpec::preview` is a `Box<dyn Fn(&TransientState) -> String>` and

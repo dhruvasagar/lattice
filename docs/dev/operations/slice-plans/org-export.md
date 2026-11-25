@@ -18,7 +18,7 @@ of them inside `org-export-mode` (design §0). Viewing the PDF in the editor is
 | **Phase 0 — settle**      |                                                                             |        |
 | EX.0                      | Spike: fuel budget, re-export into a buffer, list grant, transient **(plugin)** | ✅ |
 | **Phase 1 — host**        |                                                                             |        |
-| EX.1                      | `host-services.write-file`, plugin API 0.7.0 **(lattice)**                  | 📝     |
+| EX.1                      | Plugin API 0.7.0, the whole of it: `write-file`, transient `flag`, posted opens and `confirm` **(lattice)** | 📝 |
 | EX.R1                     | lattice release carrying EX.1; publish lattice-wit 0.7.0 **(lattice)**      | 📝     |
 | **Phase 2 — the mode and the parse** |                                                                  |        |
 | EX.2                      | `org-export-mode`: mode, layer, gate, options, dispatcher, event pipeline **(plugin)** | 📝 |
@@ -42,8 +42,11 @@ EX.0 comes first because two of its answers can change slices after it: if a
 large export does not fit one events-seam call, EX.2's pipeline is a stepped
 one from the start; and the re-export answer decides whether EX.6 needs a host
 change. EX.1 then goes in early so EX.R1 ships while the plugin work
-proceeds: only EX.9 needs it. EX.3–EX.8 are pure plugin and can land against
-lattice-wit 0.6.0; EX.9 is the first slice that needs 0.7.0. EX.10 comes after
+proceeds. It is the WHOLE of 0.7.0 (one publish), and several slices lean on
+it: EX.2's dispatcher (the `flag` rows), EX.6 / EX.7's `o` sinks (posted
+opens), EX.9 (`write-file`) and EX.10 (posted `confirm`). The parser, EX.3–EX.5,
+is pure plugin and can land against lattice-wit 0.6.0 while EX.R1 is out;
+the rest is built against a path dependency on 0.7.0 and released after it. EX.10 comes after
 the backends because it acts on the IR they already consume, and a backend that
 is wrong is easier to see without babel in the way.
 
@@ -125,18 +128,38 @@ mid-write replaces the pages with an error line; that is pdf-mode's
 
 Throwaway code; nothing from it is committed except this plan's update.
 
-### EX.1 — `write-file` (lattice) 📝
+### EX.1 — plugin API 0.7.0 (lattice) 📝
 
-`host-services.write-file(path, text) -> result<_, string>` (design §6), on
-both linkers, `spawn_blocking` host-side.
+**Every WIT and plugin-API change export and pdf-mode need, in one version**
+(design §6's table; Dhruva, 2026-11-25). A later slice that finds it needs
+another is a miss in this audit, so the audit was run against EX.2–EX.10 and
+PF.5b before EX.1 starts.
+
+1. **`host-services.write-file(path, text) -> result<_, string>`**, on both
+   linkers, `spawn_blocking` host-side.
+2. **`flag` on `transient-item-kind`**: `flag(transient-flag { name, default })`,
+   mirroring `TransientItemKind::Flag`. A guest sets `default` per open, from
+   its store, which is how the toggles stay set across exports.
+3. **`post-effects` carries `open-buffer` and `open-external-uri`** when the
+   path is inside the plugin's `fs` grants (read or write); outside, the
+   effect is replaced by a warning naming the grant, as `write-to-file` is.
+   A URI that is not a file path is refused when posted.
+4. **`post-effects` carries `confirm`.**
 
 Tests: a write inside the grant lands, and `ok` means it is on disk; outside
 the grant, refused; a symlink inside the grant pointing outside, refused (the
 `delete-file` canonicalization, reused, not copied); a path open in a dirty
 buffer, refused with a message naming the buffer; open and clean, written and
 the buffer reloads; a directory, refused; a guest against an unwired linker
-fails instantiation, as for `post-effects`. Plugin API reference regenerated.
-CHANGELOG: Added.
+fails instantiation, as for `post-effects`. A guest menu's `flag` row
+round-trips: its default reaches the state, a toggle flips it, and the fired
+command's `args-schema` receives it by name. A posted `open-buffer` inside
+the grant opens the file without a keypress and one outside is refused with
+the grant named; the same for `open-external-uri`, plus a non-path URI
+refused. A posted `confirm` raises the prompt without a keypress and `y`
+fires its action. Plugin API reference regenerated, the bundled plugins and
+the `init.rs` world moved to `@0.7.0`. CHANGELOG: Added, and the breaking
+note for the `flag` arm, as 0.6.0's for `file-anchor`.
 
 ### EX.2 — the mode (plugin) 📝
 

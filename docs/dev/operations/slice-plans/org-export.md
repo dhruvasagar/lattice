@@ -31,7 +31,7 @@ of them inside `org-export-mode` (design §0). Viewing the PDF in the editor is
 | **Phase 3 — backends**    |                                                                             |        |
 | EX.6a                     | HTML: transcoder, stylesheet, file sink **(plugin)**                        | ✅     |
 | EX.6b                     | Buffer and open sinks, every backend **(plugin)**                           | ✅     |
-| EX.7                      | Markdown (GFM) **(plugin)**                                                 | 📝     |
+| EX.7                      | Markdown (GFM) **(plugin)**                                                 | ✅     |
 | EX.8                      | LaTeX: transcoder, `.tex` file / buffer **(plugin)**                        | 📝     |
 | EX.9                      | PDF: `latex-pdf-process`, `*org-export*` log, `l p` / `l o` **(plugin)**    | 📝     |
 | **Phase 4 — babel**       |                                                                             |        |
@@ -670,12 +670,80 @@ once, after the transcoder, rather than three times.
   the same buffer's text (failed while the id was never learned;
   checked); `h o` writes the file and focuses it in lattice.
 
-### EX.7 — Markdown (plugin) 📝
+### EX.7 — Markdown (plugin) ✅
 
 GFM: ATX headings (with `H` and below as lists, as `ox-md`), pipe tables,
 footnotes, fenced code with language, task-list checkboxes, autolinks, raw
 `#+BEGIN_EXPORT markdown`. Golden tests; tables with inline markup and
 pipes in cells.
+
+**As built.**
+
+- **`export/common.rs` first.** What every backend computes the same way
+  moved out of `html.rs`: the `Outline` (export levels, section numbers,
+  the TOC entries, description-less link labels, `:ID:`s taken before the
+  filter), `Footnotes` (numbered by first reference, definitions collected
+  wherever they are, written in turn as one references another) and the
+  image tests. `html.rs` uses it unchanged in output: every HTML golden is
+  byte-identical. LaTeX will take the same pieces.
+- **`export/markdown.rs`**, the HTML writer's interface (`start`,
+  `headline`, `finish`, `Writer::Markdown`), written as the walk goes.
+  Each element is a block, blocks a blank line apart; a list item's or a
+  quote's contents are indented or prefixed as a whole.
+- **ox-md's shape.** No title heading (as ox-md). ATX headings to
+  `min(H, 6)`, prefixed by the section number when numbered; below that, a
+  list item with ox-md's four-wide bullet (`1.` from the headline's own
+  number, else `-`), nested by the item-headlines actually open above it
+  rather than by level, since skipped levels would otherwise indent an item
+  with nothing above it, which CommonMark reads as a code block. The TOC is
+  a nested list, numbered entries ordered items, as ox-md's.
+- **Anchors only where needed.** A heading writes `<a id>` when the TOC or
+  some link goes to it, so a document people read as text is not strewn
+  with them. A link can come before what it names, so `Targets::collect`
+  now records every link path, and `Targets::referred` resolves them once
+  before the walk. A `#+NAME`d element is anchored on the same rule;
+  `<<targets>>` and radio targets always are.
+- **GFM where ox-md uses HTML** (design §1): pipe tables (header from the
+  rows before the first rule, an empty header when there is none so the
+  first row stays data; extra header rows become body rows; `<l>`/`<c>`/`<r>`
+  alignment), `[^n]` footnotes with four-space continuations, `[x]`/`[ ]`
+  task items, `~~strike~~`.
+- **Escaping.** `` \`*_[]~|$ `` everywhere, `<` and `&` as entities; at a
+  line start, what would open a heading, quote, list or setext underline.
+  `|` because a cell ends at one; `$` because GitHub reads it as math.
+  Entities' UTF-8 is escaped too: `\vert`, newly in the entity table with
+  `\vbar` (emacs has both), is how a `|` gets into a cell. Code spans and
+  fences are longer than the longest backtick run they hold.
+- **Lists in a row.** Two org lists that two blank lines separate are one
+  Markdown list unless something stands between them; an empty
+  `<!-- -->` does, CommonMark's own answer.
+- **Links.** `[desc](url)`; a bare URL or `mailto:` as `<autolink>`; `.org`
+  → `.md`; an `id:` link goes to the node's file (another file's Markdown
+  has no `ID-` anchor to land on), and with no roam index, the description
+  alone. A standalone image is `![caption](path)`, the caption as alt text,
+  as ox-md.
+- **Raw output**: `export` blocks, snippets and `#+KEYWORD:`s for `md`,
+  `markdown` and `html` pass through (every Markdown renderer takes inline
+  HTML). Math: `$…$` kept, `\(…\)` → `$…$`, `\[…\]` → `$$…$$`,
+  environments as a `$$` block.
+- **Departures**: a partial checkbox is the cookie `\[-\]` (GFM's boxes have
+  two states; ox-md does the same); a bold descriptive term is not wrapped
+  in bold again; the placeholder's Markdown and HTML shells are gone, the
+  dump now LaTeX's alone.
+- **Tests.** Goldens for the five corpus files (`testdata/*.md`), each
+  checked by parsing it as GFM with `pulldown-cmark` (a new dev-dependency)
+  so every `#fragment` link lands on an anchor it writes; targeted tests read
+  the GFM events, not only the text: heading levels and the items below
+  `H:`, nesting under skipped levels (no code block), anchors only where
+  linked (fails with `referred` empty; checked), heading prefixes, tables
+  (cell count, alignment, `\vert`, code), fences around backticks,
+  footnote order and definitions, task markers, escaping (no quote or
+  heading from text), links, raw passthrough, math, quote and verse. The
+  pipeline's mechanics tests (walk order, steps, subtrees, includes,
+  macros, title) moved to the LaTeX dump; **EX.8 removes the dump**, so it
+  must give them a backend-neutral oracle first (stepped output equal to
+  the same export in one step is the candidate). Integration: the
+  `m m` tests assert real Markdown now.
 
 ### EX.8 — LaTeX (plugin) 📝
 

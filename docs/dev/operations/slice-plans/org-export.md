@@ -29,7 +29,8 @@ of them inside `org-export-mode` (design §0). Viewing the PDF in the editor is
 | EX.5c                     | `#+INCLUDE` **(plugin)**                                                    | ✅     |
 | EX.5d                     | Internal link resolution, `broken-links` **(plugin)**                       | ✅     |
 | **Phase 3 — backends**    |                                                                             |        |
-| EX.6                      | HTML: transcoder, stylesheet, file / buffer / open sinks **(plugin)**       | 📝     |
+| EX.6a                     | HTML: transcoder, stylesheet, file sink **(plugin)**                        | ✅     |
+| EX.6b                     | Buffer and open sinks, every backend **(plugin)**                           | 📝     |
 | EX.7                      | Markdown (GFM) **(plugin)**                                                 | 📝     |
 | EX.8                      | LaTeX: transcoder, `.tex` file / buffer **(plugin)**                        | 📝     |
 | EX.9                      | PDF: `latex-pdf-process`, `*org-export*` log, `l p` / `l o` **(plugin)**    | 📝     |
@@ -542,7 +543,7 @@ view, includes before the parse). EX.5d needs the tree both produce.
   at its `<<anchor>>`. Integration: a broken link stops the export and
   writes nothing.
 
-### EX.6 — HTML (plugin) 📝
+### EX.6 — HTML (plugin) 🚧
 
 The transcoder (design §1's structure and class names), the default
 stylesheet (written fresh, design §1), `#+HTML_HEAD`, `#+ATTR_HTML`, raw
@@ -552,6 +553,88 @@ file, buffer (EX.0's answer), open (`org.export.open-with`).
 
 Tests: golden HTML for the corpus; the document is well-formed (parsed back
 by an HTML parser in the test); every internal link's target id exists.
+
+Carved in two: the sinks are not HTML's alone (`h H` / `m M` / `l L` and
+`h o` / `m o` / `l o` are one mechanism for three backends), so they land
+once, after the transcoder, rather than three times.
+
+#### EX.6a — the HTML transcoder ✅
+
+- **`export/html.rs`, written as the render walks.** `Html::start` (in the
+  prepare step) numbers the headlines and builds the table of contents in
+  one pass over the headlines alone, then writes the head, the title and
+  the preamble; `Html::headline` writes one visited headline's own parts
+  per walk visit; `Html::finish` closes what is open and writes the
+  footnotes and the postamble. Open containers are a stack, so a headline
+  closes exactly the sections at its level or deeper. The render step's
+  budget counts what the writer added, as the placeholder's did.
+- **ox-html's shape**: `#content`, `.title` / `.subtitle`,
+  `#table-of-contents`, `outline-container-<anchor>` / `.outline-N`,
+  `.outline-text-N`, `section-number-N`, `.todo` / `.done` plus the
+  keyword, `.tag`, `.timestamp-wrapper`, `.org-src-container` /
+  `pre.src.src-<lang>`, `pre.example`, `.org-ul` / `.org-ol` / `.org-dl`,
+  checkbox `on` / `off` / `trans`, `.figure` / `figure-number`,
+  `table-number`, `listing-number`, `.verse`, `.org-center`, a special
+  block's own name, `#footnotes` / `.footdef` / `fnr.N` / `fn.N`,
+  `#postamble`. Levels are relative (a subtree export's top is `h2`), `h6`
+  at most.
+- **Options it reads**: `H:` (deeper headlines are items of a `<ol>` when
+  numbered, `<ul>` when not, as in ox), `num:` (reaches below `H:`, as in
+  ox) and `UNNUMBERED` (`t`, `notoc`, inherited), `toc:` (capped at `H:`),
+  `todo:`, `pri:`, `tags:` (`not-in-toc`), `tex:` (`t` = MathJax, `$…$` →
+  `\(…\)`, `$$…$$` → `\[…\]`, the script only when the page has math;
+  `verbatim`; `nil`), `-:` (en/em dash, ellipsis, soft hyphen), `\n:`,
+  `author:` / `date:` / `email:` / `title:`, `#+HTML_HEAD` /
+  `_EXTRA`, `#+LANGUAGE`, `#+SUBTITLE`.
+- **Elements**: a paragraph that is only an image link is a figure with
+  its caption; `#+ATTR_HTML` becomes attributes on the image or table;
+  tables have `<thead>` (the rows before the first rule), `<colgroup>`, a
+  cookie's alignment or right-aligned when most cells are numbers (org's
+  `org-table-number-fraction`); list items' first paragraph has no `<p>`,
+  as in ox; `#+NAME` is the element's `id`; `export html` blocks, `#+HTML:`
+  and `@@html:…@@` are raw. A `#+TOC:` is named in the closing echo.
+- **Links**: internal ones take the anchor the filter resolved and, with
+  no description, the headline's number or title; a file link to `.org`
+  goes to its `.html`; an `id:` link goes to `<node's file>.html#ID-<id>`,
+  relative when the file is beside or under this one, which is why the
+  `Host` id lookup now answers with the node's file (`IdFile`). A
+  headline with an `:ID:` carries `<a id="ID-…">` whether or not its
+  properties are exported. A described-less image link is `<img>`.
+- **Footnotes** are numbered by first reference, wherever they are defined;
+  a definition referencing another numbers it in turn; a repeated
+  reference gets `fnr.N.2`. The `Footnotes` heading is collected, not
+  exported, as in ox.
+- **XML-safe**: void elements self-close, the only entities are XML's own
+  and numeric ones, so the output is well-formed XML as well as HTML.
+- **`org.export.html-stylesheet`** (registered here, its reader's slice):
+  `default` inlines `export/html.css`, written fresh (ox-html's is GPL'd),
+  light and dark; `none`; anything else is linked.
+- **Done keywords** come from the file's `#+TODO:` lines or the configured
+  sequences: `Context` now keeps the sequence lines, so it knows which
+  keywords are done.
+- **Departures, accepted**: no syntax highlighting (design §8, classes
+  only); a footnote referenced but never defined exports empty (ox stops);
+  the table of contents leaves out TODO keywords; a timestamp range is one
+  span, its `--` not typeset.
+- **Tests** (`html.rs`, 19): goldens for the five corpus files, each parsed
+  back by `quick-xml` (a new dev-dependency) as strict XML with every
+  `href="#…"` landing on an `id`; numbering and contents with `UNNUMBERED`;
+  `num:nil toc:nil`; headlines below `H:` as list items (failed before
+  `num:` reached below `H:`); done/todo classes; footnote order; MathJax
+  only with math; file / id / image / URL links; the three stylesheet
+  settings; body only; the postamble on and off; escaping versus raw HTML;
+  table head and numeric alignment; source classes; an `:ID:` anchor with
+  properties off (fails with the anchor disabled; checked). Integration:
+  the real export writes the transcoder's document with the stylesheet
+  inline. The objects corpus's `@@html:<kbd>@@` snippet is now closed, so
+  the golden is well-formed.
+
+#### EX.6b — buffer and open sinks 📝
+
+`h H` / `m M` / `l L` into `*Org HTML Export*` and peers
+(`org-export-output-mode`, a whole-text `apply-edit` on re-export) and
+`h o` / `m o` / `l o` through `org.export.open-with` (`editor` default, or
+`system`), registered here with their reader.
 
 ### EX.7 — Markdown (plugin) 📝
 

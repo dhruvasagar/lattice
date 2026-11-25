@@ -1,4 +1,4 @@
-//! EX.1 end-to-end — `host-services.write-file`, through a real guest.
+//! `host-services.write-file` end-to-end, through a real guest.
 //!
 //! An export writes its `.tex` and then spawns the compiler, which reads it.
 //! An `effect.write-to-file` is applied later, on the editor actor, so the

@@ -226,11 +226,11 @@ impl Guest for Component {
             &spec(),
             53,
         );
-        // EX.1: write a file from the sync grammar seam. Args `"<path>\n<text>"`;
+        // Write a file from the sync grammar seam. Args `"<path>\n<text>"`;
         // echoes `wrote` or the host's error text.
         grammar::register_action(
             "multiseam-write-file",
-            "write a file from the sync grammar seam (EX.1)",
+            "write a file from the sync grammar seam",
             &spec(),
             54,
         );

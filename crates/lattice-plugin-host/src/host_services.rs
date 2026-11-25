@@ -241,7 +241,7 @@ pub(crate) fn delete_within_grant(grant: &CapabilityGrant, path: &str) -> Result
     }
 }
 
-/// EX.1: capability-gated file write (host-side, §5) — [`delete_within_grant`]'s
+/// Capability-gated file write, host-side — [`delete_within_grant`]'s
 /// peer, for an ORDERING an effect cannot give: `ok` means the bytes are on
 /// disk, so a process the guest spawns next reads them.
 ///
@@ -702,7 +702,7 @@ mod tests {
         None
     }
 
-    /// EX.1: `ok` means the bytes are there, replacing what was.
+    /// `ok` means the bytes are there, replacing what was.
     #[test]
     fn write_file_lands_within_a_writable_grant() {
         let dir = tempfile::tempdir().unwrap();

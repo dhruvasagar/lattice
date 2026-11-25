@@ -1,13 +1,13 @@
 //! Switching back to a buffer puts the caret where this pane left it, as
 //! vim's `:b` / `:bn` / `:bp` do.
 //!
-//! `7bfa3b6f` stopped a pane carrying its caret onto a DIFFERENT buffer
-//! (magit's `<CR>` opened the commit buffer at the status list's line) by
-//! resetting the caret on every switch, and left restoring it to "marks /
-//! position history". Nothing restored it, so every return to a buffer
-//! landed on line 1. The pane's buffer trail already held the position it
-//! left each buffer at (`pane_buffer_history.rs` pins that); this pins that
-//! `activate_document` reads it back.
+//! A pane must not carry its caret onto a DIFFERENT buffer (magit's `<CR>`
+//! would open the commit buffer at the status list's line), so a switch
+//! resets it, and a return restores it. The position comes from the pane's
+//! buffer trail, which records where it left each buffer
+//! (`pane_buffer_history.rs` pins the recording); these pin that
+//! `activate_document` reads it back. Without the read, every return to a
+//! buffer lands on line 1.
 
 use std::time::{Duration, Instant};
 
@@ -67,8 +67,8 @@ async fn returning_to_a_buffer_puts_the_caret_where_it_was_left() {
     assert_eq!(editor.cursor, Position::new(4, 0), "and b.txt where it was");
 }
 
-/// `7bfa3b6f`'s half, which must still hold: a buffer this pane has never
-/// shown opens at the top, whatever line the pane was on before.
+/// The reset half: a buffer this pane has never shown opens at the top,
+/// whatever line the pane was on before.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_buffer_the_pane_never_showed_opens_at_the_top() {
     let dir = tempfile::tempdir().expect("a temp dir");

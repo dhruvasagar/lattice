@@ -1156,7 +1156,7 @@ record(&outcome);
 write-file: func(path: string, text: string) -> result<_, string>
 ```
 
-EX.1: write `text` to `path`, replacing what is there — `read-file`'s
+Write `text` to `path`, replacing what is there — `read-file`'s
 and `delete-file`'s peer, for an ordering an effect cannot give.
 
 `effect.write-to-file` is applied later, on the editor actor, and the

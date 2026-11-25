@@ -1590,7 +1590,7 @@ impl crate::lattice::plugin_host::host_services::Host for PluginState {
         host_services::delete_within_grant(&self.grant, &path)
     }
 
-    /// EX.1 `write-file`: `delete-file`'s peer, gated on `fs:write`, refused
+    /// `write-file`: `delete-file`'s peer, gated on `fs:write`, refused
     /// over a buffer with unsaved changes. Gate + logic in
     /// [`host_services::write_within_grant`]; this supplies the buffer lookup.
     fn write_file(&mut self, path: String, text: String) -> Result<(), String> {

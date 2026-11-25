@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Added
+- **Plugin API 0.7.0 — breaking.** The crates (`lattice-wit`, `lattice-plugin-sdk`, `lattice-plugin-sdk-derive`) and the WIT package (`lattice:plugin-host@0.7.0`) carry `write-file`, the `flag` row on transient menus, and posted opens and confirms. The `flag` arm changes a type plugins return, so a plugin built for 0.6 does not load: move its pin to `lattice-wit = "0.7"` and rebuild. Your `init.rs` needs the same, and its `wit/init.wit` package line moved to `@0.7.0` by hand.
 - **A plugin can ask before running something, from the background.** A plugin finishing work it started from your key can show a yes/no question, for example how many code blocks an export is about to run, and `y` runs it. The command it names is checked as for any other.
 - **A plugin can open the file its background job made.** When an export or another long job finishes, the plugin can open the result in the editor or in your system's viewer without you pressing anything. Only a file inside the directories the plugin may already read or write is opened, never a web page, and never by discarding unsaved changes; anything else shows a warning naming the path.
 - **Plugin menus can have switches.** A plugin's transient menu can now carry on/off rows that flip in place when you press their key, as magit's `-a` / `-f` do, and the command you then fire receives them. Org export's dispatcher uses them for "subtree only" and "body only".

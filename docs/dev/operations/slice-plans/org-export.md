@@ -18,7 +18,7 @@ of them inside `org-export-mode` (design §0). Viewing the PDF in the editor is
 | **Phase 0 — settle**      |                                                                             |        |
 | EX.0                      | Spike: fuel budget, re-export into a buffer, list grant, transient **(plugin)** | ✅ |
 | **Phase 1 — host**        |                                                                             |        |
-| EX.1                      | Plugin API 0.7.0, the whole of it: `write-file`, transient `flag`, posted opens and `confirm` **(lattice)** | 🚧 |
+| EX.1                      | Plugin API 0.7.0, the whole of it: `write-file`, transient `flag`, posted opens and `confirm` **(lattice)** | ✅ |
 | EX.R1                     | lattice release carrying EX.1; publish lattice-wit 0.7.0 **(lattice)**      | 📝     |
 | **Phase 2 — the mode and the parse** |                                                                  |        |
 | EX.2                      | `org-export-mode`: mode, layer, gate, options, dispatcher, event pipeline **(plugin)** | 📝 |
@@ -128,7 +128,7 @@ mid-write replaces the pages with an error line; that is pdf-mode's
 
 Throwaway code; nothing from it is committed except this plan's update.
 
-### EX.1 — plugin API 0.7.0 (lattice) 🚧
+### EX.1 — plugin API 0.7.0 (lattice) ✅
 
 **Every WIT and plugin-API change export and pdf-mode need, in one version**
 (design §6's table; Dhruva, 2026-11-25). A later slice that finds it needs
@@ -180,8 +180,17 @@ each green on its own, the version bump and re-pins last.
    and `post_effects_seam.rs` (a posted confirm naming a closed command is
    refused by the gate). The TUI's confirm-seeding tests now apply the effect
    rather than calling the deleted `do_confirm`.
-5. 📝 **EX.1e** the package to `@0.7.0`, the crates to 0.7.0, the bundled
-   plugins and the `init.rs` world re-pinned, the breaking note.
+5. ✅ **EX.1e** the package to `@0.7.0`, the crates to 0.7.0, the bundled
+   plugins and the `init.rs` world re-pinned, the breaking note. Done with
+   `cargo xtask bump-plugin-api 0.7.0` (39 package lines, 4 inline WIT
+   references, the three crates, `Cargo.lock`), then by hand: the README
+   pins, the authoring guide, the distribution doc, `version-mode.md`, the
+   regenerated reference, and the fixture-guest and bundled-plugin
+   lockfiles (version lines only; the bundled plugins depend by path).
+   **Still a release blocker for EX.R1, as at 0.5.0 and 0.6.0:**
+   `refresh_wit_package` never rewrites the package line of a user-owned
+   `wit/init.wit`, so a scaffolded `init.rs` fails to build until the user
+   edits it; the CHANGELOG states the step.
 
 Tests: a write inside the grant lands, and `ok` means it is on disk; outside
 the grant, refused; a symlink inside the grant pointing outside, refused (the

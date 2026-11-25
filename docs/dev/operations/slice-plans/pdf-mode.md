@@ -21,6 +21,7 @@ text (design §8).
 | PF.4a | The keymap: page, screen and step navigation; `q`; `page N/M`      | ✅     |
 | PF.4b | Fit width, zoom, rotate, `h` / `l`: scrolling inside a page        | ⛔     |
 | PF.5  | Reload in place on change                                            | ✅     |
+| PF.5b | A reload mid-write keeps what it showed                              | 📝     |
 | PF.6a | `gx`, `:help pdf-mode` / `viewer-mode`, user docs                    | ✅     |
 | PF.6b | Benchmarks: scrolling a long PDF, the pixel cache under scrolling    | 🚧     |
 | PF.11 | Lattice as a candidate PDF viewer (Linux desktop entry)              | ✅     |
@@ -283,6 +284,28 @@ zoom keeps the old raster on screen until the new one lands (no blank frame);
 in fit width, `<C-e>` scrolls inside a page taller than the window and `j`
 still moves to the next page; in the TUI, a screen scroll is one page; the
 modeline shows the cursor's page.
+
+### PF.5b — a reload mid-write keeps what it showed 📝
+
+Design §5. Found in org-export's EX.0: `l o` re-exports while the PDF is open,
+and the user's ask is to "see the PDF update if re-exported". pdfTeX writes
+its PDF progressively, so the watcher sees it mid-compile; today a reload that
+cannot read it replaces every page with `not a readable PDF (…)` until the
+next write.
+
+- **First, measured:** what hayro makes of a truncated PDF (a valid one cut
+  at several points, and a pdfTeX-shaped one whose page tree is written
+  last). If it repairs a prefix into fewer pages, "fewer pages" is a
+  mid-write signal too, not only "unreadable"; if it always fails cleanly,
+  unreadable is the whole test.
+- **Then:** a reload whose probe fails keeps the carried-over labels and
+  blocks (and so the cursor), with a `debug!`; the GPUI cache keeps its old
+  rasters as placeholders. The next change reloads as PF.5 does.
+
+Tests: a reload onto a truncated file keeps the page labels, the cursor and
+the blocks, with no keypress; the complete file written after it reloads to
+the new page count; a first open of a truncated file still shows the error
+line. Each checked against the code with the keep removed.
 
 ### PF.5 — reload ✅
 

@@ -243,7 +243,11 @@ asking to run blocks, as capture checks its target before a word is typed.
 `html-mode`, `markdown-mode` or `text-mode`, with the output as seed text.
 Re-exporting **replaces** the buffer's text in one undo step and keeps the
 cursor's line. Seed text alone cannot do that (it is ignored for a buffer
-that exists, by design), so EX.0 settles how; §9 has the candidates.
+that exists, by design), so the buffer carries a minor,
+`org-export-output-mode`, whose `minor-activated` event hands the plugin its
+id. A re-export posts one whole-text `apply-edit` and then
+`open-synthetic-buffer`; returning to the buffer restores the caret's line
+(§9).
 
 **PDF.** `l p` writes `foo.tex`, then runs the user's
 `org.export.latex-pdf-process` in the file's directory, emacs's
@@ -300,11 +304,12 @@ open follows its write.
 
 - **Off the keystroke.** The chord costs one `emit-event`; everything else
   is on the plugin's events actor (§3). Paramount goal #1.
-- **Bounded per call.** A whole-file export must finish inside one
-  events-seam call's fuel and epoch budget. EX.0 measures it on the
-  2,300-line reference file and a 20,000-line one; if the large one does not
-  fit, the export steps through self-emitted events (parse, then transcode a
-  section at a time), as the roam scan does.
+- **Bounded per call.** No events-seam call may exceed its fuel and epoch
+  budget, and a whole-file export does not fit one: EX.0 measured 145% of
+  the event budget for 20,000 real lines (7.9% for 2,300). So the export
+  **steps** through self-emitted events (parse, then transcode a section at
+  a time), as the roam scan does, each step bounded by the bytes it covers.
+  Fuel is the bound; wall time is milliseconds.
 - **A bench.** `cargo bench` in the plugin covers parse and each transcoder
   natively (the parser is pure Rust), so a regression shows in numbers, not
   in a user's report.
@@ -327,17 +332,18 @@ open follows its write.
   is in the first cut.
 - **Export templates** (`C-c C-e #`). Insertion of option skeletons; ⛔.
 
-## 9. Open in EX.0
+## 9. Settled in EX.0
 
-- **Re-exporting into a buffer.** `open-synthetic-buffer` ignores seed text
-  for an existing buffer, which is correct for capture and wrong here. Three
-  candidates: an `apply-edit` replacing the whole text (needs the buffer id
-  and is gated on the plugin's mode being active there, so the export
-  buffer would carry a small `org-export-output-mode` minor); output buffers
-  (`output-reset` + `output-append`), if they can take a major; or a
-  `replace: bool` on the payload, which would be a host change. EX.0 picks
-  the one that needs no host change and records why.
-- **The fuel budget** (§7).
+- **Re-exporting into a buffer: the whole-text `apply-edit`** (§5), with the
+  id learned from the minor's activation. No host change. Output buffers
+  lost: their major is fixed to `plugin-output-mode`, so no `html-mode`,
+  and they cut lines at 4,096 characters. A `replace` flag on the payload
+  would be a host change for what `apply-edit` already does. Keeping the
+  caret's line needed one host *fix*, not a feature: returning to any
+  buffer put the caret on line 1 (`a6d71dc5`).
+- **The fuel budget:** stepped (§7).
+- **The dispatcher's toggles** are not settled: the transient seam does not
+  carry `flag` rows yet (§2).
 
 ## 10. Rejected alternatives
 

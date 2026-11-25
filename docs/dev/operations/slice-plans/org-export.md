@@ -16,7 +16,7 @@ of them inside `org-export-mode` (design §0). Viewing the PDF in the editor is
 | Slice                     | Description                                                                 | Status |
 |---------------------------|-----------------------------------------------------------------------------|--------|
 | **Phase 0 — settle**      |                                                                             |        |
-| EX.0                      | Spike: fuel budget, re-export into a buffer, list grant, transient **(plugin)** | 📝 |
+| EX.0                      | Spike: fuel budget, re-export into a buffer, list grant, transient **(plugin)** | ✅ |
 | **Phase 1 — host**        |                                                                             |        |
 | EX.1                      | `host-services.write-file`, plugin API 0.7.0 **(lattice)**                  | 📝     |
 | EX.R1                     | lattice release carrying EX.1; publish lattice-wit 0.7.0 **(lattice)**      | 📝     |
@@ -49,9 +49,65 @@ is wrong is easier to see without babel in the way.
 
 ## Slices
 
-### EX.0 — spike (plugin) 📝
+### EX.0 — spike (plugin) ✅
 
-Answers, recorded in this plan with the evidence, before EX.2:
+**Answers** (2026-11-25; the throwaway code is gone, as planned):
+
+1. **Fuel: a large export does not fit one call. EX.2 builds the stepped
+   pipeline.** A throwaway line-oriented parse plus object pass plus HTML
+   render, built as the component is (`opt-level = "s"`), run under the
+   host's fuel setting against `PluginBudget::event()` (100M fuel, 5 s):
+
+   | input | fuel | of the budget | wall |
+   |---|---|---|---|
+   | 2,300 lines of a real org file | 7.9M | 7.9% | 0.4 ms |
+   | 20,000 lines of real org files | 145M | 145% | 9 ms |
+   | 20,000 lines of dense synthetic markup | 680M | 680% | 77 ms |
+
+   The bar was 20,000 lines inside half the budget; real text is 3× over it.
+   Fuel, not the epoch, is the bound: wall time is far below 5 s. A step
+   should take about 5,000 real lines (≈35M fuel), less where markup is
+   dense, so a step is bounded by bytes of objects, not by lines.
+   The host does not record fuel per call (`trace.rs`'s `fuel_delta` is
+   always 0); the harness read `Store::get_fuel` directly.
+2. **Re-export: one whole-text `apply-edit`, no host change.** The export
+   buffer opens with `activate-minor: org-export-output-mode`; the
+   `minor-activated` event hands the plugin the buffer id, which it keeps in
+   the store (the agenda log's pattern, `lib.rs`'s `AGENDA_LOG_MODE_ID`).
+   Re-export reads the end position with `buffer-text`, then posts
+   `apply-edit` (whole range, `cursor: none`) followed by
+   `open-synthetic-buffer`. Run against the host, this is one `u` and the
+   caret returns to its line, but only after `a6d71dc5`: until then every
+   return to a buffer landed on line 1 (`:b` included), a host bug this
+   spike found and fixed. A killed buffer leaves a stale id, the
+   `apply-edit` is dropped, and the `open-synthetic-buffer` seeds a fresh
+   one, so posting both is always right. Never pass `cursor: some`: it moves
+   the focused buffer's caret whatever `target` names.
+   *Lost:* output buffers (major fixed to `plugin-output-mode`, so no
+   `html-mode`, and lines cut at 4,096 characters, a minified stylesheet's
+   length); a `replace` flag on the payload (a host change, and not needed).
+3. **`fs:write:{org.export.directories}`, empty by default:** answered by
+   what exists. Grants resolve by option name, and the host already pins
+   both halves for any list option (`capability.rs`:
+   `an_empty_list_grants_nothing_and_does_not_fall_back`,
+   `a_list_option_grants_each_entry`); `org.babel.tangle-directories` is the
+   same shape in org. EX.2 adds the option to `org_manifest.rs`'s
+   option-bound pin.
+4. **The transient cannot carry the toggles as they stand.** The WIT's
+   `transient-item-kind` has `action`, `argument` and `dismiss`; `flag` is
+   deferred in `plugin-transients.md` §6 "because nothing needs a boolean
+   toggle yet". Export is the first that does. **Open: a decision for
+   Dhruva** (crossing `flag` in plugin API 0.7.0 beside `write-file`, or
+   toggles as rows that reopen the menu).
+
+**Found for the PDF loop** (Dhruva, 2026-11-25: "one option that exports and
+opens the PDF within lattice and be able to see the PDF update if
+re-exported"). `l o` with `open-with = "editor"` already opens it in
+pdf-mode, and PF.5 reloads it in place. A reload that catches pdfTeX
+mid-write replaces the pages with an error line; that is pdf-mode's
+[PF.5b](pdf-mode.md), and EX.9 depends on it.
+
+**The questions as planned:**
 
 1. **Fuel and epoch.** A throwaway parse-and-render on the events seam over
    the 2,300-line reference file and a generated 20,000-line one. Record the
@@ -168,8 +224,10 @@ after the last exits zero, as jobs; output to `*org-export*`; echo the
 result. `l o`: then open it (`open-with`). Unconfigured: the echo says how to
 configure a compiler, and nothing runs.
 
-Tests: the process grant follows only a user-written value (OB.2's pins,
-re-run for the new option); a failing step stops the list and names the log;
+Needs PF.5b. Tests: the process grant follows only a user-written value
+(OB.2's pins, re-run for the new option); `l o` with the PDF already open
+reloads that buffer at its page instead of opening a second one; a failing
+step stops the list and names the log;
 a fake compiler (a script that writes a file named `%b.pdf`) proves the
 `.tex` is complete on disk when it starts; cancel kills the running step.
 

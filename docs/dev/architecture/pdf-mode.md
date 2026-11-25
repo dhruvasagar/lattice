@@ -216,6 +216,18 @@ rewritten on disk reloads the same way:
 
 `R` is the same reload by hand, on `viewer-mode`: `:e!`.
 
+**A reload that catches the file mid-write keeps what it showed** (PF.5b).
+pdfTeX writes its output as it ships pages out, so the watcher can fire on a
+PDF that is half there: unreadable, or, if the reader repairs it, short of
+its pages. Showing either replaces the document the user is reading with an
+error line or a stub, and clamps the cursor to the stub's last page, a
+pixel change to content the user did not edit. So a reload that cannot read
+the file, or reads fewer pages than the compile will finish with, leaves the
+labels, the blocks and the cursor as they were; the compile's final write
+is a change of its own and loads the finished PDF. This is what zathura and
+sioyek do. On a first open there is nothing to keep, and the error line
+stands (§3).
+
 ## 5a. Lattice as the system's PDF viewer
 
 Opening a PDF from the file manager or a browser should be able to land in

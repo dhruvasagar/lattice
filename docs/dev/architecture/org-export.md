@@ -76,7 +76,12 @@ compatible, not byte-identical.**
   `xelatex`, `lualatex`: it picks the compiler-specific default packages,
   `inputenc`/`fontenc` or `fontspec`, and is `%latex` in the PDF process),
   and the **source-block backend** (`org.export.latex-src-block-backend`:
-  `verbatim`, `listings` or `minted`). Without a compiler choice, Unicode
+  `verbatim`, `listings` or `minted`). Two deliberate divergences, both so a
+  first export compiles: the backend's package is added to the preamble
+  (emacs leaves it to `org-latex-packages-alist`), and listings takes its
+  options per listing rather than by `\lstset`, which carries one block's
+  caption into the next, with no `language=` for a language listings does
+  not know. Without a compiler choice, Unicode
   text and system fonts cannot build; without minted, source is plain; without
   classes, a `memoir` or house class cannot be used.
 
@@ -182,11 +187,15 @@ defaults once instead of in every file:
 |---|---|
 | contents | `with-toc`, `with-section-numbers`, `headline-levels`, `with-author`, `author`, `email`, `with-email`, `with-date`, `with-title`, `with-tags`, `with-todo-keywords`, `with-priority`, `with-planning`, `with-drawers`, `with-footnotes`, `with-tex`, `with-sub-superscripts`, `with-special-strings`, `with-emphasize`, `preserve-breaks`, `broken-links`, `select-tags`, `exclude-tags`, `language` (`org-export-with-*` and peers) |
 | HTML | `html-stylesheet`, `html-head`, `html-head-extra` |
-| LaTeX | `latex-compiler`, `latex-class`, `latex-class-options`, `latex-header`, `latex-classes`, `latex-src-block-backend`, `latex-image-default-width`, `latex-pdf-process` |
+| LaTeX | `latex-compiler`, `latex-class`, `latex-class-options`, `latex-header`, `latex-classes`, `latex-src-block-backend`, `latex-image-width`, `latex-pdf-process` |
 
 Option types follow `ox`'s: a depth option (`with-toc`, `with-section-numbers`) takes
 `true`, `false` or a number; a list option is a TOML array. A value that does
 not parse is refused when it is set, naming it, as with every typed option.
+A string option with a closed set of values (`latex-compiler`,
+`latex-src-block-backend`) is checked when an export reads it, and an export
+it would change stops, naming the option and the values it takes; the option
+types have no enum of strings to refuse it earlier.
 The plugin reads them when the export is asked for, not per keystroke.
 
 The v1 set, each with `ox`'s default: `toc`, `num`, `H`, `^`, `author`,
@@ -411,8 +420,9 @@ open follows its write.
 - **Export templates** (`C-c C-e #`). Insertion of option skeletons; ⛔.
 - **The rest of ox-latex's knobs.** Default-package overrides
   (`org-latex-packages-alist`, `org-latex-default-packages-alist`) are
-  `#+LATEX_HEADER` lines already; the hyperref template is niche; ⛔ for
-  both, each a typed option when someone asks. `#+BIND` binds elisp
+  `#+LATEX_HEADER` lines, and a class header's `[NO-DEFAULT-PACKAGES]`
+  drops the defaults; the hyperref template is niche; ⛔ for both, each a
+  typed option when someone asks. `#+BIND` binds elisp
   variables for one export, and lattice has no elisp: ❌, not deferred.
 
 ## 9. Settled in EX.0

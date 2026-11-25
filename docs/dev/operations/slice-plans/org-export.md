@@ -33,7 +33,7 @@ of them inside `org-export-mode` (design §0). Viewing the PDF in the editor is
 | EX.6b                     | Buffer and open sinks, every backend **(plugin)**                           | ✅     |
 | EX.7                      | Markdown (GFM) **(plugin)**                                                 | ✅     |
 | EX.8a                     | LaTeX: transcoder, built-in classes, `.tex` file / buffer **(plugin)**      | ✅     |
-| EX.8b                     | LaTeX knobs: classes, `HEADER_EXTRA`, compiler, src backend **(plugin)**    | 📝     |
+| EX.8b                     | LaTeX knobs: classes, `HEADER_EXTRA`, compiler, src backend **(plugin)**    | ✅     |
 | EX.8c                     | Every export default an `org.export.*` option (design §3.3) **(plugin)**     | 📝     |
 | EX.9                      | PDF: `latex-pdf-process`, `*org-export*` log, `l p` / `l o` **(plugin)**    | 📝     |
 | **Phase 4 — babel**       |                                                                             |        |
@@ -770,7 +770,7 @@ of ox-latex's surface is design §8 (packages-alist and hyperref template
   `LATEX_HEADER`, levels below `H` as lists, tables, verbatim source,
   escaping, raw export, footnotes, labels / `\ref` for internal links,
   `\includegraphics` figures, math kept.
-- **EX.8b — the knobs** 📝. `org.export.latex-classes`,
+- **EX.8b — the knobs** ✅. `org.export.latex-classes`,
   `#+LATEX_HEADER_EXTRA`, `#+LATEX_COMPILER` (compiler-specific default
   packages; `%latex` lands with EX.9's process), the src-block backend
   (`listings` / `minted`), `#+ATTR_LATEX` (`:environment longtable`,
@@ -786,6 +786,30 @@ of ox-latex's surface is design §8 (packages-alist and hyperref template
   `Options::resolve`, under `#+OPTIONS:` and the keywords. Tests: each option changes the
   export, a keyword overrides it, and a value that does not parse is refused naming the
   option.
+
+**EX.8b as built** (plugin `e70ff9c`).
+
+- **`Configured`.** The plugin's `org.export.*` options are read once per
+  request into a base `Options` (and HTML's stylesheet), the lowest layer
+  `Options::resolve` starts from. EX.8c adds its options to the same read.
+- **Classes** are `LatexClass { name, header, sections }`: the three
+  built-ins, then `org.export.latex-classes` entries, a later one of a name
+  replacing an earlier. A header is spliced as `org-splice-latex-header`
+  (`[DEFAULT-PACKAGES]` / `[PACKAGES]` / `[EXTRA]` and their `[NO-…]`);
+  `#+LATEX_CLASS_OPTIONS` replaces the `\documentclass[…]` group.
+- **Closed-set strings** (`latex-compiler`, `latex-src-block-backend`) are
+  string options checked when the export runs, failing it naming the option.
+  WIT's `option-type` has no string enum, so they cannot be refused at
+  `:set`; a structured `enum-of` root would be, and is the follow-up if
+  that matters.
+- **The compile check** (`the_exports_compile`) runs `latexmk -pdf` over
+  every golden plus a listings variant. `wrapfig` / `capt-of` are stubbed
+  when absent (ox loads them, this writer never uses them); a file needing
+  another absent package is skipped, naming it. The dev box lacks `ulem`
+  and `listings`, so there it skips; it was run green once with throwaway
+  stubs for those two on `TEXINPUTS`. The plugin's CI installs no TeX, so it skips
+  there too. A TeX-equipped CI job is the way to make it bite, ⛔ until
+  wanted.
 
 **EX.8a as built.**
 

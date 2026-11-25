@@ -66,6 +66,30 @@ pub struct WasmMediaCache {
     pub geometry: Option<MediaGeometry>,
     /// One entry per block: the descriptor plus the rows it reserves.
     pub blocks: Vec<(Arc<lattice_cells::MediaBlock>, u32, u16)>,
+    /// The rows reserved below each anchor line, summed over its blocks.
+    /// What the scroll walks charge a line that carries media (PF.4): a PDF
+    /// page is one line and a screen of rows, and `<C-f>` must know it.
+    pub rows_by_anchor: std::collections::HashMap<u32, u32>,
+}
+
+impl WasmMediaCache {
+    /// A cache entry for `blocks`, with its anchor index built.
+    pub fn new(
+        document_version: u64,
+        geometry: Option<MediaGeometry>,
+        blocks: Vec<(Arc<lattice_cells::MediaBlock>, u32, u16)>,
+    ) -> Self {
+        let mut rows_by_anchor = std::collections::HashMap::new();
+        for (_, anchor, rows) in &blocks {
+            *rows_by_anchor.entry(*anchor).or_insert(0) += u32::from(*rows);
+        }
+        Self {
+            document_version,
+            geometry,
+            blocks,
+            rows_by_anchor,
+        }
+    }
 }
 
 /// The [`Editor`]'s cohesive WASM-media wiring. Defaults to inert, so
@@ -204,14 +228,17 @@ impl Editor {
         // Carried across a RESIZE too: an intrinsic size does not depend on
         // the pane, so a resize re-runs `block_geometry`, which is
         // arithmetic, and reads nothing.
-        let known: std::collections::HashMap<PathBuf, (u32, u32)> = self
+        // The revision travels with the size: both were read off the same
+        // file at the same time, and a reload is a fresh buffer with nothing
+        // known, so it measures (and stamps) again.
+        let known: Known = self
             .wasm_media
             .cache
             .get_for(buffer_id)
             .map(|c| {
                 c.blocks
                     .iter()
-                    .filter_map(|(b, _, _)| Some((b.path()?.to_path_buf(), b.intrinsic?)))
+                    .filter_map(|(b, _, _)| Some((b.source.clone(), (b.intrinsic?, b.revision))))
                     .collect()
             })
             .unwrap_or_default();
@@ -292,14 +319,7 @@ impl Editor {
                 let unchanged = cache_slot
                     .get_for(buffer_id)
                     .is_some_and(|prior| same_blocks(&prior.blocks, &blocks));
-                cache_slot.insert_for(
-                    buffer_id,
-                    WasmMediaCache {
-                        document_version: version,
-                        geometry,
-                        blocks,
-                    },
-                );
+                cache_slot.insert_for(buffer_id, WasmMediaCache::new(version, geometry, blocks));
                 unchanged
             };
             if !unchanged {
@@ -337,50 +357,117 @@ fn same_blocks(
 fn size_blocks(
     requests: Vec<MediaBlockRequest>,
     geometry: Option<MediaGeometry>,
-    known: &std::collections::HashMap<PathBuf, (u32, u32)>,
+    known: &Known,
 ) -> Vec<(Arc<lattice_cells::MediaBlock>, u32, u16)> {
+    // PF.3: every page of a PDF is measured by ONE parse of the file, shared
+    // across this pass. Without it a 500-page document would be parsed 500
+    // times per refresh.
+    let mut page_sizes: PageSizes = std::collections::HashMap::new();
     requests
         .into_iter()
-        .map(|req| {
-            let mut block = lattice_cells::MediaBlock::new(req.path.clone(), req.alt);
+        .filter_map(|req| {
+            let is_page = matches!(req.source, lattice_cells::MediaSource::PdfPage { .. });
+            // A page on a peer that draws no pixels reserves nothing. A
+            // picture's alt text is the only trace of it there, so it keeps
+            // its rows; a page has its own label line ("Page 3 of 12") just
+            // above, which already says everything the alt would, and eight
+            // blank rows under every label would make a PDF eight times as
+            // long to scroll through in the TUI.
+            if is_page && geometry.is_none() {
+                return None;
+            }
+            let mut block = lattice_cells::MediaBlock::from_source(req.source.clone(), req.alt);
             block.fit = req.fit;
             let rows = match geometry {
                 None => PROVISIONAL_ROWS,
-                Some((line_height_px, pane_width_px, pane_height_px)) => match known
-                    .get(&req.path)
-                    .copied()
-                    .map(Ok)
-                    .unwrap_or_else(|| lattice_media::probe(&req.path))
-                {
-                    Ok(intrinsic) => {
-                        let (rows, height_lh) = lattice_media::block_geometry(
-                            intrinsic,
-                            req.fit,
-                            line_height_px,
-                            pane_width_px,
-                            pane_height_px,
-                        );
-                        block.intrinsic = Some(intrinsic);
-                        block.height_lh = Some(height_lh);
-                        rows
+                Some((line_height_px, pane_width_px, pane_height_px)) => {
+                    match known.get(&req.source).copied().map(Ok).unwrap_or_else(|| {
+                        // Stamped BEFORE the read, so a file rewritten
+                        // mid-measure carries the older revision and is
+                        // drawn again, never the newer with old pixels.
+                        let revision = file_revision(req.source.file());
+                        measure(&req.source, &mut page_sizes).map(|size| (size, revision))
+                    }) {
+                        Ok((intrinsic, revision)) => {
+                            block.revision = revision;
+                            let (rows, height_lh) = lattice_media::block_geometry(
+                                intrinsic,
+                                req.fit,
+                                line_height_px,
+                                pane_width_px,
+                                pane_height_px,
+                            );
+                            block.intrinsic = Some(intrinsic);
+                            block.height_lh = Some(height_lh);
+                            rows
+                        }
+                        Err(err) => {
+                            // `debug!`, not `warn!`: a buffer full of links to
+                            // images that are not there would otherwise log on
+                            // every refresh forever. The alt text is the visible
+                            // report, and it names the file.
+                            tracing::debug!(
+                                path = %req.source.file().display(),
+                                error = %err,
+                                "inline media could not be measured; alt text stands in"
+                            );
+                            UNREADABLE_ROWS
+                        }
                     }
-                    Err(err) => {
-                        // `debug!`, not `warn!`: a buffer full of links to
-                        // images that are not there would otherwise log on
-                        // every refresh forever. The alt text is the visible
-                        // report, and it names the file.
-                        tracing::debug!(
-                            path = %req.path.display(),
-                            error = %err,
-                            "inline media could not be measured; alt text stands in"
-                        );
-                        UNREADABLE_ROWS
-                    }
-                },
+                }
             };
-            (Arc::new(block), req.anchor_line, rows)
+            Some((Arc::new(block), req.anchor_line, rows))
         })
         .collect()
+}
+
+/// What a buffer's previous refresh already read off each file: its
+/// intrinsic size and the revision it was read at.
+type Known = std::collections::HashMap<lattice_cells::MediaSource, ((u32, u32), u64)>;
+
+/// A file's modification time in nanoseconds since the epoch, or 0 when it
+/// cannot be read (the block's alt text then stands in anyway).
+fn file_revision(path: &std::path::Path) -> u64 {
+    std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or(0, |d| d.as_nanos() as u64)
+}
+
+/// Each PDF's page sizes in points, read once per sizing pass (or why not).
+type PageSizes = std::collections::HashMap<PathBuf, Result<Vec<(f32, f32)>, String>>;
+
+/// The intrinsic size of `source`: a picture's pixels from its header, a
+/// page's points from its PDF, parsed once per pass through `page_sizes`.
+///
+/// Points stand in for pixels because only the aspect ratio matters to a
+/// page's fit ([`MediaFit::Page`](lattice_cells::MediaFit::Page) scales up
+/// as well as down); rounding to whole points moves an aspect ratio by well
+/// under a pixel at any size a pane can be.
+fn measure(
+    source: &lattice_cells::MediaSource,
+    page_sizes: &mut PageSizes,
+) -> Result<(u32, u32), lattice_media::MediaError> {
+    match source {
+        lattice_cells::MediaSource::Path(path) => lattice_media::probe(path),
+        lattice_cells::MediaSource::PdfPage { path, page } => {
+            let sizes = page_sizes
+                .entry(path.clone())
+                .or_insert_with(|| lattice_media::pdf_page_sizes(path).map_err(|e| e.to_string()));
+            let sizes = sizes
+                .as_ref()
+                .map_err(|e| lattice_media::MediaError::Undecodable(e.clone()))?;
+            let &(w, h) = sizes.get(*page as usize).ok_or_else(|| {
+                lattice_media::MediaError::Undecodable(format!(
+                    "page {} of a {}-page PDF",
+                    page + 1,
+                    sizes.len()
+                ))
+            })?;
+            Ok(((w.round() as u32).max(1), (h.round() as u32).max(1)))
+        }
+    }
 }
 
 impl Editor {
@@ -544,14 +631,7 @@ mod tests {
         blocks: Vec<(Arc<lattice_cells::MediaBlock>, u32, u16)>,
     ) -> MediaVirtualRowProvider {
         let cache: PerBufferCache<WasmMediaCache> = Default::default();
-        cache.insert_for(
-            BufferId(1),
-            WasmMediaCache {
-                document_version: 1,
-                geometry: None,
-                blocks,
-            },
-        );
+        cache.insert_for(BufferId(1), WasmMediaCache::new(1, None, blocks));
         MediaVirtualRowProvider::new(99, BufferId(1), cache, Arc::new(AtomicU64::new(7)), 40)
     }
 

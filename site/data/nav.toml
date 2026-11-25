@@ -88,6 +88,8 @@ docs = [
   "project-search-mode",
   "multibuffer-mode",
   "image-mode",
+  "pdf-mode",
+  "viewer-mode",
   "narrow-mode",
   "scan-view-mode",
   "scan-view-clockreport-mode",

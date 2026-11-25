@@ -60,7 +60,25 @@ resvg = { version = "0.45", default-features = false, features = [
 ] }
 tokio = { workspace = true, features = ["rt", "sync"] }
 tracing = { workspace = true }
+# PF.1: PDF pages, for pdf-mode (docs/dev/architecture/pdf-mode.md §4).
+# Pure Rust (Apache-2.0 OR MIT), so no native library ships in any artefact;
+# PF.0 measured it against poppler on a 10-file corpus before it was taken.
+# Optional, behind `pdf`, because it is the largest thing in this crate's tree
+# and a TUI-only build draws no pages: only `lattice-cli`'s `gui` turns it on.
+# Default features kept: `embed-fonts` draws a PDF that names a standard font
+# it does not embed (Helvetica, Times), and `embed-cmaps` its CJK encodings.
+hayro = { version = "0.9.0", optional = true }
+
+[features]
+default = []
+pdf = ["dep:hayro"]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
 tempfile = { workspace = true }
+criterion = { workspace = true }
+
+[[bench]]
+name = "pdf"
+harness = false
+required-features = ["pdf"]

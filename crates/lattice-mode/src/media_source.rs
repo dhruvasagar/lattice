@@ -22,8 +22,10 @@ use arc_swap::ArcSwap;
 pub struct MediaBlockRequest {
     /// 0-based source line the block hangs below.
     pub anchor_line: u32,
-    /// Path to the image, already resolved against the buffer's directory.
-    pub path: PathBuf,
+    /// What to draw: a picture file, already resolved against the buffer's
+    /// directory, or one page of a PDF. The same type the sized block
+    /// carries, so the host passes it through rather than rebuilding it.
+    pub source: lattice_cells::MediaSource,
     /// What a renderer that cannot draw shows instead. `None` falls back to
     /// the file name — never nothing.
     pub alt: Option<String>,

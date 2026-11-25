@@ -1282,6 +1282,15 @@ crate::options! {
     #[name("ui.modeline.padding")]
     #[validate(validate_modeline_padding)]
     pub ModelinePadding: i64 = 1;
+
+    /// What the modeline's position element (`core.position`) shows, as
+    /// vim's `'rulerformat'` decides its ruler. `{line}` is the cursor's
+    /// line (1-based), `{col}` its byte column, `{lines}` the buffer's line
+    /// count; anything else is shown as written. Buffer-local, so a mode
+    /// can set its own: `pdf-mode` shows `page {line}/{lines}`, because
+    /// its lines are pages.
+    #[name("ui.modeline.position-format")]
+    pub ModelinePositionFormat: String = "{line}:{col}".into();
 }
 
 // MO.1 (2026-08-21): mouse reporting.

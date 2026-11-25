@@ -269,6 +269,18 @@ fn lang_label(pane: &PaneState, rs: &RenderState) -> &'static str {
         .unwrap_or("")
 }
 
+/// Expand `ui.modeline.position-format`: `{line}`, `{col}` and `{lines}`,
+/// everything else verbatim. `lines` is called only when the format asks.
+fn format_position(format: &str, line: u32, col: u32, lines: impl FnOnce() -> u32) -> String {
+    let mut out = format
+        .replace("{line}", &line.to_string())
+        .replace("{col}", &col.to_string());
+    if out.contains("{lines}") {
+        out = out.replace("{lines}", &lines().to_string());
+    }
+    out
+}
+
 /// Resolve a built-in (`core.*`) element's content for `pane`. Pure
 /// reads off the published [`RenderState`] — O(1), no allocation
 /// proportional to document size (paramount #1).
@@ -320,8 +332,18 @@ pub fn resolve_builtin_content(
             } else {
                 pane.cursor
             };
+            let format =
+                rs.resolved_option_for::<lattice_config::ModelinePositionFormat>(pane.buffer_id);
+            // `{lines}` is the only placeholder that reads the document,
+            // and its count is O(1) off the published snapshot.
+            let lines = || {
+                rs.buffers
+                    .registry
+                    .document_line_count(pane.buffer_id)
+                    .unwrap_or(1)
+            };
             ElementContent::text(
-                format!("{}:{}", cursor.line + 1, cursor.byte),
+                format_position(&format, cursor.line + 1, cursor.byte, lines),
                 ModelineRole::new(ROLE_POSITION),
             )
         }

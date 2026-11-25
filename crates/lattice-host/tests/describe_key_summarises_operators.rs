@@ -163,9 +163,20 @@ fn the_summary_names_each_layer_and_source_the_operator_came_from() {
         .unwrap_or_else(|| panic!("the summary says where it was registered:\n{body}"));
 
     let layer_lines: Vec<&str> = origins.lines().filter(|l| l.contains("layer:")).collect();
+    // Not a fixed count: any mode whose own keys are motions composes with
+    // `gU` and earns a line (pdf-mode's `J` / `K` do). What must hold is that
+    // a layer is named ONCE, however many sources its rows came from —
+    // multibuffer-mode's four motions are four sources and one layer.
+    let mut layers: Vec<&str> = layer_lines
+        .iter()
+        .filter_map(|l| l.split("layer:").nth(1)?.split_whitespace().next())
+        .collect();
+    let named = layers.len();
+    layers.sort_unstable();
+    layers.dedup();
     assert_eq!(
-        layer_lines.len(),
-        2,
+        layers.len(),
+        named,
         "one line per LAYER — a layer holding rows from several sources is \
          still one layer:\n{body}"
     );

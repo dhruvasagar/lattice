@@ -323,9 +323,18 @@ async fn main() -> Result<()> {
     let document = match cli.file {
         // vim: `lattice newfile` opens an empty buffer the first `:w`
         // creates (CD.2), rather than refusing to start.
-        Some(path) => Document::open_or_new(&path)
-            .map(|(doc, _new)| doc)
-            .with_context(|| format!("opening {}", path.display()))?,
+        // A picture or a PDF is PRESENTED, not read as text: the same
+        // decision `:e` makes, through the same function. The editor's own
+        // registry does not exist until boot, so this asks the foundation
+        // set, which is where every presenting major registers.
+        Some(path) => {
+            let mut modes = lattice_mode::ModeRegistry::new();
+            lattice_mode::register_foundation_modes(&mut modes);
+            modes
+                .open_document(&path)
+                .map(|(doc, _new)| doc)
+                .with_context(|| format!("opening {}", path.display()))?
+        }
         // `--tutor` conflicts_with = "file" so cli.file is None here too;
         // do_tutor creates and opens the lesson buffer itself.
         None => Document::empty(),

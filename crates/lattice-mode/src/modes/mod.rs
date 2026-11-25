@@ -38,10 +38,12 @@ pub mod help;
 pub mod hover;
 pub mod image;
 pub mod messages;
+pub mod pdf;
 pub mod surround;
 pub mod table;
 pub mod text;
 pub mod version;
+pub mod viewer;
 pub mod which_key;
 
 pub use completion::{
@@ -56,8 +58,13 @@ pub use help::{HelpMode, register_help_mode_actions};
 pub use hover::HoverMode;
 pub use image::{ImageFileMediaSource, ImageMode, is_image_path, register_image_media_source};
 pub use messages::MessagesMode;
+pub use pdf::{
+    PdfMode, PdfPagesLabelled, PdfPagesMediaSource, PdfProbe, PdfProbeHandle, is_pdf_path,
+    register_pdf_media_source,
+};
 pub use text::TextMode;
 pub use version::{VersionMode, VersionReport, VersionSection, set_version_report};
+pub use viewer::{ViewerMode, register_viewer_mode_actions};
 pub use which_key::{
     WhichKeyGrid, WhichKeyMode, install as install_which_key, wire as wire_which_key,
 };
@@ -100,6 +107,12 @@ pub fn register_foundation_modes(registry: &mut ModeRegistry) {
     registry
         .register(ImageMode)
         .expect("image-mode must register without conflict");
+    // `pdf-mode`: image-mode's shape with one block per page. It presents
+    // `.pdf` in every build, so a PDF is never read into a rope even where
+    // nothing draws its pages.
+    registry
+        .register(PdfMode)
+        .expect("pdf-mode must register without conflict");
     // `repl-mode`: the REPL input surface (i/a/o/… → jump-to-prompt+Insert).
     // A `Manual` minor mode; REPL majors (`ai-conversation`, terminal, claude)
     // pull it in via `implies()`, so it never touches an ordinary buffer.
@@ -171,6 +184,11 @@ pub fn register_foundation_modes(registry: &mut ModeRegistry) {
     registry
         .register(ReadOnlyMode)
         .expect("read-only-mode must register without conflict");
+    // PF.4: the keys every file viewer shares (`q`), implied by `image-mode`
+    // and `pdf-mode`.
+    registry
+        .register(ViewerMode)
+        .expect("viewer-mode must register without conflict");
     // M.7.2: whitespace + current-line-highlight modes. Their
     // backing typed options exist; the renderer's painting hooks
     // land in M.7.3.
@@ -214,5 +232,37 @@ mod tests {
         // M.7.2 display minors.
         assert!(registry.is_registered(WhitespaceShowMode::mode_id()));
         assert!(registry.is_registered(CurrentLineHighlightMode::mode_id()));
+    }
+
+    /// `lattice paper.pdf` and `:e paper.pdf` open through one decision. A
+    /// presented file type is never read (its bytes are not UTF-8, and the
+    /// read fails), an ordinary file is read as text, and a missing one is a
+    /// new file. Without `open_document`, the command line called
+    /// `Document::open_or_new` directly and failed on the first case.
+    #[test]
+    fn the_foundation_set_opens_a_presented_file_without_reading_it() {
+        let dir = std::env::temp_dir().join(format!("lattice-open-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut registry = ModeRegistry::new();
+        register_foundation_modes(&mut registry);
+
+        for name in ["paper.pdf", "diagram.PNG"] {
+            let path = dir.join(name);
+            std::fs::write(&path, [0x25, 0x50, 0xff, 0xfe, 0x00, 0x80]).unwrap();
+            let (doc, is_new) = registry.open_document(&path).unwrap();
+            assert!(!is_new, "{name}");
+            assert_eq!(doc.path(), Some(path.as_path()), "{name}");
+            assert_eq!(doc.text(), "", "{name} was not read");
+        }
+
+        let text = dir.join("notes.txt");
+        std::fs::write(&text, "hello\n").unwrap();
+        let (doc, is_new) = registry.open_document(&text).unwrap();
+        assert!(!is_new);
+        assert_eq!(doc.text(), "hello\n");
+
+        let (_, is_new) = registry.open_document(&dir.join("new.txt")).unwrap();
+        assert!(is_new, "nothing on disk is a new file");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

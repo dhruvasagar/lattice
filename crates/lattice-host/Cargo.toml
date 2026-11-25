@@ -205,6 +205,11 @@ memchr = { workspace = true }
 # headers to read. Same codec set as `lattice-media`, which is what actually
 # probes them.
 image = { version = "0.25", default-features = false, features = ["png"] }
+# PF.2: `opening_a_pdf_file.rs` opens a real PDF, so the probe `pdf-mode`
+# reads its page count through must exist in the test build. A dev-dependency
+# feature only: the normal build's `lattice-media` keeps whatever the binary
+# resolved (the `gui` build turns `pdf` on, the TUI-only build does not).
+lattice-media = { path = "../lattice-media", features = ["pdf"] }
 # Phase 5.8.AF.6 / Slice X2.9 (gut + rename B4.2): overlay worker
 # bench (`benches/overlay_worker.rs`) needs criterion + a real
 # `Syntax` instance to feed the worker recompute path.
@@ -325,6 +330,13 @@ harness = false
 # `benches/modeline.rs`.
 [[bench]]
 name = "modeline"
+harness = false
+
+# PF.6b: a screen scroll in a 500-page PDF, where the walk charges every
+# line its media rows, against the same keys in a text file. See
+# `benches/pdf_scroll.rs`.
+[[bench]]
+name = "pdf_scroll"
 harness = false
 
 # IC.3: re-ranking an open insert-completion popup — the one match / rank /

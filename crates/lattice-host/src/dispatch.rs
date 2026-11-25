@@ -8474,6 +8474,17 @@ impl Editor {
         }
     }
 
+    /// The next (`down`) or previous visible line from the cursor, fold-aware:
+    /// the least a screen or half-screen scroll moves.
+    fn one_visible_line(&self, down: bool, total: u32) -> u32 {
+        let fold_idx = crate::folds::FoldIndex::from_folds(&self.folds, self.foldenable());
+        if down {
+            crate::folds::nth_visible_line_forward(&fold_idx, self.cursor.line, 1, total)
+        } else {
+            crate::folds::nth_visible_line_backward(&fold_idx, self.cursor.line, 1)
+        }
+    }
+
     /// The backward twin of [`Self::line_forward_by_budget`], mirroring
     /// `folds::nth_visible_line_backward`.
     fn line_backward_by_budget(&self, from: u32, budget: f32) -> u32 {
@@ -8523,6 +8534,13 @@ impl Editor {
         if let Some(w) = self.row_weights.get(line) {
             return w;
         }
+        // PF.4: the third kind of tall row, a line with media below it (a
+        // picture, a PDF page), costs its own row plus the rows its blocks
+        // reserve. Without this `<C-f>` counted a PDF page as one line and
+        // turned a screenful of pages at once.
+        if let Some(rows) = self.media_rows_below(line) {
+            return 1.0 + rows as f32;
+        }
         let Some(headings) = self.heading_heights() else {
             return 1.0;
         };
@@ -8534,6 +8552,32 @@ impl Editor {
         } else {
             1.0
         }
+    }
+
+    /// The rows media reserves below `line` in the active buffer, when a peer
+    /// that draws pixels is attached.
+    ///
+    /// Gated on [`Editor::cell_metrics`] as headings are: the terminal draws
+    /// a picture as alt text in rows that are one line tall each, and its
+    /// walks keep costing what they always did. A PDF page reserves nothing
+    /// there at all.
+    fn media_rows_below(&self, line: u32) -> Option<u32> {
+        self.cell_metrics?;
+        use crate::per_buffer_cache::PerBufferCacheExt;
+        let cache = self.wasm_media.cache.get_for(self.active_buffer_id())?;
+        cache.rows_by_anchor.get(&line).copied()
+    }
+
+    /// True when any line of the active buffer carries media rows the walks
+    /// charge (see [`Self::media_rows_below`]).
+    fn has_weighted_media(&self) -> bool {
+        use crate::per_buffer_cache::PerBufferCacheExt;
+        self.cell_metrics.is_some()
+            && self
+                .wasm_media
+                .cache
+                .get_for(self.active_buffer_id())
+                .is_some_and(|c| !c.rows_by_anchor.is_empty())
     }
 
     /// GD.7c: the reader the scroll walks ask "is this line a scaled
@@ -9379,6 +9423,25 @@ impl Editor {
             .is_some_and(|fp| fp.stat_unchanged(&change.path))
         {
             return Vec::new();
+        }
+        // PF.5: a PRESENTED file (a picture, a PDF) is not text, so the
+        // content gate below cannot read it, and used to report it gone:
+        // re-exporting a PDF said "no longer available on disk". The stat
+        // gate above is the whole check for one. Its buffer is never dirty
+        // (its major makes it read-only), so a change is always a reload,
+        // and the reload rereads it however its major reads it.
+        if self
+            .mode_registry
+            .load()
+            .presenting_major_for_path(&change.path)
+            .is_some()
+        {
+            return match self.do_edit(Some(change.path.clone()), true) {
+                DoEditOutcome::Reloaded(s)
+                | DoEditOutcome::Opened(s)
+                | DoEditOutcome::Activated(s) => s,
+                _ => Vec::new(),
+            };
         }
         let Ok(disk_text) = std::fs::read_to_string(&change.path) else {
             // Vanished between event and read — treat as a delete.
@@ -17402,8 +17465,24 @@ impl Editor {
                 // content (the file may have shrunk on disk).
                 let saved_cursor = self.cursor;
                 let saved_scroll = self.scroll;
-                let outcome =
-                    self.open_fresh_into_active_slot(target, DoEditOpenAction::Reload, None);
+                // PF.5: a PRESENTED file reopens as one empty line, and its
+                // major writes the real text later (a PDF's page labels,
+                // read off the actor). Restored against one line, the cursor
+                // would clamp to page 1 and the scroll to the top: every
+                // reload of an exported PDF would jump to its first page.
+                // So the fresh buffer starts with the text it replaces, and
+                // the major rewrites it only if the file says otherwise.
+                let presented = self
+                    .mode_registry
+                    .load()
+                    .presenting_major_for_path(&target)
+                    .is_some();
+                let carried = presented.then(|| self.document.text());
+                let outcome = self.open_fresh_into_active_slot(
+                    target,
+                    DoEditOpenAction::Reload,
+                    carried.as_deref(),
+                );
                 if old_id != self.document_buffer_id {
                     self.cursor = saved_cursor;
                     self.clamp_cursor_to_active_buffer();
@@ -17661,40 +17740,35 @@ impl Editor {
         // The placeholder is what makes `:w` dangerous rather than merely
         // useless, which is why the major declares read-only twice and
         // `do_write` refuses a third time.
-        let presented = self
-            .mode_registry
-            .load()
-            .presenting_major_for_path(&target)
-            .is_some();
+        //
         // CD.2: a path with nothing on disk opens an empty buffer that the
         // first `:w` creates — vim's `:e newfile`. This refused before, and so
-        // did `lattice newfile`.
-        let (mut new_doc, is_new) = if presented {
-            (
-                lattice_core::DocumentBuilder::default()
-                    .with_path(target.clone())
-                    .build(),
-                false,
-            )
-        } else {
-            match lattice_core::Document::open_or_new(&target) {
-                Ok(opened) => opened,
-                Err(e) => {
-                    self.set_message(EchoLevel::Error, format!("open error: {e}"));
-                    return DoEditOutcome::Failed;
-                }
+        // did `lattice newfile`. `open_document` is shared with the command
+        // line, so the two cannot disagree about either rule.
+        let (mut new_doc, is_new) = match self.mode_registry.load().open_document(&target) {
+            Ok(opened) => opened,
+            Err(e) => {
+                self.set_message(EchoLevel::Error, format!("open error: {e}"));
+                return DoEditOutcome::Failed;
             }
         };
         // Seeded BEFORE the actor spawns, so syntax is built from the real
         // text and the first frame shows it. An ordinary edit, so the buffer
         // is modified and the dirty-buffer guard protects it.
-        if let Some(text) = seed.filter(|t| is_new && !t.is_empty()) {
+        //
+        // PF.5: a reload of a presented file carries its old text over
+        // instead (see `do_edit_seeded`). That text is its major's, not the
+        // user's, so it is the clean baseline, as the major's own write is.
+        let carry_over = matches!(action, DoEditOpenAction::Reload) && !is_new;
+        if let Some(text) = seed.filter(|t| (is_new || carry_over) && !t.is_empty()) {
             let insert = lattice_protocol::edit::Edit::insert(
                 lattice_protocol::position::Position::ZERO,
                 text,
             );
             if let Err(e) = new_doc.apply_edit(insert) {
                 tracing::warn!(path = %target.display(), "seeding a new file failed: {e}");
+            } else if carry_over {
+                new_doc.mark_clean();
             }
         }
         let lang = lattice_syntax::Lang::detect_from_path(new_doc.path());
@@ -20315,6 +20389,23 @@ impl Editor {
         // adopted at its start and recorded its own write.
         let before = self.cursor;
         self.maybe_adopt_owner_write();
+        // PF.5: a bulk owner rewrite is deliberately NOT adopted (the
+        // dashboard case above `should_adopt_owner_write`), so one that SHRANK
+        // the buffer left the caret on a line that no longer exists: a PDF
+        // reloaded with fewer pages kept the cursor on page 12 of 3, and the
+        // modeline said so. vim keeps the cursor on a real line whatever
+        // changed the text. Only a caret past the end moves; one still inside
+        // the text is the user's and stays exactly where it is.
+        //
+        // "Past the end" is measured against the ROPE's lines, not
+        // `last_addressable_line`: that is Normal mode's bound, which leaves
+        // out the empty line after a final newline, and Insert puts the caret
+        // there (`o` on the last line, a `textwidth` wrap) before the next
+        // keystroke fills it. Clamping to the Normal bound pulled the caret
+        // back up mid-insert.
+        if self.cursor.line >= self.active_text().rope_line_count() {
+            self.clamp_cursor_to_active_buffer();
+        }
         if self.cursor != before {
             self.ensure_cursor_visible();
         }
@@ -26354,7 +26445,29 @@ impl Editor {
         // The topmost line that still fills the window; scrolling past it would
         // leave blank rows below the buffer.
         let top_max = last.saturating_sub(height.saturating_sub(1));
-        if down {
+        // PF.4: with media below some lines, `n` lines is not half a screen:
+        // a PDF page is one line. Walk half a screen's rows instead, at least
+        // one line, and move the view by as many lines. Without media the
+        // arm below is unchanged, so text keeps vim's exact `<C-d>`.
+        if self.has_weighted_media() {
+            let total = buffer.content_line_count();
+            let from = self.cursor.line;
+            let mut to = if down {
+                self.line_forward_by_budget(from, n as f32, total)
+            } else {
+                self.line_backward_by_budget(from, n as f32)
+            };
+            if to == from {
+                to = self.one_visible_line(down, total);
+            }
+            let to = to.min(last);
+            self.cursor.line = to;
+            self.scroll = if down {
+                self.scroll.saturating_add(to - from).min(last)
+            } else {
+                self.scroll.saturating_sub(from - to)
+            };
+        } else if down {
             self.cursor.line = self.cursor.line.saturating_add(n).min(last);
             self.scroll = self.scroll.saturating_add(n).min(top_max);
         } else {
@@ -26380,12 +26493,24 @@ impl Editor {
         // IM.1b: `step` is a budget in line-heights, not a line count — a
         // page moves by as much of the viewport as fits, and with a tall row
         // in the way that is fewer lines.
-        let new_line = if down {
+        let mut new_line = if down {
             self.line_forward_by_budget(self.cursor.line, step as f32, total)
         } else {
             self.line_backward_by_budget(self.cursor.line, step as f32)
         }
         .min(last);
+        // A line taller than the screen (a PDF page, a large picture) would
+        // leave the walk where it started; vim's `<C-f>` always moves.
+        if new_line == self.cursor.line {
+            new_line = self.one_visible_line(down, total).min(last);
+        }
+        // With media rows, put the line turned to at the top, as zathura's
+        // page scroll does. Left to `ensure_cursor_visible`, which counts
+        // lines, a PDF page turned to sits below the screen. Text keeps vim's
+        // cursor-led placement.
+        if self.has_weighted_media() {
+            self.scroll = new_line;
+        }
         // VM.3j-1: vim's `<C-f>` / `<C-b>` land on the first non-blank under
         // `startofline` (9.2: `<C-f>` from 3,6 → 21,3; 21,6 with the option
         // off). The line this walks to is unchanged — only the column is.
@@ -44459,9 +44584,26 @@ impl Editor {
         if matches!(self.modal, ModalState::Insert | ModalState::Replace) {
             self.enter_mode(ModalState::Normal);
         }
-        // Successor preference: another *listed* buffer if any,
-        // else any other buffer (including unlisted synthetics).
-        let mut successor = listed.iter().copied().find(|id| *id != to_remove);
+        // Successor preference, vim's: the buffer this pane showed most
+        // recently that is still open and listed (vim walks the jumplist,
+        // then the alternate buffer). Else another *listed* buffer, else any
+        // other buffer (including unlisted synthetics).
+        //
+        // The pane's own trail first, because "first listed by id" sent a
+        // closed buffer to whichever file happened to be opened first: `:e
+        // notes.txt`, `:e paper.pdf`, `:bd` landed on neither.
+        let from_trail = {
+            let history = self.active_pane_history_mut().clone();
+            history
+                .entries()
+                .iter()
+                .take(history.cursor().saturating_add(1))
+                .rev()
+                .map(|e| e.buffer)
+                .find(|id| *id != to_remove && listed.contains(id))
+        };
+        let mut successor =
+            from_trail.or_else(|| listed.iter().copied().find(|id| *id != to_remove));
         if successor.is_none() {
             successor = self
                 .buffers
@@ -55162,6 +55304,37 @@ mod tests {
             e.last_message.as_ref().map(|m| m.level),
             Some(EchoLevel::Warn),
             "delete warns"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// PF.5: a presented file (a picture here; a PDF the same) is not text,
+    /// so a change to it is a reload, never the "unreadable text" warning
+    /// below. Before, re-exporting a PDF reported it gone from disk.
+    #[test]
+    fn autoread_reloads_a_presented_file_instead_of_reading_it_as_text() {
+        let dir =
+            std::env::temp_dir().join(format!("lattice-ar4-presented-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("diagram.png");
+        std::fs::write(&path, [0x89, 0x50, 0x4e, 0x47, 0xff]).unwrap();
+        let mut e = crate::editor::Editor::boot(lattice_core::Document::from_text("scratch"));
+        e.do_edit(Some(path.clone()), false);
+        let before = e.document_buffer_id;
+        e.last_message = None;
+
+        std::fs::write(&path, [0x89, 0x50, 0x4e, 0x47, 0xff, 0xfe, 0x00]).unwrap();
+        inject_pending(&mut e, &path, crate::autoread::AutoreadChangeKind::Modified);
+        let _ = e.drain_autoread_changes();
+
+        assert_ne!(e.document_buffer_id, before, "reloaded into a fresh buffer");
+        assert_eq!(e.buffers.document_path(e.document_buffer_id), Some(path));
+        assert_ne!(
+            e.last_message.as_ref().map(|m| m.level),
+            Some(EchoLevel::Warn),
+            "not reported unreadable: {:?}",
+            e.last_message
         );
         std::fs::remove_dir_all(&dir).ok();
     }

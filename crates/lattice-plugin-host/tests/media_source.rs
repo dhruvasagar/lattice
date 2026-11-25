@@ -68,7 +68,7 @@ async fn the_producer_crosses_context_and_returns_resolved_blocks() {
     // The relative path resolved against the BUFFER's directory — not the
     // editor's cwd, which is wherever the user happened to launch from.
     assert_eq!(
-        blocks[0].path,
+        blocks[0].source.file(),
         std::path::Path::new("/home/u/notes/img/diagram.png")
     );
     assert_eq!(blocks[0].anchor_line, 1);
@@ -77,7 +77,10 @@ async fn the_producer_crosses_context_and_returns_resolved_blocks() {
 
     // Keyed off `line_count`, so this proves the context crossed in.
     assert_eq!(blocks[1].anchor_line, 8);
-    assert_eq!(blocks[1].path, std::path::Path::new("/tmp/absolute.png"));
+    assert_eq!(
+        blocks[1].source.file(),
+        std::path::Path::new("/tmp/absolute.png")
+    );
     assert_eq!(
         blocks[1].alt, None,
         "no alt ⇒ the file-name fallback applies"
@@ -132,5 +135,8 @@ async fn a_relative_path_without_a_buffer_path_is_dropped() {
         1,
         "the relative block is dropped; the absolute one survives"
     );
-    assert_eq!(blocks[0].path, std::path::Path::new("/tmp/absolute.png"));
+    assert_eq!(
+        blocks[0].source.file(),
+        std::path::Path::new("/tmp/absolute.png")
+    );
 }

@@ -57,6 +57,16 @@ fn validate_font_size(n: &i64) -> Result<(), String> {
     }
 }
 
+fn validate_media_cache_mb(n: &i64) -> Result<(), String> {
+    if *n >= 16 && *n <= 16384 {
+        Ok(())
+    } else {
+        Err(format!(
+            "media.cache-mb must be in range [16, 16384], got {n}"
+        ))
+    }
+}
+
 fn validate_inactive_pane_opacity(n: &i64) -> Result<(), String> {
     if *n >= 0 && *n <= 100 {
         Ok(())
@@ -227,6 +237,17 @@ lattice_config::options! {
     #[name("ui.font_size")]
     #[validate(validate_font_size)]
     pub UiFontSize: i64 = 14;
+
+    /// Megabytes of decoded pictures and PDF pages the GPUI renderer keeps
+    /// in memory. Past it, what was drawn least recently is dropped and
+    /// decoded again if it comes back into view; what is on screen is
+    /// never dropped, so a budget smaller than one screenful is exceeded
+    /// rather than made to flicker. A US-letter page drawn sharp on a 2×
+    /// display is about 50 MB, so the default holds a few pages either side
+    /// of the one being read. The TUI draws no pixels and ignores it.
+    #[name("media.cache-mb")]
+    #[validate(validate_media_cache_mb)]
+    pub MediaCacheMb: i64 = 256;
 }
 
 #[cfg(test)]

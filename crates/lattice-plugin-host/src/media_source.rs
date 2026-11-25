@@ -119,7 +119,7 @@ fn resolve_block(
     };
     Some(MediaBlockRequest {
         anchor_line: b.anchor_line,
-        path: resolved,
+        source: lattice_cells::MediaSource::Path(resolved),
         alt: b.alt.filter(|a| !a.trim().is_empty()),
         fit: match b.fit {
             crate::media_task::MediaFit::Contain => lattice_cells::MediaFit::Contain,
@@ -148,7 +148,10 @@ mod tests {
     fn a_relative_path_resolves_against_the_buffers_directory() {
         let base = Path::new("/home/u/notes");
         let got = resolve_block(wit("img/diagram.png"), Some(base)).expect("resolves");
-        assert_eq!(got.path, Path::new("/home/u/notes/img/diagram.png"));
+        assert_eq!(
+            got.source.file(),
+            Path::new("/home/u/notes/img/diagram.png")
+        );
     }
 
     /// `~/pics/shot.png` is not absolute, so without expansion it fell through
@@ -159,7 +162,7 @@ mod tests {
         let home = dirs::home_dir().expect("a home directory");
         let got = resolve_block(wit("~/pics/shot.png"), Some(Path::new("/home/u/notes")))
             .expect("resolves");
-        assert_eq!(got.path, home.join("pics/shot.png"));
+        assert_eq!(got.source.file(), home.join("pics/shot.png"));
     }
 
     /// `~someone` is not ours to resolve, and `<home>someone` would be a
@@ -168,13 +171,13 @@ mod tests {
     fn a_tilde_user_path_is_not_resolved_against_our_home() {
         let got = resolve_block(wit("~someone/x.png"), Some(Path::new("/home/u/notes")))
             .expect("resolves");
-        assert_eq!(got.path, Path::new("/home/u/notes/~someone/x.png"));
+        assert_eq!(got.source.file(), Path::new("/home/u/notes/~someone/x.png"));
     }
 
     #[test]
     fn an_absolute_path_is_left_alone() {
         let got = resolve_block(wit("/tmp/x.png"), Some(Path::new("/home/u"))).unwrap();
-        assert_eq!(got.path, Path::new("/tmp/x.png"));
+        assert_eq!(got.source.file(), Path::new("/tmp/x.png"));
     }
 
     /// Guessing the cwd would open whatever happens to sit beside the launch

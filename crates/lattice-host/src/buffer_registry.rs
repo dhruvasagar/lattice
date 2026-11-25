@@ -510,6 +510,15 @@ impl BufferRegistry {
             .unwrap_or(false)
     }
 
+    /// Kind-specific convenience: line count of the document at `id`, from
+    /// its published snapshot. `None` for absent / non-document.
+    pub fn document_line_count(&self, id: BufferId) -> Option<u32> {
+        lock_inner(&self.inner).by_id.get(&id).and_then(|e| {
+            e.document()
+                .map(|d| d.handle.snapshot().buffer.content_line_count())
+        })
+    }
+
     pub fn contains_document(&self, id: BufferId) -> bool {
         // H.1 / M.6.X follow-up (2026-06-01): Multibuffer
         // entries are document-backed (`document()` at line 137

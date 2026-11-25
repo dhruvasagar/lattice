@@ -25,9 +25,25 @@
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 
 use lattice_core::protocol::position::{Position, Range};
+use lattice_ui_gpui::cells_paint::RowCoords;
 use lattice_ui_gpui::editor_element::{
     build_line_with_inlays, byte_to_combined_col, push_range_quads,
 };
+
+/// H.3: the caret and range maths take a row's inlays AND its conceals,
+/// as one [`RowCoords`]. `build_line_with_inlays` still returns the
+/// inlays alone; these rows conceal nothing, which is what every buffer
+/// without conceal rules sees.
+fn with_coords<T, R>((text, runs, inlays): (T, R, Vec<(u32, u32)>)) -> (T, R, RowCoords) {
+    (
+        text,
+        runs,
+        RowCoords {
+            inlays,
+            conceals: Vec::new(),
+        },
+    )
+}
 
 /// T.5.b: the resolved table + builtin ids the bench resolves syntax
 /// colours through — the default registry, matching the renderer's
@@ -105,7 +121,7 @@ fn frame_budget(c: &mut Criterion) {
                         // a Rust file with rust-analyzer off): no
                         // inlay splicing, but exercises the per-
                         // char `style_at` walk + run collapse.
-                        let (text, runs, offsets) = build_line_with_inlays(
+                        let (text, runs, offsets) = with_coords(build_line_with_inlays(
                             line,
                             spans,
                             &[],
@@ -113,7 +129,7 @@ fn frame_budget(c: &mut Criterion) {
                             inlay_color,
                             &resolved,
                             &ids,
-                        );
+                        ));
                         black_box(&text);
                         black_box(&runs);
                         // Cursor + 6 decoration column lookups.
@@ -170,7 +186,7 @@ fn frame_budget_with_inlays(c: &mut Criterion) {
                             (n.min(40), inlay_text_2.as_str()),
                             (n.min(55), inlay_text_3.as_str()),
                         ];
-                        let (text, runs, offsets) = build_line_with_inlays(
+                        let (text, runs, offsets) = with_coords(build_line_with_inlays(
                             line,
                             spans,
                             &inlays,
@@ -178,7 +194,7 @@ fn frame_budget_with_inlays(c: &mut Criterion) {
                             inlay_color,
                             &resolved,
                             &ids,
-                        );
+                        ));
                         black_box(&text);
                         black_box(&runs);
                         for byte in [0, n / 4, n / 2, n.saturating_sub(1)] {
@@ -254,7 +270,7 @@ fn frame_budget_with_overlays(c: &mut Criterion) {
                         let spans = &all_spans[i];
                         // Run the post-E.1 prepaint path: shape +
                         // collapse + per-row overlay pre-bucket.
-                        let (text, runs, offsets) = build_line_with_inlays(
+                        let (text, runs, offsets) = with_coords(build_line_with_inlays(
                             line,
                             spans,
                             &[],
@@ -262,7 +278,7 @@ fn frame_budget_with_overlays(c: &mut Criterion) {
                             inlay_color,
                             &resolved,
                             &ids,
-                        );
+                        ));
                         black_box(&text);
                         black_box(&runs);
                         quads.clear();

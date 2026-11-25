@@ -95,7 +95,7 @@ fn block_at(line: u32) -> MediaBlockRequest {
 fn block_for(line: u32, path: std::path::PathBuf) -> MediaBlockRequest {
     MediaBlockRequest {
         anchor_line: line,
-        path,
+        source: lattice_cells::MediaSource::Path(path),
         alt: Some("a shot".into()),
         fit: lattice_cells::MediaFit::Contain,
     }

@@ -102,6 +102,7 @@ docs = [
   "architecture/horizontal-scroll",
   "architecture/virtual-rows",
   "architecture/inline-media",
+  "architecture/pdf-mode",
   "architecture/span-layering",
   "architecture/incremental-highlight",
   "architecture/indent-guides",
@@ -259,6 +260,7 @@ docs = [
   "architecture/org-agenda",
   "architecture/org-habits",
   "architecture/org-babel",
+  "architecture/org-export",
   "architecture/org-roam",
 ]
 

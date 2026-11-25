@@ -21,7 +21,7 @@ of them inside `org-export-mode` (design §0). Viewing the PDF in the editor is
 | EX.1                      | Plugin API 0.7.0, the whole of it: `write-file`, transient `flag`, posted opens and `confirm` **(lattice)** | ✅ |
 | EX.R1                     | lattice release carrying EX.1; publish lattice-wit 0.7.0 **(lattice)**      | 📝     |
 | **Phase 2 — the mode and the parse** |                                                                  |        |
-| EX.2                      | `org-export-mode`: mode, layer, gate, options, dispatcher, event pipeline **(plugin)** | 📝 |
+| EX.2                      | `org-export-mode`: mode, layer, gate, options, dispatcher, event pipeline **(plugin)** | ✅ |
 | EX.3                      | Parser: elements **(plugin)**                                               | 📝     |
 | EX.4                      | Parser: objects **(plugin)**                                                | 📝     |
 | EX.5                      | Options, filtering, macros, `#+INCLUDE`, link resolution **(plugin)**       | 📝     |
@@ -208,7 +208,7 @@ fires its action. Plugin API reference regenerated, the bundled plugins and
 the `init.rs` world moved to `@0.7.0`. CHANGELOG: Added, and the breaking
 note for the `flag` arm, as 0.6.0's for `file-anchor`.
 
-### EX.2 — the mode (plugin) 📝
+### EX.2 — the mode (plugin) ✅
 
 `org-export-mode`: its activation, `mode_gates` switch
 `org.export.enabled`, the `C-c C-e` layer, the options (`enabled`,
@@ -222,6 +222,39 @@ Tests: the chord opens the dispatcher only in org buffers; `org.export.enabled
 reported before anything runs, naming `org.export.directories`; the chord's
 grammar-seam call emits and returns, and the export lands with no further
 keypress (tested the way it fails: no action dispatched after the chord).
+
+**As built** (plugin `8760ca9`, on `build: plugin API 0.7.0` `4a92707`,
+which moves the plugin's pins to 0.7.0 through the uncommitted
+`.cargo/config.toml` patch until EX.R1 publishes):
+- **`src/export/mod.rs`** owns the surface (mode, layer, options,
+  commands, dispatcher); **`src/export/pipeline.rs`** the request and the
+  events-seam half. `lib.rs` gains one call per registering seam and one
+  arm per dispatch `match`, as babel's.
+- **The dispatcher is a branch on org's one transient source**
+  (`args: string("export")`), as the capture, TODO and agenda menus are;
+  a guest has one `transient-source` id. Rows fire with `args: none`, so
+  the host projects the flags into the commands' `subtree` / `body-only`
+  slots by name. The switches the last export used are stored
+  (`export/switches`) and seed the next open's flag defaults; the key is
+  cleared on load, so a session starts with both off, as emacs's.
+- **Departure: the renderers are placeholders**, the source verbatim in
+  each format's shell (`<pre class="example">`, a fenced block,
+  `verbatim`). EX.3–EX.8 replace `render`; the request, the crossing and
+  the sink stay. Subtree and body-only already act on them.
+- **Departure: options with their consumers.** Only `enabled` and
+  `directories` are registered; `open-with` and `html-stylesheet` arrive
+  with EX.6, and `latex-pdf-process` (with its `proc:spawn` grant) with
+  EX.9, so no option ships that does nothing.
+- **One step, not stepped.** A placeholder render is O(text) with no
+  parse; the stepping of design §7 arrives with the parser (EX.3), where
+  the fuel goes.
+- **Tests.** `integration/tests/org_export.rs`, five against a real
+  editor: the dispatcher only in org buffers; off removes layer and
+  effect, the rest of org stays; a refused target echoes
+  `org.export.directories` and writes nothing; an export lands on disk
+  with no key after the row's (settled on the wake alone); a flag reaches
+  the export and is still set at the next open (fails with the store
+  write removed). Unit tests in both files.
 
 ### EX.3 — parser: elements (plugin) 📝
 

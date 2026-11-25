@@ -11,6 +11,7 @@
 
 ### Fixed
 - **A PDF being recompiled no longer flickers to an error or a stub.** A compile writes its PDF a piece at a time, and a reload that caught it halfway showed "not a readable PDF", or the first few pages with your place moved to the last of them. A PDF that has not been written to its end is now left on screen as it was, and the finished file reloads at the page you were reading.
+- **A plugin can no longer write outside its granted directories through a broken symlink.** A symlink in a granted directory that pointed at a file that did not exist yet passed the check, and the write then created that file wherever the link pointed. Such a link is now refused for reading, writing and deleting.
 - **Going back to a buffer puts the cursor where you left it**, as vim does. `:b`, `:bn`, `:bp` and a plugin reopening its own buffer all landed on the first line. A buffer that got shorter while you were away puts the cursor on its last line, and a buffer the window has not shown before still opens at the top.
 
 ## 0.10.3 — 2026-11-24

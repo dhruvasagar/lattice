@@ -179,12 +179,17 @@ pub(crate) fn grant_permits_walk(grant: &CapabilityGrant, root: &Path) -> bool {
 /// a truthful answer.
 ///
 /// The fallback cannot be used to smuggle anything past the check: it only
-/// applies when nothing is there to read, so the subsequent `read` fails
-/// regardless. `<granted>/../../etc/passwd` resolves as a file and is denied on
-/// the first branch.
+/// applies when nothing is there at all. `<granted>/../../etc/passwd`
+/// resolves as a file and is denied on the first branch. A **dangling
+/// symlink** is refused outright: `exists()` follows the link and says no, so
+/// the parent fallback would pass it, and a write would then follow the link
+/// and create its target wherever it points.
 pub fn grant_permits_read(grant: &CapabilityGrant, file: &Path) -> bool {
     if file.exists() {
         return grant_permits_walk(grant, file);
+    }
+    if file.symlink_metadata().is_ok() {
+        return false;
     }
     match file.parent() {
         Some(parent) if !parent.as_os_str().is_empty() => grant_permits_walk(grant, parent),
@@ -719,6 +724,23 @@ mod tests {
             Ok(())
         );
         assert_eq!(std::fs::read_to_string(&new).unwrap(), "x");
+    }
+
+    /// A dangling symlink in the grant does not lead a write to its target,
+    /// wherever that is.
+    #[cfg(unix)]
+    #[test]
+    fn write_file_through_a_dangling_symlink_is_refused() {
+        let granted = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let target = other.path().join("planted");
+        let link = granted.path().join("notes.tex");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let grant = write_grant(granted.path().to_path_buf());
+        let err =
+            write_within_grant(&grant, link.to_str().unwrap(), "x", nothing_unsaved).unwrap_err();
+        assert!(err.contains("fs write denied"), "{err}");
+        assert!(!target.exists(), "nothing created outside the grant");
     }
 
     /// Outside the grant, and under a read-only grant, nothing is written.

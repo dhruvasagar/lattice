@@ -35,7 +35,7 @@ of them inside `org-export-mode` (design §0). Viewing the PDF in the editor is
 | EX.8a                     | LaTeX: transcoder, built-in classes, `.tex` file / buffer **(plugin)**      | ✅     |
 | EX.8b                     | LaTeX knobs: classes, `HEADER_EXTRA`, compiler, src backend **(plugin)**    | ✅     |
 | EX.8c                     | Every export default an `org.export.*` option (design §3.3) **(plugin)**     | ✅     |
-| EX.9                      | PDF: `latex-pdf-process`, `*org-export*` log, `l p` / `l o` **(plugin)**    | 📝     |
+| EX.9                      | PDF: `latex-pdf-process`, `*org-export*` log, `l p` / `l o` **(plugin)**    | ✅     |
 | **Phase 4 — babel**       |                                                                             |        |
 | EX.10                     | `:exports`, run on a copy, one consent, cancel **(plugin)**                 | 📝     |
 | **Phase 5 — finish**      |                                                                             |        |
@@ -747,7 +747,7 @@ pipes in cells.
   the same export in one step is the candidate). Integration: the
   `m m` tests assert real Markdown now.
 
-### EX.8 — LaTeX (plugin) 📝
+### EX.8 — LaTeX (plugin) ✅
 
 The preamble (design §1), `LATEX_CLASS` (`article`, `report`, `book`),
 `LATEX_CLASS_OPTIONS`, `LATEX_HEADER`, sectioning by level with `H` and
@@ -895,7 +895,7 @@ of ox-latex's surface is design §8 (packages-alist and hyperref template
   document. No TeX is installed on the build machine, so nothing compiled
   the goldens; that check is EX.8b's.
 
-### EX.9 — PDF (plugin) 📝
+### EX.9 — PDF (plugin) ✅
 
 Needs EX.R1. `l p`: write `foo.tex` with `write-file`, then run each
 `org.export.latex-pdf-process` entry in order (`%f` / `%b` / `%o`), each
@@ -909,6 +909,34 @@ reloads that buffer at its page instead of opening a second one; a failing
 step stops the list and names the log;
 a fake compiler (a script that writes a file named `%b.pdf`) proves the
 `.tex` is complete on disk when it starts; cancel kills the running step.
+
+**As built** (plugin `bf39bcd`, manifest test `5d3be4b`).
+
+- **`Step::Compile`.** A PDF run renders as `l l` and ends in the compile
+  rather than a write; the events seam hands it to `export::pdf`, so `Run`
+  has no side effects and `pdf`'s lib tests drive it through a `Runner`
+  fake (write, spawn, cancel, log).
+- **`write-file`, then spawn.** The pin is the fake compiler: `sh -c` that
+  makes `%b.pdf` only when `%f` already ends in `\end{document}`.
+- **Placeholders fill arguments, never the program.** The program is the
+  granted value, so it is run as written.
+- **The log** is `*org-export*`, reset per export, with the headerline
+  carrying running / succeeded / failed. `:org-export-log` shows it, which
+  the design's "the echo names it" needed: an output buffer is not in
+  front of the user until a command opens it.
+- **Unconfigured** writes the `.tex` and echoes an example process; nothing
+  runs.
+- **Cancel** is an event to the events seam (`org/export-cancel`), where the
+  runs and the jobs live; it drops runs in flight and cancels compiles,
+  whose `job-finished` then says so. A second export of the same file
+  cancels the first's compile.
+- **Job events are shared with babel**: export subscribes beside it, and
+  each ignores the other's ids.
+- **`l o` reloads in place.** Opening the PDF a second time reuses its
+  buffer (`opening_the_pdf_again_reuses_its_buffer`); pdf-mode's PF.5
+  reload shows the new pages.
+- **Found:** `org_manifest.rs` had been asserting babel's grants alone since
+  EX.0 added export's write grant and gate; fixed with EX.9's spawn grant.
 
 ### EX.10 — babel during export (plugin) 📝
 

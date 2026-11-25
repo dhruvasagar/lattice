@@ -102,6 +102,7 @@ host transient (`open-transient`, magit's mechanism), not a bespoke buffer:
 | `C-s` | toggle: the subtree at point only | `--subtree` |
 | `C-b` | toggle: body only (no preamble/`<head>`) | `--body-only` |
 | | cancel a running export | `:org-export-cancel` |
+| | show the PDF compile's output | `:org-export-log` |
 
 `C-s` and `C-b` are transient **`flag` rows**, magit's switches: they flip in
 place, and the fired command reads them through its `args-schema`
@@ -317,7 +318,11 @@ it is still the user's. It is granted **only from a
 value the user wrote** (OB.2's rule): the plugin's default is empty, so no
 compiler runs until the user names one, and PDF export says how to name one.
 A non-zero exit stops the list; the log is in `*org-export*`, and the echo
-names it.
+names it and `:org-export-log`, which shows it. The `.tex` is written with
+`write-file`, whose `ok` means the bytes are on disk, so the compiler never
+starts on a half-written file; the `write-to-file` effect would race it.
+The log starts each export on a clean page, and its headerline says what
+is running and how it ended.
 
 ## 6. The host changes: plugin API 0.7.0, one publish
 

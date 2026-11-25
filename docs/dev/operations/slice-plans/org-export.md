@@ -27,7 +27,7 @@ of them inside `org-export-mode` (design §0). Viewing the PDF in the editor is
 | EX.5a                     | Options and filtering **(plugin)**                                          | ✅     |
 | EX.5b                     | `#+MACRO` expansion **(plugin)**                                            | ✅     |
 | EX.5c                     | `#+INCLUDE` **(plugin)**                                                    | ✅     |
-| EX.5d                     | Internal link resolution, `broken-links` **(plugin)**                       | 📝     |
+| EX.5d                     | Internal link resolution, `broken-links` **(plugin)**                       | ✅     |
 | **Phase 3 — backends**    |                                                                             |        |
 | EX.6                      | HTML: transcoder, stylesheet, file / buffer / open sinks **(plugin)**       | 📝     |
 | EX.7                      | Markdown (GFM) **(plugin)**                                                 | 📝     |
@@ -506,11 +506,41 @@ view, includes before the parse). EX.5d needs the tree both produce.
   granted include is spliced, an ungranted one fails naming its path,
   through the real host `read-file`.
 
-#### EX.5d — links and `broken-links` 📝
+#### EX.5d — links and `broken-links` ✅
 
-Internal link resolution in ox's order (`CUSTOM_ID`, target, radio target,
-headline text, `#+NAME`), giving each resolved target an id the backends
-emit; `broken-links:` as EX.5a reads it.
+- **`export/targets.rs`, built during the parse steps** a section at a
+  time: `CUSTOM_ID`s, `ID`s, headline titles, `#+NAME:`s, `<<targets>>`
+  and `<<<radio targets>>>`, each with the headline it sits under. After
+  the selection the index learns which headlines are exported
+  (`filter::live`, one pass over the headlines): a target in a subtree the
+  export leaves out, or in the preamble of a subtree export, is no target,
+  as in ox, which resolves against the pruned tree.
+- **ox's order**: `#id` → `CUSTOM_ID`; `*Title` → headline; `id:X` → an
+  `ID` here, else the roam index (known elsewhere: external; unknown:
+  broken; no index: let through, since there is no telling); a scheme or a
+  file path → external; anything else → target, then name, then title.
+  Titles and plain paths compare with whitespace collapsed and ASCII case
+  folded. `[[(ref)]]` code references are named in the closing echo.
+- **The IR carries the answer**: `Object::Link` gained `target:
+  Option<String>`, the anchor, `None` from the parse and for an external
+  link; the filter sets it. Anchors are a `CUSTOM_ID` or `org` and an
+  FNV-1a hash of what they name, so a re-export keeps them.
+- **`broken-links:`**: nil (default) stops the export with `org: [[x]]
+  links to nothing in the export (#+OPTIONS: broken-links:mark exports it
+  marked)`; `mark` writes `[BROKEN LINK: x]`; `t` drops the link,
+  description and all, as ox does.
+- **Radio targets link their text**: whole words, ASCII case aside, the
+  earliest and then longest match; not inside a link or the radio target
+  itself.
+- **A `Host` trait** (`read-file`, id lookup) sits behind the run, so the
+  pipeline's tests use an in-memory one; the guest's is `Guest`.
+- **Placeholder output** names each headline's anchor.
+- **Tests.** Every path kind, liveness, anchor stability (`targets.rs`);
+  resolved links, all three `broken-links` settings, a link into a
+  `noexport` subtree, radio links (`filter.rs`); both liveness tests fail
+  with liveness disabled (checked). The objects corpus's `[[x]]` now points
+  at its `<<anchor>>`. Integration: a broken link stops the export and
+  writes nothing.
 
 ### EX.6 — HTML (plugin) 📝
 

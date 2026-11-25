@@ -628,7 +628,7 @@ export!(Component);
 /// OB.3: the effect `POST_REQUEST` asks for, posted with `post-effects`.
 fn post_requested() {
     use lattice::plugin_host::types::{
-        ApplyEditPayload, Args, CommandRef, Edit, EditKind, Effect, FileAnchor, OpenBufferPayload,
+        ApplyEditPayload, Args, CommandRef, ConfirmPayload, Edit, EditKind, Effect, FileAnchor, OpenBufferPayload,
         Position, QuitPayload, QuitScope, Range, SpawnTerminalPayload, TrackRangePayload,
         WriteToFilePayload,
     };
@@ -667,6 +667,12 @@ fn post_requested() {
             force: false,
         }),
         "open-uri" => Effect::OpenExternalUri(arg.to_string()),
+        // `confirm <yes-action>`: ask before running it.
+        "confirm" => Effect::Confirm(ConfirmPayload {
+            prompt: "Run it?".to_string(),
+            yes_action: arg.to_string(),
+            args: Args::None,
+        }),
         // Effects the posted path must refuse.
         "quit" => Effect::QuitEditor(QuitPayload {
             force: true,

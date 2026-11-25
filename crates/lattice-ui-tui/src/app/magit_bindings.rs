@@ -1003,7 +1003,7 @@ mod tests {
 /// `seed_transient_state` / `project_transient_state` are pinned as
 /// inverses in `lattice-host`, and magit's ask halves are pinned to
 /// carry their target. Neither covers the step between them: that
-/// `do_confirm` actually seeds the dialog it opens. Without that step
+/// applying the `Confirm` effect actually seeds the dialog it opens. Without that step
 /// the carried target is built, crosses nothing, and the yes-action
 /// falls back to re-deriving — which looks exactly like the bug IX.1
 /// removed, and is what happened to `…-file-discard-execute` until
@@ -1013,16 +1013,16 @@ mod confirm_seeding {
     use crate::app::test_helpers::*;
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn do_confirm_seeds_the_dialog_with_the_carried_target() {
+    async fn a_confirm_seeds_the_dialog_with_the_carried_target() {
         let mut app = app_with("one\ntwo\n", 20);
 
-        app.do_confirm(
-            "Discard changes to src/main.rs?".to_string(),
-            "action:magit-global-file-discard-execute".to_string(),
-            lattice_grammar::Args::List(vec![lattice_grammar::ArgValue::String(
+        app.apply_effect(lattice_grammar::Effect::Confirm {
+            prompt: "Discard changes to src/main.rs?".to_string(),
+            yes_action: "action:magit-global-file-discard-execute".to_string(),
+            args: lattice_grammar::Args::List(vec![lattice_grammar::ArgValue::String(
                 "src/main.rs".to_string(),
             )]),
-        );
+        });
 
         let picker = app
             .editor
@@ -1061,13 +1061,13 @@ mod confirm_seeding {
         // because the schema declares one and anything past it is dropped.
         // `lattice-magit` pins the producer to that arity; this pins that the
         // arity is enough to get every file across.
-        app.do_confirm(
-            "Discard 3 files?".to_string(),
-            "action:magit-discard-batch-execute".to_string(),
-            lattice_grammar::Args::List(vec![lattice_grammar::ArgValue::String(
+        app.apply_effect(lattice_grammar::Effect::Confirm {
+            prompt: "Discard 3 files?".to_string(),
+            yes_action: "action:magit-discard-batch-execute".to_string(),
+            args: lattice_grammar::Args::List(vec![lattice_grammar::ArgValue::String(
                 entries.join("\0"),
             )]),
-        );
+        });
 
         let picker = app.editor.picker.as_ref().expect("transient opened");
         let Some(lattice_picker::TransientValue::String(carried)) =
@@ -1093,11 +1093,11 @@ mod confirm_seeding {
     #[tokio::test(flavor = "multi_thread")]
     async fn a_confirm_with_no_args_leaves_the_dialog_unseeded() {
         let mut app = app_with("one\n", 20);
-        app.do_confirm(
-            "Abort the rebase?".to_string(),
-            "action:magit-rebase-abort-execute".to_string(),
-            lattice_grammar::Args::None,
-        );
+        app.apply_effect(lattice_grammar::Effect::Confirm {
+            prompt: "Abort the rebase?".to_string(),
+            yes_action: "action:magit-rebase-abort-execute".to_string(),
+            args: lattice_grammar::Args::None,
+        });
         let picker = app.editor.picker.as_ref().expect("transient opened");
         assert!(
             !picker.transient_state.contains_key("file"),

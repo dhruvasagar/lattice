@@ -169,7 +169,17 @@ each green on its own, the version bump and re-pins last.
    `%2e%2e` where the OS handler opens `..`. Tests: `effect_authorizer.rs`
    unit tests (inside, outside, each refused shape) and
    `post_effects_seam.rs` through the events guest.
-4. 📝 **EX.1d `post-effects` carries `confirm`.**
+4. ✅ **EX.1d `post-effects` carries `confirm`.** A confirm was
+   peer-applied, and a post drains host-side (`drain_tick_callbacks` keeps
+   only renderer signals), so a posted one was dropped. Its body moved to
+   `Editor::open_confirm`, applied in `handle_effect`; both peers' arms are
+   now no-ops, which also retires the two copies the TUI and GPUI carried.
+   Tests: `posted_confirm_raises_its_dialog.rs` (a tick callback yields it,
+   the dialog is up with no key, `y` fires with the carried args; both fail
+   with the host arm removed), the authorizer's `a_posted_confirm_is_kept`,
+   and `post_effects_seam.rs` (a posted confirm naming a closed command is
+   refused by the gate). The TUI's confirm-seeding tests now apply the effect
+   rather than calling the deleted `do_confirm`.
 5. 📝 **EX.1e** the package to `@0.7.0`, the crates to 0.7.0, the bundled
    plugins and the `init.rs` world re-pinned, the breaking note.
 

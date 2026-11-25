@@ -176,47 +176,6 @@ impl App {
         }
     }
 
-    /// Open a y/n confirmation transient dialog.
-    pub(crate) fn do_confirm(
-        &mut self,
-        prompt: String,
-        yes_action: String,
-        args: lattice_grammar::Args,
-    ) {
-        let signals = self.mutate_editor_with(move |e| {
-            let Some(cmd_reg) = e.services.get::<lattice_grammar::CommandRegistryHandle>() else {
-                e.set_message(
-                    crate::app::EchoLevel::Error,
-                    "confirm: command registry unavailable".to_string(),
-                );
-                return Vec::new();
-            };
-            let Some(cmd_id) = cmd_reg.load().id_by_name(&yes_action) else {
-                e.set_message(
-                    crate::app::EchoLevel::Error,
-                    format!("confirm: unknown action `{yes_action}`"),
-                );
-                return Vec::new();
-            };
-            let spec = lattice_picker::confirm_transient_spec(&prompt, cmd_id);
-            // IX.1: seed the dialog's state with the yes-action's
-            // arguments, so what fires on `y` is what the prompt named.
-            // Without this the yes-half would re-derive its target when
-            // it runs, and the context it derives from can change while
-            // the dialog is open.
-            let seed = match cmd_reg.load().lookup(cmd_id) {
-                Some(spec) => e.seed_confirm_args(&spec.args_schema, &args),
-                None => Default::default(),
-            };
-            let signals = e.open_transient(spec);
-            e.extend_transient_state(seed);
-            signals
-        });
-        for s in signals {
-            self.handle_renderer_signal(s);
-        }
-    }
-
     /// Open a named transient picker menu — resolves `source`
     /// against the `TransientSourceRegistry` service (populated at
     /// boot by the owning mode crate; e.g. magit registers
@@ -235,7 +194,7 @@ impl App {
     }
 
     /// Open a generic one-line minibuffer text prompt. Mirrors
-    /// `do_confirm`/`do_open_transient`'s shape — the actual
+    /// `do_open_transient`'s shape — the actual
     /// buffer-focus mutation lives host-side (`Editor::open_prompt_line`),
     /// this wrapper just routes the resulting renderer signals.
     pub(crate) fn do_open_prompt(

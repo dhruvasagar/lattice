@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Added
+- **A plugin can ask before running something, from the background.** A plugin finishing work it started from your key can show a yes/no question, for example how many code blocks an export is about to run, and `y` runs it. The command it names is checked as for any other.
 - **A plugin can open the file its background job made.** When an export or another long job finishes, the plugin can open the result in the editor or in your system's viewer without you pressing anything. Only a file inside the directories the plugin may already read or write is opened, never a web page, and never by discarding unsaved changes; anything else shows a warning naming the path.
 - **Plugin menus can have switches.** A plugin's transient menu can now carry on/off rows that flip in place when you press their key, as magit's `-a` / `-f` do, and the command you then fire receives them. Org export's dispatcher uses them for "subtree only" and "body only".
 - **A plugin can write a file and know it is there.** `host-services.write-file` writes a whole file and returns once it is on disk, so a program the plugin starts next reads what was written, which the `write-to-file` effect cannot promise. It needs the plugin's `fs:write` grant, refuses a file you have open with unsaved changes, naming the buffer, and an open buffer with nothing unsaved reloads as for any change made outside the editor.

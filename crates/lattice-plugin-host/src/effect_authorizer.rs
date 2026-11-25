@@ -688,7 +688,13 @@ impl EffectAuthorizer {
     /// - `open-buffer` / `open-external-uri` — showing the file the job made
     ///   (an export's HTML or PDF), only for a path inside the plugin's own
     ///   `fs` grants, so it opens nothing the plugin could not already read.
-    ///   See [`Self::posted_open`] and [`Self::posted_external`].
+    ///   See [`Self::posted_open`] and [`Self::posted_external`];
+    /// - `confirm` — asking once before work only the job could size (export
+    ///   counts the code blocks it would run after parsing). Its yes-action
+    ///   has passed the command gate already, as a returned confirm's does.
+    ///   It is the one entry that can catch keys: a dialog raised while the
+    ///   user types takes the next key, so a plugin should post it only as
+    ///   the direct answer to a chord the user just pressed.
     ///
     /// Anything else becomes a warning naming it, and ends the batch: what
     /// followed may presume it happened, as after a denied write.
@@ -718,7 +724,8 @@ impl EffectAuthorizer {
             | NativeEffect::TrackRange { .. }
             | NativeEffect::UntrackRange { .. }
             | NativeEffect::OpenSyntheticBuffer { .. }
-            | NativeEffect::Echo { .. }) => (allowed, false),
+            | NativeEffect::Echo { .. }
+            | NativeEffect::Confirm { .. }) => (allowed, false),
             NativeEffect::OpenBuffer { path, force }
             | NativeEffect::OpenBufferAtColumn {
                 path,
@@ -1438,6 +1445,22 @@ mod tests {
                 refused_text(&auth.restrict_posted(NativeEffect::OpenBuffer { path, force }));
             assert!(text.contains(says), "{says}: {text}");
         }
+    }
+
+    /// A posted confirm passes: the job asks once, after it knows what it
+    /// would do.
+    #[test]
+    fn a_posted_confirm_is_kept() {
+        let auth = EffectAuthorizer::new(&CapabilityGrant::default(), "org");
+        let out = auth.restrict_posted(NativeEffect::Confirm {
+            prompt: "Run 3 code blocks?".to_string(),
+            yes_action: "org-export-run".to_string(),
+            args: lattice_grammar::Args::None,
+        });
+        assert!(
+            matches!(&out, NativeEffect::Confirm { yes_action, .. } if yes_action == "org-export-run"),
+            "{out:?}"
+        );
     }
 
     /// `open-external-uri` posts only a file the plugin can read, as a path

@@ -26,7 +26,7 @@ use lattice_grammar::Effect;
 ///
 /// `ask` is what a chord or transient item is bound to; `execute` is
 /// the `yes_action` it hands to `Effect::Confirm`. Both names must be
-/// registered as actions or `Editor::do_confirm` bails at
+/// registered as actions or `Editor::open_confirm` bails at
 /// "confirm: unknown action `…`" — a failure that only shows up when a
 /// user actually presses the key. The table exists so one test proves
 /// registration for all of them at once, and so adding a destructive
@@ -167,7 +167,7 @@ mod tests {
     use lattice_grammar::CommandRegistry;
 
     /// The failure this guards is silent from the code's side and
-    /// loud from the user's: `do_confirm` resolves `yes_action`
+    /// loud from the user's: `Editor::open_confirm` resolves `yes_action`
     /// through the command registry, so an unregistered execute half
     /// turns the whole destructive action into an error message.
     /// MG.32: ex-commands are registered too, because an ask half is

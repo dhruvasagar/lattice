@@ -1259,11 +1259,9 @@ impl App {
                 fill_action,
                 query,
             } => self.open_picker_seeded(source, args, root, fill_action, query),
-            Effect::Confirm {
-                prompt,
-                yes_action,
-                args,
-            } => self.do_confirm(prompt, yes_action, args),
+            // Host-applied in `Editor::handle_effect` (so a posted confirm
+            // works off-keystroke too); nothing left for the peer.
+            Effect::Confirm { .. } => {}
             Effect::OpenTransient { source, args } => self.do_open_transient(source, args),
             Effect::OpenPrompt {
                 prompt,

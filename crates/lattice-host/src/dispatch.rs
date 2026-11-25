@@ -4868,6 +4868,16 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
         // `apply_effect_app_arms` collapses its old `AppAction` arm to
         // the grouped no-op band.
         Effect::AppAction(app) => editor.apply_app_effect(app, out),
+        // Host-applied, so a confirm a plugin posts from the background
+        // (drained here, off-keystroke, where peer arms never run) raises its
+        // dialog as one returned from a chord does. Both peers no-op it.
+        Effect::Confirm {
+            prompt,
+            yes_action,
+            args,
+        } => out
+            .renderer_signals
+            .extend(editor.open_confirm(prompt, yes_action, args)),
         // BC.8c: host-applied `window/showDocument` open effects. They run
         // host-side (NOT in the peer) because the showDocument bus drains
         // off-keystroke through the generic inbound tick-callback, where
@@ -38722,6 +38732,47 @@ impl Editor {
         self.picker = Some(picker);
 
         Vec::new()
+    }
+
+    /// Open a y/n confirmation dialog whose `y` fires `yes_action` with
+    /// `args`.
+    ///
+    /// The dialog's state is seeded with the yes-action's arguments, so what
+    /// fires on `y` is what the prompt named. Without that the yes half would
+    /// re-derive its target when it runs, and the context it derives from can
+    /// change while the dialog is open. An unknown `yes_action` opens nothing
+    /// and says so.
+    pub fn open_confirm(
+        &mut self,
+        prompt: String,
+        yes_action: String,
+        args: lattice_grammar::Args,
+    ) -> Vec<RendererSignal> {
+        let Some(cmd_reg) = self
+            .services
+            .get::<lattice_grammar::CommandRegistryHandle>()
+        else {
+            self.set_message(
+                EchoLevel::Error,
+                "confirm: command registry unavailable".to_string(),
+            );
+            return Vec::new();
+        };
+        let Some(cmd_id) = cmd_reg.load().id_by_name(&yes_action) else {
+            self.set_message(
+                EchoLevel::Error,
+                format!("confirm: unknown action `{yes_action}`"),
+            );
+            return Vec::new();
+        };
+        let spec = lattice_picker::confirm_transient_spec(&prompt, cmd_id);
+        let seed = match cmd_reg.load().lookup(cmd_id) {
+            Some(spec) => self.seed_confirm_args(&spec.args_schema, &args),
+            None => Default::default(),
+        };
+        let signals = self.open_transient(spec);
+        self.extend_transient_state(seed);
+        signals
     }
 
     /// PICK.1: close the transient and dismiss the picker.

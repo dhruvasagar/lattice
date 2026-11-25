@@ -650,8 +650,12 @@ nothing the plugin could not already read. A posted open needs an
 absolute path and may not be `force`d (a background result does not
 discard unsaved edits); `open-external-uri` takes an absolute path or
 a `file://` URI without percent-escapes, and refuses anything else, a
-web page included. Anything else is replaced by a warning naming it,
-and the effects after it are dropped.
+web page included. And `confirm`, to ask once before work only the
+job could size (its yes-action passes the same command check as a
+returned one); a dialog raised while the user types takes the next
+key, so post it only as the direct answer to a chord just pressed.
+Anything else is replaced by a warning naming it, and the effects
+after it are dropped.
 
 Prefer returning effects where a seam can: an effect posted here lands
 after the current keystroke's, not inside it.

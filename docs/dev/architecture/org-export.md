@@ -323,9 +323,12 @@ write-file: func(path: string, text: string) -> result<_, string>;
 ```
 
 Synchronous, because ordering is the point: when it returns `ok`, the file
-is there. It runs on `spawn_blocking` host-side like every file service, so
-the guest call never blocks the editor actor. Additive on its own; it ships
-in 0.7.0 with the rest of the table above.
+is there. Like `read-file` and `delete-file` it runs on the calling seam's
+thread (host functions are synchronous imports on every linker), so from
+the events seam, where export writes, the editor actor never waits on it;
+an action on the grammar seam would pay the write on the keystroke, which
+is why export moves the work off that seam first (§7). Additive on its own;
+it ships in 0.7.0 with the rest of the table above.
 
 **Why not the alternatives.** Waiting for a `watch` event on the `.tex`
 before spawning: the same race, one hop later, plus a watcher per export.

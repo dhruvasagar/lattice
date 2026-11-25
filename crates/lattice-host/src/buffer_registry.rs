@@ -964,6 +964,10 @@ impl lattice_mode::BufferStore for BufferRegistry {
         self.document_path(id)
     }
 
+    fn find_by_path(&self, path: &std::path::Path) -> Option<lattice_core::BufferId> {
+        self.document_with_path(path)
+    }
+
     fn scope_dir_for(&self, id: lattice_core::BufferId) -> Option<std::path::PathBuf> {
         self.scope_dir_of(id)
     }

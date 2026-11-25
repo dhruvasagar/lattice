@@ -18,7 +18,7 @@ of them inside `org-export-mode` (design §0). Viewing the PDF in the editor is
 | **Phase 0 — settle**      |                                                                             |        |
 | EX.0                      | Spike: fuel budget, re-export into a buffer, list grant, transient **(plugin)** | ✅ |
 | **Phase 1 — host**        |                                                                             |        |
-| EX.1                      | Plugin API 0.7.0, the whole of it: `write-file`, transient `flag`, posted opens and `confirm` **(lattice)** | 📝 |
+| EX.1                      | Plugin API 0.7.0, the whole of it: `write-file`, transient `flag`, posted opens and `confirm` **(lattice)** | 🚧 |
 | EX.R1                     | lattice release carrying EX.1; publish lattice-wit 0.7.0 **(lattice)**      | 📝     |
 | **Phase 2 — the mode and the parse** |                                                                  |        |
 | EX.2                      | `org-export-mode`: mode, layer, gate, options, dispatcher, event pipeline **(plugin)** | 📝 |
@@ -128,30 +128,41 @@ mid-write replaces the pages with an error line; that is pdf-mode's
 
 Throwaway code; nothing from it is committed except this plan's update.
 
-### EX.1 — plugin API 0.7.0 (lattice) 📝
+### EX.1 — plugin API 0.7.0 (lattice) 🚧
 
 **Every WIT and plugin-API change export and pdf-mode need, in one version**
 (design §6's table; Dhruva, 2026-11-25). A later slice that finds it needs
 another is a miss in this audit, so the audit was run against EX.2–EX.10 and
-PF.5b before EX.1 starts.
+PF.5b before EX.1 starts. It lands as one commit per part (EX.1a–EX.1e),
+each green on its own, the version bump and re-pins last.
 
-1. **`host-services.write-file(path, text) -> result<_, string>`**, on both
-   linkers, `spawn_blocking` host-side.
-2. **`flag` on `transient-item-kind`**: `flag(transient-flag { name, default })`,
+1. ✅ **EX.1a `host-services.write-file(path, text) -> result<_, string>`.**
+   Host functions are synchronous imports wired once for every linker, so
+   it runs on the calling seam's thread as `read-file` does; the plan's
+   `spawn_blocking` had no async import to sit behind. The open-buffer
+   check needed one store addition, `BufferStore::find_by_path` (defaulted;
+   the registry answers it with `document_with_path`).
+   *Dropped test:* "a guest against an unwired linker fails instantiation".
+   `write-file` is in `host-services`, which every linker wires whole, so
+   there is no linker without it to test against.
+2. 📝 **EX.1b `flag` on `transient-item-kind`**: `flag(transient-flag { name, default })`,
    mirroring `TransientItemKind::Flag`. A guest sets `default` per open, from
    its store, which is how the toggles stay set across exports.
-3. **`post-effects` carries `open-buffer` and `open-external-uri`** when the
+3. 📝 **EX.1c `post-effects` carries `open-buffer` and `open-external-uri`** when the
    path is inside the plugin's `fs` grants (read or write); outside, the
    effect is replaced by a warning naming the grant, as `write-to-file` is.
    A URI that is not a file path is refused when posted.
-4. **`post-effects` carries `confirm`.**
+4. 📝 **EX.1d `post-effects` carries `confirm`.**
+5. 📝 **EX.1e** the package to `@0.7.0`, the crates to 0.7.0, the bundled
+   plugins and the `init.rs` world re-pinned, the breaking note.
 
 Tests: a write inside the grant lands, and `ok` means it is on disk; outside
 the grant, refused; a symlink inside the grant pointing outside, refused (the
 `delete-file` canonicalization, reused, not copied); a path open in a dirty
-buffer, refused with a message naming the buffer; open and clean, written and
-the buffer reloads; a directory, refused; a guest against an unwired linker
-fails instantiation, as for `post-effects`. A guest menu's `flag` row
+buffer, refused with a message naming the buffer; open and clean, written
+(the reload is autoread's, pinned by its own suite); a directory, refused
+(EX.1a: `host_services.rs` unit tests and
+`tests/write_file_on_the_sync_linker.rs` through a real guest). A guest menu's `flag` row
 round-trips: its default reaches the state, a toggle flips it, and the fired
 command's `args-schema` receives it by name. A posted `open-buffer` inside
 the grant opens the file without a keypress and one outside is refused with

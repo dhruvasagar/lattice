@@ -95,6 +95,17 @@ pub trait BufferStore: Send + Sync {
         None
     }
 
+    /// The document buffer visiting `path`, if one is open — [`Self::path_for`]
+    /// read the other way. The path is compared as given, so a caller holding
+    /// a path it did not get from the store tries its canonical form too.
+    ///
+    /// For a host service that writes a file and must not overwrite unsaved
+    /// edits to it (`write-file`). Default `None`, like [`Self::path_for`]: a
+    /// store that cannot answer reports no buffer open.
+    fn find_by_path(&self, _path: &std::path::Path) -> Option<BufferId> {
+        None
+    }
+
     /// The directory buffer `id` is *about* when it is not itself a file —
     /// its [`BufferScopeDir`](crate::BufferScopeDir): an oil listing's
     /// directory, a file tree's root, a search view's scan root. `None`
@@ -226,6 +237,11 @@ impl BufferStoreHandle {
     /// Forwards to [`BufferStore::path_for`].
     pub fn path_for(&self, id: BufferId) -> Option<std::path::PathBuf> {
         self.inner.path_for(id)
+    }
+
+    /// Forwards to [`BufferStore::find_by_path`].
+    pub fn find_by_path(&self, path: &std::path::Path) -> Option<BufferId> {
+        self.inner.find_by_path(path)
     }
 
     /// Forwards to [`BufferStore::scope_dir_for`].

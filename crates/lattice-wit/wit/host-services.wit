@@ -259,6 +259,30 @@ interface host-services {
     /// named.
     delete-file: func(path: string) -> result<_, string>;
 
+    /// EX.1: write `text` to `path`, replacing what is there — `read-file`'s
+    /// and `delete-file`'s peer, for an ordering an effect cannot give.
+    ///
+    /// `effect.write-to-file` is applied later, on the editor actor, and the
+    /// guest learns nothing about when. A guest that writes a file and then
+    /// starts a process that reads it (an export writing a `.tex`, then
+    /// spawning the compiler) races the effect and can lose. **`ok` means the
+    /// bytes are on disk**, so a `spawn-process` after it reads what was
+    /// written.
+    ///
+    /// Gated on **`fs:write`** and re-checked host-side, with `delete-file`'s
+    /// canonicalization: a symlink inside the grant pointing outside it is
+    /// refused rather than followed. Refused when `path` is a directory, when
+    /// its directory does not exist (nothing is created), and when it is open
+    /// in a buffer with **unsaved changes** — the user's edits are not
+    /// overwritten behind their back, and the message names the buffer. An
+    /// open buffer with no unsaved changes reloads from disk, as for any
+    /// change made outside the editor.
+    ///
+    /// For a file nothing reads before the host applies it, prefer the
+    /// effect: it is ordered with the rest of the action's effects (an open
+    /// after a write sees the write) and needs no grant query first.
+    write-file: func(path: string, text: string) -> result<_, string>;
+
     /// CD.3b: would an `effect.write-to-file` of `path` from this plugin land?
     ///
     /// The same grant test the boundary applies to a returned write, and the

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Added
+- **A plugin can write a file and know it is there.** `host-services.write-file` writes a whole file and returns once it is on disk, so a program the plugin starts next reads what was written, which the `write-to-file` effect cannot promise. It needs the plugin's `fs:write` grant, refuses a file you have open with unsaved changes, naming the buffer, and an open buffer with nothing unsaved reloads as for any change made outside the editor.
+
 ### Fixed
 - **Going back to a buffer puts the cursor where you left it**, as vim does. `:b`, `:bn`, `:bp` and a plugin reopening its own buffer all landed on the first line. A buffer that got shorter while you were away puts the cursor on its last line, and a buffer the window has not shown before still opens at the top.
 

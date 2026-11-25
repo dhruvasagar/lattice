@@ -29,7 +29,7 @@ does — a bounded `walk` covers the fuzzy-finder.
 - [`position`](types.md#record-position) from [`types`](types.md)
 - [`effect`](types.md#variant-effect) from [`types`](types.md)
 
-## Functions (37)
+## Functions (38)
 
 ### `buffer-text`
 
@@ -1148,6 +1148,48 @@ let outcome = match host_services::watch(target) {
     Err(e) => format!("watch:err({e})"),
 };
 record(&outcome);
+```
+
+### `write-file`
+
+```wit
+write-file: func(path: string, text: string) -> result<_, string>
+```
+
+EX.1: write `text` to `path`, replacing what is there — `read-file`'s
+and `delete-file`'s peer, for an ordering an effect cannot give.
+
+`effect.write-to-file` is applied later, on the editor actor, and the
+guest learns nothing about when. A guest that writes a file and then
+starts a process that reads it (an export writing a `.tex`, then
+spawning the compiler) races the effect and can lose. **`ok` means the
+bytes are on disk**, so a `spawn-process` after it reads what was
+written.
+
+Gated on **`fs:write`** and re-checked host-side, with `delete-file`'s
+canonicalization: a symlink inside the grant pointing outside it is
+refused rather than followed. Refused when `path` is a directory, when
+its directory does not exist (nothing is created), and when it is open
+in a buffer with **unsaved changes** — the user's edits are not
+overwritten behind their back, and the message names the buffer. An
+open buffer with no unsaved changes reloads from disk, as for any
+change made outside the editor.
+
+For a file nothing reads before the host applies it, prefer the
+effect: it is ordered with the rest of the action's effects (an open
+after a write sees the write) and needs no grant query first.
+
+**Example — Write a file and know it is on disk before starting a process that reads it** · [`crates/lattice-plugin-host/tests/fixtures/multiseam-guest/src/lib.rs`](../../../../crates/lattice-plugin-host/tests/fixtures/multiseam-guest/src/lib.rs)
+
+```rust
+let text = match host_services::write_file(path, body) {
+    Ok(()) => "wrote".to_string(),
+    Err(e) => format!("error: {e}"),
+};
+Ok(vec![Effect::Echo(EchoPayload {
+    level: EchoLevel::Info,
+    text,
+})])
 ```
 
 ### `write-job-stdin`

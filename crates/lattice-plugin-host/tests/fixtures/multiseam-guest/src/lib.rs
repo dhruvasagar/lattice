@@ -226,6 +226,14 @@ impl Guest for Component {
             &spec(),
             53,
         );
+        // EX.1: write a file from the sync grammar seam. Args `"<path>\n<text>"`;
+        // echoes `wrote` or the host's error text.
+        grammar::register_action(
+            "multiseam-write-file",
+            "write a file from the sync grammar seam (EX.1)",
+            &spec(),
+            54,
+        );
         // HB.2b: what `excerpt-source` answers a guest standing on a multibuffer
         // row. Every other test of that seam supplies the resolver's arguments
         // itself; this one takes them from the context the HOST handed the
@@ -651,6 +659,24 @@ impl GrammarCallbacks for Component {
                 // @example host-services.can-write-file: Check whether a write to a path would land, before committing to it
                 let text = match host_services::can_write_file(&path) {
                     Ok(()) => "writable".to_string(),
+                    Err(e) => format!("error: {e}"),
+                };
+                Ok(vec![Effect::Echo(EchoPayload {
+                    level: EchoLevel::Info,
+                    text,
+                })])
+                // @end-example
+            }
+            54 => {
+                let (path, body) = match &ctx.args {
+                    Args::String(s) => s.split_once('\n').unwrap_or((s.as_str(), "")),
+                    other => {
+                        return Err(format!("multiseam: write-file wants a path, got {other:?}"));
+                    }
+                };
+                // @example host-services.write-file: Write a file and know it is on disk before starting a process that reads it
+                let text = match host_services::write_file(path, body) {
+                    Ok(()) => "wrote".to_string(),
                     Err(e) => format!("error: {e}"),
                 };
                 Ok(vec![Effect::Echo(EchoPayload {

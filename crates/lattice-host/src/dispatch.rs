@@ -28363,6 +28363,27 @@ impl Editor {
     /// *departure* is what keeps a single rule — "always record where
     /// you were before moving" — instead of trying to guess where
     /// activation will land the cursor before it has happened.
+    /// Where the active pane was in `id` the last time it LEFT it, from the
+    /// pane's buffer trail: the most recent entry for `id` other than the
+    /// one being entered. `None` when this pane has never shown `id`.
+    ///
+    /// `activate_document` restores it, vim's per-window last position.
+    /// The entry being entered is skipped because `activate_buffer_only`
+    /// has already pushed it, at the origin.
+    fn position_this_pane_left(
+        &self,
+        id: BufferId,
+    ) -> Option<(lattice_protocol::position::Position, u32)> {
+        let history = self.pane_buffer_history.get(&self.pane_tree.active().id)?;
+        history
+            .entries()
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(i, e)| e.buffer == id && *i != history.cursor())
+            .map(|(_, e)| (e.cursor, e.scroll))
+    }
+
     fn record_pane_history_visit(
         &mut self,
         id: BufferId,
@@ -44331,6 +44352,7 @@ impl Editor {
         // Preserve the target's kind tag (Document vs Messages)
         // so dispatch / introspection sees the right identity.
         self.active_buffer = target_kind;
+        let remembered = self.position_this_pane_left(id);
         let pane = self.pane_tree.active_mut();
         let changed_buffer = pane.buffer_id != id;
         pane.buffer = target_kind;
@@ -44343,12 +44365,21 @@ impl Editor {
         // the status list happened to be scrolled to.
         //
         // Reset the stash as well as the hot slots, so the two agree.
-        // Restoring your position when you return to a buffer is a
-        // per-BUFFER concern (marks / position history), not something
-        // a pane can answer once its buffer has changed under it.
+        //
+        // …unless this pane has shown `id` before. vim brings you back
+        // to where you were when the window last left a buffer (`:b`,
+        // `:bn`, `<C-^>`), and the pane's buffer trail already holds
+        // that position: `record_pane_history_visit` stores the
+        // outgoing cursor and scroll on every switch. A buffer the pane
+        // has never shown — magit's freshly opened commit buffer — has
+        // no entry and still opens at the top. Only this pane's trail
+        // is read: another pane's entry for a buffer it is showing now
+        // holds where it was when that pane last LEFT it, not where it
+        // is, so it is not a fallback worth taking.
         if changed_buffer {
-            pane.cursor = lattice_protocol::position::Position::ZERO;
-            pane.scroll = 0;
+            let (cursor, scroll) = remembered.unwrap_or_default();
+            pane.cursor = cursor;
+            pane.scroll = scroll;
             pane.leftcol = 0;
         }
         // hlsearch is NOT cleared by hand here: `load_active_pane`'s
@@ -44359,6 +44390,11 @@ impl Editor {
         self.cursor = lattice_protocol::position::Position::ZERO;
         self.scroll = 0;
         self.load_active_pane();
+        // A remembered position is from before the buffer was left, and
+        // the buffer may have shrunk since (a reload, an owner rewrite).
+        if changed_buffer && remembered.is_some() {
+            self.clamp_cursor_to_active_buffer();
+        }
         // Echo the switch. PI.5: `activate_buffer` is only reached on a real,
         // committed switch now (preview is an isolated projection that never
         // activates), so this always echoes — matching vim's `:e` filename

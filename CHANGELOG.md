@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- **Going back to a buffer puts the cursor where you left it**, as vim does. `:b`, `:bn`, `:bp` and a plugin reopening its own buffer all landed on the first line. A buffer that got shorter while you were away puts the cursor on its last line, and a buffer the window has not shown before still opens at the top.
+
 ## 0.10.3 — 2026-11-24
 
 ### Added

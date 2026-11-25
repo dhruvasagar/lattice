@@ -22,7 +22,7 @@ of them inside `org-export-mode` (design §0). Viewing the PDF in the editor is
 | EX.R1                     | lattice release carrying EX.1; publish lattice-wit 0.7.0 **(lattice)**      | 📝     |
 | **Phase 2 — the mode and the parse** |                                                                  |        |
 | EX.2                      | `org-export-mode`: mode, layer, gate, options, dispatcher, event pipeline **(plugin)** | ✅ |
-| EX.3                      | Parser: elements **(plugin)**                                               | 📝     |
+| EX.3                      | Parser: elements, and the stepped pipeline **(plugin)**                     | ✅     |
 | EX.4                      | Parser: objects **(plugin)**                                                | 📝     |
 | EX.5                      | Options, filtering, macros, `#+INCLUDE`, link resolution **(plugin)**       | 📝     |
 | **Phase 3 — backends**    |                                                                             |        |
@@ -256,7 +256,7 @@ which moves the plugin's pins to 0.7.0 through the uncommitted
   the export and is still set at the next open (fails with the store
   write removed). Unit tests in both files.
 
-### EX.3 — parser: elements (plugin) 📝
+### EX.3 — parser: elements, and the stepped pipeline (plugin) ✅
 
 Sections and headlines (TODO keyword, priority, tags, COMMENT), paragraphs,
 plain / ordered / description lists with checkboxes and continuation,
@@ -270,6 +270,47 @@ the edge cases org-element is known for (a list ended by two blank lines, a
 block inside a list item, a drawer that never closes, a headline inside a
 block). Property: parsing never panics on arbitrary text (a fuzz-style test
 over generated input, run natively).
+
+**As built** (2026-11-25):
+
+- **Where.** `src/export/parse/` in the plugin: `mod.rs` (the IR, sections,
+  headlines via `todo::parse` so "what is a headline" stays in one place,
+  planning, property drawers, `Context::for_file` for a file's own
+  `#+TODO:` / `#+SEQ_TODO:` / `#+TYP_TODO:`), `element.rs` (everything
+  else), `dump.rs` (the readable tree). Paragraph text, titles, cells and
+  item tags stay raw for EX.4.
+- **Departure: the stepping landed here, with the parser,** not in EX.2,
+  and it covers the render too: a run parses a chunk of ~64 KiB per call
+  (cut at headlines, so the chunked parse is the whole parse — pinned by a
+  test over the corpus and over the random inputs), then renders headlines
+  per call under the same budget, walking the tree in preorder with an
+  index-path cursor and escaping as it goes. The first cut rendered in one
+  final call and a 1.5 MB file trapped on fuel; the integration test
+  `a_file_too_large_for_one_call_is_exported_in_steps` fails with the
+  stepping disabled (verified). **EX.6–EX.8's transcoders render through the
+  same walk**, a headline's own parts per visit, opening and closing the
+  outline as the cursor's depth moves; none may render the whole tree in
+  one call.
+- **Runs live in guest memory**, as the roam scan's do, not in the store:
+  nothing in a run has to survive the instance, and serialising chunk trees
+  between steps would spend fuel on the bound it exists to keep. A second
+  export of the same target replaces the run in flight; others run beside
+  it.
+- **The placeholder body is the parse tree** (`dump`) in each shell, so the
+  parse is visible end to end through a real export. It is also the IR's
+  production reader until the transcoders exist; when EX.8 lands `dump`
+  goes back to `#[cfg(test)]`, for the goldens.
+- **Bounded.** End markers (`#+end_X`, `:END:`, `\end{X}`) are indexed once
+  per section, so an unterminated opener is a lookup, not a rescan (60,000
+  of them parse in milliseconds); nesting past 32 is read as text.
+- **Known bound:** one section larger than the step budget is one step,
+  since inside a section there is no exact cut. The request step also
+  reads the whole file once (`#+TODO:`, `#+TITLE:`, the chunk plan).
+- **Tests.** Four golden corpora (`testdata/*.org` → `.ir`,
+  `UPDATE_GOLDEN=1` rewrites them for review) plus the chunk-equivalence,
+  no-panic (3,000 generated inputs), depth and rescan tests in the parser;
+  chunk planning, multi-step runs and the corpus render in the pipeline;
+  six integration tests.
 
 ### EX.4 — parser: objects (plugin) 📝
 
@@ -318,6 +359,15 @@ below as `itemize`, tables as `tabular` (or `longtable` via
 specials, raw `#+BEGIN_EXPORT latex`. Golden tests, plus: every golden
 `.tex` compiles with `latexmk` when one is installed (skipped, and saying so,
 when not).
+
+**Open question (raised 2026-11-25, decide before EX.8 starts):** which of
+emacs's LaTeX tuning knobs beyond the above to carry. Not in the design:
+`org-latex-classes` (user-defined classes and their sectioning),
+`#+LATEX_HEADER_EXTRA`, `#+LATEX_COMPILER`, `org-latex-packages-alist` /
+default-package overrides, `org-latex-src-block-backend` (listings /
+minted), `org-latex-hyperref-template`, `#+BIND`. The proposal on the
+table: carry classes, `LATEX_HEADER_EXTRA`, `LATEX_COMPILER` and the
+listings / minted switch, the ones users actually tune.
 
 ### EX.9 — PDF (plugin) 📝
 

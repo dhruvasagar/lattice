@@ -28369,20 +28369,6 @@ impl Editor {
         })
     }
 
-    /// PBH.2: record that the active pane is leaving its current buffer
-    /// for `id`.
-    ///
-    /// `outgoing` is where the cursor was in the buffer being left —
-    /// captured onto the *current* entry before the new one is pushed,
-    /// so walking back returns the user to where they actually were
-    /// rather than to the top of the file.
-    ///
-    /// The newly pushed entry's own position is a placeholder; it is
-    /// filled in by the next call that leaves it (this one, or the walk
-    /// in [`Self::capture_outgoing_pane_position`]). Capturing on
-    /// *departure* is what keeps a single rule — "always record where
-    /// you were before moving" — instead of trying to guess where
-    /// activation will land the cursor before it has happened.
     /// Where the active pane was in `id` the last time it LEFT it, from the
     /// pane's buffer trail: the most recent entry for `id` other than the
     /// one being entered. `None` when this pane has never shown `id`.
@@ -28404,6 +28390,20 @@ impl Editor {
             .map(|(_, e)| (e.cursor, e.scroll))
     }
 
+    /// Record that the active pane is leaving its current buffer
+    /// for `id`.
+    ///
+    /// `outgoing` is where the cursor was in the buffer being left —
+    /// captured onto the *current* entry before the new one is pushed,
+    /// so walking back returns the user to where they actually were
+    /// rather than to the top of the file.
+    ///
+    /// The newly pushed entry's own position is a placeholder; it is
+    /// filled in by the next call that leaves it (this one, or the walk
+    /// in [`Self::capture_outgoing_pane_position`]). Capturing on
+    /// *departure* is what keeps a single rule — "always record where
+    /// you were before moving" — instead of trying to guess where
+    /// activation will land the cursor before it has happened.
     fn record_pane_history_visit(
         &mut self,
         id: BufferId,

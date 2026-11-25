@@ -413,6 +413,7 @@ pub fn ask_effect(
                 size.div_ceil(4000)
             ),
             yes_action: ACTION_ASK_CONFIRMED.to_string(),
+            no_action: None,
             args: Args::List(vec![
                 ArgValue::String(token.to_string()),
                 ArgValue::String(instruction.to_string()),

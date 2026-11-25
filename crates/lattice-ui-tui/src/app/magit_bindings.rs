@@ -1019,6 +1019,7 @@ mod confirm_seeding {
         app.apply_effect(lattice_grammar::Effect::Confirm {
             prompt: "Discard changes to src/main.rs?".to_string(),
             yes_action: "action:magit-global-file-discard-execute".to_string(),
+            no_action: None,
             args: lattice_grammar::Args::List(vec![lattice_grammar::ArgValue::String(
                 "src/main.rs".to_string(),
             )]),
@@ -1064,6 +1065,7 @@ mod confirm_seeding {
         app.apply_effect(lattice_grammar::Effect::Confirm {
             prompt: "Discard 3 files?".to_string(),
             yes_action: "action:magit-discard-batch-execute".to_string(),
+            no_action: None,
             args: lattice_grammar::Args::List(vec![lattice_grammar::ArgValue::String(
                 entries.join("\0"),
             )]),
@@ -1096,6 +1098,7 @@ mod confirm_seeding {
         app.apply_effect(lattice_grammar::Effect::Confirm {
             prompt: "Abort the rebase?".to_string(),
             yes_action: "action:magit-rebase-abort-execute".to_string(),
+            no_action: None,
             args: lattice_grammar::Args::None,
         });
         let picker = app.editor.picker.as_ref().expect("transient opened");

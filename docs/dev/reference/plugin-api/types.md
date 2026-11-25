@@ -871,6 +871,7 @@ the host ensures a popup buffer named `name` under major mode `mode-id`.
 record confirm-payload {
     prompt: string,
     yes-action: string,
+    no-action: option<string>,
     args: args,
 }
 ```
@@ -892,10 +893,14 @@ from context that may have changed while the dialog was open.
 - `prompt`: `string` — Shown as the dialog's title. Name the target in it — a
   question has to be answerable without dismissing it to go
   look.
-- `yes-action`: `string` — Action name dispatched on `y`. `n` / `q` / Esc dismiss and
-  dispatch nothing.
-- `args`: [`args`](#variant-args) — Arguments handed to `yes-action`, positional against its
-  declared `args-schema`.
+- `yes-action`: `string` — Action name dispatched on `y`.
+- `no-action`: `option<string>` — Action name dispatched on `n`, for a question whose no is
+  itself an answer: an export that asks before running a file's
+  code still exports on `n`, with the results already there.
+  `none`: `n` dismisses. `q` / Esc always dismiss and dispatch
+  nothing.
+- `args`: [`args`](#variant-args) — Arguments handed to `yes-action`, and to `no-action`: each
+  positional against its own declared `args-schema`.
 
 ### record `open-transient-payload`
 

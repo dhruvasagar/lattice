@@ -6825,7 +6825,7 @@
           "name": "confirm-payload",
           "kind": "record",
           "doc": "IX.3: the payload of `effect.confirm`.\n\n`yes-action` names an action the guest (or host) registered; the\nhost resolves it through the command registry when the user\nanswers `y`. A **name**, not a command id — a guest cannot hold a\nhost-internal id, and names are what a plugin registers under.\n\n`args` is what the yes-action receives when it fires, so the\nconfirmed target and the executed target are the same thing.\nWithout it the yes-half must re-derive its target at answer time\nfrom context that may have changed while the dialog was open.",
-          "definition": "record confirm-payload {\n    prompt: string,\n    yes-action: string,\n    args: args,\n}",
+          "definition": "record confirm-payload {\n    prompt: string,\n    yes-action: string,\n    no-action: option<string>,\n    args: args,\n}",
           "members": [
             {
               "name": "prompt",
@@ -6835,12 +6835,17 @@
             {
               "name": "yes-action",
               "type": "string",
-              "doc": "Action name dispatched on `y`. `n` / `q` / Esc dismiss and\ndispatch nothing."
+              "doc": "Action name dispatched on `y`."
+            },
+            {
+              "name": "no-action",
+              "type": "option<string>",
+              "doc": "Action name dispatched on `n`, for a question whose no is\nitself an answer: an export that asks before running a file's\ncode still exports on `n`, with the results already there.\n`none`: `n` dismisses. `q` / Esc always dismiss and dispatch\nnothing."
             },
             {
               "name": "args",
               "type": "args",
-              "doc": "Arguments handed to `yes-action`, positional against its\ndeclared `args-schema`."
+              "doc": "Arguments handed to `yes-action`, and to `no-action`: each\npositional against its own declared `args-schema`."
             }
           ],
           "examples": []

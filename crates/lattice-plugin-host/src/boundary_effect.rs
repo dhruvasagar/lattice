@@ -970,10 +970,12 @@ fn effect_to_wit(e: &NativeEffect) -> Result<WitEffect, String> {
         NativeEffect::Confirm {
             prompt,
             yes_action,
+            no_action,
             args,
         } => WitEffect::Confirm(WitConfirmPayload {
             prompt: prompt.clone(),
             yes_action: yes_action.clone(),
+            no_action: no_action.clone(),
             args: args.to_wit()?,
         }),
         // IX.4: no WIT mirror yet — a **typed error**, not `None`.
@@ -1178,6 +1180,7 @@ fn effect_from_wit(w: WitEffect) -> Result<NativeEffect, String> {
         WitEffect::Confirm(p) => NativeEffect::Confirm {
             prompt: p.prompt,
             yes_action: p.yes_action,
+            no_action: p.no_action,
             args: NativeArgs::from_wit(p.args)?,
         },
         // IX.5: a guest asks for a line of text. The submitted value
@@ -1529,6 +1532,7 @@ mod tests {
         let native = NativeEffect::Confirm {
             prompt: "Delete src/main.rs?".to_string(),
             yes_action: "action:my-plugin-delete".to_string(),
+            no_action: Some("action:my-plugin-keep".to_string()),
             args: NativeArgs::List(vec![lattice_grammar::args::ArgValue::String(
                 "src/main.rs".to_string(),
             )]),
@@ -1538,10 +1542,12 @@ mod tests {
             NativeEffect::Confirm {
                 prompt,
                 yes_action,
+                no_action,
                 args,
             } => {
                 assert_eq!(prompt, "Delete src/main.rs?");
                 assert_eq!(yes_action, "action:my-plugin-delete");
+                assert_eq!(no_action.as_deref(), Some("action:my-plugin-keep"));
                 // The carried target is the whole point: a confirm that
                 // lost its args on the way across would ask about one
                 // thing and act on another.
@@ -1562,6 +1568,7 @@ mod tests {
         let native = NativeEffect::Confirm {
             prompt: "Proceed?".to_string(),
             yes_action: "action:my-plugin-go".to_string(),
+            no_action: None,
             args: NativeArgs::None,
         };
         let back = effect_from_wit(effect_to_wit(&native).unwrap()).unwrap();

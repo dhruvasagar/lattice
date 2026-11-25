@@ -2072,6 +2072,7 @@ index 111..222 100644
             Some(Effect::Confirm {
                 prompt: "Discard 3 files?".to_string(),
                 yes_action: "action:magit-discard-batch-execute".to_string(),
+                no_action: None,
                 args: lattice_grammar::Args::None,
             })
         };

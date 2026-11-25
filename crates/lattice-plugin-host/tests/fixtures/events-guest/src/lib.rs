@@ -671,6 +671,7 @@ fn post_requested() {
         "confirm" => Effect::Confirm(ConfirmPayload {
             prompt: "Run it?".to_string(),
             yes_action: arg.to_string(),
+            no_action: None,
             args: Args::None,
         }),
         // Effects the posted path must refuse.

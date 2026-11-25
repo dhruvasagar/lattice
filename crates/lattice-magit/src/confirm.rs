@@ -157,6 +157,7 @@ pub(crate) fn ask_with(prompt: String, yes_action: &str, args: lattice_grammar::
     Effect::Confirm {
         prompt,
         yes_action: yes_action.to_string(),
+        no_action: None,
         args,
     }
 }
@@ -210,6 +211,7 @@ mod tests {
             Effect::Confirm {
                 prompt,
                 yes_action,
+                no_action: _,
                 args,
             } => {
                 assert_eq!(prompt, "Delete branch feature/foo?");

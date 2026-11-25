@@ -1458,6 +1458,7 @@ mod tests {
         let out = auth.restrict_posted(NativeEffect::Confirm {
             prompt: "Run 3 code blocks?".to_string(),
             yes_action: "org-export-run".to_string(),
+            no_action: None,
             args: lattice_grammar::Args::None,
         });
         assert!(
@@ -1720,6 +1721,7 @@ mod tests {
                 NativeEffect::Confirm {
                     prompt: "ok?".into(),
                     yes_action: command.into(),
+                    no_action: None,
                     args: lattice_grammar::Args::String("x".into()),
                 },
                 NativeEffect::OpenPrompt {

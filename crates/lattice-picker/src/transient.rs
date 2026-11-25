@@ -585,31 +585,52 @@ impl TransientSourceRegistry {
 
 /// Build a simple y/n confirmation transient spec.
 /// `prompt` is the title shown at the top; `yes_command_id`
-/// is the action fired when the user presses `y`.
-pub fn confirm_transient_spec(prompt: &str, yes_command_id: CommandId) -> TransientSpec {
+/// is the action fired when the user presses `y`, and `no_command_id`
+/// the one fired on `n`, for a question whose no is itself an answer.
+/// Without one, `n` dismisses; `q` always does.
+pub fn confirm_transient_spec(
+    prompt: &str,
+    yes_command_id: CommandId,
+    no_command_id: Option<CommandId>,
+) -> TransientSpec {
+    let key = |keys: &[&str]| keys.iter().map(|k| k.to_string()).collect();
+    let yes = TransientItem {
+        key: key(&["y", "Y"]),
+        label: "Yes".to_string(),
+        description: String::new(),
+        kind: TransientItemKind::action(yes_command_id),
+    };
+    let items = match no_command_id {
+        None => vec![
+            yes,
+            TransientItem {
+                key: key(&["n", "N", "q", "Q"]),
+                label: "No".to_string(),
+                description: String::new(),
+                kind: TransientItemKind::Dismiss,
+            },
+        ],
+        Some(no) => vec![
+            yes,
+            TransientItem {
+                key: key(&["n", "N"]),
+                label: "No".to_string(),
+                description: String::new(),
+                kind: TransientItemKind::action(no),
+            },
+            TransientItem {
+                key: key(&["q", "Q"]),
+                label: "Cancel".to_string(),
+                description: String::new(),
+                kind: TransientItemKind::Dismiss,
+            },
+        ],
+    };
     TransientSpec {
         title: prompt.to_string(),
         groups: vec![TransientGroup {
             label: String::new(),
-            items: vec![
-                TransientItem {
-                    key: vec!["y".to_string(), "Y".to_string()],
-                    label: "Yes".to_string(),
-                    description: String::new(),
-                    kind: TransientItemKind::action(yes_command_id),
-                },
-                TransientItem {
-                    key: vec![
-                        "n".to_string(),
-                        "N".to_string(),
-                        "q".to_string(),
-                        "Q".to_string(),
-                    ],
-                    label: "No".to_string(),
-                    description: String::new(),
-                    kind: TransientItemKind::Dismiss,
-                },
-            ],
+            items,
         }],
         preview: None,
         footer: None,
@@ -1109,7 +1130,7 @@ mod tests {
     #[test]
     fn confirm_transient_spec_has_yes_action_and_dismiss_items() {
         let cmd_id = CommandId::new(42);
-        let spec = confirm_transient_spec("Discard changes?", cmd_id);
+        let spec = confirm_transient_spec("Discard changes?", cmd_id, None);
         assert_eq!(spec.title, "Discard changes?");
         assert_eq!(spec.groups.len(), 1);
         let items = &spec.groups[0].items;
@@ -1121,5 +1142,27 @@ mod tests {
         assert!(matches!(items[1].kind, TransientItemKind::Dismiss));
         assert!(items[1].key.iter().any(|k| k == "q"), "q must dismiss");
         assert!(items[1].key.iter().any(|k| k == "n"), "n must dismiss");
+    }
+
+    /// With a no-action, `n` fires it and `q` alone dismisses.
+    #[test]
+    fn confirm_transient_spec_with_a_no_action_fires_it_on_n() {
+        let (yes, no) = (CommandId::new(42), CommandId::new(43));
+        let spec = confirm_transient_spec("Export runs 2 blocks?", yes, Some(no));
+        let items = &spec.groups[0].items;
+        assert_eq!(items.len(), 3);
+        let fires = |key: &str| {
+            items
+                .iter()
+                .find(|i| i.key.iter().any(|k| k == key))
+                .map(|i| match i.kind {
+                    TransientItemKind::Action { command, .. } => Some(command),
+                    _ => None,
+                })
+        };
+        assert_eq!(fires("y"), Some(Some(yes)));
+        assert_eq!(fires("n"), Some(Some(no)));
+        assert_eq!(fires("N"), Some(Some(no)));
+        assert_eq!(fires("q"), Some(None), "q dismisses");
     }
 }

@@ -2060,7 +2060,12 @@ pub enum Effect {
         prompt: String,
         /// Registered action name dispatched on `y`.
         yes_action: String,
-        /// Arguments passed to `yes_action` (see above).
+        /// Registered action name dispatched on `n`, for a question whose
+        /// no is itself an answer ("export with the results already in the
+        /// file"). `None`: `n` dismisses, as `q` and Esc always do.
+        no_action: Option<String>,
+        /// Arguments passed to `yes_action`, and to `no_action` — each
+        /// positional against its own declared schema (see above).
         args: crate::Args,
     },
 

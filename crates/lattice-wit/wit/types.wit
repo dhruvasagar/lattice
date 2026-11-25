@@ -465,11 +465,16 @@ interface types {
         /// question has to be answerable without dismissing it to go
         /// look.
         prompt: string,
-        /// Action name dispatched on `y`. `n` / `q` / Esc dismiss and
-        /// dispatch nothing.
+        /// Action name dispatched on `y`.
         yes-action: string,
-        /// Arguments handed to `yes-action`, positional against its
-        /// declared `args-schema`.
+        /// Action name dispatched on `n`, for a question whose no is
+        /// itself an answer: an export that asks before running a file's
+        /// code still exports on `n`, with the results already there.
+        /// `none`: `n` dismisses. `q` / Esc always dismiss and dispatch
+        /// nothing.
+        no-action: option<string>,
+        /// Arguments handed to `yes-action`, and to `no-action`: each
+        /// positional against its own declared `args-schema`.
         args: args,
     }
 

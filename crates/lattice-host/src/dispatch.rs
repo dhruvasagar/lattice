@@ -4874,10 +4874,11 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
         Effect::Confirm {
             prompt,
             yes_action,
+            no_action,
             args,
         } => out
             .renderer_signals
-            .extend(editor.open_confirm(prompt, yes_action, args)),
+            .extend(editor.open_confirm(prompt, yes_action, no_action, args)),
         // BC.8c: host-applied `window/showDocument` open effects. They run
         // host-side (NOT in the peer) because the showDocument bus drains
         // off-keystroke through the generic inbound tick-callback, where
@@ -38745,17 +38746,19 @@ impl Editor {
     }
 
     /// Open a y/n confirmation dialog whose `y` fires `yes_action` with
-    /// `args`.
+    /// `args`, and whose `n` fires `no_action` with them when there is one
+    /// (otherwise `n` dismisses, as `q` and Esc always do).
     ///
-    /// The dialog's state is seeded with the yes-action's arguments, so what
-    /// fires on `y` is what the prompt named. Without that the yes half would
+    /// The dialog's state is seeded with each action's arguments, so what
+    /// fires is what the prompt named. Without that an action would
     /// re-derive its target when it runs, and the context it derives from can
-    /// change while the dialog is open. An unknown `yes_action` opens nothing
-    /// and says so.
+    /// change while the dialog is open. An unknown action opens nothing and
+    /// says so.
     pub fn open_confirm(
         &mut self,
         prompt: String,
         yes_action: String,
+        no_action: Option<String>,
         args: lattice_grammar::Args,
     ) -> Vec<RendererSignal> {
         let Some(cmd_reg) = self
@@ -38775,11 +38778,30 @@ impl Editor {
             );
             return Vec::new();
         };
-        let spec = lattice_picker::confirm_transient_spec(&prompt, cmd_id);
-        let seed = match cmd_reg.load().lookup(cmd_id) {
-            Some(spec) => self.seed_confirm_args(&spec.args_schema, &args),
-            None => Default::default(),
+        let no_id = match no_action {
+            None => None,
+            Some(name) => match cmd_reg.load().id_by_name(&name) {
+                Some(id) => Some(id),
+                // A question whose no cannot be answered is not asked: `n`
+                // would do nothing where the asker expects it to act.
+                None => {
+                    self.set_message(
+                        EchoLevel::Error,
+                        format!("confirm: unknown action `{name}`"),
+                    );
+                    return Vec::new();
+                }
+            },
         };
+        let spec = lattice_picker::confirm_transient_spec(&prompt, cmd_id, no_id);
+        // Each half reads its arguments by its own schema's names; the
+        // state they read from is one.
+        let mut seed = lattice_picker::TransientState::default();
+        for id in std::iter::once(cmd_id).chain(no_id) {
+            if let Some(spec) = cmd_reg.load().lookup(id) {
+                seed.extend(self.seed_confirm_args(&spec.args_schema, &args));
+            }
+        }
         let signals = self.open_transient(spec);
         self.extend_transient_state(seed);
         signals

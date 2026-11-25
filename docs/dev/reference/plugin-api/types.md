@@ -22,7 +22,7 @@ command mirror (§4.1) and cross as a typed error until then.
 
 _(none — a shared type interface)_
 
-## Types (165)
+## Types (166)
 
 ### variant `arg-value`
 
@@ -2938,24 +2938,49 @@ throughout rather than a run of prompts the user cannot go back into.
   always seeds with the value already held.
 - `prompt`: `string` — The prompt's label.
 
+### record `transient-flag`
+
+```wit
+record transient-flag {
+    name: string,
+    default: bool,
+}
+```
+
+A boolean the menu toggles in place.
+
+Pressing its key flips the value under `name` in the menu's state and
+the menu stays open, as magit's `-a` / `-f` switches do. A fired action
+whose command declares an `args-schema` slot named `name` receives it
+as a `bool`, positioned by the schema. Org export's `C-s` (subtree) and
+`C-b` (body only) are two.
+
+**Fields**
+
+- `name`: `string` — Key in the menu's state, and the schema slot it fills.
+- `default`: `bool` — Its value when the menu opens. A guest that wants a toggle to stay
+  set across opens keeps it in its store and sets this from it.
+
 ### variant `transient-item-kind`
 
 ```wit
 variant transient-item-kind {
     action(transient-action),
     argument(transient-argument),
+    flag(transient-flag),
     dismiss,
 }
 ```
 
-Mirrors `lattice_picker::TransientItemKind`. v1 crosses three of its
-six variants; `submenu` / `flag` / `variable` are deferred with reasons
-in `plugin-transients.md` §5.
+Mirrors `lattice_picker::TransientItemKind`. Crosses four of its six
+variants; `submenu` / `variable` are deferred with reasons in
+`plugin-transients.md` §5.
 
 **Cases**
 
 - `action`: [`transient-action`](#record-transient-action) — Fires a command and closes the menu.
 - `argument`: [`transient-argument`](#record-transient-argument) — Collects a named value into the menu's state (TR.3b).
+- `flag`: [`transient-flag`](#record-transient-flag) — Toggles a named boolean in the menu's state.
 - `dismiss` — Closes the menu without firing anything. Free, and a menu with no
   `q` is a trap.
 

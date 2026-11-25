@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Added
+- **Plugin menus can have switches.** A plugin's transient menu can now carry on/off rows that flip in place when you press their key, as magit's `-a` / `-f` do, and the command you then fire receives them. Org export's dispatcher uses them for "subtree only" and "body only".
 - **A plugin can write a file and know it is there.** `host-services.write-file` writes a whole file and returns once it is on disk, so a program the plugin starts next reads what was written, which the `write-to-file` effect cannot promise. It needs the plugin's `fs:write` grant, refuses a file you have open with unsaved changes, naming the buffer, and an open buffer with nothing unsaved reloads as for any change made outside the editor.
 
 ### Fixed

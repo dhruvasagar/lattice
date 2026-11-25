@@ -1754,14 +1754,31 @@ interface types {
         prompt: string,
     }
 
-    /// Mirrors `lattice_picker::TransientItemKind`. v1 crosses three of its
-    /// six variants; `submenu` / `flag` / `variable` are deferred with reasons
-    /// in `plugin-transients.md` §5.
+    /// A boolean the menu toggles in place.
+    ///
+    /// Pressing its key flips the value under `name` in the menu's state and
+    /// the menu stays open, as magit's `-a` / `-f` switches do. A fired action
+    /// whose command declares an `args-schema` slot named `name` receives it
+    /// as a `bool`, positioned by the schema. Org export's `C-s` (subtree) and
+    /// `C-b` (body only) are two.
+    record transient-flag {
+        /// Key in the menu's state, and the schema slot it fills.
+        name: string,
+        /// Its value when the menu opens. A guest that wants a toggle to stay
+        /// set across opens keeps it in its store and sets this from it.
+        default: bool,
+    }
+
+    /// Mirrors `lattice_picker::TransientItemKind`. Crosses four of its six
+    /// variants; `submenu` / `variable` are deferred with reasons in
+    /// `plugin-transients.md` §5.
     variant transient-item-kind {
         /// Fires a command and closes the menu.
         action(transient-action),
         /// Collects a named value into the menu's state (TR.3b).
         argument(transient-argument),
+        /// Toggles a named boolean in the menu's state.
+        flag(transient-flag),
         /// Closes the menu without firing anything. Free, and a menu with no
         /// `q` is a trap.
         dismiss,

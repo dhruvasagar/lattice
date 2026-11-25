@@ -145,9 +145,15 @@ each green on its own, the version bump and re-pins last.
    *Dropped test:* "a guest against an unwired linker fails instantiation".
    `write-file` is in `host-services`, which every linker wires whole, so
    there is no linker without it to test against.
-2. 📝 **EX.1b `flag` on `transient-item-kind`**: `flag(transient-flag { name, default })`,
+2. ✅ **EX.1b `flag` on `transient-item-kind`**: `flag(transient-flag { name, default })`,
    mirroring `TransientItemKind::Flag`. A guest sets `default` per open, from
    its store, which is how the toggles stay set across exports.
+   The conversion is one arm in `spec_from_wit`; open, toggle and the
+   schema projection are the host's native flag machinery, unchanged.
+   Tests: `transient_source.rs`'s `a_flag_row_crosses_with_its_name_and_default`
+   (a real guest) and `lattice-host`'s `plugin_transient_flag_round_trips.rs`
+   (default reaches the command, a key flips it, projected by name against a
+   schema in the reverse order; both fail with the open-time seeding removed).
 3. 📝 **EX.1c `post-effects` carries `open-buffer` and `open-external-uri`** when the
    path is inside the plugin's `fs` grants (read or write); outside, the
    effect is replaced by a warning naming the grant, as `write-to-file` is.

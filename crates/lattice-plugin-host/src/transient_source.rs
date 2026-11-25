@@ -83,6 +83,14 @@ pub fn spec_from_wit(
                 .filter_map(|item| {
                     let kind = match item.kind {
                         WitItemKind::Dismiss => NativeTransientItemKind::Dismiss,
+                        // A switch toggled in place. The host's own
+                        // flag machinery (magit's) does the rest: the default
+                        // seeds the state at open, the key flips it, and the
+                        // fired command's schema reads it by name.
+                        WitItemKind::Flag(f) => NativeTransientItemKind::Flag {
+                            name: f.name,
+                            default: f.default,
+                        },
                         // TR.3b: a field. `source` is `None` — the
                         // picker-backed variant (pick the value from a
                         // registered picker source) stays deferred; a

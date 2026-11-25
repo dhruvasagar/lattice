@@ -9913,10 +9913,29 @@
           "examples": []
         },
         {
+          "name": "transient-flag",
+          "kind": "record",
+          "doc": "A boolean the menu toggles in place.\n\nPressing its key flips the value under `name` in the menu's state and\nthe menu stays open, as magit's `-a` / `-f` switches do. A fired action\nwhose command declares an `args-schema` slot named `name` receives it\nas a `bool`, positioned by the schema. Org export's `C-s` (subtree) and\n`C-b` (body only) are two.",
+          "definition": "record transient-flag {\n    name: string,\n    default: bool,\n}",
+          "members": [
+            {
+              "name": "name",
+              "type": "string",
+              "doc": "Key in the menu's state, and the schema slot it fills."
+            },
+            {
+              "name": "default",
+              "type": "bool",
+              "doc": "Its value when the menu opens. A guest that wants a toggle to stay\nset across opens keeps it in its store and sets this from it."
+            }
+          ],
+          "examples": []
+        },
+        {
           "name": "transient-item-kind",
           "kind": "variant",
-          "doc": "Mirrors `lattice_picker::TransientItemKind`. v1 crosses three of its\nsix variants; `submenu` / `flag` / `variable` are deferred with reasons\nin `plugin-transients.md` §5.",
-          "definition": "variant transient-item-kind {\n    action(transient-action),\n    argument(transient-argument),\n    dismiss,\n}",
+          "doc": "Mirrors `lattice_picker::TransientItemKind`. Crosses four of its six\nvariants; `submenu` / `variable` are deferred with reasons in\n`plugin-transients.md` §5.",
+          "definition": "variant transient-item-kind {\n    action(transient-action),\n    argument(transient-argument),\n    flag(transient-flag),\n    dismiss,\n}",
           "members": [
             {
               "name": "action",
@@ -9927,6 +9946,11 @@
               "name": "argument",
               "type": "transient-argument",
               "doc": "Collects a named value into the menu's state (TR.3b)."
+            },
+            {
+              "name": "flag",
+              "type": "transient-flag",
+              "doc": "Toggles a named boolean in the menu's state."
             },
             {
               "name": "dismiss",

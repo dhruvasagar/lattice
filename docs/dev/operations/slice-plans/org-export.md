@@ -32,7 +32,7 @@ of them inside `org-export-mode` (design §0). Viewing the PDF in the editor is
 | EX.6a                     | HTML: transcoder, stylesheet, file sink **(plugin)**                        | ✅     |
 | EX.6b                     | Buffer and open sinks, every backend **(plugin)**                           | ✅     |
 | EX.7                      | Markdown (GFM) **(plugin)**                                                 | ✅     |
-| EX.8a                     | LaTeX: transcoder, built-in classes, `.tex` file / buffer **(plugin)**      | 📝     |
+| EX.8a                     | LaTeX: transcoder, built-in classes, `.tex` file / buffer **(plugin)**      | ✅     |
 | EX.8b                     | LaTeX knobs: classes, `HEADER_EXTRA`, compiler, src backend **(plugin)**    | 📝     |
 | EX.8c                     | Every export default an `org.export.*` option (design §3.3) **(plugin)**     | 📝     |
 | EX.9                      | PDF: `latex-pdf-process`, `*org-export*` log, `l p` / `l o` **(plugin)**    | 📝     |
@@ -763,7 +763,7 @@ and the source-block backend (`verbatim` / `listings` / `minted`). The rest
 of ox-latex's surface is design §8 (packages-alist and hyperref template
 ⛔, `#+BIND` ❌). Carved in two:
 
-- **EX.8a — the writer** 📝. First, the pipeline's mechanics tests get a
+- **EX.8a — the writer** ✅. First, the pipeline's mechanics tests get a
   backend-neutral oracle (the stepped export equals the same export in one
   step), so the dump can go. Then `latex.rs` on `common.rs`: the preamble,
   the three built-in classes and their sectioning, `LATEX_CLASS_OPTIONS`,
@@ -786,6 +786,75 @@ of ox-latex's surface is design §8 (packages-alist and hyperref template
   `Options::resolve`, under `#+OPTIONS:` and the keywords. Tests: each option changes the
   export, a keyword overrides it, and a value that does not parse is refused naming the
   option.
+
+**EX.8a as built.**
+
+- **The oracle first.** A `Run` steps by a `budget` (`STEP_BYTES`, or
+  any size in tests), and `steps_change_nothing` exports each corpus file
+  in steps of one byte, and a 200 KB file in steps of the real budget,
+  against the same export in one step, for every backend, and requires the
+  same bytes. The mechanics tests (subtrees,
+  includes and the cursor, macros, title, body only) assert real Markdown
+  or LaTeX. With that, the placeholder went: `Writer::Dump`, the verbatim
+  shell and the anchor lines. `parse::dump` is now a test fixture
+  (`#[cfg(test)]`), what the parser's and filter's goldens compare.
+- **`export/latex.rs`**, the same writer interface as HTML and Markdown,
+  on `common.rs`. ox-latex's preamble: the `pdflatex` comment, the class
+  with `[11pt]` unless `LATEX_CLASS_OPTIONS` says otherwise, its default
+  packages in its order, `LATEX_HEADER` lines, `\author` (with
+  `\thanks{email}` under `email:t`), `\date` (`\today` when unset),
+  `\title` with the subtitle under `\medskip`, `\hypersetup` (`pdflang`
+  from `#+LANGUAGE`), `secnumdepth` for `num:N`, `\maketitle`,
+  `\tableofcontents` with `tocdepth` for `toc:N`.
+- **Classes.** `article`, `report` and `book`, each with ox's sectioning
+  list; an unknown `#+LATEX_CLASS` fails the export naming it. Headlines
+  are `\section[short]{full}` (the short title when the full one carries a
+  keyword, priority or tags), starred and `\addcontentsline`d when
+  unnumbered but listed, each with a `\label`. Below `H:`, or past the
+  class's last command, they are `itemize` / `enumerate` items opened by
+  the first sibling and closed after the last.
+- **Escaping.** The ten specials, `[` braced where LaTeX would read an
+  optional argument (line start, after `\\` or `\item`), `...` as
+  `\ldots{}`, `--` kept from ligaturing under `-:nil`. Entities: math
+  commands in `\(…\)`, text commands, or escaped UTF-8.
+- **Elements.** `verbatim` for source (in a `figure` when captioned),
+  example, fixed-width and table.el; `tabular` with alignment from the
+  cookies or a numeric column, `\hline` per rule, a `table` float with the
+  caption above when captioned; images `\includegraphics[width=.9\linewidth]`
+  in a `figure` or centred; lists with `\setcounter{enumN}` for `[@n]`,
+  checkbox symbols, `\item[{term}]`; verse with `\\`, `\hspace*` and
+  stanza gaps; quote, center and special blocks as environments; raw
+  `latex` / `tex` keywords, blocks and snippets passed through.
+- **Footnotes** at the first reference (`\footnote{…}`), later ones
+  `\footnotemark[n]`, so every definition is collected before the body.
+- **Links.** `\ref` to a numbered headline or a target with no
+  description, `\hyperref[anchor]{…}` with one or to an unnumbered
+  headline (its title), `\url` / `\href` outward with `%`, `#` and `\`
+  escaped, a cross-file `id:` to the node's file.
+- **No step does work in proportion to the file.** The wasm integration
+  test of a 4000-headline file trapped once the dump was gone: numbering
+  the outline and writing the contents ran in the one call after the parse,
+  and at that size they passed the event handler's fuel. So a render is now
+  three walks, each a budget a step: the outline (`Outline::begin` /
+  `step`, over headline paths, which now live in `common.rs` with the
+  render walk), the writer's index pass (`index`: HTML's and Markdown's
+  contents, LaTeX's footnote definitions) and the body. Writers are made
+  with `new(outline, settings)` once the outline is whole and write their
+  head with `begin`. The largest step for that file went from 8 ms to under
+  1 ms natively. The whole-tree passes left in the prepare step
+  (assembling the tree, the selection, which targets are live, which a
+  link refers to) cost about a sixth of what was there; a preamble with no
+  headline at all is still one parse chunk and one call, as before.
+- **Tests.** Goldens for the five corpus files (`testdata/*.tex`), each
+  checked for TeX's grouping (every brace and environment closed, in
+  order, `verbatim` read as text) and that every `\ref` / `\hyperref`
+  lands on a `\label`. Targeted tests: the preamble, classes and the
+  unknown one, starred and listed headlines, item headlines, the headline
+  text and its short title, escaping and the braced `[`, links, footnotes
+  defined after their reference, tables, lists, blocks with raw LaTeX and
+  entities, captioned and bare images. Integration: `l l` writes the
+  document. No TeX is installed on the build machine, so nothing compiled
+  the goldens; that check is EX.8b's.
 
 ### EX.9 — PDF (plugin) 📝
 

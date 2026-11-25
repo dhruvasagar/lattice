@@ -381,9 +381,13 @@ open follows its write.
 - **Bounded per call.** No events-seam call may exceed its fuel and epoch
   budget, and a whole-file export does not fit one: EX.0 measured 145% of
   the event budget for 20,000 real lines (7.9% for 2,300). So the export
-  **steps** through self-emitted events (parse, then transcode a section at
-  a time), as the roam scan does, each step bounded by the bytes it covers.
-  Fuel is the bound; wall time is milliseconds.
+  **steps** through self-emitted events, as the roam scan does, each step
+  bounded by the bytes it covers: the includes, the parse a chunk at a
+  time, then three walks over the headlines (numbering the outline, the
+  writer's index pass for its contents or what it must know before the
+  body, then the body a section at a time). Anything over the whole file
+  is a walk, never a loop in one call: numbering 4,000 headlines at once
+  was enough to trap. Fuel is the bound; wall time is milliseconds.
 - **A bench.** `cargo bench` in the plugin covers parse and each transcoder
   natively (the parser is pure Rust), so a regression shows in numbers, not
   in a user's report.

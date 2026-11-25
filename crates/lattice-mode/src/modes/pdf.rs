@@ -118,6 +118,11 @@ impl Mode for PdfMode {
         PDF_EXTENSIONS
     }
 
+    /// A PDF is finished when its tail holds `%%EOF`.
+    fn presented_file_settled(&self, path: &Path) -> bool {
+        pdf_file_settled(path)
+    }
+
     /// Read-only, half one: this gates insert-mode typing. And the
     /// modeline's position reads as pages, because the lines are pages.
     fn options(&self) -> OptionOverrideSet {
@@ -206,6 +211,38 @@ async fn read_labels(probe: Option<PdfProbeHandle>, path: PathBuf) -> (String, u
             (format!("{name}: reading the PDF failed"), 0)
         }
     }
+}
+
+/// How far from the end of a PDF its `%%EOF` may sit. The format puts it
+/// last; readers have long accepted trailing bytes after it, and 1024 is the
+/// window they search.
+const EOF_WINDOW: u64 = 1024;
+
+/// Has the PDF at `path` been written to the end?
+///
+/// A PDF ends with `%%EOF`, and an incremental update appends a new one, so a
+/// file whose tail lacks it is one still being written. Page counts cannot
+/// tell: a reader repairs a cut file whose page tree came first into a prefix
+/// of its pages (a 12-page file cut in half reads as 6), which looks exactly
+/// like a document that lost pages. pdfTeX writes the tree last, and its cut
+/// files do not parse at all, but the marker answers both.
+///
+/// A file that cannot be read is called settled: the reload that follows is
+/// what reports it.
+fn pdf_file_settled(path: &Path) -> bool {
+    use std::io::{Read, Seek, SeekFrom};
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return true;
+    };
+    let Ok(len) = file.metadata().map(|m| m.len()) else {
+        return true;
+    };
+    let start = len.saturating_sub(EOF_WINDOW);
+    let mut tail = Vec::with_capacity((len - start) as usize);
+    if file.seek(SeekFrom::Start(start)).is_err() || file.read_to_end(&mut tail).is_err() {
+        return true;
+    }
+    tail.windows(5).any(|w| w == b"%%EOF")
 }
 
 /// One label per page, `Page N of M`, newline-joined: line `N - 1` is page `N`.
@@ -371,6 +408,72 @@ pub fn is_pdf_path(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A scratch file holding `bytes`, removed when the guard drops.
+    struct Scratch(PathBuf);
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+    fn scratch(name: &str, bytes: &[u8]) -> Scratch {
+        let path = std::env::temp_dir().join(format!(
+            "lattice-pdf-settled-{}-{name}.pdf",
+            std::process::id()
+        ));
+        std::fs::write(&path, bytes).expect("the temp dir is writable");
+        Scratch(path)
+    }
+
+    /// The marker decides, wherever in the last 1024 bytes it sits: at the
+    /// very end, before trailing whitespace or junk, and after an
+    /// incremental update that appended a second one.
+    #[test]
+    fn a_pdf_is_settled_when_its_tail_holds_the_eof_marker() {
+        let body = format!("%PDF-1.7\n{}\nstartxref\n9\n", "x".repeat(4000));
+        for (name, tail) in [
+            ("end", "%%EOF"),
+            ("newline", "%%EOF\r\n"),
+            ("junk", "%%EOF\n\0\0\0 trailing bytes a producer left"),
+        ] {
+            let f = scratch(name, format!("{body}{tail}").as_bytes());
+            assert!(pdf_file_settled(&f.0), "{name}");
+        }
+        let updated = scratch(
+            "update",
+            format!("{body}%%EOF\nmore objects\n%%EOF\n").as_bytes(),
+        );
+        assert!(pdf_file_settled(&updated.0));
+    }
+
+    /// Cut anywhere before its marker, a PDF is still being written, a long
+    /// one included (the marker of an earlier write, far up the file, does
+    /// not count) and an empty one (the producer has only truncated it).
+    #[test]
+    fn a_pdf_cut_short_is_not_settled() {
+        let early = format!(
+            "%PDF-1.7\n%%EOF\n{}",
+            "1 0 obj\n<< >>\nendobj\n".repeat(200)
+        );
+        for (name, bytes) in [
+            (
+                "cut",
+                b"%PDF-1.7\n1 0 obj\n<< /Type /Catalog >>\nendobj\n".to_vec(),
+            ),
+            ("early-marker", early.into_bytes()),
+            ("empty", Vec::new()),
+        ] {
+            let f = scratch(name, &bytes);
+            assert!(!pdf_file_settled(&f.0), "{name}");
+        }
+    }
+
+    /// A file that is not there is not waited for: the reload is what says
+    /// it is gone.
+    #[test]
+    fn a_missing_pdf_is_settled() {
+        assert!(pdf_file_settled(Path::new("/definitely/not/here.pdf")));
+    }
 
     #[test]
     fn id_kind_and_claim() {

@@ -611,3 +611,71 @@ async fn a_reload_with_fewer_pages_clamps_to_the_last() {
     assert_eq!(editor.cursor.line, 2, "on the new last page");
     assert_eq!(modeline_position(&mut editor), "page 3/3");
 }
+
+/// What the watcher hands the editor when `path` changes on disk.
+fn watcher_saw_change(editor: &mut Editor, path: &std::path::Path) {
+    let id = editor.document_buffer_id;
+    editor.autoread_pending.insert(
+        id,
+        lattice_host::autoread::AutoreadChange {
+            path: path.to_path_buf(),
+            kind: lattice_host::autoread::AutoreadChangeKind::Modified,
+        },
+    );
+    let _ = editor.drain_autoread_changes();
+}
+
+/// A compile writes its PDF progressively, so the watcher fires on a file
+/// that is half there. Reloading that would read it as six pages of twelve
+/// (a reader repairs the prefix) and clamp the reader to page 6, so the
+/// reload waits: the buffer, its labels, its blocks and the cursor are all as
+/// they were, with no key pressed. The compile's last write reloads the
+/// finished file.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_reload_mid_write_keeps_the_pages_and_the_finished_file_reloads() {
+    let (dir, mut editor, id) = open_drawn(12).await;
+    let pdf = dir.path().join("paper.pdf");
+    keys(&mut editor, "JJJJJJJ");
+    assert_eq!(editor.cursor.line, 7);
+    let scroll = editor.scroll;
+    let before = revisions(&editor, id);
+
+    let finished = pdf_bytes(12);
+    rewrite(&pdf, &finished[..finished.len() / 2]);
+    watcher_saw_change(&mut editor, &pdf);
+    assert_eq!(
+        editor.document_buffer_id, id,
+        "no reload of a half-written file"
+    );
+    assert_eq!(text_of(&editor, id).lines().count(), 12, "the labels stand");
+    assert_eq!(editor.cursor.line, 7, "still on page 8");
+    assert_eq!(editor.scroll, scroll);
+    assert_eq!(
+        revisions(&editor, id),
+        before,
+        "the pages are the ones drawn"
+    );
+
+    rewrite(&pdf, &pdf_bytes(9));
+    watcher_saw_change(&mut editor, &pdf);
+    let reloaded = editor.document_buffer_id;
+    assert_ne!(reloaded, id, "the finished file reloads");
+    assert!(
+        settle_woken(&mut editor, |e| text_of(e, reloaded).lines().count() == 9).await,
+        "the finished file's pages never landed: {:?}",
+        text_of(&editor, reloaded)
+    );
+}
+
+/// A first open has nothing on screen to keep, so a half-written file is
+/// opened and says what it is.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_first_open_of_a_half_written_pdf_is_not_held_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let finished = pdf_bytes(12);
+    let pdf = write(dir.path(), "paper.pdf", &finished[..finished.len() / 10]);
+    let mut editor = Editor::boot(CoreDocument::from_text("x\n"));
+    let id = open_and_label(&mut editor, &pdf).await;
+    let text = text_of(&editor, id);
+    assert!(text.starts_with("paper.pdf: not a readable PDF"), "{text}");
+}

@@ -221,10 +221,28 @@ pdfTeX writes its output as it ships pages out, so the watcher can fire on a
 PDF that is half there: unreadable, or, if the reader repairs it, short of
 its pages. Showing either replaces the document the user is reading with an
 error line or a stub, and clamps the cursor to the stub's last page, a
-pixel change to content the user did not edit. So a reload that cannot read
-the file, or reads fewer pages than the compile will finish with, leaves the
-labels, the blocks and the cursor as they were; the compile's final write
-is a change of its own and loads the finished PDF. This is what zathura and
+pixel change to content the user did not edit. So a reload of a file that
+is still being written does not happen: the labels, the blocks, the rasters
+and the cursor stay as they were, and the compile's final write is a change
+of its own that loads the finished PDF.
+
+The page count cannot be the test. A reader repairs a cut file whose page
+tree came first into a prefix of its pages (measured: a 12-page file cut at
+half reads as 6, at 70% as 10), which is indistinguishable from a document
+that lost pages, and a real rewrite that drops pages must clamp. pdfTeX
+writes its tree last, so its cut files do not parse at all, but that is one
+producer's order. The test is the format's own end marker: a PDF ends with
+`%%EOF` (an incremental update appends another), so a file without one in
+its last 1024 bytes is unfinished. `pdf-mode` answers it through
+`Mode::presented_file_settled`, which autoread asks before reloading any
+presented file; the default is "settled", so pictures reload as before.
+Gating the reload rather than its result is what keeps all three layers
+still: the media pump re-measures a fresh buffer from nothing, and the GPUI
+cache redraws on a new revision, so a reload that went ahead and kept only
+the labels would still have collapsed every page to its one-row stub. `R`
+reloads by hand without asking: the user has said to. A file that ends with
+the marker and still cannot be read is reloaded, and says so, because that
+is the file the compile finished with. This is what zathura and
 sioyek do. On a first open there is nothing to keep, and the error line
 stands (§3).
 

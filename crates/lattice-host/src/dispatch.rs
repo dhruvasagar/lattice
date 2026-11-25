@@ -9434,18 +9434,28 @@ impl Editor {
         {
             return Vec::new();
         }
-        // PF.5: a PRESENTED file (a picture, a PDF) is not text, so the
-        // content gate below cannot read it, and used to report it gone:
-        // re-exporting a PDF said "no longer available on disk". The stat
-        // gate above is the whole check for one. Its buffer is never dirty
-        // (its major makes it read-only), so a change is always a reload,
-        // and the reload rereads it however its major reads it.
-        if self
-            .mode_registry
-            .load()
-            .presenting_major_for_path(&change.path)
-            .is_some()
-        {
+        // A PRESENTED file (a picture, a PDF) is not text, so the content
+        // gate below cannot read it; the stat gate above is the whole check
+        // for one. Its buffer is never dirty (its major makes it read-only),
+        // so a change is a reload, rereading it however its major reads it.
+        //
+        // Unless the file is still being written: a reload of a half-written
+        // PDF would replace the pages on screen with an error line or a stub.
+        // The change is dropped, nothing on screen moves, and the producer's
+        // last write arrives as a change of its own.
+        let registry = self.mode_registry.load();
+        if let Some(major) = registry.presenting_major_for_path(&change.path) {
+            if registry
+                .get(major)
+                .is_some_and(|m| !m.presented_file_settled(&change.path))
+            {
+                tracing::debug!(
+                    path = %change.path.display(),
+                    "autoread: presented file is still being written; reload waits"
+                );
+                return Vec::new();
+            }
+            drop(registry);
             return match self.do_edit(Some(change.path.clone()), true) {
                 DoEditOutcome::Reloaded(s)
                 | DoEditOutcome::Opened(s)

@@ -23,7 +23,7 @@ of them inside `org-export-mode` (design §0). Viewing the PDF in the editor is
 | **Phase 2 — the mode and the parse** |                                                                  |        |
 | EX.2                      | `org-export-mode`: mode, layer, gate, options, dispatcher, event pipeline **(plugin)** | ✅ |
 | EX.3                      | Parser: elements, and the stepped pipeline **(plugin)**                     | ✅     |
-| EX.4                      | Parser: objects **(plugin)**                                                | 📝     |
+| EX.4                      | Parser: objects **(plugin)**                                                | ✅     |
 | EX.5                      | Options, filtering, macros, `#+INCLUDE`, link resolution **(plugin)**       | 📝     |
 | **Phase 3 — backends**    |                                                                             |        |
 | EX.6                      | HTML: transcoder, stylesheet, file / buffer / open sinks **(plugin)**       | 📝     |
@@ -312,7 +312,7 @@ over generated input, run natively).
   chunk planning, multi-step runs and the corpus render in the pipeline;
   six integration tests.
 
-### EX.4 — parser: objects (plugin) 📝
+### EX.4 — parser: objects (plugin) ✅
 
 Emphasis (`*` `/` `_` `+` `=` `~`, with org's pre/post character rules),
 links (bracket, angle, plain; `links.rs`'s parser, extended rather than
@@ -323,6 +323,41 @@ radio targets, statistics cookies, macros.
 Tests: golden object trees, plus the classic traps: `a*b*c` (not emphasis),
 `=code with *stars*=` (verbatim wins), a link with brackets in its
 description, emphasis across a line break, unicode around markers.
+
+**As built** (2026-11-25):
+
+- **Where.** `src/export/parse/objects.rs`. The element pass runs it on
+  paragraphs, headline titles (which keep `raw_title` too, for EX.5's
+  `[[*Title]]` resolution), table cells, descriptive items' tags and
+  captions, inside the parse step, so its fuel is stepped with the rest.
+  Verse bodies and keyword values (`#+TITLE:` and peers) stay text: EX.5
+  and the transcoders parse them with the same function.
+- **Links extended, not duplicated.** `links.rs` gained `bracket_link`
+  (org's rules: `\]` escapes in the path, single brackets allowed in the
+  description) and `close_before`; `link_at` now goes through
+  `bracket_link`, which fixed a real bug: `[[file:a\]b.org]]` opened a file
+  named with the backslash.
+- **Departure: export snippets** (`@@html:…@@`) are parsed too; org has
+  them, and EX.6–EX.8 need them for raw inline output. Inline source blocks
+  and babel calls are not (EX.10).
+- **Entities: a table of ~150 names** (Greek, arrows, relations and
+  operators, typography) with their UTF-8, not org's full `org-entities`
+  list. An unknown `\name` is a LaTeX fragment, as in org. The LaTeX
+  backend passes most names through; the few that are not LaTeX commands
+  (`\nbsp`, `\ndash`…) need a mapping in EX.8.
+- **Sub- and superscripts** follow `Context::subsup`, default `^:t`;
+  EX.5 sets it from `#+OPTIONS: ^:{}` / `^:nil`.
+- **Linear in the line, measured.** The first cut was quadratic: an opener
+  that never closes scanned to the end of its line, and a 60 KB line of
+  ` *a` took 1.36 s natively, a fuel trap in the guest. Emphasis closes are
+  now found once per text and binary-searched, the one-newline window from
+  a newline index, and every other closer stops at the next opener of its
+  kind or at a character its grammar forbids. A test runs seventeen such
+  60 KB lines (0.1 s together).
+- **Tests.** Inline tables of the traps, links and the rest in
+  `objects.rs`; a fifth golden corpus, `objects.org`, that puts objects in
+  every place they live; the chunk-equivalence and render-walk tests run
+  over it; no-panic over 5,000 generated strings; nesting bounds.
 
 ### EX.5 — options and filtering (plugin) 📝
 

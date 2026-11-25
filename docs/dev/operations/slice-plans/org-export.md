@@ -26,7 +26,7 @@ of them inside `org-export-mode` (design §0). Viewing the PDF in the editor is
 | EX.4                      | Parser: objects **(plugin)**                                                | ✅     |
 | EX.5a                     | Options and filtering **(plugin)**                                          | ✅     |
 | EX.5b                     | `#+MACRO` expansion **(plugin)**                                            | ✅     |
-| EX.5c                     | `#+INCLUDE` **(plugin)**                                                    | 📝     |
+| EX.5c                     | `#+INCLUDE` **(plugin)**                                                    | ✅     |
 | EX.5d                     | Internal link resolution, `broken-links` **(plugin)**                       | 📝     |
 | **Phase 3 — backends**    |                                                                             |        |
 | EX.6                      | HTML: transcoder, stylesheet, file / buffer / open sinks **(plugin)**       | 📝     |
@@ -463,15 +463,48 @@ view, includes before the parse). EX.5d needs the tree both produce.
   (`pipeline.rs`); the objects corpus gained the `#+MACRO:` its `kbd` call
   needs; the integration test now carries a macro.
 
-#### EX.5c — `#+INCLUDE` 📝
+#### EX.5c — `#+INCLUDE` ✅
 
-Textual, before the parse, as in ox: `#+INCLUDE:` through `read-file`,
-relative to the including file, recursion-bounded and cycle-checked, one
-include per step. `src` / `example` / `export` / any block wrapping (code
-comma-escaped), `:lines`, `:minlevel` (default: one below the headline the
-include sits under, as ox does), `::*headline` / `::#custom-id` with
-`:only-contents`. A line map keeps a subtree export finding the cursor's
-headline. An include the plugin may not read fails the export, naming it.
+- **`export/include.rs`, textual and before the parse**, as in ox: an
+  included file's headlines nest into the outline, its keywords apply, and
+  its includes include in turn, all of which the parse of the whole sees
+  for free. The text is held as pieces (text runs and unread includes);
+  each step reads one include through `read-file` and splices its pieces
+  in, so no call reads two files; the text is joined once at the end and
+  only then are the parse chunks planned. A file with no include takes no
+  extra step and makes no copy.
+- **Found by one pass that skips blocks**, where `#+INCLUDE:` is content.
+- **What it reads**: a path relative to the including file (or absolute,
+  or `~`), lexically normalised so a cycle is caught by name (`org: … includes
+  itself`); nesting stops at 16. `:lines "a-b"` (1-based, either end open),
+  `:minlevel`, and ox's default without one: an include under a level-N
+  headline has its shallowest headline at N+1. `::*Title` and `::#custom-id`
+  take that subtree; `:only-contents` drops the headline, its planning and
+  property drawer. A block kind wraps: `src lang …`, `example`,
+  `export html`, or any other name; `src` and `example` content is
+  comma-escaped so the parse reads it back as written.
+- **Failures name the path**: not granted or missing (`org: cannot include
+  /p: <host's reason>`), an unreadable directive, a search with no match.
+  The export stops; nothing is written.
+- **The cursor follows.** A line map records what each top-level include
+  became (an empty one still took its own line), so a subtree export's
+  cursor line is moved past the includes above it before the subtree is
+  taken.
+- **`#+TODO:` stays the including file's**, read before anything is
+  included, as emacs reads the buffer's settings.
+- **Departures, accepted**: footnote labels from an included file are not
+  renamed (ox renames them to avoid clashes); a search other than `*` /
+  `#` is read as a headline title, where ox would also try targets and
+  names.
+- **Tests.** `include.rs`: splice and nesting below the headline,
+  `:minlevel`, relative includes from an include, blocks and escaping,
+  both searches and `:only-contents`, an include in a block is text, each
+  failure's message, the line map with an empty include. `pipeline.rs`:
+  an included file's macro and title apply, an include a step, a subtree
+  export under two includes takes the right headline (fails with the map
+  disabled; checked), a missing include writes nothing. Integration: a
+  granted include is spliced, an ungranted one fails naming its path,
+  through the real host `read-file`.
 
 #### EX.5d — links and `broken-links` 📝
 

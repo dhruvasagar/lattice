@@ -413,3 +413,19 @@ async fn a_rewrite_that_keeps_the_carets_line_does_not_move_it() {
     editor.run_tick_pending();
     assert_eq!(editor.cursor, Position::new(1, 1));
 }
+
+/// …and the clamp leaves Insert's caret on the empty line after a final
+/// newline. `o` on the last line puts it there before anything is typed;
+/// that line is past Normal mode's last addressable line but it exists, so
+/// the tick must not pull the caret back up. Measuring "past the end" by
+/// Normal's bound did, and the first key of every `o` on a last line (and
+/// every `textwidth` wrap) landed at the start of the line above.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_tick_leaves_inserts_caret_on_the_line_after_the_last_newline() {
+    let mut editor = boot("aaa");
+    key(&mut editor, Action::OpenLineBelow);
+    assert_eq!(text(&editor), "aaa\n");
+    assert_eq!(editor.cursor, Position::new(1, 0), "`o` opened the line");
+    editor.run_tick_pending();
+    assert_eq!(editor.cursor, Position::new(1, 0), "and the tick kept it");
+}

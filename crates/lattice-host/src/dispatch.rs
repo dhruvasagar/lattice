@@ -20396,7 +20396,14 @@ impl Editor {
         // modeline said so. vim keeps the cursor on a real line whatever
         // changed the text. Only a caret past the end moves; one still inside
         // the text is the user's and stays exactly where it is.
-        if self.cursor.line > last_addressable_line(&self.active_text()) {
+        //
+        // "Past the end" is measured against the ROPE's lines, not
+        // `last_addressable_line`: that is Normal mode's bound, which leaves
+        // out the empty line after a final newline, and Insert puts the caret
+        // there (`o` on the last line, a `textwidth` wrap) before the next
+        // keystroke fills it. Clamping to the Normal bound pulled the caret
+        // back up mid-insert.
+        if self.cursor.line >= self.active_text().rope_line_count() {
             self.clamp_cursor_to_active_buffer();
         }
         if self.cursor != before {

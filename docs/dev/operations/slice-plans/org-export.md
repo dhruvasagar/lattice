@@ -30,7 +30,7 @@ of them inside `org-export-mode` (design §0). Viewing the PDF in the editor is
 | EX.5d                     | Internal link resolution, `broken-links` **(plugin)**                       | ✅     |
 | **Phase 3 — backends**    |                                                                             |        |
 | EX.6a                     | HTML: transcoder, stylesheet, file sink **(plugin)**                        | ✅     |
-| EX.6b                     | Buffer and open sinks, every backend **(plugin)**                           | 📝     |
+| EX.6b                     | Buffer and open sinks, every backend **(plugin)**                           | ✅     |
 | EX.7                      | Markdown (GFM) **(plugin)**                                                 | 📝     |
 | EX.8                      | LaTeX: transcoder, `.tex` file / buffer **(plugin)**                        | 📝     |
 | EX.9                      | PDF: `latex-pdf-process`, `*org-export*` log, `l p` / `l o` **(plugin)**    | 📝     |
@@ -543,7 +543,7 @@ view, includes before the parse). EX.5d needs the tree both produce.
   at its `<<anchor>>`. Integration: a broken link stops the export and
   writes nothing.
 
-### EX.6 — HTML (plugin) 🚧
+### EX.6 — HTML (plugin) ✅
 
 The transcoder (design §1's structure and class names), the default
 stylesheet (written fresh, design §1), `#+HTML_HEAD`, `#+ATTR_HTML`, raw
@@ -629,12 +629,46 @@ once, after the transcoder, rather than three times.
   inline. The objects corpus's `@@html:<kbd>@@` snippet is now closed, so
   the golden is well-formed.
 
-#### EX.6b — buffer and open sinks 📝
+#### EX.6b — buffer and open sinks ✅
 
-`h H` / `m M` / `l L` into `*Org HTML Export*` and peers
-(`org-export-output-mode`, a whole-text `apply-edit` on re-export) and
-`h o` / `m o` / `l o` through `org.export.open-with` (`editor` default, or
-`system`), registered here with their reader.
+- **`export/sink.rs`** owns the end of a run: the pipeline's last step
+  hands it the output and the done echo, and it returns what to post. The
+  request carries a `Sink` (`File`, `Buffer`, `Open { system }`), decided
+  by the command, so the pipeline stays pure and its tests cover every
+  sink.
+- **Commands**: `:org-export-html-buffer`, `-markdown-buffer`,
+  `-latex-buffer`, `:org-export-html-open`, `-markdown-open`; dispatcher
+  rows `h H`, `h o`, `m M`, `m o`, `l L`. `l o` is PDF's, EX.9. A buffer
+  export skips the `can-write-file` check (nothing is written) but still
+  needs the buffer's file, for the title, includes and relative links.
+- **The buffer sink**: `*Org HTML Export*`, `*Org MD Export*`,
+  `*Org LATEX Export*` (emacs's names) in `html-mode`, `markdown-mode` and
+  `text-mode` (lattice has no LaTeX major). A re-export posts a whole-text
+  `apply-edit` (`cursor: none`) and then `open-synthetic-buffer`, as EX.0
+  found; a killed buffer's stale id is dropped by the host and the open
+  seeds a new one. The ids are kept in the plugin's store, so a reload
+  still finds the buffers.
+- **Departure: one output minor per backend**, not one
+  `org-export-output-mode` (design §5 / §9, now updated). The activation
+  event names the buffer but not which export it is, and `buffer-text`
+  cannot tell them apart at that moment: it reads a buffer only once the
+  editor has published that the plugin's mode is on there, and the event
+  arrives before that publish (found by the integration test, which
+  returned `none` from the activation handler). A hash of the seeded text
+  was the first cut and could not be checked for that reason. With
+  `org-export-{html,markdown,latex}-output-mode`, the mode's name says
+  which buffer it is, with no read and no race.
+- **The open sink**: the write, then `open-buffer` (`force: false`) for
+  `editor`, or `open-external-uri` for `system`, both posted, both inside
+  the plugin's grant, as 0.7.0 allows. `org.export.open-with` is read on
+  the command; another value is refused there, naming it.
+- **Tests.** `sink.rs`: file / open / system effects in order, a buffer
+  sink's first open (name, major, minor) and its in-place replacement
+  (range to the true end, no cursor), the minor-to-backend mapping, the
+  names. Integration: `h H` opens and focuses `*Org HTML Export*` and
+  writes no file, and a second `h H` after an edit to the source replaces
+  the same buffer's text (failed while the id was never learned;
+  checked); `h o` writes the file and focuses it in lattice.
 
 ### EX.7 — Markdown (plugin) 📝
 

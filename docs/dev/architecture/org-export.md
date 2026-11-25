@@ -246,9 +246,12 @@ asking to run blocks, as capture checks its target before a word is typed.
 `html-mode`, `markdown-mode` or `text-mode`, with the output as seed text.
 Re-exporting **replaces** the buffer's text in one undo step and keeps the
 cursor's line. Seed text alone cannot do that (it is ignored for a buffer
-that exists, by design), so the buffer carries a minor,
-`org-export-output-mode`, whose `minor-activated` event hands the plugin its
-id. A re-export posts one whole-text `apply-edit` and then
+that exists, by design), so the buffer carries a minor whose
+`minor-activated` event hands the plugin its id: one per backend
+(`org-export-html-output-mode`, `-markdown-`, `-latex-`), because the event
+names the buffer and not the export, and the buffer cannot be read at that
+moment to tell them apart (`buffer-text` waits for the editor to publish
+that the plugin's mode is on). A re-export posts one whole-text `apply-edit` and then
 `open-synthetic-buffer`; returning to the buffer restores the caret's line
 (§9).
 
@@ -375,7 +378,7 @@ open follows its write.
 ## 9. Settled in EX.0
 
 - **Re-exporting into a buffer: the whole-text `apply-edit`** (§5), with the
-  id learned from the minor's activation. No host change. Output buffers
+  id learned from the minor's activation (a minor per backend, EX.6b). No host change. Output buffers
   lost: their major is fixed to `plugin-output-mode`, so no `html-mode`,
   and they cut lines at 4,096 characters. A `replace` flag on the payload
   would be a host change for what `apply-edit` already does. Keeping the

@@ -25,8 +25,9 @@ of them inside `org-export-mode` (design §0). Viewing the PDF in the editor is
 | EX.3                      | Parser: elements, and the stepped pipeline **(plugin)**                     | ✅     |
 | EX.4                      | Parser: objects **(plugin)**                                                | ✅     |
 | EX.5a                     | Options and filtering **(plugin)**                                          | ✅     |
-| EX.5b                     | `#+MACRO` expansion and `#+INCLUDE` **(plugin)**                            | 📝     |
-| EX.5c                     | Internal link resolution, `broken-links` **(plugin)**                       | 📝     |
+| EX.5b                     | `#+MACRO` expansion **(plugin)**                                            | ✅     |
+| EX.5c                     | `#+INCLUDE` **(plugin)**                                                    | 📝     |
+| EX.5d                     | Internal link resolution, `broken-links` **(plugin)**                       | 📝     |
 | **Phase 3 — backends**    |                                                                             |        |
 | EX.6                      | HTML: transcoder, stylesheet, file / buffer / open sinks **(plugin)**       | 📝     |
 | EX.7                      | Markdown (GFM) **(plugin)**                                                 | 📝     |
@@ -371,8 +372,10 @@ properties, `#+MACRO` expansion, `#+INCLUDE` through `read-file`, internal
 link resolution in `ox`'s order, `broken-links`. An unimplemented keyword is
 named in the echo, once per export.
 
-Carved in three: each is a mechanism of its own with its own failure modes,
-and EX.5c needs the tree EX.5b's includes and macros produce.
+Carved in four: each is a mechanism of its own with its own failure modes.
+Macros and includes were one slice in the first carve and split when they
+turned out to sit at opposite ends of the pipeline (macros in the render
+view, includes before the parse). EX.5d needs the tree both produce.
 
 #### EX.5a — options and filtering ✅
 
@@ -427,15 +430,50 @@ and EX.5c needs the tree EX.5b's includes and macros produce.
   innermost headline. Integration: a file with `noexport`, `COMMENT`, an
   `#+OPTIONS: ^:nil` after its text and two unsupported asks, end to end.
 
-#### EX.5b — `#+MACRO` and `#+INCLUDE` 📝
+#### EX.5b — `#+MACRO` ✅
 
-`{{{name(args)}}}` expansion with `$1`… and the built-ins (`title`,
-`author`, `date`, `email`, `time`, `property`, `input-file`,
-`modification-time` where the host can say); `#+INCLUDE:` through
-`read-file`, with `:lines`, `:minlevel` and `src` / `example` wrapping,
-recursion-bounded, and stepped like the parse.
+- **`export/macros.rs`.** Templates are the keyword built-ins (`title`,
+  `author`, `date`, `email`, `input-file`) and `#+MACRO:` lines, which win;
+  `Options::resolve` collects them in its one precedence pass, so a
+  subtree's `EXPORT_AUTHOR` is what `{{{author}}}` gives. `$1`… substitute,
+  a missing argument is empty. The function built-ins: `time(FORMAT)` (the
+  request's local time, through the plugin's `format_time`), `date(FORMAT)`
+  (a `#+DATE:` timestamp, formatted; otherwise as written), `property(NAME)`
+  (the headline being rendered, no inheritance: ox's default),
+  `keyword(NAME)` (every value, space-joined), `n(NAME, ACTION)` counters.
+- **In the tree, not the text.** ox replaces macros in the text before it
+  parses; here they expand in the render view, as the walk reaches them,
+  and the expansion is parsed as objects and filtered like its
+  surroundings. Same result wherever a macro stands where an object may,
+  which is where ox's replacement looks too. It keeps `n` in document order
+  without a pass of its own, and keeps the expansion stepped.
+- **The filter is a `View`.** It owns the `Options`, the macro state and
+  the current headline's properties; `own`, `elements` and `objects` take
+  it `&mut`.
+- **Failures.** An undefined macro fails the export, as in ox, naming it:
+  `org: {{{nope}}} is not defined`. A macro that expands into itself is
+  stopped at depth 16 with the same kind of error. `(eval …)` bodies,
+  `modification-time` and `property` with a search are named in the closing
+  echo and expand to nothing.
+- **Tests.** Templates and arguments, each function built-in, counters,
+  the failures (`macros.rs`); precedence of built-ins and `#+MACRO:`
+  (`options.rs`); expansion that is markup, nested, filtered by `*:nil`,
+  `property` reading the rendered headline, the depth stop (`filter.rs`);
+  an undefined macro in the title and in the body writes nothing
+  (`pipeline.rs`); the objects corpus gained the `#+MACRO:` its `kbd` call
+  needs; the integration test now carries a macro.
 
-#### EX.5c — links and `broken-links` 📝
+#### EX.5c — `#+INCLUDE` 📝
+
+Textual, before the parse, as in ox: `#+INCLUDE:` through `read-file`,
+relative to the including file, recursion-bounded and cycle-checked, one
+include per step. `src` / `example` / `export` / any block wrapping (code
+comma-escaped), `:lines`, `:minlevel` (default: one below the headline the
+include sits under, as ox does), `::*headline` / `::#custom-id` with
+`:only-contents`. A line map keeps a subtree export finding the cursor's
+headline. An include the plugin may not read fails the export, naming it.
+
+#### EX.5d — links and `broken-links` 📝
 
 Internal link resolution in ox's order (`CUSTOM_ID`, target, radio target,
 headline text, `#+NAME`), giving each resolved target an id the backends

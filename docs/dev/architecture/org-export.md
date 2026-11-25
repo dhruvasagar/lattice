@@ -185,12 +185,19 @@ defaults once instead of in every file:
 
 | group | options (emacs's variable) |
 |---|---|
-| contents | `with-toc`, `with-section-numbers`, `headline-levels`, `with-author`, `author`, `email`, `with-email`, `with-date`, `with-title`, `with-tags`, `with-todo-keywords`, `with-priority`, `with-planning`, `with-drawers`, `with-footnotes`, `with-tex`, `with-sub-superscripts`, `with-special-strings`, `with-emphasize`, `preserve-breaks`, `broken-links`, `select-tags`, `exclude-tags`, `language` (`org-export-with-*` and peers) |
+| contents | one per `#+OPTIONS:` item: `with-toc`, `with-section-numbers`, `headline-levels`, `with-author`, `with-email`, `with-date`, `with-title`, `with-tags`, `with-todo-keywords`, `with-priority`, `with-timestamps`, `with-planning`, `with-clocks`, `with-properties`, `with-drawers`, `with-footnotes`, `with-statistics-cookies`, `with-latex`, `with-sub-superscripts`, `with-special-strings`, `with-emphasize`, `with-fixed-width`, `with-tables`, `with-entities`, `preserve-breaks`, `broken-links` (`org-export-with-*` and peers); and `author`, `email`, `select-tags`, `exclude-tags`, `language` |
 | HTML | `html-stylesheet`, `html-head`, `html-head-extra` |
 | LaTeX | `latex-compiler`, `latex-class`, `latex-class-options`, `latex-header`, `latex-classes`, `latex-src-block-backend`, `latex-image-width`, `latex-pdf-process` |
 
-Option types follow `ox`'s: a depth option (`with-toc`, `with-section-numbers`) takes
-`true`, `false` or a number; a list option is a TOML array. A value that does
+Option types follow `ox`'s: a flag is a boolean, `headline-levels` an integer,
+a list option a TOML array, and the rest (a depth such as `with-toc`, a
+choice such as `with-tags`) a string in the `#+OPTIONS:` spelling, `true`
+and `false` standing for `t` and `nil`. One table in the plugin maps each
+option to its `#+OPTIONS:` key and goes through the same parser, so the two
+spell values alike. `#+HTML_HEAD` replaces `html-head`'s lines, as the
+keyword overrides `org-html-head` in ox; `#+LATEX_HEADER` adds to
+`latex-header`'s, which plays `org-latex-packages-alist`'s always-loaded
+part. A value that does
 not parse is refused when it is set, naming it, as with every typed option.
 A string option with a closed set of values (`latex-compiler`,
 `latex-src-block-backend`) is checked when an export reads it, and an export

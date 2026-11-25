@@ -68,7 +68,17 @@ compatible, not byte-identical.**
   and the guide says so.
 - **LaTeX** uses `ox-latex`'s preamble shape (`\documentclass`, the default
   package list, `\title`/`\author`/`\date`, `\maketitle`, `\tableofcontents`,
-  `\section`…), so a `#+LATEX_HEADER` written for emacs compiles here.
+  `\section`…), so a `#+LATEX_HEADER` written for emacs compiles here. It
+  carries the four knobs emacs users actually tune (Dhruva, 2026-11-25):
+  **user-defined classes** with their sectioning (`org.export.latex-classes`,
+  emacs's `org-latex-classes`, beside the built-in `article` / `report` /
+  `book`), `#+LATEX_HEADER_EXTRA`, **`#+LATEX_COMPILER`** (`pdflatex`,
+  `xelatex`, `lualatex`: it picks the compiler-specific default packages,
+  `inputenc`/`fontenc` or `fontspec`, and is `%latex` in the PDF process),
+  and the **source-block backend** (`org.export.latex-src-block-backend`:
+  `verbatim`, `listings` or `minted`). Without a compiler choice, Unicode
+  text and system fonts cannot build; without minted, source is plain; without
+  classes, a `memoir` or house class cannot be used.
 
 ## 2. What the user does
 
@@ -168,7 +178,8 @@ The v1 set, each with `ox`'s default: `toc`, `num`, `H`, `^`, `author`,
 `:`, `|`, `e`, `\n`. Keywords: `TITLE`, `SUBTITLE`, `AUTHOR`, `EMAIL`,
 `DATE`, `LANGUAGE`, `SELECT_TAGS`, `EXCLUDE_TAGS` (default `noexport`),
 `HTML_HEAD`, `HTML_HEAD_EXTRA`, `LATEX_CLASS`, `LATEX_CLASS_OPTIONS`,
-`LATEX_HEADER`, `MACRO`, `CAPTION`, `NAME`, `ATTR_HTML`, `ATTR_LATEX`, `INCLUDE`.
+`LATEX_HEADER`, `LATEX_HEADER_EXTRA`, `LATEX_COMPILER`, `MACRO`, `CAPTION`,
+`NAME`, `ATTR_HTML`, `ATTR_LATEX`, `INCLUDE`.
 
 A `COMMENT` headline and a `:noexport:` subtree are dropped; `SELECT_TAGS`
 keeps only tagged subtrees and their ancestors. Internal links resolve
@@ -266,7 +277,10 @@ args = ["-pdf", "-interaction=nonstopmode", "-output-directory=%o", "%f"]
 ```
 
 A list, run in order, each after the previous succeeds; `%f` is the `.tex`
-path, `%b` its base name, `%o` its directory. It is granted **only from a
+path, `%b` its base name, `%o` its directory, `%latex` the file's
+`#+LATEX_COMPILER` (default `pdflatex`). `%latex` is safe to splice from the
+file because it is one of three names, refused otherwise; the command around
+it is still the user's. It is granted **only from a
 value the user wrote** (OB.2's rule): the plugin's default is empty, so no
 compiler runs until the user names one, and PDF export says how to name one.
 A non-zero exit stops the list; the log is in `*org-export*`, and the echo
@@ -374,6 +388,11 @@ open follows its write.
   Each is another transcoder or a project layer over the same IR, and none
   is in the first cut.
 - **Export templates** (`C-c C-e #`). Insertion of option skeletons; ⛔.
+- **The rest of ox-latex's knobs.** Default-package overrides
+  (`org-latex-packages-alist`, `org-latex-default-packages-alist`) are
+  `#+LATEX_HEADER` lines already; the hyperref template is niche; ⛔ for
+  both, each a typed option when someone asks. `#+BIND` binds elisp
+  variables for one export, and lattice has no elisp: ❌, not deferred.
 
 ## 9. Settled in EX.0
 

@@ -32,7 +32,8 @@ of them inside `org-export-mode` (design §0). Viewing the PDF in the editor is
 | EX.6a                     | HTML: transcoder, stylesheet, file sink **(plugin)**                        | ✅     |
 | EX.6b                     | Buffer and open sinks, every backend **(plugin)**                           | ✅     |
 | EX.7                      | Markdown (GFM) **(plugin)**                                                 | ✅     |
-| EX.8                      | LaTeX: transcoder, `.tex` file / buffer **(plugin)**                        | 📝     |
+| EX.8a                     | LaTeX: transcoder, built-in classes, `.tex` file / buffer **(plugin)**      | 📝     |
+| EX.8b                     | LaTeX knobs: classes, `HEADER_EXTRA`, compiler, src backend **(plugin)**    | 📝     |
 | EX.9                      | PDF: `latex-pdf-process`, `*org-export*` log, `l p` / `l o` **(plugin)**    | 📝     |
 | **Phase 4 — babel**       |                                                                             |        |
 | EX.10                     | `:exports`, run on a copy, one consent, cancel **(plugin)**                 | 📝     |
@@ -755,14 +756,24 @@ specials, raw `#+BEGIN_EXPORT latex`. Golden tests, plus: every golden
 `.tex` compiles with `latexmk` when one is installed (skipped, and saying so,
 when not).
 
-**Open question (raised 2026-11-25, decide before EX.8 starts):** which of
-emacs's LaTeX tuning knobs beyond the above to carry. Not in the design:
-`org-latex-classes` (user-defined classes and their sectioning),
-`#+LATEX_HEADER_EXTRA`, `#+LATEX_COMPILER`, `org-latex-packages-alist` /
-default-package overrides, `org-latex-src-block-backend` (listings /
-minted), `org-latex-hyperref-template`, `#+BIND`. The proposal on the
-table: carry classes, `LATEX_HEADER_EXTRA`, `LATEX_COMPILER` and the
-listings / minted switch, the ones users actually tune.
+**Decided 2026-11-25:** the four tuned knobs, design §1: user classes
+(`org.export.latex-classes`), `#+LATEX_HEADER_EXTRA`, `#+LATEX_COMPILER`,
+and the source-block backend (`verbatim` / `listings` / `minted`). The rest
+of ox-latex's surface is design §8 (packages-alist and hyperref template
+⛔, `#+BIND` ❌). Carved in two:
+
+- **EX.8a — the writer** 📝. First, the pipeline's mechanics tests get a
+  backend-neutral oracle (the stepped export equals the same export in one
+  step), so the dump can go. Then `latex.rs` on `common.rs`: the preamble,
+  the three built-in classes and their sectioning, `LATEX_CLASS_OPTIONS`,
+  `LATEX_HEADER`, levels below `H` as lists, tables, verbatim source,
+  escaping, raw export, footnotes, labels / `\ref` for internal links,
+  `\includegraphics` figures, math kept.
+- **EX.8b — the knobs** 📝. `org.export.latex-classes`,
+  `#+LATEX_HEADER_EXTRA`, `#+LATEX_COMPILER` (compiler-specific default
+  packages; `%latex` lands with EX.9's process), the src-block backend
+  (`listings` / `minted`), `#+ATTR_LATEX` (`:environment longtable`,
+  `:width`). The `latexmk` compile check over the goldens.
 
 ### EX.9 — PDF (plugin) 📝
 

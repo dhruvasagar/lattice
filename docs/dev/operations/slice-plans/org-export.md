@@ -19,6 +19,8 @@ of them inside `org-export-mode` (design §0). Viewing the PDF in the editor is
 | EX.0                      | Spike: fuel budget, re-export into a buffer, list grant, transient **(plugin)** | ✅ |
 | **Phase 1 — host**        |                                                                             |        |
 | EX.1                      | Plugin API 0.7.0, the whole of it: `write-file`, transient `flag`, posted opens and `confirm` **(lattice)** | ✅ |
+| EX.1f                     | A confirm's `no-action`: `n` as an answer (found by EX.10) **(lattice)**    | ✅     |
+| EX.1g                     | `display-buffer`: show a file or synthetic buffer in a split / vsplit / tab, focus kept **(lattice)** | 📝 |
 | EX.R1                     | lattice release carrying EX.1; publish lattice-wit 0.7.0 **(lattice)**      | 📝     |
 | **Phase 2 — the mode and the parse** |                                                                  |        |
 | EX.2                      | `org-export-mode`: mode, layer, gate, options, dispatcher, event pipeline **(plugin)** | ✅ |
@@ -37,7 +39,9 @@ of them inside `org-export-mode` (design §0). Viewing the PDF in the editor is
 | EX.8c                     | Every export default an `org.export.*` option (design §3.3) **(plugin)**     | ✅     |
 | EX.9                      | PDF: `latex-pdf-process`, `*org-export*` log, `l p` / `l o` **(plugin)**    | ✅     |
 | **Phase 4 — babel**       |                                                                             |        |
-| EX.10                     | `:exports`, run on a copy, one consent, cancel **(plugin)**                 | 📝     |
+| EX.10a                    | `:exports` decides what of a block is exported **(plugin)**                 | ✅     |
+| EX.10b                    | Run on a copy, one consent, `n`, cancel **(plugin)**                        | ✅     |
+| EX.10c                    | Every export open goes through `display-buffer`, `org.export.open-in` **(plugin)** | 📝 |
 | **Phase 5 — finish**      |                                                                             |        |
 | EX.11                     | Bench, guide (`doc/export.md`), user docs, scope lines **(plugin + lattice)** | 📝   |
 | EX.R2                     | org plugin release **(plugin)**                                             | 📝     |
@@ -197,6 +201,36 @@ each green on its own, the version bump and re-pins last.
    `refresh_wit_package` never rewrites the package line of a user-owned
    `wit/init.wit`, so a scaffolded `init.rs` fails to build until the user
    edits it; the CHANGELOG states the step.
+6. ✅ **EX.1f a confirm's `no-action`** (lattice `923bf1ea`). Found by
+   EX.10: §4's `n` exports with the file's results, and a confirm could
+   act only on `y`, so `n` dismissed it and the export waited. A miss in
+   this audit, but 0.7.0 was not yet published, so it joined the bundle
+   and the publish is still one. `confirm-payload` and `Effect::Confirm`
+   gain `no-action: option<string>`. With one, the dialog is `y` Yes,
+   `n` No (fires it), `q` Cancel; without, `n` dismisses as before. Both
+   actions read the question's arguments by their own schema from one
+   seeded state, and an unknown no-action opens nothing and names it.
+   Tests: `posted_confirm_raises_its_dialog.rs` (`n` fires the no-action
+   with the carried args and not the yes; `q` dismisses; the unknown one
+   refused), the picker's three-row spec, the boundary round-trip.
+7. 📝 **EX.1g `display-buffer`** (Dhruva, 2026-11-26: "let the export
+   always open in the background in a new split / tab (configurable),
+   lets not change focus"; then "One display-buffer"). An export's open
+   lands seconds after its chord, by which time the user is elsewhere, so
+   it must never take the window. Native `Effect::DisplayBuffer { source,
+   target }`, `source` a file path or a synthetic buffer (name, major,
+   seed), `target` `split` / `vsplit` / `tab`. The pane: one not active
+   that already shows the buffer is left as it is (so `l o` again reloads
+   in place); otherwise the target is made, the buffer shown there, and
+   focus stays in the pane (and tab) it was in. Host-applied, as posts
+   drain host-side. `DisplaySyntheticBuffer` becomes its synthetic case
+   and its callers (the LLM layer) move to it, rather than keeping two
+   display paths. Mirrored in WIT and postable; a posted file source is
+   checked against the plugin's `fs` grants as a posted open is.
+   Tests: focus and tab unchanged after each target; a pane already
+   showing the file reused, not split again; a posted file outside the
+   grants refused naming the grant; the boundary round-trip; GPUI's
+   classifier arm.
 
 Tests: a write inside the grant lands, and `ok` means it is on disk; outside
 the grant, refused; a symlink inside the grant pointing outside, refused (the
@@ -938,7 +972,7 @@ a fake compiler (a script that writes a file named `%b.pdf`) proves the
 - **Found:** `org_manifest.rs` had been asserting babel's grants alone since
   EX.0 added export's write grant and gate; fixed with EX.9's spawn grant.
 
-### EX.10 — babel during export (plugin) 📝
+### EX.10 — babel during export (plugin) ✅
 
 Design §4: `:exports` × the four values, run through `org-babel-mode`'s
 runner on a copy, one consent per export, `n` uses existing results,
@@ -948,6 +982,57 @@ babel off ⇒ existing results, `:org-export-cancel`.
 Tests: the source buffer's text is byte-identical after an export that ran
 blocks; a `:var` chain and a `:session` block export with fresh results; a
 run cancelled mid-way writes nothing.
+
+**As built**, in two parts and a follow-up (plugin `f4ba030`, `387d951`,
+`7bfd4cb`).
+
+- **EX.10a `:exports`.** The header is babel's own merge
+  (`babel::block::inherit`: defaults, file properties, each ancestor's
+  drawer, the block), so a file's `:exports` means what `C-c C-c` reads.
+  The scan is stepped with the parse, a chunk at a time, and resolved
+  512 blocks a step: done in one call, the 44,000-line test file ran out
+  of the event handler's fuel and the plugin was quarantined with nothing
+  said. Filtering drops the left-out lines when the IR is built, so no
+  transcoder knows about it.
+- **EX.10b running.** After the parse, the runnable blocks (`results` /
+  `both`, not `:eval no` / `never` / `no-export` / `never-export`) are
+  planned with babel's own `run::expand`, so a `:var` chain brings its
+  dependencies, deduplicated, and a dependency marked not to run in export
+  stops its dependant with a note. Each becomes a babel `RunRequest`
+  tagged with the export's run id; babel's jobs settle it into the export
+  instead of the file: the result is spliced into the copy where babel
+  would have put it, and when the last is in, the copy is parsed again.
+  Planning is stepped too (`PLAN_LINES`).
+- **One question**, `Export runs sh block "greet"? (y/n)`, posted through
+  EX.1d. `y` and `n` (EX.1f) are actions on the grammar seam; each is an
+  event to the events seam (`org/export-run-blocks`,
+  `org/export-keep-results`), where the runs are. `n` renders over the
+  file as it is; `q` leaves the run waiting until a newer export of the
+  file or `:org-export-cancel` drops it.
+- **Notes** (babel off; unconfigured languages, named once) are carried on
+  the run and posted when it ends, so they arrive with the result.
+- **Cancel** kills the export's jobs (`jobs::cancel_export`) and drops the
+  rest of their queue. *Known gap:* a block already sent to a running
+  `:session` is not interrupted; its result is dropped when it arrives.
+- **Tests**, integration: `an_export_runs_its_blocks_on_a_copy` (the
+  buffer is byte-identical), `a_var_chain_and_a_session_export_fresh_results`,
+  `an_export_asks_once_before_running`,
+  `no_to_the_question_exports_the_results_in_the_file` (the block, which
+  would `touch` a file, never runs; fails with the resume removed),
+  `a_cancelled_run_stops_its_block_and_writes_nothing` (waits for the
+  block to start, then proves it never finishes; fails with the kill
+  removed). Unit: splicing above the cursor moves a subtree export's line,
+  a block that did not run keeps its old result, `:exports` × four.
+
+### EX.10c — the export never takes focus (plugin) 📝
+
+Needs EX.1g. Every open an export makes (`h o`, `m o`, `l o` in the
+editor, and the to-buffer sinks) posts `display-buffer` with
+`org.export.open-in` (`vsplit` default, `split`, `tab`); a bad value is
+named in the echo and falls back to the default. The system viewer route
+(`open-with = "system"`) is unchanged. Tests: after `h o`, the org buffer
+is still focused and the HTML is shown beside it; `l o` twice reuses the
+pane; `open-in = "tab"` keeps the tab.
 
 ### EX.11 — finish (plugin + lattice) 📝
 

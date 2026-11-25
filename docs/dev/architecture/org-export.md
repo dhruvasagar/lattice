@@ -255,10 +255,18 @@ results already in the file. Blocks marked `:eval no-export` /
 unconfigured language uses its existing result, and the echo names the
 language once.
 
-**State crosses seams through the store**, as babel's jobs do: an export run
-is a store record (`export/<run-id>`) holding the IR, the pending job ids and
-the sink. Each `job-finished` fills one result; the last one transcodes and
-writes. `:org-export-cancel` cancels the run's jobs and drops the record.
+**The run lives on the events seam**, beside babel's jobs: it holds a copy
+of the text, the pending blocks and the sink. Each block is a babel run
+tagged with the export's id, so its `job-finished` puts the result into the
+copy (where babel would have put it in the file) rather than the file; the
+last one re-parses the copy, which then transcodes and writes. The question's
+`y` and `n` are actions on the grammar seam and reach the run as events. `q`
+leaves it waiting, until a newer export of the same file or
+`:org-export-cancel` drops it; cancel also kills its jobs.
+
+*Not a store record*, as first written here: the grammar seam never reads
+the run, it only sends it the user's answer, and an event carries that with
+no shared state to keep consistent.
 
 ## 5. Sinks
 
@@ -324,13 +332,26 @@ starts on a half-written file; the `write-to-file` effect would race it.
 The log starts each export on a clean page, and its headerline says what
 is running and how it ended.
 
+**Where it opens, and why never in front.** Every open an export makes
+(`h o`, `m o`, `l o` in the editor, the to-buffer sinks) is a
+`display-buffer` into `org.export.open-in`: `vsplit` (default), `split` or
+`tab`. A pane that already shows the output is reused, so a re-export
+refreshes it where it is. Focus stays where the user is (Dhruva,
+2026-11-26). An export lands seconds after its chord, and a compile lands
+much later, by which time the user is typing elsewhere; a window that
+moves under the keys loses them, and the alternative first chosen,
+focusing only when no key had been pressed since, made where the output
+landed depend on timing the user cannot see. The system viewer
+(`open-with = "system"`) is a separate window and unaffected.
+
 ## 6. The host changes: plugin API 0.7.0, one publish
 
 Everything export and pdf-mode need from the plugin API ships in **one**
 version, 0.7.0, audited against every slice before EX.1 starts (Dhruva,
 2026-11-25: "all updates to WIT for pdf / export are bundled together in the
 next version (0.7.0), I don't want multiple publishes for this"). Four
-changes:
+changes, and two found while building §4 and §5, which joined it before it
+was published:
 
 | change | why | ABI |
 |---|---|---|
@@ -338,6 +359,8 @@ changes:
 | `flag` arm on `transient-item-kind` | the dispatcher's `C-s` / `C-b` toggles (§2) | **breaking**: a type plugins return |
 | `post-effects` carries `open-buffer` and `open-external-uri`, for a path inside the plugin's own `fs` grants | `h o` / `m o` / `l o` open the output once the export lands on the events seam | behaviour |
 | `post-effects` carries `confirm` | babel's one consent, asked after the parse, when the count is exact (§4) | behaviour |
+| `confirm-payload.no-action` | `n` to that consent is an answer: export with the file's results (§4) | a field on a record new in 0.7.0 |
+| `display-buffer` effect | an export's output is shown in a split / vsplit / tab and never takes focus (§5) | additive |
 
 **0.7.0 is therefore breaking**, as 0.4, 0.5 and 0.6 were: every plugin and
 every `init.rs` moves its pin to `lattice-wit = "0.7"` and rebuilds. The

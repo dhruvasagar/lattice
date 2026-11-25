@@ -34,6 +34,7 @@ of them inside `org-export-mode` (design §0). Viewing the PDF in the editor is
 | EX.7                      | Markdown (GFM) **(plugin)**                                                 | ✅     |
 | EX.8a                     | LaTeX: transcoder, built-in classes, `.tex` file / buffer **(plugin)**      | 📝     |
 | EX.8b                     | LaTeX knobs: classes, `HEADER_EXTRA`, compiler, src backend **(plugin)**    | 📝     |
+| EX.8c                     | Every export default an `org.export.*` option (design §3.3) **(plugin)**     | 📝     |
 | EX.9                      | PDF: `latex-pdf-process`, `*org-export*` log, `l p` / `l o` **(plugin)**    | 📝     |
 | **Phase 4 — babel**       |                                                                             |        |
 | EX.10                     | `:exports`, run on a copy, one consent, cancel **(plugin)**                 | 📝     |
@@ -774,6 +775,17 @@ of ox-latex's surface is design §8 (packages-alist and hyperref template
   packages; `%latex` lands with EX.9's process), the src-block backend
   (`listings` / `minted`), `#+ATTR_LATEX` (`:environment longtable`,
   `:width`). The `latexmk` compile check over the goldens.
+  Every LaTeX knob is also an `org.export.latex-*` option (the compiler,
+  class, class options, header, classes, src backend, image width), the
+  file's keyword overriding it.
+- **EX.8c — export defaults as options** 📝 (Dhruva, 2026-11-25: "latex
+  compiler etc must all be configurable (and other things for
+  org-export)"). The design §3.3 table: the contents options
+  (`org.export.with-toc`, `-section-numbers`, `headline-levels`, `author`, …)
+  and HTML's (`html-head`, `html-head-extra`). They are the lowest layer of
+  `Options::resolve`, under `#+OPTIONS:` and the keywords. Tests: each option changes the
+  export, a keyword overrides it, and a value that does not parse is refused naming the
+  option.
 
 ### EX.9 — PDF (plugin) 📝
 

@@ -172,6 +172,23 @@ Read from the file, in `ox`'s order of precedence (later wins): the plugin's
 options → `#+OPTIONS:`, `#+TITLE:` and peers → for a subtree export, the
 headline's `EXPORT_*` properties.
 
+**Every default is a plugin option** (Dhruva, 2026-11-25: "latex compiler etc
+must all be configurable (and other things for org-export)"). Each `ox`
+variable the export reads has a typed `org.export.<name>` option. The option
+is the lowest layer and the file's keywords override it, so a user sets their
+defaults once instead of in every file:
+
+| group | options (emacs's variable) |
+|---|---|
+| contents | `with-toc`, `with-section-numbers`, `headline-levels`, `with-author`, `author`, `email`, `with-email`, `with-date`, `with-title`, `with-tags`, `with-todo-keywords`, `with-priority`, `with-planning`, `with-drawers`, `with-footnotes`, `with-tex`, `with-sub-superscripts`, `with-special-strings`, `with-emphasize`, `preserve-breaks`, `broken-links`, `select-tags`, `exclude-tags`, `language` (`org-export-with-*` and peers) |
+| HTML | `html-stylesheet`, `html-head`, `html-head-extra` |
+| LaTeX | `latex-compiler`, `latex-class`, `latex-class-options`, `latex-header`, `latex-classes`, `latex-src-block-backend`, `latex-image-default-width`, `latex-pdf-process` |
+
+Option types follow `ox`'s: a depth option (`with-toc`, `with-section-numbers`) takes
+`true`, `false` or a number; a list option is a TOML array. A value that does
+not parse is refused when it is set, naming it, as with every typed option.
+The plugin reads them when the export is asked for, not per keystroke.
+
 The v1 set, each with `ox`'s default: `toc`, `num`, `H`, `^`, `author`,
 `date`, `title`, `email`, `tags`, `todo`, `pri`, `<` (timestamps), `p`
 (planning), `d` (drawers), `f` (footnotes), `tex`, `broken-links`, `*`, `-`,

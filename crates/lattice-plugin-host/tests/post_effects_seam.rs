@@ -79,6 +79,13 @@ async fn start(wasm: &str, request: &str, wired: bool, capabilities: &str) -> Ha
     }
 }
 
+/// The manifest entry granting writes under `dir`, as a TOML literal
+/// string: in a basic string a Windows path's `\U` (`C:\Users`) is read as
+/// a unicode escape and the manifest does not parse.
+fn grant_entry(dir: &Path) -> String {
+    format!("'fs:write:{}'", dir.display())
+}
+
 /// One instance of the fixture, as plugin `id`, on `host`.
 async fn spawn_on(
     host: &PluginHost,
@@ -184,6 +191,84 @@ async fn a_posted_write_outside_the_grant_is_refused() {
     );
 }
 
+/// A job's output opens once it is made: a posted `open-buffer` of a file
+/// inside the plugin's grant crosses the WIT and arrives as the host-applied
+/// open, which the editor's host-side drain carries out with no keypress
+/// (`show_document_open_effect.rs` pins that arm). Outside the grant it
+/// arrives as a warning naming the path.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_posted_open_reaches_the_editor_only_inside_the_grant() {
+    let Some(wasm) = guest_wasm() else {
+        eprintln!("SKIP: events fixture guest not built");
+        return;
+    };
+    let granted = TempDir::new().unwrap();
+    let html = granted.path().join("notes.html");
+    let cap = grant_entry(granted.path());
+
+    let h = start(wasm, &format!("open {}", html.display()), true, &cap).await;
+    wait_for(&h.data_dir, |l| l.starts_with("post:"))
+        .await
+        .expect("the guest posted");
+    let effects = posted(&h);
+    assert!(
+        matches!(effects.as_slice(), [Effect::OpenBufferAtColumn { path: Some(p), column: None, force: false }] if *p == html),
+        "{effects:?}"
+    );
+
+    let elsewhere = TempDir::new().unwrap();
+    let theirs = elsewhere.path().join("theirs.html");
+    let h = start(wasm, &format!("open {}", theirs.display()), true, &cap).await;
+    wait_for(&h.data_dir, |l| l.starts_with("post:"))
+        .await
+        .expect("the guest posted");
+    let effects = posted(&h);
+    assert!(
+        matches!(effects.as_slice(), [Effect::Echo { level: EchoLevel::Warn, text }]
+            if text.contains("open denied") && text.contains("theirs.html")),
+        "{effects:?}"
+    );
+}
+
+/// `open-external-uri` from the background: a granted file passes, a web
+/// page does not.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_posted_external_open_is_limited_to_granted_files() {
+    let Some(wasm) = guest_wasm() else {
+        eprintln!("SKIP: events fixture guest not built");
+        return;
+    };
+    let granted = TempDir::new().unwrap();
+    let pdf = granted.path().join("notes.pdf");
+    let cap = grant_entry(granted.path());
+
+    let h = start(wasm, &format!("open-uri {}", pdf.display()), true, &cap).await;
+    wait_for(&h.data_dir, |l| l.starts_with("post:"))
+        .await
+        .expect("the guest posted");
+    let effects = posted(&h);
+    assert!(
+        matches!(effects.as_slice(), [Effect::OpenExternalUri { uri }] if *uri == pdf.to_string_lossy()),
+        "{effects:?}"
+    );
+
+    let h = start(wasm, "open-uri https://example.com/", true, &cap).await;
+    wait_for(&h.data_dir, |l| l.starts_with("post:"))
+        .await
+        .expect("the guest posted");
+    let effects = posted(&h);
+    assert!(
+        matches!(
+            effects.as_slice(),
+            [Effect::Echo {
+                level: EchoLevel::Warn,
+                ..
+            }]
+        ),
+        "a web page is not a background job's to open: {effects:?}"
+    );
+}
+
 /// Unwired, the plugin is told — nothing is silently dropped.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_unwired_sink_is_an_err_to_the_guest() {
@@ -242,12 +327,14 @@ async fn posted_ranges_from_two_plugins_do_not_collide() {
     }
 }
 
-/// OB.3a: a post is unsolicited, so the effects a background job has no
-/// business sending arrive as a warning naming them — never as the effect.
-/// Each is posted from the events seam for real, through the WIT conversion.
-/// Two are stopped a step earlier, by the command gate every effect passes
-/// (a closed command, a terminal command without `proc:spawn`); the warning
-/// then names what was refused rather than the variant.
+/// A post is unsolicited, so the effects a background job has no business
+/// sending arrive as a warning naming them — never as the effect. Each is
+/// posted from the events seam for real, through the WIT conversion. Three
+/// are stopped a step earlier, by the command gate every effect passes (a
+/// closed command invoked, or named as a confirm's yes-action, and a terminal
+/// command without `proc:spawn`); the warning then names what was refused
+/// rather than the variant. A confirm is in the background set, so it is the
+/// gate, not the set, that refuses this one.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_posted_effect_outside_the_background_set_is_refused() {
     let Some(wasm) = guest_wasm() else {
@@ -259,6 +346,7 @@ async fn a_posted_effect_outside_the_background_set_is_refused() {
         ("set-option org.babel.languages=sh", "SetOption"),
         ("set-global-option org.directory=/", "SetGlobalOption"),
         ("invoke shell-command touch /tmp/pwned", "`shell-command`"),
+        ("confirm shell-command", "`shell-command`"),
         ("terminal sh -c id", "proc:spawn"),
     ] {
         let h = start(wasm, request, true, "").await;

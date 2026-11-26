@@ -1,5 +1,5 @@
 {
-  "package": "lattice:plugin-host@0.6.0",
+  "package": "lattice:plugin-host@0.7.0",
   "interfaces": [
     {
       "name": "buffer",
@@ -2296,7 +2296,7 @@
           ],
           "result": "result<_, string>",
           "signature": "post-effects: func(effects: list<effect>) -> result<_, string>",
-          "doc": "OB.3: hand the editor `effects` from a seam that cannot return them —\nthe events seam's `on-event` and `on-wake`, which return nothing. The\nresult of a job a plugin started (`spawn-process`, `http-download`)\narrives there, and this is how that result becomes an edit, an echo or\na buffer the user sees.\n\nThe effects go through the editor's inbound path, which wakes it: they\nare applied **without a keypress**, in the order given, as one batch.\nThey pass the same checks returned effects do — a `write-to-file`\noutside the plugin's `fs:write` grant is replaced by a warning naming\nthe grant, exactly as it would be from a command. An `apply-edit`\naddresses its buffer by id and is dropped if that buffer has closed.\n\nA post carries only what writing a result needs: `apply-edit`,\n`write-to-file` (with no `cut`, which would be taken from whatever\nbuffer has focus when the post lands), `track-range`, `untrack-range`,\n`open-synthetic-buffer` and `echo`. Anything else is replaced by a\nwarning naming it, and the effects after it are dropped.\n\nPrefer returning effects where a seam can: an effect posted here lands\nafter the current keystroke's, not inside it.\n\n`err` only when this seam has nowhere to post to (an editor that wired\nnone) — the effects are then dropped, and the plugin is told.",
+          "doc": "Hand the editor `effects` from a seam that cannot return them —\nthe events seam's `on-event` and `on-wake`, which return nothing. The\nresult of a job a plugin started (`spawn-process`, `http-download`)\narrives there, and this is how that result becomes an edit, an echo or\na buffer the user sees.\n\nThe effects go through the editor's inbound path, which wakes it: they\nare applied **without a keypress**, in the order given, as one batch.\nThey pass the same checks returned effects do — a `write-to-file`\noutside the plugin's `fs:write` grant is replaced by a warning naming\nthe grant, exactly as it would be from a command. An `apply-edit`\naddresses its buffer by id and is dropped if that buffer has closed.\n\nA post carries only what writing a result needs: `apply-edit`,\n`write-to-file` (with no `cut`, which would be taken from whatever\nbuffer has focus when the post lands), `track-range`, `untrack-range`,\n`open-synthetic-buffer` and `echo`; and, to show a file the job made\n(an export's HTML or PDF), `open-buffer` and `open-external-uri` for a\nfile inside the plugin's own `fs` grants, read or write, so it opens\nnothing the plugin could not already read. A posted open needs an\nabsolute path and may not be `force`d (a background result does not\ndiscard unsaved edits); `open-external-uri` takes an absolute path or\na `file://` URI without percent-escapes, and refuses anything else, a\nweb page included. And `confirm`, to ask once before work only the\njob could size (its yes-action passes the same command check as a\nreturned one); a dialog raised while the user types takes the next\nkey, so post it only as the direct answer to a chord just pressed.\nAnything else is replaced by a warning naming it, and the effects\nafter it are dropped.\n\nPrefer returning effects where a seam can: an effect posted here lands\nafter the current keystroke's, not inside it.\n\n`err` only when this seam has nowhere to post to (an editor that wired\nnone) — the effects are then dropped, and the plugin is told.",
           "examples": [
             {
               "id": "events-guest:host-services.post-effects",
@@ -2740,6 +2740,35 @@
               "source": "crates/lattice-plugin-host/tests/fixtures/events-guest/src/lib.rs",
               "language": "rust",
               "code": "events::subscribe(&kind_filter(EventKind::FilesChanged), 6);\nlet outcome = match host_services::watch(target) {\n    Ok(()) => \"watch:ok\".to_string(),\n    Err(e) => format!(\"watch:err({e})\"),\n};\nrecord(&outcome);"
+            }
+          ]
+        },
+        {
+          "name": "write-file",
+          "display_name": "write-file",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [
+            {
+              "name": "path",
+              "type": "string"
+            },
+            {
+              "name": "text",
+              "type": "string"
+            }
+          ],
+          "result": "result<_, string>",
+          "signature": "write-file: func(path: string, text: string) -> result<_, string>",
+          "doc": "Write `text` to `path`, replacing what is there — `read-file`'s\nand `delete-file`'s peer, for an ordering an effect cannot give.\n\n`effect.write-to-file` is applied later, on the editor actor, and the\nguest learns nothing about when. A guest that writes a file and then\nstarts a process that reads it (an export writing a `.tex`, then\nspawning the compiler) races the effect and can lose. **`ok` means the\nbytes are on disk**, so a `spawn-process` after it reads what was\nwritten.\n\nGated on **`fs:write`** and re-checked host-side, with `delete-file`'s\ncanonicalization: a symlink inside the grant pointing outside it is\nrefused rather than followed. Refused when `path` is a directory, when\nits directory does not exist (nothing is created), and when it is open\nin a buffer with **unsaved changes** — the user's edits are not\noverwritten behind their back, and the message names the buffer. An\nopen buffer with no unsaved changes reloads from disk, as for any\nchange made outside the editor.\n\nFor a file nothing reads before the host applies it, prefer the\neffect: it is ordered with the rest of the action's effects (an open\nafter a write sees the write) and needs no grant query first.",
+          "examples": [
+            {
+              "id": "multiseam-guest:host-services.write-file",
+              "caption": "Write a file and know it is on disk before starting a process that reads it",
+              "source": "crates/lattice-plugin-host/tests/fixtures/multiseam-guest/src/lib.rs",
+              "language": "rust",
+              "code": "let text = match host_services::write_file(path, body) {\n    Ok(()) => \"wrote\".to_string(),\n    Err(e) => format!(\"error: {e}\"),\n};\nOk(vec![Effect::Echo(EchoPayload {\n    level: EchoLevel::Info,\n    text,\n})])"
             }
           ]
         },
@@ -6796,7 +6825,7 @@
           "name": "confirm-payload",
           "kind": "record",
           "doc": "IX.3: the payload of `effect.confirm`.\n\n`yes-action` names an action the guest (or host) registered; the\nhost resolves it through the command registry when the user\nanswers `y`. A **name**, not a command id — a guest cannot hold a\nhost-internal id, and names are what a plugin registers under.\n\n`args` is what the yes-action receives when it fires, so the\nconfirmed target and the executed target are the same thing.\nWithout it the yes-half must re-derive its target at answer time\nfrom context that may have changed while the dialog was open.",
-          "definition": "record confirm-payload {\n    prompt: string,\n    yes-action: string,\n    args: args,\n}",
+          "definition": "record confirm-payload {\n    prompt: string,\n    yes-action: string,\n    no-action: option<string>,\n    args: args,\n}",
           "members": [
             {
               "name": "prompt",
@@ -6806,12 +6835,17 @@
             {
               "name": "yes-action",
               "type": "string",
-              "doc": "Action name dispatched on `y`. `n` / `q` / Esc dismiss and\ndispatch nothing."
+              "doc": "Action name dispatched on `y`."
+            },
+            {
+              "name": "no-action",
+              "type": "option<string>",
+              "doc": "Action name dispatched on `n`, for a question whose no is\nitself an answer: an export that asks before running a file's\ncode still exports on `n`, with the results already there.\n`none`: `n` dismisses. `q` / Esc always dismiss and dispatch\nnothing."
             },
             {
               "name": "args",
               "type": "args",
-              "doc": "Arguments handed to `yes-action`, positional against its\ndeclared `args-schema`."
+              "doc": "Arguments handed to `yes-action`, and to `no-action`: each\npositional against its own declared `args-schema`."
             }
           ],
           "examples": []
@@ -7197,6 +7231,68 @@
               "name": "activate-minor",
               "type": "option<string>",
               "doc": "A minor to activate on the buffer alongside its major. Mirrors\n`spawn-terminal-payload.activate-minor`, and exists for the same\nreason: the interesting behaviour belongs to a minor that rides a\ngeneral-purpose major. An org capture buffer IS an org buffer — it\nwants org's grammar, motions and folding — so its major is\n`org-mode` and only the `C-c C-c` / `C-c C-k` finalize/abort pair\nis capture-specific. Naming the minor here is what keeps those\nchords off every other org buffer."
+            }
+          ],
+          "examples": []
+        },
+        {
+          "name": "display-target",
+          "kind": "enum",
+          "doc": "Where `display-buffer` makes a pane when none shows the buffer yet.\nMirrors `lattice_core::ui::pane::DisplayTarget`.",
+          "definition": "enum display-target {\n    split,\n    vsplit,\n    tab,\n}",
+          "members": [
+            {
+              "name": "split",
+              "type": null,
+              "doc": "A new pane below the active one."
+            },
+            {
+              "name": "vsplit",
+              "type": null,
+              "doc": "A new pane to the right of the active one."
+            },
+            {
+              "name": "tab",
+              "type": null,
+              "doc": "A new tab after the active one, not switched to."
+            }
+          ],
+          "examples": []
+        },
+        {
+          "name": "display-source",
+          "kind": "variant",
+          "doc": "What `display-buffer` shows.",
+          "definition": "variant display-source {\n    file(string),\n    synthetic(open-synthetic-buffer-payload),\n}",
+          "members": [
+            {
+              "name": "file",
+              "type": "string",
+              "doc": "A file, by absolute path, opened as `:e` opens it."
+            },
+            {
+              "name": "synthetic",
+              "type": "open-synthetic-buffer-payload",
+              "doc": "A named synthetic buffer, with `open-synthetic-buffer`'s fields\nand meaning."
+            }
+          ],
+          "examples": []
+        },
+        {
+          "name": "display-buffer-payload",
+          "kind": "record",
+          "doc": null,
+          "definition": "record display-buffer-payload {\n    source: display-source,\n    target: display-target,\n}",
+          "members": [
+            {
+              "name": "source",
+              "type": "display-source",
+              "doc": null
+            },
+            {
+              "name": "target",
+              "type": "display-target",
+              "doc": null
             }
           ],
           "examples": []
@@ -8389,7 +8485,7 @@
           "name": "effect",
           "kind": "variant",
           "doc": "Mirrors `lattice_grammar::effect::Effect` (§4.4). Every arm is pure data;\n`Many`/`Global`/`AppAction` are absent by design (see the note above).",
-          "definition": "variant effect {\n    none,\n    declined,\n    edits(list<applied-edit>),\n    apply-edit(apply-edit-payload),\n    write-to-file(write-to-file-payload),\n    selection-change(selection-set),\n    cursor-move(position),\n    confirm(confirm-payload),\n    open-prompt(open-prompt-payload),\n    open-transient(open-transient-payload),\n    yank(yank-payload),\n    enter-mode(modal-state),\n    save-buffer(option<string>),\n    quit-editor(quit-payload),\n    open-buffer(open-buffer-payload),\n    open-buffer-at(open-buffer-at-payload),\n    open-external-uri(string),\n    open-buffer-at-column(open-buffer-at-column-payload),\n    spawn-terminal(spawn-terminal-payload),\n    terminal-input(list<u8>),\n    set-option(string),\n    set-local-option(string),\n    set-global-option(string),\n    clear-search-highlight,\n    set-colorscheme(string),\n    echo(echo-payload),\n    show-diagnostics-popup(list<tuple<string, u8>>),\n    lsp(lsp-request),\n    echo-registers,\n    echo-marks,\n    substitute(substitute-payload),\n    delete-current-line,\n    describe-command(describe-command-payload),\n    describe-buffer,\n    apropos(string),\n    describe-key(string),\n    list-keymap,\n    buffer-next,\n    buffer-prev,\n    list-buffers,\n    open-buffer-picker,\n    open-picker(open-picker-payload),\n    buffer-delete(bool),\n    open-file-tree(option<string>),\n    close-file-tree,\n    open-oil(option<string>),\n    describe-option(string),\n    describe-element(string),\n    list-options,\n    describe-plugin-api(option<string>),\n    list-plugin-apis,\n    export-plugin-api(option<string>),\n    list-commands,\n    describe-plugin(string),\n    list-plugins,\n    open-hover(string),\n    dismiss-popup,\n    dismiss-popup-named(string),\n    open-popup(open-popup-payload),\n    open-help-topic(option<string>),\n    list-diagnostics,\n    next-diagnostic,\n    prev-diagnostic,\n    open-lsp-log(option<string>),\n    open-messages,\n    open-dashboard,\n    toggle-lsp-trace(string),\n    open-lsp-trace-log(option<string>),\n    lsp-status,\n    lsp-server-log-listing,\n    lsp-restart(string),\n    lsp-progress-cancel(option<string>),\n    lsp-expand-region,\n    lsp-shrink-region,\n    set-lsp-log-level(set-lsp-log-level-payload),\n    lsp-log-clear(option<string>),\n    lsp-document-symbol,\n    lsp-workspace-symbol(string),\n    lsp-incoming-calls,\n    lsp-outgoing-calls,\n    lsp-supertypes,\n    lsp-subtypes,\n    lsp-moniker,\n    lsp-code-lens,\n    lsp-color-presentation,\n    lsp-format,\n    lsp-format-range,\n    lsp-signature-help,\n    lsp-complete,\n    lsp-rename(string),\n    lsp-code-action(code-action-request),\n    expand-snippet(range),\n    expand-snippet-over(expand-snippet-over-payload),\n    reload-snippets,\n    describe-events,\n    describe-diff,\n    diff-open,\n    diff-off(bool),\n    diffthis,\n    diffsplit(diffsplit-payload),\n    diff-get-cmd(option<u32>),\n    diff-put-cmd(option<u32>),\n    diff-accept,\n    diff-reject,\n    diff-accept-all,\n    diff-reject-all,\n    close-session-diffs(close-session-diffs-payload),\n    close-all-session-diffs(u64),\n    next-hunk,\n    prev-hunk,\n    describe-event(string),\n    list-modes,\n    describe-mode(string),\n    describe-active-modes,\n    describe-active-bindings,\n    describe-option-resolution(string),\n    customize(option<string>),\n    tutor(option<u32>),\n    toggle-mode(string),\n    app-action(app-effect),\n    record-jump,\n    open-ai-log(option<string>),\n    open-synthetic-buffer(open-synthetic-buffer-payload),\n    focus-buffer(u32),\n    invoke-command(command-ref),\n    track-range(track-range-payload),\n    untrack-range(untrack-range-payload),\n    insert-snippet(insert-snippet-payload),\n}",
+          "definition": "variant effect {\n    none,\n    declined,\n    edits(list<applied-edit>),\n    apply-edit(apply-edit-payload),\n    write-to-file(write-to-file-payload),\n    selection-change(selection-set),\n    cursor-move(position),\n    confirm(confirm-payload),\n    open-prompt(open-prompt-payload),\n    open-transient(open-transient-payload),\n    yank(yank-payload),\n    enter-mode(modal-state),\n    save-buffer(option<string>),\n    quit-editor(quit-payload),\n    open-buffer(open-buffer-payload),\n    open-buffer-at(open-buffer-at-payload),\n    open-external-uri(string),\n    open-buffer-at-column(open-buffer-at-column-payload),\n    spawn-terminal(spawn-terminal-payload),\n    terminal-input(list<u8>),\n    set-option(string),\n    set-local-option(string),\n    set-global-option(string),\n    clear-search-highlight,\n    set-colorscheme(string),\n    echo(echo-payload),\n    show-diagnostics-popup(list<tuple<string, u8>>),\n    lsp(lsp-request),\n    echo-registers,\n    echo-marks,\n    substitute(substitute-payload),\n    delete-current-line,\n    describe-command(describe-command-payload),\n    describe-buffer,\n    apropos(string),\n    describe-key(string),\n    list-keymap,\n    buffer-next,\n    buffer-prev,\n    list-buffers,\n    open-buffer-picker,\n    open-picker(open-picker-payload),\n    buffer-delete(bool),\n    open-file-tree(option<string>),\n    close-file-tree,\n    open-oil(option<string>),\n    describe-option(string),\n    describe-element(string),\n    list-options,\n    describe-plugin-api(option<string>),\n    list-plugin-apis,\n    export-plugin-api(option<string>),\n    list-commands,\n    describe-plugin(string),\n    list-plugins,\n    open-hover(string),\n    dismiss-popup,\n    dismiss-popup-named(string),\n    open-popup(open-popup-payload),\n    open-help-topic(option<string>),\n    list-diagnostics,\n    next-diagnostic,\n    prev-diagnostic,\n    open-lsp-log(option<string>),\n    open-messages,\n    open-dashboard,\n    toggle-lsp-trace(string),\n    open-lsp-trace-log(option<string>),\n    lsp-status,\n    lsp-server-log-listing,\n    lsp-restart(string),\n    lsp-progress-cancel(option<string>),\n    lsp-expand-region,\n    lsp-shrink-region,\n    set-lsp-log-level(set-lsp-log-level-payload),\n    lsp-log-clear(option<string>),\n    lsp-document-symbol,\n    lsp-workspace-symbol(string),\n    lsp-incoming-calls,\n    lsp-outgoing-calls,\n    lsp-supertypes,\n    lsp-subtypes,\n    lsp-moniker,\n    lsp-code-lens,\n    lsp-color-presentation,\n    lsp-format,\n    lsp-format-range,\n    lsp-signature-help,\n    lsp-complete,\n    lsp-rename(string),\n    lsp-code-action(code-action-request),\n    expand-snippet(range),\n    expand-snippet-over(expand-snippet-over-payload),\n    reload-snippets,\n    describe-events,\n    describe-diff,\n    diff-open,\n    diff-off(bool),\n    diffthis,\n    diffsplit(diffsplit-payload),\n    diff-get-cmd(option<u32>),\n    diff-put-cmd(option<u32>),\n    diff-accept,\n    diff-reject,\n    diff-accept-all,\n    diff-reject-all,\n    close-session-diffs(close-session-diffs-payload),\n    close-all-session-diffs(u64),\n    next-hunk,\n    prev-hunk,\n    describe-event(string),\n    list-modes,\n    describe-mode(string),\n    describe-active-modes,\n    describe-active-bindings,\n    describe-option-resolution(string),\n    customize(option<string>),\n    tutor(option<u32>),\n    toggle-mode(string),\n    app-action(app-effect),\n    record-jump,\n    open-ai-log(option<string>),\n    open-synthetic-buffer(open-synthetic-buffer-payload),\n    focus-buffer(u32),\n    invoke-command(command-ref),\n    track-range(track-range-payload),\n    untrack-range(untrack-range-payload),\n    insert-snippet(insert-snippet-payload),\n    display-buffer(display-buffer-payload),\n}",
           "members": [
             {
               "name": "none",
@@ -9030,6 +9126,11 @@
               "name": "insert-snippet",
               "type": "insert-snippet-payload",
               "doc": "RF.4e: expand a snippet body over a range of the active buffer,\nin one edit (one undo step), and start its session: the first\nstop is selected, and typing there types at every linked site.\nThe peer of `expand-snippet-over`, which names a registered\nsnippet; this one carries the body."
+            },
+            {
+              "name": "display-buffer",
+              "type": "display-buffer-payload",
+              "doc": "Show a buffer in a pane other than the active one and leave focus\nwhere it is: emacs's `display-buffer`, where the opens are\n`switch-to-buffer`. For output that lands while the user works\nelsewhere, as an export finishing after its chord does; a window\nthat moved under the keys would lose them. A pane already showing\nthe buffer, in any tab, is left as it is; a synthetic buffer also\nreuses a non-active pane whose major is its `mode-id`; otherwise a\npane is made at `target`. A posted `file` must be an absolute path\ninside the plugin's `fs` grants, as a posted open must. Appended\nlast so existing variant indices do not move."
             }
           ],
           "examples": []
@@ -9884,10 +9985,29 @@
           "examples": []
         },
         {
+          "name": "transient-flag",
+          "kind": "record",
+          "doc": "A boolean the menu toggles in place.\n\nPressing its key flips the value under `name` in the menu's state and\nthe menu stays open, as magit's `-a` / `-f` switches do. A fired action\nwhose command declares an `args-schema` slot named `name` receives it\nas a `bool`, positioned by the schema. Org export's `C-s` (subtree) and\n`C-b` (body only) are two.",
+          "definition": "record transient-flag {\n    name: string,\n    default: bool,\n}",
+          "members": [
+            {
+              "name": "name",
+              "type": "string",
+              "doc": "Key in the menu's state, and the schema slot it fills."
+            },
+            {
+              "name": "default",
+              "type": "bool",
+              "doc": "Its value when the menu opens. A guest that wants a toggle to stay\nset across opens keeps it in its store and sets this from it."
+            }
+          ],
+          "examples": []
+        },
+        {
           "name": "transient-item-kind",
           "kind": "variant",
-          "doc": "Mirrors `lattice_picker::TransientItemKind`. v1 crosses three of its\nsix variants; `submenu` / `flag` / `variable` are deferred with reasons\nin `plugin-transients.md` §5.",
-          "definition": "variant transient-item-kind {\n    action(transient-action),\n    argument(transient-argument),\n    dismiss,\n}",
+          "doc": "Mirrors `lattice_picker::TransientItemKind`. Crosses four of its six\nvariants; `submenu` / `variable` are deferred with reasons in\n`plugin-transients.md` §5.",
+          "definition": "variant transient-item-kind {\n    action(transient-action),\n    argument(transient-argument),\n    flag(transient-flag),\n    dismiss,\n}",
           "members": [
             {
               "name": "action",
@@ -9898,6 +10018,11 @@
               "name": "argument",
               "type": "transient-argument",
               "doc": "Collects a named value into the menu's state (TR.3b)."
+            },
+            {
+              "name": "flag",
+              "type": "transient-flag",
+              "doc": "Toggles a named boolean in the menu's state."
             },
             {
               "name": "dismiss",

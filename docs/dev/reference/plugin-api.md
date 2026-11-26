@@ -3,7 +3,7 @@
 
 # Lattice Plugin API
 
-The plugin API is the WIT package `lattice:plugin-host@0.6.0` — 32 interfaces ("seams") and 28 worlds. It is the whole contract: a plugin written in any language with Component-Model tooling (Rust, Go, Zig, JavaScript, …) sees exactly what is on these pages and nothing else. This reference is generated from the `.wit` files in `crates/lattice-wit/wit/`, so it cannot disagree with them.
+The plugin API is the WIT package `lattice:plugin-host@0.7.0` — 32 interfaces ("seams") and 28 worlds. It is the whole contract: a plugin written in any language with Component-Model tooling (Rust, Go, Zig, JavaScript, …) sees exactly what is on these pages and nothing else. This reference is generated from the `.wit` files in `crates/lattice-wit/wit/`, so it cannot disagree with them.
 
 New to writing plugins? Start with the [plugin authoring guide](../../dev/guides/plugin-authoring.md), then come back here for the detail. The same reference in machine-readable form — every seam, signature, type and member — is `docs/dev/reference/plugin-api.json` in the repository and `/plugin-api.json` on the documentation site.
 
@@ -67,7 +67,7 @@ Each world's entry points — the `register-*` functions the host calls on load 
 | [`grammar`](plugin-api/grammar.md) | imports | - | 6 | 0 | The grammar-**extension** API (plugin-host.md §4.1, PH7.7). |
 | [`grammar-callbacks`](plugin-api/grammar-callbacks.md) | exports | - | 6 | 0 | The behavior callbacks a grammar plugin **exports**; the host calls one by `callback` id on dispatch (the PH7.3d callback-id trampoline). |
 | [`help`](plugin-api/help.md) | imports | - | 1 | 0 | CR.3: plugin-contributed `:help` pages. |
-| [`host-services`](plugin-api/host-services.md) | imports | fs | 37 | 5 | Guest→host services (plugin-host.md §5). |
+| [`host-services`](plugin-api/host-services.md) | imports | fs | 38 | 5 | Guest→host services (plugin-host.md §5). |
 | [`keymap`](plugin-api/keymap.md) | imports | - | 1 | 1 | The `keymap` guest→host binding-registration seam (PL8.D.1). |
 | [`language`](plugin-api/language.md) | imports | - | 1 | 2 | LG.3c: plugin-contributed languages. |
 | [`llm-tools`](plugin-api/llm-tools.md) | exports | - | 3 | 0 | AT.5: tools a plugin offers to the LLM assistant. |
@@ -85,5 +85,5 @@ Each world's entry points — the `register-*` functions the host calls on load 
 | [`theme`](plugin-api/theme.md) | imports | - | 2 | 3 | Mirrors the theme-element registry (`lattice-theme`). |
 | [`transient-source`](plugin-api/transient-source.md) | exports | - | 2 | 0 | TR.2b: plugin-contributed transient menus. |
 | [`tree-sitter`](plugin-api/tree-sitter.md) | imports | - | 26 | 6 | Structural queries for plugins (plugin-treesitter-seam.md). |
-| [`types`](plugin-api/types.md) | types | - | 0 | 165 | Shared boundary records/variants — the owned, WIT-serializable mirrors of the native grammar + picker/completion types (plugin-host.md §4). |
+| [`types`](plugin-api/types.md) | types | - | 0 | 169 | Shared boundary records/variants — the owned, WIT-serializable mirrors of the native grammar + picker/completion types (plugin-host.md §4). |
 | [`ui`](plugin-api/ui.md) | imports | - | 4 | 0 | The UI-contribution surface (design.md §9.4 `ui`): guest→host emits **data only**, never draw calls (§7, paramount #1). |

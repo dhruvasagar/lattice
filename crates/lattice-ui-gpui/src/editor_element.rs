@@ -269,7 +269,7 @@ pub(crate) struct MouseTarget {
 }
 
 pub(crate) struct EditorElement {
-    /// IM.5: pixels already decoded for the media blocks in view, keyed by
+    /// Pixels already decoded for the media blocks in view, keyed by
     /// descriptor.
     ///
     /// A LOOKUP, never a loader. `paint` consults this and draws nothing on a
@@ -553,13 +553,13 @@ pub(crate) struct EditorElement {
 }
 
 /// Per-frame layout state. Slice X3.full.2 holds nothing.
-/// IM.5: decoded pixels for media blocks, ready to upload.
+/// Decoded pixels for media blocks, ready to upload.
 ///
 /// Populated off the UI thread by the media worker; read (never written) by
 /// `paint`. An empty map is the normal state for every buffer without images
 /// and costs one pointer chase to establish.
 ///
-/// PF.3b: keyed by [`MediaSource`](lattice_cells::MediaSource), so two pages
+/// Keyed by [`MediaSource`](lattice_cells::MediaSource), so two pages
 /// of one PDF are two entries, and **bounded by bytes** (`media.cache-mb`).
 /// It used to hold every decoded picture for the session, which a PDF would
 /// turn into gigabytes. Past the budget, what was drawn least recently goes,
@@ -567,7 +567,7 @@ pub(crate) struct EditorElement {
 /// drawn in this frame or the last is never evicted: a budget smaller than a
 /// screenful is exceeded rather than made to flicker.
 ///
-/// `pub` for the `media_pixels` bench (PF.6b); outside `bench-internals`
+/// `pub` for the `media_pixels` bench; outside `bench-internals`
 /// the module is crate-private, so it reaches no further than before.
 #[derive(Default)]
 pub struct MediaPixels {
@@ -582,12 +582,12 @@ pub struct MediaPixels {
 struct MediaEntry {
     image: Arc<gpui::RenderImage>,
     bytes: usize,
-    /// The block height, in logical pixels, it was decoded for. A block that
-    /// has since changed size (the pane was resized) is decoded again, with
-    /// this one drawn meanwhile.
-    target_h: u32,
-    /// The file's revision it was decoded from (PF.5,
-    /// [`MediaBlock::revision`](lattice_cells::MediaBlock::revision)). A
+    /// The box, in logical pixels, it was decoded for. A block that has
+    /// since changed size (the pane was resized), or a page drawn ahead into
+    /// a neighbour's box that is not its own, is decoded again, with this one
+    /// drawn meanwhile.
+    target: (u32, u32),
+    /// The file's revision it was decoded from ([`MediaBlock::revision`](lattice_cells::MediaBlock::revision)). A
     /// block naming another revision is decoded again, with this one drawn
     /// meanwhile, exactly as for a size change.
     revision: u64,
@@ -644,14 +644,19 @@ impl MediaPixels {
         }
     }
 
-    /// Claim the right to decode `source` at file `revision` for a block
-    /// `target_h` logical pixels high, or `false` if a decode of that
-    /// revision is in flight or has failed, or one has already landed at
-    /// that height and revision.
+    /// Claim the right to decode `source` at file `revision` into a `target`
+    /// box in logical pixels, or `false` if a decode of that revision is in
+    /// flight or has failed, or one has already landed in that box at that
+    /// revision.
     ///
     /// Called from prepaint, on the UI thread, so it does nothing but a hash
     /// lookup — the decode itself is spawned by the caller.
-    pub fn claim(&self, source: &lattice_cells::MediaSource, target_h: u32, revision: u64) -> bool {
+    pub fn claim(
+        &self,
+        source: &lattice_cells::MediaSource,
+        target: (u32, u32),
+        revision: u64,
+    ) -> bool {
         let Ok(mut inner) = self.inner.lock() else {
             return false;
         };
@@ -659,7 +664,7 @@ impl MediaPixels {
             || inner
                 .ready
                 .get(source)
-                .is_some_and(|e| e.target_h == target_h && e.revision == revision)
+                .is_some_and(|e| e.target == target && e.revision == revision)
         {
             return false;
         }
@@ -675,7 +680,7 @@ impl MediaPixels {
         source: lattice_cells::MediaSource,
         image: Arc<gpui::RenderImage>,
         bytes: usize,
-        target_h: u32,
+        target: (u32, u32),
         revision: u64,
     ) {
         let Ok(mut inner) = self.inner.lock() else {
@@ -694,7 +699,7 @@ impl MediaPixels {
             MediaEntry {
                 image,
                 bytes,
-                target_h,
+                target,
                 revision,
                 drawn,
             },
@@ -982,7 +987,7 @@ pub(crate) struct EditorElementPrepaintState {
     /// it as a 2-D composition (quad mark + shaped wordmark) over the
     /// blanked branding rows. `None` for every non-dashboard buffer.
     branding: Option<BrandingPaint>,
-    /// IM.5: media blocks whose rows fall in this viewport, as
+    /// Media blocks whose rows fall in this viewport, as
     /// `(first_display_row, row_count, descriptor)`. `paint` draws each
     /// one's pixels over the blanked rows; the rows themselves carry the alt
     /// text, which is what the TUI paints and what this peer falls back to
@@ -990,7 +995,7 @@ pub(crate) struct EditorElementPrepaintState {
     media: Vec<MediaPaint>,
 }
 
-/// IM.5: one media block located in the current viewport.
+/// One media block located in the current viewport.
 struct MediaPaint {
     /// Display-row index of the block's first row (its `y` = `row_top`).
     first_row: usize,
@@ -1032,7 +1037,7 @@ struct BrandingPaint {
 const BRANDING_MARK_GLYPH: u32 = 0x2588; // █
 
 impl EditorElement {
-    /// IM.5c: start a background decode for any visible block that has no
+    /// Start a background decode for any visible block that has no
     /// pixels yet, so the image appears WITHOUT the user pressing anything.
     ///
     /// Called from prepaint, on the UI thread, and does no I/O itself: a hash
@@ -1064,13 +1069,13 @@ impl EditorElement {
             let revision = m.block.revision;
             match &m.block.source {
                 lattice_cells::MediaSource::Path(path) => {
-                    if !self.media_pixels.claim(&m.block.source, target_h, revision) {
-                        continue;
-                    }
                     // Width bound is generous: `block_geometry` already fitted
                     // the height to the pane, and `decode` preserves aspect
                     // ratio, so the height is the binding constraint.
                     let target = (target_h.saturating_mul(8).max(1), target_h);
+                    if !self.media_pixels.claim(&m.block.source, target, revision) {
+                        continue;
+                    }
                     self.spawn_picture_decode(
                         m.block.source.clone(),
                         path.clone(),
@@ -1088,11 +1093,12 @@ impl EditorElement {
                         .round()
                         .max(1.0) as u32;
                     // This page, then the one after and the one before
-                    // (design §3: the viewport plus one either side), so a
+                    // (`pdf-mode.md` §3: the viewport plus one either side), so a
                     // page turn lands on a page that is already drawn. The
                     // neighbours borrow this page's box: pages of one
                     // document are almost always one size, and one that is
-                    // not is redrawn at its own when it comes into view.
+                    // not is redrawn at its own when it comes into view,
+                    // since its box is then a different claim.
                     // Page `n+1` past the end fails its render once and stays
                     // claimed, which is the end of it.
                     let neighbours = [Some(*page), page.checked_add(1), page.checked_sub(1)];
@@ -1101,7 +1107,10 @@ impl EditorElement {
                             path: path.clone(),
                             page: p,
                         };
-                        if !self.media_pixels.claim(&source, target_h, revision) {
+                        if !self
+                            .media_pixels
+                            .claim(&source, (target_w, target_h), revision)
+                        {
                             continue;
                         }
                         self.spawn_page_render(
@@ -1117,7 +1126,7 @@ impl EditorElement {
         }
     }
 
-    /// IM.5c: decode one picture off the UI thread and land it.
+    /// Decode one picture off the UI thread and land it.
     fn spawn_picture_decode(
         &self,
         source: lattice_cells::MediaSource,
@@ -1141,11 +1150,12 @@ impl EditorElement {
                             target,
                             lattice_media::PixelFormat::BgraPremultiplied8,
                         )
+                        .and_then(upload_ready)
                     }
                 })
                 .await;
             match decoded {
-                Ok(img) => land_media(&pixels, source, img, target.1, revision, cx),
+                Ok(ready) => land_media(&pixels, source, ready, target, revision, cx),
                 Err(err) => {
                     // Logged once: `claim` keeps the source claimed on
                     // failure, so a missing file is not retried every
@@ -1158,10 +1168,10 @@ impl EditorElement {
         .detach();
     }
 
-    /// PF.3b: render one PDF page off the UI thread, in two passes.
+    /// Render one PDF page off the UI thread, in two passes.
     ///
     /// The first pass draws at the block's size in logical pixels and lands
-    /// at once, so a slow page (PF.0: up to 330 ms for a dense figure at 2×)
+    /// at once, so a slow page (up to 330 ms measured for a dense figure at 2×)
     /// shows soft rather than late. The second draws at the display's scale
     /// and replaces it. On a 1× display there is no second pass.
     fn spawn_page_render(
@@ -1197,20 +1207,21 @@ impl EditorElement {
                                 size,
                                 lattice_media::PixelFormat::BgraPremultiplied8,
                             )
+                            .and_then(upload_ready)
                         }
                     })
                     .await;
                 match rendered {
-                    Ok(img) => {
+                    Ok(ready) => {
                         tracing::debug!(
                             page,
                             pass,
-                            width = img.width,
-                            height = img.height,
+                            width = ready.width,
+                            height = ready.height,
                             ms = started.elapsed().as_secs_f32() * 1000.0,
                             "PDF page rendered"
                         );
-                        land_media(&pixels, source.clone(), img, target.1, revision, cx);
+                        land_media(&pixels, source.clone(), ready, target, revision, cx);
                     }
                     Err(err) => {
                         // Once, as for a picture: the source stays claimed. A
@@ -1229,32 +1240,52 @@ impl EditorElement {
     }
 }
 
-/// Upload-ready pixels into the cache, then ask for a frame: the half that
-/// makes media appear WITHOUT a keypress (`boot-composition.md` §3).
+/// Decoded pixels as gpui draws them, with what the cache budget counts.
+struct UploadReady {
+    image: Arc<gpui::RenderImage>,
+    bytes: usize,
+    width: u32,
+    height: u32,
+}
+
+/// Wrap decoded pixels for gpui. On the background executor, with the
+/// decode: it copies every pixel, which is O(the page) and so no work for
+/// the UI thread. A buffer the wrong length for its size (a decoder bug)
+/// is an error, not a picture.
+fn upload_ready(
+    img: lattice_media::DecodedImage,
+) -> Result<UploadReady, lattice_media::MediaError> {
+    let bytes = img.rgba.len();
+    let raster =
+        image::RgbaImage::from_raw(img.width, img.height, img.rgba.to_vec()).ok_or_else(|| {
+            lattice_media::MediaError::Undecodable(format!(
+                "{} bytes for a {}x{} image",
+                bytes, img.width, img.height
+            ))
+        })?;
+    Ok(UploadReady {
+        image: Arc::new(gpui::RenderImage::new(vec![image::Frame::new(raster)])),
+        bytes,
+        width: img.width,
+        height: img.height,
+    })
+}
+
+/// Put upload-ready pixels into the cache, then ask for a frame: the half
+/// that makes media appear WITHOUT a keypress (`boot-composition.md` §3).
 fn land_media(
     pixels: &MediaPixels,
     source: lattice_cells::MediaSource,
-    img: lattice_media::DecodedImage,
-    target_h: u32,
+    ready: UploadReady,
+    target: (u32, u32),
     revision: u64,
     cx: &mut gpui::AsyncApp,
 ) {
-    let bytes = img.rgba.len();
-    let frame = image::Frame::new(
-        image::RgbaImage::from_raw(img.width, img.height, img.rgba.to_vec())
-            .unwrap_or_else(|| image::RgbaImage::new(1, 1)),
-    );
-    pixels.insert(
-        source,
-        std::sync::Arc::new(gpui::RenderImage::new(vec![frame])),
-        bytes,
-        target_h,
-        revision,
-    );
+    pixels.insert(source, ready.image, ready.bytes, target, revision);
     let _ = cx.update(|cx| cx.refresh_windows());
 }
 
-/// IM.5: coalesce this frame's MediaBlock rows into one entry per block.
+/// Coalesce this frame's MediaBlock rows into one entry per block.
 ///
 /// Rows arrive in display order, so a run of consecutive display rows sharing
 /// the same descriptor is one block. A block partly scrolled off the top
@@ -1531,7 +1562,7 @@ impl Element for EditorElement {
         // DB.4-gpui: `(display_row, cells)` for each BrandingBlock virtual
         // row emitted this frame; parsed into a `BrandingPaint` below.
         let mut branding_rows: Vec<(usize, std::sync::Arc<[lattice_cells::Cell]>)> = Vec::new();
-        // IM.5: `(display_row, descriptor)` for each MediaBlock virtual row
+        // `(display_row, descriptor)` for each MediaBlock virtual row
         // emitted this frame, coalesced into groups below.
         let mut media_rows: Vec<(usize, lattice_cells::MediaBlockRef)> = Vec::new();
         // D.3.b.1.gpui (2026-05-29): for each entry in
@@ -3319,7 +3350,7 @@ impl Element for EditorElement {
             }
         }
 
-        // IM.5: inline media. Each block's pixels are drawn over its blanked
+        // Inline media. Each block's pixels are drawn over its blanked
         // rows, aspect-preserved inside the reserved box and clipped to the
         // pane.
         //
@@ -4399,7 +4430,7 @@ fn push_virtual_row(
     // GPUI peer paints the quad mark + shaped wordmark over it, so the raw
     // mark/wordmark cells must not double-paint. (The TUI peer paints the
     // cells directly; it never reaches this function.)
-    // IM.5: a MediaBlock row is recorded for the image pass and then rendered
+    // A MediaBlock row is recorded for the image pass and then rendered
     // BLANK, so the alt-text cells do not show through the picture. Only when
     // the block HAS pixels to draw — an unresolved or failed block keeps its
     // cells, which is how the alt text becomes the placeholder rather than a
@@ -4618,7 +4649,7 @@ fn push_virtual_row(
         // 2-D composition over these rows itself.
         // MG.26b: an annotation carries no backdrop of its own — a
         // blame heading tinted like a deletion would read as one.
-        // IM.5: a media block paints its own pixels over these rows; a cell
+        // A media block paints its own pixels over these rows; a cell
         // backdrop behind them would tint the image. An unresolved block
         // reaches here too and stays blank behind its alt text.
         lattice_cells::VirtualRowKind::Annotation
@@ -4893,15 +4924,18 @@ mod tests {
 
     use super::*;
 
-    /// IM.5c: a block visible for two hundred frames must start ONE decode,
+    /// A block visible for two hundred frames must start ONE decode,
     /// not two hundred. `claim` is what makes prepaint's dispatch idempotent.
     #[test]
     fn a_decode_is_claimed_once_however_many_frames_the_block_is_visible() {
         let pixels = MediaPixels::default();
         let p = &lattice_cells::MediaSource::Path("/tmp/x.png".into());
-        assert!(pixels.claim(p, 10, 0), "first frame claims it");
+        assert!(pixels.claim(p, (10, 10), 0), "first frame claims it");
         for _ in 0..200 {
-            assert!(!pixels.claim(p, 10, 0), "every later frame is a no-op");
+            assert!(
+                !pixels.claim(p, (10, 10), 0),
+                "every later frame is a no-op"
+            );
         }
     }
 
@@ -4912,16 +4946,19 @@ mod tests {
     fn a_failed_path_is_not_retried_every_frame() {
         let pixels = MediaPixels::default();
         let p = &lattice_cells::MediaSource::Path("/tmp/missing.png".into());
-        assert!(pixels.claim(p, 10, 0));
+        assert!(pixels.claim(p, (10, 10), 0));
         // No `insert` follows — this is the failure path.
         assert!(
-            !pixels.claim(p, 10, 0),
+            !pixels.claim(p, (10, 10), 0),
             "still claimed, so no second attempt"
         );
-        // Retried only when the file changes (PF.5): a broken PDF fixed on
+        // Retried only when the file changes: a broken PDF fixed on
         // disk draws, an unchanged one is never tried twice.
-        assert!(pixels.claim(p, 10, 7), "a new revision is a new attempt");
-        assert!(!pixels.claim(p, 10, 7));
+        assert!(
+            pixels.claim(p, (10, 10), 7),
+            "a new revision is a new attempt"
+        );
+        assert!(!pixels.claim(p, (10, 10), 7));
     }
 
     fn raster() -> Arc<gpui::RenderImage> {
@@ -4939,8 +4976,23 @@ mod tests {
 
     impl MediaPixels {
         fn claim_page(&self, n: u32) -> bool {
-            self.claim(&page(n), 10, 0)
+            self.claim(&page(n), (10, 10), 0)
         }
+    }
+
+    /// A page drawn ahead into its neighbour's box (a portrait page beside
+    /// a landscape one) is drawn again in its own when that box differs,
+    /// though the height is the same.
+    #[test]
+    fn a_page_drawn_into_another_box_is_drawn_again_in_its_own() {
+        let pixels = MediaPixels::default();
+        assert!(pixels.claim(&page(1), (70, 100), 0), "drawn ahead");
+        pixels.insert(page(1), raster(), 100, (70, 100), 0);
+        assert!(!pixels.claim(&page(1), (70, 100), 0), "same box: landed");
+        assert!(
+            pixels.claim(&page(1), (140, 100), 0),
+            "its own, wider box: drawn again"
+        );
     }
 
     /// A block that changes size is decoded again, and the old pixels are
@@ -4951,15 +5003,18 @@ mod tests {
         let mut b = lattice_cells::MediaBlock::from_source(page(0), None);
         b.height_lh = Some(1.0);
         let b = Arc::new(b);
-        assert!(pixels.claim(&page(0), 10, 0));
-        pixels.insert(page(0), raster(), 100, 10, 0);
-        assert!(!pixels.claim(&page(0), 10, 0), "landed at this size");
-        assert!(pixels.claim(&page(0), 20, 0), "the pane grew: decode again");
+        assert!(pixels.claim(&page(0), (10, 10), 0));
+        pixels.insert(page(0), raster(), 100, (10, 10), 0);
+        assert!(!pixels.claim(&page(0), (10, 10), 0), "landed at this size");
+        assert!(
+            pixels.claim(&page(0), (20, 20), 0),
+            "the pane grew: decode again"
+        );
         assert!(pixels.get(&b).is_some(), "the old size draws meanwhile");
-        assert!(!pixels.claim(&page(0), 20, 0), "in flight");
+        assert!(!pixels.claim(&page(0), (20, 20), 0), "in flight");
     }
 
-    /// PF.3b: two pages of one PDF are two entries, not one picture.
+    /// Two pages of one PDF are two entries, not one picture.
     #[test]
     fn two_pages_of_one_pdf_are_claimed_separately() {
         let pixels = MediaPixels::default();
@@ -4968,7 +5023,7 @@ mod tests {
         assert!(!pixels.claim_page(0));
     }
 
-    /// PF.3b: past the budget the least recently drawn entry goes, and its
+    /// Past the budget the least recently drawn entry goes, and its
     /// claim with it, so it is decoded again when it scrolls back into view.
     /// What was drawn in this frame or the last stays, even over budget: the
     /// alternative is a page that blinks out while it is being read.
@@ -4986,7 +5041,7 @@ mod tests {
         for n in 0..3u32 {
             pixels.begin_frame();
             assert!(pixels.claim_page(n));
-            pixels.insert(page(n), raster(), 100, 10, 0);
+            pixels.insert(page(n), raster(), 100, (10, 10), 0);
             assert!(pixels.get(&block(n)).is_some());
         }
         // 300 bytes against 250: page 0, drawn two frames ago, went.
@@ -5011,12 +5066,12 @@ mod tests {
     #[test]
     fn a_second_pass_replaces_the_first() {
         let pixels = MediaPixels::default();
-        pixels.insert(page(0), raster(), 100, 10, 0);
-        pixels.insert(page(0), raster(), 400, 10, 0);
+        pixels.insert(page(0), raster(), 100, (10, 10), 0);
+        pixels.insert(page(0), raster(), 400, (10, 10), 0);
         assert_eq!(pixels.bytes(), 400);
     }
 
-    /// PF.5: a file rewritten on disk is decoded again, its old pixels draw
+    /// A file rewritten on disk is decoded again, its old pixels draw
     /// until the new ones land (no blank page on reload), and a decode of
     /// the old revision that lands late cannot cancel the new one's claim.
     #[test]
@@ -5025,26 +5080,29 @@ mod tests {
         let mut b = lattice_cells::MediaBlock::from_source(page(0), None);
         b.height_lh = Some(1.0);
         let b = Arc::new(b);
-        assert!(pixels.claim(&page(0), 10, 1));
-        pixels.insert(page(0), raster(), 100, 10, 1);
-        assert!(!pixels.claim(&page(0), 10, 1), "landed at this revision");
+        assert!(pixels.claim(&page(0), (10, 10), 1));
+        pixels.insert(page(0), raster(), 100, (10, 10), 1);
+        assert!(
+            !pixels.claim(&page(0), (10, 10), 1),
+            "landed at this revision"
+        );
 
         assert!(
-            pixels.claim(&page(0), 10, 2),
+            pixels.claim(&page(0), (10, 10), 2),
             "the file changed: decode again"
         );
         assert!(pixels.get(&b).is_some(), "the old raster draws meanwhile");
         // A second pass of the OLD render lands after the new claim.
-        pixels.insert(page(0), raster(), 100, 10, 1);
+        pixels.insert(page(0), raster(), 100, (10, 10), 1);
         assert!(
-            !pixels.claim(&page(0), 10, 2),
+            !pixels.claim(&page(0), (10, 10), 2),
             "the new decode is still in flight"
         );
-        pixels.insert(page(0), raster(), 100, 10, 2);
-        assert!(!pixels.claim(&page(0), 10, 2), "and has landed");
+        pixels.insert(page(0), raster(), 100, (10, 10), 2);
+        assert!(!pixels.claim(&page(0), (10, 10), 2), "and has landed");
     }
 
-    /// IM.5: consecutive rows sharing a descriptor coalesce into ONE block,
+    /// Consecutive rows sharing a descriptor coalesce into ONE block,
     /// so a five-row image is painted once rather than five times stacked on
     /// top of each other.
     #[test]

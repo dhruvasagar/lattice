@@ -1259,11 +1259,9 @@ impl App {
                 fill_action,
                 query,
             } => self.open_picker_seeded(source, args, root, fill_action, query),
-            Effect::Confirm {
-                prompt,
-                yes_action,
-                args,
-            } => self.do_confirm(prompt, yes_action, args),
+            // Host-applied in `Editor::handle_effect` (so a posted confirm
+            // works off-keystroke too); nothing left for the peer.
+            Effect::Confirm { .. } => {}
             Effect::OpenTransient { source, args } => self.do_open_transient(source, args),
             Effect::OpenPrompt {
                 prompt,
@@ -1328,7 +1326,7 @@ impl App {
             // a synthetic buffer and then acts on it runs in order.
             Effect::OpenSyntheticBuffer { .. }
             | Effect::OpenSyntheticBufferAt { .. }
-            | Effect::DisplaySyntheticBuffer { .. } => {}
+            | Effect::DisplayBuffer { .. } => {}
             // PI.2b: dump the plugin-API catalog into a savable buffer.
             Effect::ExportPluginApi { format } => {
                 self.mutate_editor(move |e| e.do_export_plugin_api(format.as_deref()))
@@ -1667,7 +1665,7 @@ fn effect_mutates_or_yanks(effect: &Effect) -> bool {
         | Effect::OpenDashboard
         | Effect::OpenOilSource { .. }
         | Effect::InTarget { .. }
-        | Effect::DisplaySyntheticBuffer { .. }
+        | Effect::DisplayBuffer { .. }
         | Effect::ChangeDir(_)
         | Effect::PrintWorkingDir
         | Effect::PrintProjectRoot => false,
@@ -1839,7 +1837,7 @@ fn effect_mutates(effect: &Effect) -> bool {
         | Effect::OpenDashboard
         | Effect::OpenOilSource { .. }
         | Effect::InTarget { .. }
-        | Effect::DisplaySyntheticBuffer { .. }
+        | Effect::DisplayBuffer { .. }
         | Effect::ChangeDir(_)
         | Effect::PrintWorkingDir
         | Effect::PrintProjectRoot => false,

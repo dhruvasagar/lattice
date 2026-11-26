@@ -96,6 +96,22 @@ it, and it reloads when the list changes. Tangling (`C-c C-v t`) writes
 files, so it may write only under `org.directory` and the directories you
 list in `org.babel.tangle-directories`.
 
+### Where an export may write
+
+An export writes beside the org file, so the same rule holds: under
+`org.directory`, `org.roam-directory`, and the directories you list in
+`org.export.directories` (empty by default). A PDF compile runs only the
+steps you name in `org.export.latex-pdf-process`, in your config file:
+
+```toml
+[org.export]
+directories = ["~/src/my-project"]
+
+[[org.export.latex-pdf-process]]
+command = "latexmk"
+args    = ["-pdf", "-interaction=nonstopmode", "-output-directory=%o", "%f"]
+```
+
 Confirm it loaded with `:plugins`, and reach for `:plugin-trace` if it did not.
 
 ## What you get
@@ -111,6 +127,7 @@ Confirm it loaded with `:plugins`, and reach for `:plugin-trace` if it did not.
 | **Roam** | a Zettelkasten layer: id links, backlinks, dailies, and notes that nest. A note created while you write another links into it, or back to it |
 | **Clocking** | clock in and out, with the running clock in your modeline |
 | **Babel** | run source blocks in the background and keep their output under them as `#+RESULTS:`, byte-for-byte as emacs writes it — tables, drawers, values, append or replace — and tangle them out to files (`C-c C-v t`) |
+| **Export** | `C-c C-e` — HTML, Markdown, LaTeX and PDF, with emacs's dispatcher letters, `#+OPTIONS:` and tags. It runs in the background, shows the result beside the org file without taking your window, and a PDF open in lattice reloads in place on each export |
 
 The agenda is a **multibuffer**: its rows are real excerpts of your files, so
 editing a row edits the file and `:w` saves it. That is why it behaves like the
@@ -141,8 +158,10 @@ the habit rules. It versions with the code.
   the journal, note templates, and nesting notes inside captures.
 - **`doc/babel.md`** — babel: the languages table, running and cancelling,
   `:results`, value wrappers, `:dir` and tangling.
+- **`doc/export.md`** — export: the dispatcher, what is exported, source
+  blocks during export, where the output goes, PDF, and every option.
 - **`:help`** inside lattice — the plugin contributes its own help topics at
-  load (`:help org`, `:help org.roam`, `:help org.babel`), so they describe the version you have
+  load (`:help org`, `:help org.roam`, `:help org.babel`, `:help org.export`), so they describe the version you have
   installed.
 
 This page is deliberately thin. Duplicating that reference here would put two

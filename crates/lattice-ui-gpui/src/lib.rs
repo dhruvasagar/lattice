@@ -1689,7 +1689,7 @@ impl GpuiApp {
             // a synthetic buffer and then acts on it runs in order.
             Effect::OpenSyntheticBuffer { .. }
             | Effect::OpenSyntheticBufferAt { .. }
-            | Effect::DisplaySyntheticBuffer { .. } => {}
+            | Effect::DisplayBuffer { .. } => {}
             Effect::OpenLspTraceLog { server_id } => {
                 self.mutate_editor(move |e| e.do_open_lsp_trace_log(server_id.as_deref()));
             }
@@ -1854,42 +1854,9 @@ impl GpuiApp {
                     self.handle_renderer_signal(s);
                 }
             }
-            // PU.6: confirmation dialog opens a transient picker for
-            // y/n/q dismissal (TUI/GPUI parity per `do_confirm`).
-            Effect::Confirm { prompt, yes_action, args } => {
-                let signals = self.mutate_editor_with(move |e| {
-                    let Some(cmd_reg) = e.services.get::<lattice_grammar::CommandRegistryHandle>()
-                    else {
-                        e.set_message(
-                            lattice_host::action::EchoLevel::Error,
-                            "confirm: command registry unavailable".to_string(),
-                        );
-                        return Vec::new();
-                    };
-                    let Some(cmd_id) = cmd_reg.load().id_by_name(&yes_action) else {
-                        e.set_message(
-                            lattice_host::action::EchoLevel::Error,
-                            format!("confirm: unknown action `{yes_action}`"),
-                        );
-                        return Vec::new();
-                    };
-                    let spec = lattice_picker::confirm_transient_spec(&prompt, cmd_id);
-                    // IX.1: seed the dialog's state with the
-                    // yes-action's arguments so what fires on `y` is
-                    // what the prompt named (parity with the TUI peer's
-                    // `do_confirm`).
-                    let seed = match cmd_reg.load().lookup(cmd_id) {
-                        Some(spec) => e.seed_confirm_args(&spec.args_schema, &args),
-                        None => Default::default(),
-                    };
-                    let signals = e.open_transient(spec);
-                    e.extend_transient_state(seed);
-                    signals
-                });
-                for s in signals {
-                    self.handle_renderer_signal(s);
-                }
-            }
+            // Host-applied in `Editor::handle_effect` (so a posted confirm
+            // works off-keystroke too); nothing left for the peer.
+            Effect::Confirm { .. } => {}
             // Fold audit fix: named transient menus (magit-dispatch /
             // magit-file-dispatch), resolved via the owning mode
             // crate's `TransientSourceRegistry` registration. TUI/GPUI

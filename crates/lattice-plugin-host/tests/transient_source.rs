@@ -255,6 +255,42 @@ async fn an_argument_row_crosses_with_its_name_prompt_and_default() {
     }
 }
 
+/// A `flag` row crosses as the host's own switch, with the guest's
+/// name and default. Toggling and the schema projection are the host's
+/// (magit's), pinned in `lattice-host`'s `plugin_transient_flag_round_trips`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_flag_row_crosses_with_its_name_and_default() {
+    let Some(_) = guest_wasm() else {
+        eprintln!("SKIP: transient fixture guest not built");
+        return;
+    };
+    let host = PluginHost::new().unwrap();
+    let client = client(&host).await;
+    let registry = commands();
+    let spec = build(&client, &registry, &in_org()).await.expect("builds");
+
+    let switch = spec.groups[0]
+        .items
+        .iter()
+        .find(|i| i.key.iter().any(|k| k == "s"))
+        .expect("the flag row");
+    match &switch.kind {
+        TransientItemKind::Flag { name, default } => {
+            assert_eq!(name, "subtree");
+            assert!(*default, "the guest's default, not the host's `false`");
+        }
+        other => panic!("expected a flag row, got {other:?}"),
+    }
+    let state = lattice_picker::transient_initial_state(&spec);
+    assert!(
+        matches!(
+            state.get("subtree"),
+            Some(lattice_picker::TransientValue::Bool(true))
+        ),
+        "the default seeds the menu's state at open"
+    );
+}
+
 /// One bad row costs that row, not the menu. The fixture names a command
 /// nobody registered; the other three must survive.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -277,7 +313,7 @@ async fn an_unregistered_command_drops_only_its_row() {
         .collect();
     assert_eq!(
         keys,
-        vec!["t", "n", "w", "q"],
+        vec!["t", "n", "w", "s", "q"],
         "the ghost row is gone and the rest of the menu is intact"
     );
 }

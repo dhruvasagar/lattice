@@ -160,7 +160,7 @@ argument is for one open; an identity is for as long as the buffer exists.
 
 ### What crosses, and what does not
 
-`TransientItemKind` has six variants. The seam mirrors **three**:
+`TransientItemKind` has six variants. The seam mirrors **four**:
 
 | Variant | v1 | Why |
 |---|---|---|
@@ -168,7 +168,7 @@ argument is for one open; an identity is for as long as the buffer exists.
 | `Dismiss` | ✅ | Free, and a menu without `q` is a trap. |
 | `Submenu` | 📝 | `Arc<TransientSpec>` is recursive; the WIT mirror needs the same care `Range`'s recursion needed. No consumer yet. |
 | `Argument` | ✅ (TR.3b) | The field mechanism — see §7. |
-| `Flag` | 📝 | Round-trips `TransientState` like `Argument`, but nothing needs a boolean toggle yet. |
+| `Flag` | ✅ (0.7.0) | `flag(transient-flag { name, default })`, crossing as the native switch, so the host's own machinery does the rest: `default` seeds the state at open, the key flips it in place, and a fired command's `args-schema` slot of that name receives it as a `bool`. A guest that wants a switch to stay set across opens keeps it in its store and sets `default` from it; the host keeps no state between opens. Deferred until something needed a boolean toggle; org export's dispatcher does (`C-s` subtree, `C-b` body only, [`org-export.md`](org-export.md) §6). |
 | `Variable` | 📝 | Prefetched external value + an action that prompts. Wants the config seam more than the transient one. |
 
 `TransientSpec::preview` is a `Box<dyn Fn(&TransientState) -> String>` and

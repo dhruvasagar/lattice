@@ -68,7 +68,22 @@ compatible, not byte-identical.**
   and the guide says so.
 - **LaTeX** uses `ox-latex`'s preamble shape (`\documentclass`, the default
   package list, `\title`/`\author`/`\date`, `\maketitle`, `\tableofcontents`,
-  `\section`…), so a `#+LATEX_HEADER` written for emacs compiles here.
+  `\section`…), so a `#+LATEX_HEADER` written for emacs compiles here. It
+  carries the four knobs emacs users actually tune (Dhruva, 2026-11-25):
+  **user-defined classes** with their sectioning (`org.export.latex-classes`,
+  emacs's `org-latex-classes`, beside the built-in `article` / `report` /
+  `book`), `#+LATEX_HEADER_EXTRA`, **`#+LATEX_COMPILER`** (`pdflatex`,
+  `xelatex`, `lualatex`: it picks the compiler-specific default packages,
+  `inputenc`/`fontenc` or `fontspec`, and is `%latex` in the PDF process),
+  and the **source-block backend** (`org.export.latex-src-block-backend`:
+  `verbatim`, `listings` or `minted`). Two deliberate divergences, both so a
+  first export compiles: the backend's package is added to the preamble
+  (emacs leaves it to `org-latex-packages-alist`), and listings takes its
+  options per listing rather than by `\lstset`, which carries one block's
+  caption into the next, with no `language=` for a language listings does
+  not know. Without a compiler choice, Unicode
+  text and system fonts cannot build; without minted, source is plain; without
+  classes, a `memoir` or house class cannot be used.
 
 ## 2. What the user does
 
@@ -87,8 +102,12 @@ host transient (`open-transient`, magit's mechanism), not a bespoke buffer:
 | `C-s` | toggle: the subtree at point only | `--subtree` |
 | `C-b` | toggle: body only (no preamble/`<head>`) | `--body-only` |
 | | cancel a running export | `:org-export-cancel` |
+| | show the PDF compile's output | `:org-export-log` |
 
-The letters are emacs's. The toggles stay set across exports in the session,
+`C-s` and `C-b` are transient **`flag` rows**, magit's switches: they flip in
+place, and the fired command reads them through its `args-schema`
+(`subtree`, `body-only`). A plugin menu could not carry a flag before 0.7.0
+(§6). The letters are emacs's. The toggles stay set across exports in the session,
 as emacs's do. Ex-commands are dashed and namespaced, per the naming rule.
 
 **Opening** (`h o`, `l o`, `m o`) goes through `org.export.open-with`:
@@ -159,13 +178,42 @@ Read from the file, in `ox`'s order of precedence (later wins): the plugin's
 options → `#+OPTIONS:`, `#+TITLE:` and peers → for a subtree export, the
 headline's `EXPORT_*` properties.
 
+**Every default is a plugin option** (Dhruva, 2026-11-25: "latex compiler etc
+must all be configurable (and other things for org-export)"). Each `ox`
+variable the export reads has a typed `org.export.<name>` option. The option
+is the lowest layer and the file's keywords override it, so a user sets their
+defaults once instead of in every file:
+
+| group | options (emacs's variable) |
+|---|---|
+| contents | one per `#+OPTIONS:` item: `with-toc`, `with-section-numbers`, `headline-levels`, `with-author`, `with-email`, `with-date`, `with-title`, `with-tags`, `with-todo-keywords`, `with-priority`, `with-timestamps`, `with-planning`, `with-clocks`, `with-properties`, `with-drawers`, `with-footnotes`, `with-statistics-cookies`, `with-latex`, `with-sub-superscripts`, `with-special-strings`, `with-emphasize`, `with-fixed-width`, `with-tables`, `with-entities`, `preserve-breaks`, `broken-links` (`org-export-with-*` and peers); and `author`, `email`, `select-tags`, `exclude-tags`, `language` |
+| HTML | `html-stylesheet`, `html-head`, `html-head-extra` |
+| LaTeX | `latex-compiler`, `latex-class`, `latex-class-options`, `latex-header`, `latex-classes`, `latex-src-block-backend`, `latex-image-width`, `latex-pdf-process` |
+
+Option types follow `ox`'s: a flag is a boolean, `headline-levels` an integer,
+a list option a TOML array, and the rest (a depth such as `with-toc`, a
+choice such as `with-tags`) a string in the `#+OPTIONS:` spelling, `true`
+and `false` standing for `t` and `nil`. One table in the plugin maps each
+option to its `#+OPTIONS:` key and goes through the same parser, so the two
+spell values alike. `#+HTML_HEAD` replaces `html-head`'s lines, as the
+keyword overrides `org-html-head` in ox; `#+LATEX_HEADER` adds to
+`latex-header`'s, which plays `org-latex-packages-alist`'s always-loaded
+part. A value that does
+not parse is refused when it is set, naming it, as with every typed option.
+A string option with a closed set of values (`latex-compiler`,
+`latex-src-block-backend`) is checked when an export reads it, and an export
+it would change stops, naming the option and the values it takes; the option
+types have no enum of strings to refuse it earlier.
+The plugin reads them when the export is asked for, not per keystroke.
+
 The v1 set, each with `ox`'s default: `toc`, `num`, `H`, `^`, `author`,
 `date`, `title`, `email`, `tags`, `todo`, `pri`, `<` (timestamps), `p`
 (planning), `d` (drawers), `f` (footnotes), `tex`, `broken-links`, `*`, `-`,
 `:`, `|`, `e`, `\n`. Keywords: `TITLE`, `SUBTITLE`, `AUTHOR`, `EMAIL`,
 `DATE`, `LANGUAGE`, `SELECT_TAGS`, `EXCLUDE_TAGS` (default `noexport`),
 `HTML_HEAD`, `HTML_HEAD_EXTRA`, `LATEX_CLASS`, `LATEX_CLASS_OPTIONS`,
-`LATEX_HEADER`, `MACRO`, `CAPTION`, `NAME`, `ATTR_HTML`, `ATTR_LATEX`, `INCLUDE`.
+`LATEX_HEADER`, `LATEX_HEADER_EXTRA`, `LATEX_COMPILER`, `MACRO`, `CAPTION`,
+`NAME`, `ATTR_HTML`, `ATTR_LATEX`, `INCLUDE`.
 
 A `COMMENT` headline and a `:noexport:` subtree are dropped; `SELECT_TAGS`
 keeps only tagged subtrees and their ancestors. Internal links resolve
@@ -207,10 +255,18 @@ results already in the file. Blocks marked `:eval no-export` /
 unconfigured language uses its existing result, and the echo names the
 language once.
 
-**State crosses seams through the store**, as babel's jobs do: an export run
-is a store record (`export/<run-id>`) holding the IR, the pending job ids and
-the sink. Each `job-finished` fills one result; the last one transcodes and
-writes. `:org-export-cancel` cancels the run's jobs and drops the record.
+**The run lives on the events seam**, beside babel's jobs: it holds a copy
+of the text, the pending blocks and the sink. Each block is a babel run
+tagged with the export's id, so its `job-finished` puts the result into the
+copy (where babel would have put it in the file) rather than the file; the
+last one re-parses the copy, which then transcodes and writes. The question's
+`y` and `n` are actions on the grammar seam and reach the run as events. `q`
+leaves it waiting, until a newer export of the same file or
+`:org-export-cancel` drops it; cancel also kills its jobs.
+
+*Not a store record*, as first written here: the grammar seam never reads
+the run, it only sends it the user's answer, and an event carries that with
+no shared state to keep consistent.
 
 ## 5. Sinks
 
@@ -243,7 +299,14 @@ asking to run blocks, as capture checks its target before a word is typed.
 `html-mode`, `markdown-mode` or `text-mode`, with the output as seed text.
 Re-exporting **replaces** the buffer's text in one undo step and keeps the
 cursor's line. Seed text alone cannot do that (it is ignored for a buffer
-that exists, by design), so EX.0 settles how; §9 has the candidates.
+that exists, by design), so the buffer carries a minor whose
+`minor-activated` event hands the plugin its id: one per backend
+(`org-export-html-output-mode`, `-markdown-`, `-latex-`), because the event
+names the buffer and not the export, and the buffer cannot be read at that
+moment to tell them apart (`buffer-text` waits for the editor to publish
+that the plugin's mode is on). A re-export posts one whole-text `apply-edit` and then
+`open-synthetic-buffer`; returning to the buffer restores the caret's line
+(§9).
 
 **PDF.** `l p` writes `foo.tex`, then runs the user's
 `org.export.latex-pdf-process` in the file's directory, emacs's
@@ -256,13 +319,69 @@ args = ["-pdf", "-interaction=nonstopmode", "-output-directory=%o", "%f"]
 ```
 
 A list, run in order, each after the previous succeeds; `%f` is the `.tex`
-path, `%b` its base name, `%o` its directory. It is granted **only from a
+path, `%b` its base name, `%o` its directory, `%latex` the file's
+`#+LATEX_COMPILER` (default `pdflatex`). `%latex` is safe to splice from the
+file because it is one of three names, refused otherwise; the command around
+it is still the user's. It is granted **only from a
 value the user wrote** (OB.2's rule): the plugin's default is empty, so no
 compiler runs until the user names one, and PDF export says how to name one.
 A non-zero exit stops the list; the log is in `*org-export*`, and the echo
-names it.
+names it and `:org-export-log`, which shows it. The `.tex` is written with
+`write-file`, whose `ok` means the bytes are on disk, so the compiler never
+starts on a half-written file; the `write-to-file` effect would race it.
+The log starts each export on a clean page, and its headerline says what
+is running and how it ended.
 
-## 6. The host change: `write-file`
+**Where it opens, and why never in front.** Every open an export makes
+(`h o`, `m o`, `l o` in the editor, the to-buffer sinks) is a
+`display-buffer` into `org.export.open-in`: `vsplit` (default), `split` or
+`tab`. A pane that already shows the output is reused, so a re-export
+refreshes it where it is. Focus stays where the user is (Dhruva,
+2026-11-26). An export lands seconds after its chord, and a compile lands
+much later, by which time the user is typing elsewhere; a window that
+moves under the keys loses them, and the alternative first chosen,
+focusing only when no key had been pressed since, made where the output
+landed depend on timing the user cannot see. The system viewer
+(`open-with = "system"`) is a separate window and unaffected.
+
+## 6. The host changes: plugin API 0.7.0, one publish
+
+Everything export and pdf-mode need from the plugin API ships in **one**
+version, 0.7.0, audited against every slice before EX.1 starts (Dhruva,
+2026-11-25: "all updates to WIT for pdf / export are bundled together in the
+next version (0.7.0), I don't want multiple publishes for this"). Four
+changes, and two found while building §4 and §5, which joined it before it
+was published:
+
+| change | why | ABI |
+|---|---|---|
+| `host-services.write-file` | the `.tex` on disk before the compiler starts (below) | additive |
+| `flag` arm on `transient-item-kind` | the dispatcher's `C-s` / `C-b` toggles (§2) | **breaking**: a type plugins return |
+| `post-effects` carries `open-buffer` and `open-external-uri`, for a path inside the plugin's own `fs` grants | `h o` / `m o` / `l o` open the output once the export lands on the events seam | behaviour |
+| `post-effects` carries `confirm` | babel's one consent, asked after the parse, when the count is exact (§4) | behaviour |
+| `confirm-payload.no-action` | `n` to that consent is an answer: export with the file's results (§4) | a field on a record new in 0.7.0 |
+| `display-buffer` effect | an export's output is shown in a split / vsplit / tab and never takes focus (§5) | additive |
+
+**0.7.0 is therefore breaking**, as 0.4, 0.5 and 0.6 were: every plugin and
+every `init.rs` moves its pin to `lattice-wit = "0.7"` and rebuilds. The
+`flag` arm alone forces it; `write-file` would have been additive.
+
+**The open-effects stay narrow.** A posted open lands seconds after the
+command that caused it (a compile), so it cannot come from the command's
+return; but a background plugin opening anything at all would be a new
+surface. Limited to a path inside the plugin's `fs` grants, it opens only
+what the plugin could already have written.
+
+**A posted `confirm` can catch keys.** Any plugin may now raise a y/n prompt
+from the background, and a prompt that appears while the user types takes
+the next key. Export's lands milliseconds after the user's own chord. The
+alternative, counting blocks on the chord as `execute-buffer` does, puts an
+O(file) scan on the grammar seam's Reflex budget and miscounts: it cannot see
+`:noexport:`, `SELECT_TAGS` or `#+INCLUDE`.
+
+The pdf side needs nothing here: PF.5b is pdf-mode alone.
+
+### `write-file`
 
 The `.tex` must be **on disk before the compiler starts.** `write-to-file` is
 an *effect*: it is applied later, on the editor actor, and the guest learns
@@ -282,9 +401,12 @@ write-file: func(path: string, text: string) -> result<_, string>;
 ```
 
 Synchronous, because ordering is the point: when it returns `ok`, the file
-is there. It runs on `spawn_blocking` host-side like every file service, so
-the guest call never blocks the editor actor. Additive to the WIT world, so
-it ships as plugin API **0.7.0**, and a guest built against 0.6 is unaffected.
+is there. Like `read-file` and `delete-file` it runs on the calling seam's
+thread (host functions are synchronous imports on every linker), so from
+the events seam, where export writes, the editor actor never waits on it;
+an action on the grammar seam would pay the write on the keystroke, which
+is why export moves the work off that seam first (§7). Additive on its own;
+it ships in 0.7.0 with the rest of the table above.
 
 **Why not the alternatives.** Waiting for a `watch` event on the `.tex`
 before spawning: the same race, one hop later, plus a watcher per export.
@@ -300,11 +422,16 @@ open follows its write.
 
 - **Off the keystroke.** The chord costs one `emit-event`; everything else
   is on the plugin's events actor (§3). Paramount goal #1.
-- **Bounded per call.** A whole-file export must finish inside one
-  events-seam call's fuel and epoch budget. EX.0 measures it on the
-  2,300-line reference file and a 20,000-line one; if the large one does not
-  fit, the export steps through self-emitted events (parse, then transcode a
-  section at a time), as the roam scan does.
+- **Bounded per call.** No events-seam call may exceed its fuel and epoch
+  budget, and a whole-file export does not fit one: EX.0 measured 145% of
+  the event budget for 20,000 real lines (7.9% for 2,300). So the export
+  **steps** through self-emitted events, as the roam scan does, each step
+  bounded by the bytes it covers: the includes, the parse a chunk at a
+  time, then three walks over the headlines (numbering the outline, the
+  writer's index pass for its contents or what it must know before the
+  body, then the body a section at a time). Anything over the whole file
+  is a walk, never a loop in one call: numbering 4,000 headlines at once
+  was enough to trap. Fuel is the bound; wall time is milliseconds.
 - **A bench.** `cargo bench` in the plugin covers parse and each transcoder
   natively (the parser is pure Rust), so a regression shows in numbers, not
   in a user's report.
@@ -326,18 +453,27 @@ open follows its write.
   Each is another transcoder or a project layer over the same IR, and none
   is in the first cut.
 - **Export templates** (`C-c C-e #`). Insertion of option skeletons; ⛔.
+- **The rest of ox-latex's knobs.** Default-package overrides
+  (`org-latex-packages-alist`, `org-latex-default-packages-alist`) are
+  `#+LATEX_HEADER` lines, and a class header's `[NO-DEFAULT-PACKAGES]`
+  drops the defaults; the hyperref template is niche; ⛔ for both, each a
+  typed option when someone asks. `#+BIND` binds elisp
+  variables for one export, and lattice has no elisp: ❌, not deferred.
 
-## 9. Open in EX.0
+## 9. Settled in EX.0
 
-- **Re-exporting into a buffer.** `open-synthetic-buffer` ignores seed text
-  for an existing buffer, which is correct for capture and wrong here. Three
-  candidates: an `apply-edit` replacing the whole text (needs the buffer id
-  and is gated on the plugin's mode being active there, so the export
-  buffer would carry a small `org-export-output-mode` minor); output buffers
-  (`output-reset` + `output-append`), if they can take a major; or a
-  `replace: bool` on the payload, which would be a host change. EX.0 picks
-  the one that needs no host change and records why.
-- **The fuel budget** (§7).
+- **Re-exporting into a buffer: the whole-text `apply-edit`** (§5), with the
+  id learned from the minor's activation (a minor per backend, EX.6b). No host change. Output buffers
+  lost: their major is fixed to `plugin-output-mode`, so no `html-mode`,
+  and they cut lines at 4,096 characters. A `replace` flag on the payload
+  would be a host change for what `apply-edit` already does. Keeping the
+  caret's line needed one host *fix*, not a feature: returning to any
+  buffer put the caret on line 1 (`a6d71dc5`).
+- **The fuel budget:** stepped (§7).
+- **The dispatcher's toggles: transient `flag` rows** (Dhruva, 2026-11-25),
+  crossed in 0.7.0 (§6).
+- **Consent: after the parse, through a posted `confirm`** (Dhruva,
+  2026-11-25; §6).
 
 ## 10. Rejected alternatives
 

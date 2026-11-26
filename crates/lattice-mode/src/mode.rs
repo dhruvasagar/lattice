@@ -662,6 +662,25 @@ pub trait Mode: Send + Sync + 'static {
         &[]
     }
 
+    /// Has the file at `path`, one this major presents, finished being
+    /// written?
+    ///
+    /// Autoread asks before it reloads a presented file. A producer that
+    /// writes its output progressively (pdfTeX ships a PDF page by page) fires
+    /// the watcher on a file that is half there, and a reload of that would
+    /// replace what the user is reading with an error line or a stub, and
+    /// clamp the cursor to it. `false` skips that change; the producer's last
+    /// write is a change of its own, and reloads the finished file. A first
+    /// open is never held back: there is nothing on screen to keep.
+    ///
+    /// **Blocking**, on the editor actor, so it must stay a bounded read (a
+    /// file's tail, never a parse). Default `true`: a format with no way to
+    /// tell has nothing to wait for.
+    fn presented_file_settled(&self, path: &std::path::Path) -> bool {
+        let _ = path;
+        true
+    }
+
     /// Declarative mirror hint for "this mode is the on/off
     /// switch for a typed option of the same observable state".
     /// `Some(canonical_name)` ⇒ a host-driven cascade keeps the
@@ -929,6 +948,8 @@ pub trait DynMode: Send + Sync + 'static {
     fn implies(&self) -> &[ModeId];
     /// Forwards to [`Mode::presents_extensions`].
     fn presents_extensions(&self) -> &[&'static str];
+    /// Forwards to [`Mode::presented_file_settled`].
+    fn presented_file_settled(&self, path: &std::path::Path) -> bool;
     /// Forwards to [`Mode::mirrors_option`].
     fn mirrors_option(&self) -> Option<&'static str>;
     /// Forwards to [`Mode::invocation_runner`].
@@ -995,6 +1016,9 @@ impl<M: Mode> DynMode for M {
     }
     fn presents_extensions(&self) -> &[&'static str] {
         <M as Mode>::presents_extensions(self)
+    }
+    fn presented_file_settled(&self, path: &std::path::Path) -> bool {
+        <M as Mode>::presented_file_settled(self, path)
     }
     fn mirrors_option(&self) -> Option<&'static str> {
         <M as Mode>::mirrors_option(self)

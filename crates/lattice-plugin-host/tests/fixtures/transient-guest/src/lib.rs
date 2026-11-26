@@ -11,6 +11,7 @@
 //!     plus a `dismiss` — and a fourth row naming a command that was never
 //!     registered, so the drop-the-row-keep-the-menu rule is proven against a
 //!     real guest;
+//!   - a `flag` row (`s`, `subtree`, default on) crosses as a native switch;
 //!   - the menu's title ECHOES the projected context's major mode, so the host
 //!     can assert the projection crossed rather than trusting the signature;
 //!   - a context whose major mode is `broken-mode` returns the WIT typed
@@ -24,8 +25,8 @@ wit_bindgen::generate!({
 
 use exports::lattice::plugin_host::transient_source::Guest;
 use lattice::plugin_host::types::{
-    Args, TransientAction, TransientArgument, TransientContext, TransientGroup, TransientItem,
-    TransientItemKind, TransientSpec,
+    Args, TransientAction, TransientArgument, TransientContext, TransientFlag, TransientGroup,
+    TransientItem, TransientItemKind, TransientSpec,
 };
 
 struct Component;
@@ -87,6 +88,17 @@ impl Guest for Component {
                             name: "word".to_string(),
                             default: Some("chat".to_string()),
                             prompt: "Word".to_string(),
+                        }),
+                    },
+                    // A SWITCH, toggled in place. Default on, so a host
+                    // assertion can tell the guest's default from the host's.
+                    TransientItem {
+                        key: vec!["s".to_string()],
+                        label: "subtree".to_string(),
+                        description: "a switch the menu toggles".to_string(),
+                        kind: TransientItemKind::Flag(TransientFlag {
+                            name: "subtree".to_string(),
+                            default: true,
                         }),
                     },
                     TransientItem {

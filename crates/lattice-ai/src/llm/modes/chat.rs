@@ -358,6 +358,7 @@ fn send_handler(chats: LlmChatsHandle, anchors: PromptAnchors) -> ActionHandler 
                     "@{profile} enables tools this session does not have. Send this one request with it?"
                 ),
                 yes_action: ACTION_SEND_WIDENED.to_string(),
+                no_action: None,
                 args: Args::List(vec![ArgValue::String(profile), ArgValue::String(prompt)]),
             }),
         }

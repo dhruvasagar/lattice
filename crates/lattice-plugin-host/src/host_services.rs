@@ -179,12 +179,17 @@ pub(crate) fn grant_permits_walk(grant: &CapabilityGrant, root: &Path) -> bool {
 /// a truthful answer.
 ///
 /// The fallback cannot be used to smuggle anything past the check: it only
-/// applies when nothing is there to read, so the subsequent `read` fails
-/// regardless. `<granted>/../../etc/passwd` resolves as a file and is denied on
-/// the first branch.
+/// applies when nothing is there at all. `<granted>/../../etc/passwd`
+/// resolves as a file and is denied on the first branch. A **dangling
+/// symlink** is refused outright: `exists()` follows the link and says no, so
+/// the parent fallback would pass it, and a write would then follow the link
+/// and create its target wherever it points.
 pub fn grant_permits_read(grant: &CapabilityGrant, file: &Path) -> bool {
     if file.exists() {
         return grant_permits_walk(grant, file);
+    }
+    if file.symlink_metadata().is_ok() {
+        return false;
     }
     match file.parent() {
         Some(parent) if !parent.as_os_str().is_empty() => grant_permits_walk(grant, parent),
@@ -239,6 +244,63 @@ pub(crate) fn delete_within_grant(grant: &CapabilityGrant, path: &str) -> Result
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(format!("fs delete failed: '{path}': {e}")),
     }
+}
+
+/// Capability-gated file write, host-side — [`delete_within_grant`]'s
+/// peer, for an ORDERING an effect cannot give: `ok` means the bytes are on
+/// disk, so a process the guest spawns next reads them.
+///
+/// `unsaved` answers "is this path open with unsaved changes, and in which
+/// buffer"; the caller looks it up in the buffer store. Asked with the path as
+/// given and, when it resolves, canonicalized, since a buffer may have been
+/// opened under either spelling. A buffer with no unsaved changes is not
+/// asked about: the write lands and autoread reloads it, as for any change
+/// made outside the editor.
+pub(crate) fn write_within_grant(
+    grant: &CapabilityGrant,
+    path: &str,
+    text: &str,
+    unsaved: impl Fn(&Path) -> Option<String>,
+) -> Result<(), String> {
+    let file = PathBuf::from(path);
+    if !grant_permits_write(grant, &file) {
+        tracing::info!(
+            path = %file.display(),
+            "host-services write denied: outside the plugin's writable fs grant"
+        );
+        return Err(format!(
+            "fs write denied: '{path}' is outside the plugin's writable paths"
+        ));
+    }
+    match std::fs::metadata(&file) {
+        Ok(meta) if meta.is_dir() => {
+            return Err(format!("fs write refused: '{path}' is a directory"));
+        }
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => match file.parent() {
+            Some(dir) if dir.as_os_str().is_empty() || dir.is_dir() => {}
+            Some(dir) => {
+                return Err(format!(
+                    "fs write refused: no such directory: {}",
+                    dir.display()
+                ));
+            }
+            None => {
+                return Err(format!(
+                    "fs write refused: '{path}' has no parent directory"
+                ));
+            }
+        },
+        Err(e) => return Err(format!("fs write failed: '{path}': {e}")),
+    }
+    let canonical = std::fs::canonicalize(&file).ok();
+    let open = unsaved(&file).or_else(|| canonical.as_deref().and_then(&unsaved));
+    if let Some(buffer) = open {
+        return Err(format!(
+            "fs write refused: '{path}' is open in {buffer} with unsaved changes"
+        ));
+    }
+    std::fs::write(&file, text).map_err(|e| format!("fs write failed: '{path}': {e}"))
 }
 
 /// CD.3b: would a `WriteToFile` of `path` from this plugin land?
@@ -638,6 +700,122 @@ mod tests {
         let err = delete_within_grant(&grant, sub.to_str().unwrap()).unwrap_err();
         assert!(err.contains("directory"), "{err}");
         assert!(sub.exists());
+    }
+
+    /// No buffer has unsaved changes anywhere.
+    fn nothing_unsaved(_: &Path) -> Option<String> {
+        None
+    }
+
+    /// `ok` means the bytes are there, replacing what was.
+    #[test]
+    fn write_file_lands_within_a_writable_grant() {
+        let dir = tempfile::tempdir().unwrap();
+        let grant = write_grant(dir.path().to_path_buf());
+        let tex = dir.path().join("notes.tex");
+        std::fs::write(&tex, "stale").unwrap();
+        let wrote = write_within_grant(&grant, tex.to_str().unwrap(), "fresh\n", nothing_unsaved);
+        assert_eq!(wrote, Ok(()));
+        assert_eq!(std::fs::read_to_string(&tex).unwrap(), "fresh\n");
+
+        let new = dir.path().join("new.tex");
+        assert_eq!(
+            write_within_grant(&grant, new.to_str().unwrap(), "x", nothing_unsaved),
+            Ok(())
+        );
+        assert_eq!(std::fs::read_to_string(&new).unwrap(), "x");
+    }
+
+    /// A dangling symlink in the grant does not lead a write to its target,
+    /// wherever that is.
+    #[cfg(unix)]
+    #[test]
+    fn write_file_through_a_dangling_symlink_is_refused() {
+        let granted = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let target = other.path().join("planted");
+        let link = granted.path().join("notes.tex");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let grant = write_grant(granted.path().to_path_buf());
+        let err =
+            write_within_grant(&grant, link.to_str().unwrap(), "x", nothing_unsaved).unwrap_err();
+        assert!(err.contains("fs write denied"), "{err}");
+        assert!(!target.exists(), "nothing created outside the grant");
+    }
+
+    /// Outside the grant, and under a read-only grant, nothing is written.
+    #[test]
+    fn write_file_outside_the_writable_grant_is_refused() {
+        let granted = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let theirs = other.path().join("theirs.tex");
+        let grant = write_grant(granted.path().to_path_buf());
+        let err =
+            write_within_grant(&grant, theirs.to_str().unwrap(), "x", nothing_unsaved).unwrap_err();
+        assert!(err.contains("fs write denied"), "{err}");
+        assert!(!theirs.exists());
+
+        let read_only = read_grant(granted.path().to_path_buf());
+        let mine = granted.path().join("mine.tex");
+        let err = write_within_grant(&read_only, mine.to_str().unwrap(), "x", nothing_unsaved)
+            .unwrap_err();
+        assert!(
+            err.contains("fs write denied"),
+            "a read grant is not a write grant: {err}"
+        );
+        assert!(!mine.exists());
+    }
+
+    /// `delete-file`'s canonicalization: a link under the grant pointing out
+    /// of it is refused, and its target is untouched.
+    #[cfg(unix)]
+    #[test]
+    fn write_file_through_a_symlink_out_of_the_grant_is_refused() {
+        let granted = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let target = other.path().join("precious.tex");
+        std::fs::write(&target, "keep").unwrap();
+        let link = granted.path().join("link.tex");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let grant = write_grant(granted.path().to_path_buf());
+        assert!(write_within_grant(&grant, link.to_str().unwrap(), "x", nothing_unsaved).is_err());
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "keep");
+    }
+
+    /// A directory, and a file whose directory does not exist: refused, and
+    /// nothing is created.
+    #[test]
+    fn write_file_refuses_a_directory_and_a_missing_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let grant = write_grant(dir.path().to_path_buf());
+        let sub = dir.path().join("out");
+        std::fs::create_dir(&sub).unwrap();
+        let err =
+            write_within_grant(&grant, sub.to_str().unwrap(), "x", nothing_unsaved).unwrap_err();
+        assert!(err.contains("is a directory"), "{err}");
+
+        let missing = dir.path().join("nope").join("a.tex");
+        let err = write_within_grant(&grant, missing.to_str().unwrap(), "x", nothing_unsaved)
+            .unwrap_err();
+        assert!(err.contains("no such directory"), "{err}");
+        assert!(!dir.path().join("nope").exists());
+    }
+
+    /// A buffer with unsaved changes is not overwritten, and the refusal says
+    /// which buffer. It is found under the canonical spelling too.
+    #[test]
+    fn write_file_refuses_a_path_open_with_unsaved_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let grant = write_grant(dir.path().to_path_buf());
+        let tex = dir.path().join("notes.tex");
+        std::fs::write(&tex, "mine").unwrap();
+        let canonical = std::fs::canonicalize(&tex).unwrap();
+        let unsaved = |p: &Path| (p == canonical).then(|| "buffer 4".to_string());
+        // Spelled with a `.` so only the canonical form matches.
+        let spelled = dir.path().join(".").join("notes.tex");
+        let err = write_within_grant(&grant, spelled.to_str().unwrap(), "x", unsaved).unwrap_err();
+        assert!(err.contains("buffer 4") && err.contains("unsaved"), "{err}");
+        assert_eq!(std::fs::read_to_string(&tex).unwrap(), "mine");
     }
 
     #[test]

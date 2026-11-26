@@ -660,6 +660,7 @@ mod tests {
             Effect::Confirm {
                 prompt,
                 yes_action,
+                no_action: _,
                 args: _,
             } => {
                 assert_eq!(prompt, "Drop stash@{2}?");

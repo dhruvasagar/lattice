@@ -397,6 +397,7 @@ pub fn clean_handler() -> ActionHandler {
                 names.join(", ")
             ),
             yes_action: CLEAN_CONFIRMED.to_string(),
+            no_action: None,
             args: lattice_grammar::Args::String(names.join(",")),
         })
     })

@@ -413,6 +413,7 @@ pub fn ask_effect(
                 size.div_ceil(4000)
             ),
             yes_action: ACTION_ASK_CONFIRMED.to_string(),
+            no_action: None,
             args: Args::List(vec![
                 ArgValue::String(token.to_string()),
                 ArgValue::String(instruction.to_string()),
@@ -523,11 +524,15 @@ pub fn ask_effect(
     }
     let session = target.unwrap_or_else(|| chats.create_for_source(source.buffer, &hint));
     chats.submit_source(&session, block, typed.trim().to_string(), overrides);
-    let display = Effect::DisplaySyntheticBuffer {
-        name: session.name.clone(),
-        mode_id: LlmChatMode::mode_id().as_str().to_string(),
-        content: None,
-        split: lattice_core::ui::pane::SplitOrientation::Vertical,
+    let display = Effect::DisplayBuffer {
+        source: Box::new(lattice_grammar::DisplaySource::Synthetic {
+            name: session.name.clone(),
+            mode_id: LlmChatMode::mode_id().as_str().to_string(),
+            content: None,
+            cursor: None,
+            activate_minor: None,
+        }),
+        target: lattice_core::ui::pane::DisplayTarget::VSplit,
     };
     match note {
         Some(text) => Effect::Many(vec![display, echo(EchoLevel::Info, text)]),

@@ -1,4 +1,4 @@
-package lattice:plugin-host@0.6.0;
+package lattice:plugin-host@0.7.0;
 
 /// The `refactor` bundled plugin's world (RF.2): editing by syntax node,
 /// from the tree-sitter parse, in every language with a grammar and with no

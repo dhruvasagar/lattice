@@ -275,7 +275,14 @@ pub fn a_replayed_macro_types_into_the_buffer_it_opened<P: PeerUnderTest>() {
 
     let mut peer = boot::<P>("origin\n");
     let origin = peer.editor().document_buffer_id;
-    press(&mut peer, &format!("qa:e {}<CR>ihi <Esc>q", path.display()));
+    // `ggI`, not `i`: returning to a buffer puts the caret back where it
+    // was left, so on replay a bare `i` would type wherever the recording
+    // ended. This test is about ORDER, the buffer the keys land in, so
+    // the insert goes to a place that does not depend on the caret.
+    press(
+        &mut peer,
+        &format!("qa:e {}<CR>ggIhi <Esc>q", path.display()),
+    );
     let target = peer.editor().document_buffer_id;
     assert_ne!(target, origin, "test premise: `:e` switched buffers");
     assert_eq!(text(&peer), "hi target\n", "test premise: recording typed");

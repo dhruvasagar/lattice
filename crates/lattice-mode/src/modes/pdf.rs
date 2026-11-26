@@ -118,6 +118,11 @@ impl Mode for PdfMode {
         PDF_EXTENSIONS
     }
 
+    /// A PDF is finished when its tail holds `%%EOF`.
+    fn presented_file_settled(&self, path: &Path) -> bool {
+        pdf_file_settled(path)
+    }
+
     /// Read-only, half one: this gates insert-mode typing. And the
     /// modeline's position reads as pages, because the lines are pages.
     fn options(&self) -> OptionOverrideSet {
@@ -208,6 +213,38 @@ async fn read_labels(probe: Option<PdfProbeHandle>, path: PathBuf) -> (String, u
     }
 }
 
+/// How far from the end of a PDF its `%%EOF` may sit. The format puts it
+/// last; readers have long accepted trailing bytes after it, and 1024 is the
+/// window they search.
+const EOF_WINDOW: u64 = 1024;
+
+/// Has the PDF at `path` been written to the end?
+///
+/// A PDF ends with `%%EOF`, and an incremental update appends a new one, so a
+/// file whose tail lacks it is one still being written. Page counts cannot
+/// tell: a reader repairs a cut file whose page tree came first into a prefix
+/// of its pages (a 12-page file cut in half reads as 6), which looks exactly
+/// like a document that lost pages. pdfTeX writes the tree last, and its cut
+/// files do not parse at all, but the marker answers both.
+///
+/// A file that cannot be read is called settled: the reload that follows is
+/// what reports it.
+fn pdf_file_settled(path: &Path) -> bool {
+    use std::io::{Read, Seek, SeekFrom};
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return true;
+    };
+    let Ok(len) = file.metadata().map(|m| m.len()) else {
+        return true;
+    };
+    let start = len.saturating_sub(EOF_WINDOW);
+    let mut tail = Vec::with_capacity((len - start) as usize);
+    if file.seek(SeekFrom::Start(start)).is_err() || file.read_to_end(&mut tail).is_err() {
+        return true;
+    }
+    tail.windows(5).any(|w| w == b"%%EOF")
+}
+
 /// One label per page, `Page N of M`, newline-joined: line `N - 1` is page `N`.
 pub fn page_labels(pages: usize) -> String {
     (1..=pages)
@@ -221,22 +258,32 @@ pub fn page_labels(pages: usize) -> String {
 /// Clean, because the modified flag means "the user changed this" and the
 /// user changed nothing: without it every PDF would open marked modified and
 /// `:q` would refuse to leave it.
+///
+/// The text it already has is not written again. A reload of a PDF whose
+/// pages did not change starts with these very labels (they are carried
+/// over so the cursor keeps its page), and an edit that changes nothing
+/// would still mark the buffer modified until the clean lands. When the text
+/// does change, the clean is queued with the edit rather than after its
+/// reply: the actor's mailbox is in order, so only the gap between handling
+/// the two is left, where a reply round trip would leave the buffer shown
+/// modified for as long as the scheduler took.
 async fn write_owned_text(handle: &dyn lattice_runtime::Document, text: String) {
     let snap = handle.snapshot();
+    if snap.text() == text {
+        return;
+    }
     let last_line = snap.buffer.rope_line_count().saturating_sub(1);
     let last_len = snap.buffer.line(last_line).unwrap_or_default().len() as u32;
     let all = lattice_protocol::Range::new(
         lattice_protocol::position::Position::new(0, 0),
         lattice_protocol::position::Position::new(last_line, last_len),
     );
-    if let Err(e) = handle
-        .apply_edit_batch(vec![lattice_protocol::edit::Edit::replace(all, text)])
-        .await
-    {
+    let written = handle.apply_edit_batch(vec![lattice_protocol::edit::Edit::replace(all, text)]);
+    let cleaned = handle.mark_clean();
+    if let Err(e) = written.await {
         tracing::warn!(error = %e, "pdf-mode: writing the page labels failed");
-        return;
     }
-    if let Err(e) = handle.mark_clean().await {
+    if let Err(e) = cleaned.await {
         tracing::debug!(error = %e, "pdf-mode: marking the labels clean failed");
     }
 }
@@ -371,6 +418,102 @@ pub fn is_pdf_path(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn labelled(pages: usize) -> lattice_runtime::handle::RopeDocumentHandle {
+        lattice_runtime::handle::spawn_document(
+            lattice_core::BufferId(1),
+            lattice_core::Document::from_text(&page_labels(pages)),
+            Arc::new(arc_swap::ArcSwap::from_pointee(
+                lattice_grammar::registry::CommandRegistry::new(),
+            )),
+        )
+    }
+
+    /// A reload whose pages did not change already holds its labels, so
+    /// nothing is written and the buffer is never, even briefly, modified.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn labels_already_in_the_buffer_are_not_written_again() {
+        let handle = labelled(3);
+        let before = handle.text_version();
+        write_owned_text(&handle, page_labels(3)).await;
+        assert_eq!(handle.text_version(), before, "no edit");
+        assert!(!handle.dirty());
+    }
+
+    /// New labels land, and the buffer is clean once they have.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn changed_labels_are_written_and_left_clean() {
+        let handle = labelled(3);
+        write_owned_text(&handle, page_labels(5)).await;
+        assert_eq!(handle.text(), page_labels(5));
+        assert!(!handle.dirty());
+    }
+
+    /// A scratch file holding `bytes`, removed when the guard drops.
+    struct Scratch(PathBuf);
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+    fn scratch(name: &str, bytes: &[u8]) -> Scratch {
+        let path = std::env::temp_dir().join(format!(
+            "lattice-pdf-settled-{}-{name}.pdf",
+            std::process::id()
+        ));
+        std::fs::write(&path, bytes).expect("the temp dir is writable");
+        Scratch(path)
+    }
+
+    /// The marker decides, wherever in the last 1024 bytes it sits: at the
+    /// very end, before trailing whitespace or junk, and after an
+    /// incremental update that appended a second one.
+    #[test]
+    fn a_pdf_is_settled_when_its_tail_holds_the_eof_marker() {
+        let body = format!("%PDF-1.7\n{}\nstartxref\n9\n", "x".repeat(4000));
+        for (name, tail) in [
+            ("end", "%%EOF"),
+            ("newline", "%%EOF\r\n"),
+            ("junk", "%%EOF\n\0\0\0 trailing bytes a producer left"),
+        ] {
+            let f = scratch(name, format!("{body}{tail}").as_bytes());
+            assert!(pdf_file_settled(&f.0), "{name}");
+        }
+        let updated = scratch(
+            "update",
+            format!("{body}%%EOF\nmore objects\n%%EOF\n").as_bytes(),
+        );
+        assert!(pdf_file_settled(&updated.0));
+    }
+
+    /// Cut anywhere before its marker, a PDF is still being written, a long
+    /// one included (the marker of an earlier write, far up the file, does
+    /// not count) and an empty one (the producer has only truncated it).
+    #[test]
+    fn a_pdf_cut_short_is_not_settled() {
+        let early = format!(
+            "%PDF-1.7\n%%EOF\n{}",
+            "1 0 obj\n<< >>\nendobj\n".repeat(200)
+        );
+        for (name, bytes) in [
+            (
+                "cut",
+                b"%PDF-1.7\n1 0 obj\n<< /Type /Catalog >>\nendobj\n".to_vec(),
+            ),
+            ("early-marker", early.into_bytes()),
+            ("empty", Vec::new()),
+        ] {
+            let f = scratch(name, &bytes);
+            assert!(!pdf_file_settled(&f.0), "{name}");
+        }
+    }
+
+    /// A file that is not there is not waited for: the reload is what says
+    /// it is gone.
+    #[test]
+    fn a_missing_pdf_is_settled() {
+        assert!(pdf_file_settled(Path::new("/definitely/not/here.pdf")));
+    }
 
     #[test]
     fn id_kind_and_claim() {

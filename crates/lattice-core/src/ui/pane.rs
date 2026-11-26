@@ -450,6 +450,19 @@ pub enum OpenTarget {
     Tab,
 }
 
+/// Where a buffer is displayed when no pane shows it yet: a pane made for
+/// it, never the active one, since a display leaves focus where it is.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum DisplayTarget {
+    /// A new pane below the active one.
+    Split,
+    /// A new pane to the right of the active one.
+    #[default]
+    VSplit,
+    /// A new tab after the active one, not switched to.
+    Tab,
+}
+
 /// `<C-w>h/j/k/l` cardinal navigation. Geometry-aware: walks the
 /// tree to find the spatial neighbour of the active pane.
 ///

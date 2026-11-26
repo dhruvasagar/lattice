@@ -29,7 +29,7 @@ does — a bounded `walk` covers the fuzzy-finder.
 - [`position`](types.md#record-position) from [`types`](types.md)
 - [`effect`](types.md#variant-effect) from [`types`](types.md)
 
-## Functions (37)
+## Functions (38)
 
 ### `buffer-text`
 
@@ -627,7 +627,7 @@ let status = host_services::output_status(
 post-effects: func(effects: list<effect>) -> result<_, string>
 ```
 
-OB.3: hand the editor `effects` from a seam that cannot return them —
+Hand the editor `effects` from a seam that cannot return them —
 the events seam's `on-event` and `on-wake`, which return nothing. The
 result of a job a plugin started (`spawn-process`, `http-download`)
 arrives there, and this is how that result becomes an edit, an echo or
@@ -643,8 +643,19 @@ addresses its buffer by id and is dropped if that buffer has closed.
 A post carries only what writing a result needs: `apply-edit`,
 `write-to-file` (with no `cut`, which would be taken from whatever
 buffer has focus when the post lands), `track-range`, `untrack-range`,
-`open-synthetic-buffer` and `echo`. Anything else is replaced by a
-warning naming it, and the effects after it are dropped.
+`open-synthetic-buffer` and `echo`; and, to show a file the job made
+(an export's HTML or PDF), `open-buffer` and `open-external-uri` for a
+file inside the plugin's own `fs` grants, read or write, so it opens
+nothing the plugin could not already read. A posted open needs an
+absolute path and may not be `force`d (a background result does not
+discard unsaved edits); `open-external-uri` takes an absolute path or
+a `file://` URI without percent-escapes, and refuses anything else, a
+web page included. And `confirm`, to ask once before work only the
+job could size (its yes-action passes the same command check as a
+returned one); a dialog raised while the user types takes the next
+key, so post it only as the direct answer to a chord just pressed.
+Anything else is replaced by a warning naming it, and the effects
+after it are dropped.
 
 Prefer returning effects where a seam can: an effect posted here lands
 after the current keystroke's, not inside it.
@@ -1148,6 +1159,48 @@ let outcome = match host_services::watch(target) {
     Err(e) => format!("watch:err({e})"),
 };
 record(&outcome);
+```
+
+### `write-file`
+
+```wit
+write-file: func(path: string, text: string) -> result<_, string>
+```
+
+Write `text` to `path`, replacing what is there — `read-file`'s
+and `delete-file`'s peer, for an ordering an effect cannot give.
+
+`effect.write-to-file` is applied later, on the editor actor, and the
+guest learns nothing about when. A guest that writes a file and then
+starts a process that reads it (an export writing a `.tex`, then
+spawning the compiler) races the effect and can lose. **`ok` means the
+bytes are on disk**, so a `spawn-process` after it reads what was
+written.
+
+Gated on **`fs:write`** and re-checked host-side, with `delete-file`'s
+canonicalization: a symlink inside the grant pointing outside it is
+refused rather than followed. Refused when `path` is a directory, when
+its directory does not exist (nothing is created), and when it is open
+in a buffer with **unsaved changes** — the user's edits are not
+overwritten behind their back, and the message names the buffer. An
+open buffer with no unsaved changes reloads from disk, as for any
+change made outside the editor.
+
+For a file nothing reads before the host applies it, prefer the
+effect: it is ordered with the rest of the action's effects (an open
+after a write sees the write) and needs no grant query first.
+
+**Example — Write a file and know it is on disk before starting a process that reads it** · [`crates/lattice-plugin-host/tests/fixtures/multiseam-guest/src/lib.rs`](../../../../crates/lattice-plugin-host/tests/fixtures/multiseam-guest/src/lib.rs)
+
+```rust
+let text = match host_services::write_file(path, body) {
+    Ok(()) => "wrote".to_string(),
+    Err(e) => format!("error: {e}"),
+};
+Ok(vec![Effect::Echo(EchoPayload {
+    level: EchoLevel::Info,
+    text,
+})])
 ```
 
 ### `write-job-stdin`

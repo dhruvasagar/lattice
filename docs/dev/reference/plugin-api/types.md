@@ -22,7 +22,7 @@ command mirror (§4.1) and cross as a typed error until then.
 
 _(none — a shared type interface)_
 
-## Types (165)
+## Types (169)
 
 ### variant `arg-value`
 
@@ -871,6 +871,7 @@ the host ensures a popup buffer named `name` under major mode `mode-id`.
 record confirm-payload {
     prompt: string,
     yes-action: string,
+    no-action: option<string>,
     args: args,
 }
 ```
@@ -892,10 +893,14 @@ from context that may have changed while the dialog was open.
 - `prompt`: `string` — Shown as the dialog's title. Name the target in it — a
   question has to be answerable without dismissing it to go
   look.
-- `yes-action`: `string` — Action name dispatched on `y`. `n` / `q` / Esc dismiss and
-  dispatch nothing.
-- `args`: [`args`](#variant-args) — Arguments handed to `yes-action`, positional against its
-  declared `args-schema`.
+- `yes-action`: `string` — Action name dispatched on `y`.
+- `no-action`: `option<string>` — Action name dispatched on `n`, for a question whose no is
+  itself an answer: an export that asks before running a file's
+  code still exports on `n`, with the results already there.
+  `none`: `n` dismisses. `q` / Esc always dismiss and dispatch
+  nothing.
+- `args`: [`args`](#variant-args) — Arguments handed to `yes-action`, and to `no-action`: each
+  positional against its own declared `args-schema`.
 
 ### record `open-transient-payload`
 
@@ -1294,6 +1299,56 @@ behaviour exactly.
   `org-mode` and only the `C-c C-c` / `C-c C-k` finalize/abort pair
   is capture-specific. Naming the minor here is what keeps those
   chords off every other org buffer.
+
+### enum `display-target`
+
+```wit
+enum display-target {
+    split,
+    vsplit,
+    tab,
+}
+```
+
+Where `display-buffer` makes a pane when none shows the buffer yet.
+Mirrors `lattice_core::ui::pane::DisplayTarget`.
+
+**Cases**
+
+- `split` — A new pane below the active one.
+- `vsplit` — A new pane to the right of the active one.
+- `tab` — A new tab after the active one, not switched to.
+
+### variant `display-source`
+
+```wit
+variant display-source {
+    file(string),
+    synthetic(open-synthetic-buffer-payload),
+}
+```
+
+What `display-buffer` shows.
+
+**Cases**
+
+- `file`: `string` — A file, by absolute path, opened as `:e` opens it.
+- `synthetic`: [`open-synthetic-buffer-payload`](#record-open-synthetic-buffer-payload) — A named synthetic buffer, with `open-synthetic-buffer`'s fields
+  and meaning.
+
+### record `display-buffer-payload`
+
+```wit
+record display-buffer-payload {
+    source: display-source,
+    target: display-target,
+}
+```
+
+**Fields**
+
+- `source`: [`display-source`](#variant-display-source)
+- `target`: [`display-target`](#enum-display-target)
 
 ### record `spawn-terminal-payload`
 
@@ -2083,6 +2138,7 @@ variant effect {
     track-range(track-range-payload),
     untrack-range(untrack-range-payload),
     insert-snippet(insert-snippet-payload),
+    display-buffer(display-buffer-payload),
 }
 ```
 
@@ -2266,6 +2322,16 @@ Mirrors `lattice_grammar::effect::Effect` (§4.4). Every arm is pure data;
   stop is selected, and typing there types at every linked site.
   The peer of `expand-snippet-over`, which names a registered
   snippet; this one carries the body.
+- `display-buffer`: [`display-buffer-payload`](#record-display-buffer-payload) — Show a buffer in a pane other than the active one and leave focus
+  where it is: emacs's `display-buffer`, where the opens are
+  `switch-to-buffer`. For output that lands while the user works
+  elsewhere, as an export finishing after its chord does; a window
+  that moved under the keys would lose them. A pane already showing
+  the buffer, in any tab, is left as it is; a synthetic buffer also
+  reuses a non-active pane whose major is its `mode-id`; otherwise a
+  pane is made at `target`. A posted `file` must be an absolute path
+  inside the plugin's `fs` grants, as a posted open must. Appended
+  last so existing variant indices do not move.
 
 ### variant `arg-kind`
 
@@ -2938,24 +3004,49 @@ throughout rather than a run of prompts the user cannot go back into.
   always seeds with the value already held.
 - `prompt`: `string` — The prompt's label.
 
+### record `transient-flag`
+
+```wit
+record transient-flag {
+    name: string,
+    default: bool,
+}
+```
+
+A boolean the menu toggles in place.
+
+Pressing its key flips the value under `name` in the menu's state and
+the menu stays open, as magit's `-a` / `-f` switches do. A fired action
+whose command declares an `args-schema` slot named `name` receives it
+as a `bool`, positioned by the schema. Org export's `C-s` (subtree) and
+`C-b` (body only) are two.
+
+**Fields**
+
+- `name`: `string` — Key in the menu's state, and the schema slot it fills.
+- `default`: `bool` — Its value when the menu opens. A guest that wants a toggle to stay
+  set across opens keeps it in its store and sets this from it.
+
 ### variant `transient-item-kind`
 
 ```wit
 variant transient-item-kind {
     action(transient-action),
     argument(transient-argument),
+    flag(transient-flag),
     dismiss,
 }
 ```
 
-Mirrors `lattice_picker::TransientItemKind`. v1 crosses three of its
-six variants; `submenu` / `flag` / `variable` are deferred with reasons
-in `plugin-transients.md` §5.
+Mirrors `lattice_picker::TransientItemKind`. Crosses four of its six
+variants; `submenu` / `variable` are deferred with reasons in
+`plugin-transients.md` §5.
 
 **Cases**
 
 - `action`: [`transient-action`](#record-transient-action) — Fires a command and closes the menu.
 - `argument`: [`transient-argument`](#record-transient-argument) — Collects a named value into the menu's state (TR.3b).
+- `flag`: [`transient-flag`](#record-transient-flag) — Toggles a named boolean in the menu's state.
 - `dismiss` — Closes the menu without firing anything. Free, and a menu with no
   `q` is a trap.
 

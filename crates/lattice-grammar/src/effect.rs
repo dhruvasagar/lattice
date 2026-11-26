@@ -404,6 +404,28 @@ impl FileAnchor {
     }
 }
 
+/// What [`Effect::DisplayBuffer`] shows.
+#[derive(Debug, Clone, PartialEq)]
+pub enum DisplaySource {
+    /// A file, opened as `:e` opens it (or found, when already open).
+    File(PathBuf),
+    /// A named synthetic buffer, with [`Effect::OpenSyntheticBuffer`]'s
+    /// fields and meaning: `content` seeds a fresh buffer only, `cursor`
+    /// places a fresh buffer's caret, and `activate_minor` joins the major.
+    Synthetic {
+        /// Buffer name; an existing buffer of that name is shown, not made.
+        name: String,
+        /// Major mode id; must be registered at boot. Also rule 2's key.
+        mode_id: String,
+        /// Seed text for a fresh buffer.
+        content: Option<String>,
+        /// Where a fresh buffer's caret starts.
+        cursor: Option<lattice_protocol::position::Position>,
+        /// A minor activated beside the major.
+        activate_minor: Option<String>,
+    },
+}
+
 /// What a command asks the host to do. See the [module docs](self) for
 /// the coordinate convention, which buffer an un-addressed variant acts on,
 /// and which variants are host- vs. peer-applied.
@@ -1482,35 +1504,34 @@ pub enum Effect {
         /// reason — the interesting behaviour rides a general-purpose major.
         activate_minor: Option<String>,
     },
-    /// LL.10a: show a named synthetic buffer in a pane **other than the
-    /// active one, leaving focus where it is** — Emacs's `display-buffer`,
-    /// where [`Effect::OpenSyntheticBuffer`] is `switch-to-buffer`.
+    /// Show a buffer in a pane **other than the active one, leaving focus
+    /// where it is**: emacs's `display-buffer`, where the opens are
+    /// `switch-to-buffer`.
     ///
-    /// For output the user asked for while working somewhere else: an LLM
-    /// answer about the code under the caret, which has to appear without
-    /// taking the caret, the mode or the pane away from that code. The pane
-    /// is chosen, in order:
+    /// For output that lands while the user works somewhere else: an LLM
+    /// answer about the code under the caret, or an export finishing seconds
+    /// after its chord. A window that moves under the keys loses them. The
+    /// pane is chosen, in order:
     ///
-    /// 1. a non-active pane already showing this buffer — left as it is;
-    /// 2. a non-active pane showing a buffer whose major is `mode_id` —
-    ///    reused, so a second answer replaces the first in place instead of
-    ///    adding a split per request;
-    /// 3. otherwise a new `split` of the active pane.
+    /// 1. any pane already showing the buffer, the active one included, in
+    ///    this tab or another, left as it is;
+    /// 2. for a synthetic source, a non-active pane in this tab whose
+    ///    buffer's major is the source's `mode_id`, reused, so a second
+    ///    answer replaces the first instead of adding a split per request;
+    /// 3. otherwise a new pane at `target`.
     ///
-    /// Zoom is cleared when the chosen pane would be hidden by it, as a
-    /// split already does. The active pane is never chosen. `content` seeds
-    /// a fresh buffer only, with [`Effect::OpenSyntheticBuffer`]'s rule.
-    /// Host-applied. Host/peer-only — no WIT mirror yet.
-    DisplaySyntheticBuffer {
-        /// Buffer name; an existing buffer of that name is displayed rather
-        /// than recreated.
-        name: String,
-        /// Major mode id; must be registered at boot. Also the reuse key.
-        mode_id: String,
-        /// Seed text for a fresh buffer.
-        content: Option<String>,
-        /// How to split when no pane can be reused.
-        split: lattice_core::ui::pane::SplitOrientation,
+    /// The buffer is opened in that pane through the ordinary open (modes,
+    /// autoread and language servers as for any open), then focus returns
+    /// to the pane and tab it was in, within one application, so nothing is
+    /// drawn in between. A file that cannot be opened leaves the layout as it
+    /// was. Host-applied: posts drain host-side, where peer arms never run.
+    DisplayBuffer {
+        /// What to show. Boxed: a synthetic source carries five fields, and
+        /// inline it would make this the largest variant and every `Effect`
+        /// the size of it.
+        source: Box<DisplaySource>,
+        /// Where, when rule 3 applies.
+        target: lattice_core::ui::pane::DisplayTarget,
     },
     /// MG.50: [`Effect::OpenSyntheticBuffer`] + cursor placement, in one
     /// step.
@@ -2060,7 +2081,12 @@ pub enum Effect {
         prompt: String,
         /// Registered action name dispatched on `y`.
         yes_action: String,
-        /// Arguments passed to `yes_action` (see above).
+        /// Registered action name dispatched on `n`, for a question whose
+        /// no is itself an answer ("export with the results already in the
+        /// file"). `None`: `n` dismisses, as `q` and Esc always do.
+        no_action: Option<String>,
+        /// Arguments passed to `yes_action`, and to `no_action` — each
+        /// positional against its own declared schema (see above).
         args: crate::Args,
     },
 

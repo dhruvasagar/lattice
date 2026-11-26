@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- **Plugin API 0.7.0 — breaking.** The crates (`lattice-wit`, `lattice-plugin-sdk`, `lattice-plugin-sdk-derive`) and the WIT package (`lattice:plugin-host@0.7.0`) carry `write-file`, the `flag` row on transient menus, posted opens and confirms, a confirm's `no-action`, and `display-buffer`. The `flag` arm changes a type plugins return, so a plugin built for 0.6 does not load: move its pin to `lattice-wit = "0.7"` and rebuild. Your `init.rs` needs the same, and its `wit/init.wit` package line moved to `@0.7.0` by hand.
+- **A plugin can ask before running something, from the background.** A plugin finishing work it started from your key can show a yes/no question, for example how many code blocks an export is about to run, and `y` runs it. The command it names is checked as for any other.
+- **A plugin can show its output without taking your window.** `display-buffer` shows a file, or one of the plugin's own buffers, in a split, a vertical split or a background tab, and leaves the cursor where you are typing. A pane already showing it is reused, so showing it again refreshes it in place. As with a plugin's other opens, a file must be inside the directories the plugin may read or write.
+- **A yes/no question's `n` can be an answer.** A question may name a command for `n` as well as `y`, as org export does: `n` to "Export runs 3 blocks?" still exports, with the results already in the file. `q` and Esc then dismiss without doing either. A question naming an unknown command for `n` is not shown, and the echo names the command.
+- **A plugin can open the file its background job made.** When an export or another long job finishes, the plugin can open the result in the editor or in your system's viewer without you pressing anything. Only a file inside the directories the plugin may already read or write is opened, never a web page, and never by discarding unsaved changes; anything else shows a warning naming the path.
+- **Plugin menus can have switches.** A plugin's transient menu can now carry on/off rows that flip in place when you press their key, as magit's `-a` / `-f` do, and the command you then fire receives them. Org export's dispatcher uses them for "subtree only" and "body only".
+- **A plugin can write a file and know it is there.** `host-services.write-file` writes a whole file and returns once it is on disk, so a program the plugin starts next reads what was written, which the `write-to-file` effect cannot promise. It needs the plugin's `fs:write` grant, refuses a file you have open with unsaved changes, naming the buffer, and an open buffer with nothing unsaved reloads as for any change made outside the editor.
+
+### Fixed
+- **On Windows, a plugin can open a file it made by its `file:///C:/…` URI.** The URI was read as the path `/C:/…`, which names nothing there, so the open was refused as outside the plugin's directories.
+- **Reloading a PDF no longer marks it modified for a moment.** A reload rewrote the page list even when the pages had not changed, and the buffer showed as modified until it was marked clean again.
+- **A PDF being recompiled no longer flickers to an error or a stub.** A compile writes its PDF a piece at a time, and a reload that caught it halfway showed "not a readable PDF", or the first few pages with your place moved to the last of them. A PDF that has not been written to its end is now left on screen as it was, and the finished file reloads at the page you were reading.
+- **A plugin can no longer write outside its granted directories through a broken symlink.** A symlink in a granted directory that pointed at a file that did not exist yet passed the check, and the write then created that file wherever the link pointed. Such a link is now refused for reading, writing and deleting.
+- **A plugin's request to open a `file://localhost/…` URI is refused**, naming the form to use. It was checked against the plugin's grants as a relative path while the system opener read the absolute one; a plugin posts the absolute path (`file:///…` or `/…`).
+- **A PDF that mixes page sizes draws each page at its own size** in the GUI. A landscape page next to portrait ones was drawn ahead into its neighbour's box and kept those pixels when it came into view. Turning pages also does less work on the interface thread: a page's pixels are prepared in the background with its render.
+- **Going back to a buffer puts the cursor where you left it**, as vim does. `:b`, `:bn`, `:bp` and a plugin reopening its own buffer all landed on the first line. A buffer that got shorter while you were away puts the cursor on its last line, and a buffer the window has not shown before still opens at the top.
+
 ## 0.10.3 — 2026-11-24
 
 ### Added

@@ -21,9 +21,52 @@ The plugin is released as `vX.Y.Z` tags; its
 current one and its `CHANGELOG.md` says what each changed.
 
 **Without building it.** Each release publishes org ready-built, so the
-simplest install needs no Rust toolchain. You need lattice 0.9.11 or later,
-and an `init.rs` (`lattice --scaffold-init` makes one). In its
-`register_plugins`:
+simplest install needs no Rust toolchain and no `init.rs`. In your
+`lattice.toml`:
+
+```toml
+[plugins.org]
+release = "dhruvasagar/lattice-org-plugin"   # add version = "v…" to stay on one release
+```
+
+then `:reload-config` (or restart). The table's fields are in
+[installing plugins from `lattice.toml`](help:plugins#installing-plugins-from-lattice-toml).
+
+The plugin and its settings can share the file. `[plugins.org]` installs org;
+`[org]` and the tables under it are org's own options, held until org loads
+and declares them:
+
+```toml
+# ~/.config/lattice/lattice.toml
+
+# Install org from its GitHub releases.
+[plugins.org]
+release = "dhruvasagar/lattice-org-plugin"
+# version = "v…"                    # optional: stay on one release; omitted, the newest built for this editor
+
+# Configure it.
+[org]
+directory = "~/notes"               # where org may write
+roam-directory = "~/notes/roam"
+agenda-files = ["~/notes", "~/work/notes"]
+
+[[org.capture-templates]]
+key = "t"
+description = "todo"
+target = { file = "~/notes/inbox.org", headline = "Tasks" }
+body = """
+* TODO %?
+%U
+"""
+```
+
+The two tables are independent. Removing `[plugins.org]` does not
+uninstall org, and `[org]` has no effect until org is installed. A typo in an
+option is reported in `*messages*` once org has loaded.
+
+**From `init.rs`.** The same install, declared in code. You need lattice
+0.9.11 or later and an `init.rs` (`lattice --scaffold-init` makes one). In
+its `register_plugins`:
 
 ```rust
 fn register_plugins() {
@@ -128,6 +171,7 @@ Confirm it loaded with `:plugins`, and reach for `:plugin-trace` if it did not.
 | **Clocking** | clock in and out, with the running clock in your modeline |
 | **Babel** | run source blocks in the background and keep their output under them as `#+RESULTS:`, byte-for-byte as emacs writes it — tables, drawers, values, append or replace — and tangle them out to files (`C-c C-v t`) |
 | **Export** | `C-c C-e` — HTML, Markdown, LaTeX and PDF, with emacs's dispatcher letters, `#+OPTIONS:` and tags. It runs in the background, shows the result beside the org file without taking your window, and a PDF open in lattice reloads in place on each export |
+| **Assistant** | tools for lattice's language-model chats over your agenda, entries, clocked time and roam notes, with `:org-plan-day`, `:org-review` and `:org-report` workflows; the same tools reach Claude Code through `lattice --mcp`. See `:help org.assistant` |
 
 The agenda is a **multibuffer**: its rows are real excerpts of your files, so
 editing a row edits the file and `:w` saves it. That is why it behaves like the

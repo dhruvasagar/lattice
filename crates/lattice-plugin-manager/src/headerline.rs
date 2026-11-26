@@ -399,6 +399,7 @@ mod tests {
             option_bound: Vec::new(),
             health,
             source: SourceRecord::Unknown,
+            declared_by: None,
             build: BuildState::NotBuilt,
             build_error: None,
         };

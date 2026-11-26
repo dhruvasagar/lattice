@@ -16,6 +16,9 @@ through the same seams any plugin uses.
 | **Habits** | repeating tasks with a consistency graph under their agenda row |
 | **Roam** | a Zettelkasten layer — id links, backlinks, dailies, and notes that nest |
 | **Clocking** | clock in and out, with the running clock in your modeline |
+| **Babel** | run source blocks in the background and keep their output under them as `#+RESULTS:`, as emacs writes it, and tangle them out to files. Nothing runs until you list the languages that may |
+| **Export** | `C-c C-e`: HTML, Markdown, LaTeX and PDF with emacs' dispatcher letters, `#+OPTIONS:` and tags, shown beside the file; a PDF open in lattice reloads in place on each export |
+| **Assistant** | tools for lattice's language-model chats over your agenda, entries, clocked time and roam notes, with `:org-plan-day`, `:org-review` and `:org-report` workflows; the same tools reach Claude Code through `lattice --mcp` |
 
 The agenda is a **multibuffer**: its rows are real excerpts of your files, so
 editing a row edits the file and `:w` saves it. That is why it behaves like the
@@ -31,23 +34,29 @@ will be.
 
 ## Getting it
 
-Point the plugin manager at the repository and let the editor build it on
-first boot, or build the component yourself and drop it in:
+Every release publishes org ready-built, so the simplest install needs no
+Rust toolchain and no `init.rs`. In `~/.config/lattice/lattice.toml`:
 
-```sh
-git clone https://github.com/dhruvasagar/lattice-org-plugin
-cd lattice-org-plugin
-cargo build --release --target wasm32-wasip2
-mkdir -p ~/.config/lattice/plugins/org
-cp target/wasm32-wasip2/release/lattice_org_plugin.wasm \
-   ~/.config/lattice/plugins/org/org.wasm
-cp plugin.toml ~/.config/lattice/plugins/org/
+```toml
+[plugins.org]
+release = "dhruvasagar/lattice-org-plugin"
+
+[org]
+directory = "~/notes"
+agenda-files = ["~/notes"]
 ```
 
-That build needs Rust and nothing else — no checkout of lattice. Org depends
-on the plugin API the way any crate depends on anything, by version:
-`lattice-wit` carries the WIT package and `lattice-plugin-sdk` the typed
-config helpers, both from crates.io.
+then `:reload-config`, or restart lattice. `[plugins.org]` installs org and
+`[org]` configures it. Lattice holds the options until org loads, so one file
+does both. The table's fields are in
+[installing plugins from `lattice.toml`](@/docs/config/plugins.md#installing-plugins-from-lattice-toml).
+
+The same release can be installed from `init.rs` with `require_release`, or
+built from source with `require`, or staged by hand. The
+[README](https://github.com/dhruvasagar/lattice-org-plugin#installing-it)
+covers each one. Building org needs Rust, the `wasm32-wasip2` target and clang,
+and no checkout of lattice: org depends on the plugin API by version, through
+`lattice-wit` and `lattice-plugin-sdk` from crates.io.
 
 Confirm it loaded with `:plugins`, and reach for `:plugin-trace` if it did
 not.

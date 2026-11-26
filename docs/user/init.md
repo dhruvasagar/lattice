@@ -707,6 +707,11 @@ or built from source with `plugin_manager::require` and a git or local
 `PluginSource`. `:reload-config` applies a change; `:plugin-update <name>`
 moves an unpinned plugin to its newest release or commit.
 
+A released plugin needs no `init.rs` at all: `[plugins.org] release =
+"owner/name"` in `lattice.toml` installs it the same way
+([`plugins`](help:plugins#installing-plugins-from-lattice-toml)). If both
+files name a plugin, the `init.rs` declaration wins.
+
 The scaffold already has this seam, with the example commented out. A config
 scaffolded before 0.9.11 needs `import plugin-manager;` and
 `export register-plugins: func();` in `wit/init.wit`, and `"plugin-manager"`

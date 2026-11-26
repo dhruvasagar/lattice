@@ -3564,6 +3564,20 @@ mode toggles are roughly an order of magnitude rarer than
 `:set` writes, so the recompute cost is amortised across
 many reads.
 
+### Plugin declarations (`config::plugins_table`)
+
+Parsing `lattice.toml`'s `[plugins]` table into release declarations
+(`lattice_config::parse_plugin_declarations`). Runs once at boot and once per
+`:reload-config`, on the plugin-install task, never on the UI or actor
+thread. Measured on the TOML table already parsed, so it is the shape-check
+cost alone.
+
+| Bench                         | Time       | Notes |
+|-------------------------------|------------|-------|
+| `config::plugins_table/1`     | **41ns**   | One shorthand entry. |
+| `config::plugins_table/16`    | **3.2µs**  | Mixed shorthand and full tables. |
+| `config::plugins_table/128`   | **23µs**   | Far past any real config; linear in entries. |
+
 ---
 
 ## Picker (`crates/lattice-picker/benches/picker.rs`)

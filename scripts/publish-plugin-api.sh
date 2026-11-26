@@ -146,9 +146,11 @@ cargo test --quiet -p lattice-wit --test the_crate_versions_track_the_wit_packag
     || die "the crate versions do not track the WIT package version — see the test output above"
 
 # ------------------------------------------------------------------- publish
-# One crate at a time, and each is dry-run immediately before its own upload
-# rather than all up front: the SDK's dry-run cannot pass until the derive
-# crate it depends on is really on the index.
+# One crate at a time, and each is checked immediately before its own upload
+# rather than all up front: the SDK cannot package until the derive crate it
+# depends on is really on the index. A real publish runs `cargo publish`
+# alone: it packages and verifies before it uploads, and uploads nothing when
+# that fails, so a separate dry run first would only build each crate twice.
 for crate in "${todo[@]}"; do
     say "$crate $version"
     if [ "$crate" = "lattice-plugin-sdk" ] \
@@ -161,14 +163,15 @@ for crate in "${todo[@]}"; do
         die "lattice-plugin-sdk-derive $version is not on crates.io, and the SDK needs it"
     fi
 
-    cargo publish -p "$crate" --dry-run \
-        || die "$crate does not package cleanly — nothing was uploaded for it"
-    if [ "$mode" = "publish" ]; then
-        cargo publish -p "$crate" || die "publishing $crate failed.
+    if [ "$mode" = "dry-run" ]; then
+        cargo publish -p "$crate" --dry-run \
+            || die "$crate does not package cleanly"
+        continue
+    fi
+    cargo publish -p "$crate" || die "publishing $crate failed.
 Whatever was uploaded before it stays uploaded; fix the cause and re-run —
 crates already on crates.io are skipped."
-        echo "  published $crate $version"
-    fi
+    echo "  published $crate $version"
 done
 
 if [ "$mode" = "dry-run" ]; then

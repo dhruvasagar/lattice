@@ -517,7 +517,7 @@ impl EffectAuthorizer {
             // Only `file:///abs`: a host part (`file://localhost/abs`)
             // would be checked as a relative path while the opener reads
             // the absolute one.
-            Some(rest) if !rest.contains('%') && rest.starts_with('/') => PathBuf::from(rest),
+            Some(rest) if !rest.contains('%') && rest.starts_with('/') => file_uri_path(rest),
             Some(_) => {
                 return Err(format!(
                     "{}: refused to open {uri} — post the absolute path, not a URI with a host or escapes",
@@ -823,6 +823,21 @@ fn effect_name(effect: &NativeEffect) -> String {
         .next()
         .unwrap_or_default()
         .to_string()
+}
+
+/// The path a `file://` URI's `rest` (what follows `file://`, starting `/`)
+/// names. On Windows a drive path is written `file:///C:/x`, whose `rest`
+/// `/C:/x` is no path there, so the slash before the drive is dropped;
+/// elsewhere `/C:/x` is a path like any other and is kept.
+fn file_uri_path(rest: &str) -> PathBuf {
+    PathBuf::from(file_uri_path_text(rest, cfg!(windows)))
+}
+
+/// [`file_uri_path`]'s text, for the platform `windows` says.
+fn file_uri_path_text(rest: &str, windows: bool) -> &str {
+    let bytes = rest.as_bytes();
+    let drive = bytes.len() >= 3 && bytes[1].is_ascii_alphabetic() && bytes[2] == b':';
+    if windows && drive { &rest[1..] } else { rest }
 }
 
 /// The path to compare against a granted prefix.
@@ -1541,17 +1556,42 @@ mod tests {
         );
     }
 
+    /// `file:///C:/x` names `C:/x` on Windows; elsewhere `/C:/x` is a path
+    /// like any other and is kept.
+    #[test]
+    fn a_file_uri_names_a_drive_path_on_windows_only() {
+        assert_eq!(
+            file_uri_path_text("/C:/Users/me/notes.pdf", true),
+            "C:/Users/me/notes.pdf"
+        );
+        assert_eq!(
+            file_uri_path_text("/C:/Users/me/notes.pdf", false),
+            "/C:/Users/me/notes.pdf"
+        );
+        assert_eq!(
+            file_uri_path_text("/home/me/notes.pdf", true),
+            "/home/me/notes.pdf"
+        );
+        assert_eq!(
+            file_uri_path_text("/home/me/notes.pdf", false),
+            "/home/me/notes.pdf"
+        );
+    }
+
     /// `open-external-uri` posts only a file the plugin can read, as a path
-    /// or a `file://` URI, and is passed through unchanged.
+    /// or a `file://` URI in the platform's form, and is passed through.
     #[test]
     fn a_posted_external_open_of_a_granted_file_is_kept() {
+        // `file:///abs` on Unix, `file:///C:/abs` on Windows.
+        fn file_uri(path: &Path) -> String {
+            let path = path.to_string_lossy().replace('\\', "/");
+            let slash = if path.starts_with('/') { "" } else { "/" };
+            format!("file://{slash}{path}")
+        }
         let dir = tmp("posted-uri");
         let pdf = dir.join("notes.pdf");
         let auth = EffectAuthorizer::new(&grant(&dir, true), "org");
-        for uri in [
-            pdf.to_string_lossy().into_owned(),
-            format!("file://{}", pdf.display()),
-        ] {
+        for uri in [pdf.to_string_lossy().into_owned(), file_uri(&pdf)] {
             let out = auth.restrict_posted(NativeEffect::OpenExternalUri { uri: uri.clone() });
             assert!(
                 matches!(&out, NativeEffect::OpenExternalUri { uri: kept } if *kept == uri),

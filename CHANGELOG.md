@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.10.5 — 2026-11-26
 
 ### Added
 - **Plugins without a Rust toolchain.** `lattice.toml` can declare plugins published as releases: `[plugins.org]` with `release = "owner/name"` and optionally `version`, `sha256` and `enable-mode`, or the one-line `org = "owner/name@v0.2.0"`. They install at startup like `init.rs`'s `require-release`, so you no longer need an `init.rs` just to use plugins. A plugin named in both files takes `init.rs`'s declaration, with a warning when the two differ. An entry that cannot be read, such as one naming a `git` source or a misspelt key, is skipped and listed in `:plugins` with the reason. A project's `.lattice/config.toml` cannot declare plugins. `:reload-config` installs a plugin you have added since startup, with or without an `init.rs`. `:plugins` names the file that declared each plugin.

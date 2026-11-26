@@ -221,8 +221,9 @@ never read.
 
 ### Who reads the file
 
-The loader reads the user's `lattice.toml` itself
-(`lattice_config::default_user_config_path`) at the top of the install task,
+The install task reads the user's `lattice.toml` itself
+(`lattice_config::default_user_config_path`, through
+`lattice_config::read_plugin_declarations`) before `init.rs` loads,
 so the order relative to `Editor::load_persistent_config` cannot matter. A
 parse error is `debug!` on this side; the editor's own load already reports
 it to the user, and reporting it twice is noise.
@@ -240,9 +241,11 @@ TOML duplicate-key error).
 
 ### One declaration path, with provenance
 
-Both front-ends go through one `PluginLoader` helper that fills `required` and
-`declared` together, tagging each spec with its origin
-(`DeclaredBy::InitRs` / `DeclaredBy::LatticeToml`). The merge happens when the
+Both front-ends go through one `PluginLoader::declare` that fills `required` and
+`declared` together, tagging each queue entry with its origin
+(`DeclaredBy::InitRs` / `DeclaredBy::LatticeToml`). `RequiredSpec` itself does
+not change: it mirrors a WIT-facing type, and nothing after the merge reads the
+origin. The merge happens when the
 queue is drained, after `init.rs` has loaded, so precedence is decided in one
 place with both sets visible. `:plugins` shows the origin of each declared
 plugin and the TOML entries the parser rejected.

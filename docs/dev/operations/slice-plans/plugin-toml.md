@@ -17,7 +17,7 @@ Every non-trivial slice ships the four artefacts (doc + bench where perf-relevan
 | PT.0 | Design made final; CLAUDE.md, `plugin-manager.md`, `config-and-init.md` amended; this plan; ledger entry. No code. | docs | ✅ |
 | PT.1 | The parser: `PluginDeclaration` + `parse_plugin_declarations`, table tests, a parse bench. No wiring. | `lattice-config` | ✅ 18 tests; `config::plugins_table` 41 ns / 3.2 µs / 23 µs at 1 / 16 / 128 entries |
 | PT.2 | The walker reserves `plugins`; project config refuses it; `[plugin.<x>]` with `release` warns. | `lattice-config` | ✅ 3 tests |
-| PT.3 | Boot: one `declare` path with `DeclaredBy` origin; the install task reads `lattice.toml`, lowers, merges with `init.rs` (init wins), installs. | `lattice-plugin-loader` | 📝 |
+| PT.3 | Boot: one `declare` path with `DeclaredBy` origin; the install task reads `lattice.toml`, lowers, merges with `init.rs` (init wins), installs. | `lattice-config`, `lattice-plugin-loader` | ✅ 9 tests (5 unit, 4 integration + 1 fixture-gated); whole-crate suites pending the next batch run |
 | PT.4 | `:reload-config` reconciles `[plugins]`; no `init.rs` is benign. | `lattice-plugin-loader` | 📝 |
 | PT.5 | `:plugins` shows each plugin's origin and the rejected TOML entries. | `lattice-plugin-loader` (view) | 📝 |
 | PT.6 | Docs sweep: user guide, `:help`, scaffold comment, `BENCHMARKS.md`, CHANGELOG. | docs, `lattice-cli` | 📝 |
@@ -80,28 +80,40 @@ declaration; `[plugin.org] release = …` warns.
 
 ## PT.3 — boot
 
-- `RequiredSpec` gains `declared_by: DeclaredBy` (`InitRs` / `LatticeToml`).
-  `to_required_spec` sets `InitRs`.
-- One `PluginLoader::declare(specs)` fills `required` and `declared`; the
-  plugin-manager drain calls it instead of its inline locking.
-- `lower_declarations(PluginDeclarations) -> (Vec<RequiredSpec>, Vec<(String, String)>)`:
-  `is_safe_plugin_name`, then `PluginSource::Release`, `pinned: false`.
-- The install task reads `default_user_config_path()` at its top, parses,
-  lowers, `declare`s, and `record_failure`s each rejection with a `warn!`.
-  A read or parse error is `debug!`.
-- At drain (`run_required`), `merge_declared(specs)`: dedup by name,
-  `InitRs` beats `LatticeToml`, `warn!` on a differing pair, `debug!` on an
-  identical one. The log line stops saying "declared by init.rs".
+As built:
 
-**Tests**: `merge_declared` unit tests (init wins, warn on difference, no
-warn on identical, TOML-only passes through); lowering rejects an unsafe id;
-an integration test that boots with no `init.rs` and a `lattice.toml`
-declaring a release, through a fake fetcher, and finds it installed and
-loaded; a warm boot with the marker present that asserts zero fetches with a
-counting fetcher; one broken entry not stopping the others. Pattern on
-`tests/require_drain.rs` and `tests/release_round_trip.rs`. The integration
-tests need the fetcher injectable at the `run_required` seam; if it is not,
-the slice adds that seam first.
+- `lattice-config::read_plugin_declarations(path)` reads and parses the file,
+  quiet on a missing or broken one (the editor's config load reports that), so
+  the loader stays free of a `toml` dependency.
+- `lattice-plugin-loader/src/declare.rs`: `DeclaredBy` (`InitRs` /
+  `LatticeToml`), `lower_declarations` (the `is_safe_plugin_name` gate, then
+  `PluginSource::Release`, `pinned: false`) and `merge_declared` (one spec per
+  name, `init.rs` beats `lattice.toml`, later beats earlier within one file,
+  `warn!` naming both files on a differing pair).
+- The origin rides on the queue entry, `(DeclaredBy, RequiredSpec)`, and in
+  the `declared` map, not as a `RequiredSpec` field: nothing after the merge
+  reads it, and `RequiredSpec` mirrors a WIT-facing type with a dozen literal
+  sites. `take_required` merges as it drains, so precedence is decided in one
+  place with both files' declarations visible.
+- `PluginLoader::declare(by, specs)` is the one path both front-ends use; the
+  plugin-manager drain calls it. `declare_from_config_file(path)` reads,
+  lowers, declares, and `warn!` + `record_failure`s each rejection with the
+  file as its location.
+- The boot task calls `declare_from_config_file(default_user_config_path())`
+  first. `run_required` keeps the real git / network / toolchain and user
+  roots and delegates to the new public `run_required_in`, the seam the tests
+  drive. Nothing was hoisted out of the init-dir gate: it was never a gate
+  (design §1).
+- A repeated `require` of one name in `init.rs` now installs once, the later
+  spec, rather than twice.
+
+**Tests** (`tests/toml_plugins.rs`, `declare.rs` unit tests): lowering and the
+unsafe-id gate; merge precedence both orders, pass-through order, repeat within
+a file; a declaration queued as a release spec; rejections recorded with the
+file as their location; a missing file; no `init.rs`, a release installed
+through a fake fetcher with no git or toolchain, a broken entry costing only
+itself, and a warm boot doing zero fetches; `init.rs` winning a shared name
+against the real plugin-manager fixture guest.
 
 ## PT.4 — `:reload-config`
 

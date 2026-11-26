@@ -100,6 +100,32 @@ pub fn parse_plugin_declarations(root: &toml::Table) -> PluginDeclarations {
     out
 }
 
+/// Read the configuration file at `path` and parse its `[plugins]` table.
+///
+/// `None` when the file is absent, unreadable or does not parse. None of those
+/// is reported here: this is a second reader of the user's `lattice.toml`, and
+/// the editor's own load of the same file already tells the user what is wrong
+/// with it. Saying it twice is noise.
+pub fn read_plugin_declarations(path: &std::path::Path) -> Option<PluginDeclarations> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                tracing::debug!(path = %path.display(), error = %e, "plugins: config unreadable");
+            }
+        })
+        .ok()?;
+    let root: toml::Table = text
+        .parse()
+        .map_err(|_| {
+            tracing::debug!(
+                path = %path.display(),
+                "plugins: config does not parse; the config load reports why"
+            );
+        })
+        .ok()?;
+    Some(parse_plugin_declarations(&root))
+}
+
 fn parse_entry(id: &str, entry: &toml::Value) -> Result<PluginDeclaration, String> {
     match entry {
         toml::Value::String(spec) => parse_shorthand(id, spec),
@@ -414,6 +440,25 @@ mod tests {
         let bad: Vec<_> = out.rejected.iter().map(|r| r.id.as_str()).collect();
         assert_eq!(ok, ["alpha", "omega"]);
         assert_eq!(bad, ["broken", "source"]);
+    }
+
+    #[test]
+    fn reading_a_missing_or_broken_file_declares_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("lattice.toml");
+        assert_eq!(read_plugin_declarations(&path), None);
+        std::fs::write(&path, "[plugins\norg = ").unwrap();
+        assert_eq!(read_plugin_declarations(&path), None);
+    }
+
+    #[test]
+    fn reading_a_file_parses_its_plugins_table() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("lattice.toml");
+        std::fs::write(&path, "tabstop = 4\n[plugins]\norg = \"owner/org@v1\"\n").unwrap();
+        let out = read_plugin_declarations(&path).unwrap();
+        assert_eq!(out.declared.len(), 1);
+        assert_eq!(out.declared[0].version.as_deref(), Some("v1"));
     }
 
     /// Repo and tag syntax belong to the install step's validator, shared with

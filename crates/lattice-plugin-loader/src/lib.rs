@@ -65,6 +65,7 @@
 //! `docs/dev/operations/slice-plans/plugin-loader.md`.
 
 pub mod build;
+pub mod declare;
 pub mod discovery;
 pub mod events;
 mod ex_commands;
@@ -80,6 +81,7 @@ pub use build::{
     BuildOutcome, CargoComponentBuilder, ComponentBuilder, Stamp, Toolchain, ToolchainProblem,
     USER_WORLD_FILE, WASM_TARGET, artifact_path, build_plugin, source_stamp,
 };
+pub use declare::DeclaredBy;
 pub use discovery::{
     DiscoveredPlugin, default_core_plugins_dir, default_init_dir, default_plugins_dir,
     default_source_cache_dir, discover, discover_one,
@@ -87,11 +89,15 @@ pub use discovery::{
 pub use events::{LanguagesRegistered, PluginStatusChanged};
 pub use install::{
     autoload_enabled, disable_autoload, enable_autoload, flush_plugin_stores, install,
+    run_required_in,
 };
 pub use pipeline::{Install, RequiredSpec, install_all, install_required, to_required_spec};
 pub use resolve::{
     Fetcher, GitRunner, HttpFetcher, PluginSource, Resolved, SystemGit, git_cache_dir, resolve,
 };
+
+/// Each declared plugin's source and the file that declared it, by name.
+type DeclaredSources = std::collections::HashMap<String, (SourceRecord, DeclaredBy)>;
 pub use source_record::SourceRecord;
 
 use std::sync::{Arc, Mutex};
@@ -848,7 +854,7 @@ pub struct PluginLoader {
     /// that also contributes a keymap goes down the same path — and threading
     /// a second return value through every arm to serve one of them would put
     /// the cost on all of them.
-    required: Mutex<Vec<pipeline::RequiredSpec>>,
+    required: Mutex<Vec<(DeclaredBy, pipeline::RequiredSpec)>>,
     /// Where each `require`d plugin was declared to come from, by name — kept
     /// after `required` is drained.
     ///
@@ -857,7 +863,7 @@ pub struct PluginLoader {
     /// plugin a user most needs to rebuild from `:plugins` — the one that has
     /// never built — would answer "no buildable source", its source having
     /// been named in `init.rs` a minute earlier.
-    declared: Mutex<std::collections::HashMap<String, SourceRecord>>,
+    declared: Mutex<DeclaredSources>,
     /// WT.4: plugins that tried to load and could not, for `:plugins`.
     ///
     /// In memory, not on disk. A load failure is a fact about *this* boot
@@ -2651,7 +2657,7 @@ impl PluginLoader {
                 .declared
                 .lock()
                 .ok()
-                .and_then(|d| d.get(name).cloned())
+                .and_then(|d| d.get(name).map(|(source, _)| source.clone()))
                 .unwrap_or(SourceRecord::Unknown),
             marked => marked,
         };
@@ -3009,11 +3015,74 @@ impl PluginLoader {
     /// Drained exactly once per boot by the install task. Draining rather than
     /// reading is what stops a second call from resolving, building and
     /// loading the same set twice.
+    ///
+    /// Both front-ends' declarations meet here, so this is where a plugin
+    /// named by `init.rs` and `lattice.toml` is resolved to one spec
+    /// ([`declare::merge_declared`]): `init.rs`'s.
     pub fn take_required(&self) -> Vec<pipeline::RequiredSpec> {
-        self.required
+        let queue = self
+            .required
             .lock()
             .map(|mut q| std::mem::take(&mut *q))
-            .unwrap_or_default()
+            .unwrap_or_default();
+        declare::merge_declared(queue)
+    }
+
+    /// Queue `specs` for install and remember where each was declared.
+    ///
+    /// The one path both front-ends declare through. The queue is drained by
+    /// [`take_required`](Self::take_required); the record of where each plugin
+    /// came from outlives it, so `:plugins` can rebuild a plugin whose first
+    /// install never staged anything. That record follows the precedence the
+    /// drain applies: a `lattice.toml` declaration never replaces an
+    /// `init.rs` one.
+    pub fn declare(&self, by: DeclaredBy, specs: Vec<pipeline::RequiredSpec>) {
+        if specs.is_empty() {
+            return;
+        }
+        if let Ok(mut declared) = self.declared.lock() {
+            for spec in &specs {
+                let outranked = declared
+                    .get(&spec.name)
+                    .is_some_and(|(_, kept)| kept.outranks(by));
+                if !outranked {
+                    declared.insert(
+                        spec.name.clone(),
+                        (SourceRecord::from_plugin_source(&spec.source), by),
+                    );
+                }
+            }
+        }
+        if let Ok(mut queue) = self.required.lock() {
+            queue.extend(specs.into_iter().map(|spec| (by, spec)));
+        }
+    }
+
+    /// Declare the release plugins in the `[plugins]` table of the
+    /// configuration file at `config`, the user's `lattice.toml`.
+    ///
+    /// An entry that cannot be declared is logged and recorded under its id,
+    /// so `:plugins` says why it is not there, with the file as its location.
+    /// A missing or unparseable file declares nothing and says nothing here:
+    /// the editor's config load reports a broken file.
+    pub fn declare_from_config_file(&self, config: &std::path::Path) {
+        let Some(declarations) = lattice_config::read_plugin_declarations(config) else {
+            return;
+        };
+        let (specs, rejected) = declare::lower_declarations(declarations);
+        for r in rejected {
+            tracing::warn!(
+                plugin = %r.id,
+                file = %config.display(),
+                "plugin not declared: {}",
+                r.reason
+            );
+            self.record_failure(&r.id, config, TrustTier::UserInstalled, &r.reason);
+        }
+        if !specs.is_empty() {
+            tracing::debug!(count = specs.len(), file = %config.display(), "plugins declared");
+        }
+        self.declare(DeclaredBy::LatticeToml, specs);
     }
 
     /// Unload the plugin named `target` (its manifest id, or its numeric plugin
@@ -4497,20 +4566,10 @@ impl PluginLoader {
             count = specs.len(),
             "config guest declared plugins via require"
         );
-        if !specs.is_empty() {
-            let specs: Vec<_> = specs.into_iter().map(pipeline::to_required_spec).collect();
-            if let Ok(mut declared) = self.declared.lock() {
-                for spec in &specs {
-                    declared.insert(
-                        spec.name.clone(),
-                        SourceRecord::from_plugin_source(&spec.source),
-                    );
-                }
-            }
-            if let Ok(mut queue) = self.required.lock() {
-                queue.extend(specs);
-            }
-        }
+        self.declare(
+            DeclaredBy::InitRs,
+            specs.into_iter().map(pipeline::to_required_spec).collect(),
+        );
         // The seam contributes no registry entries, so there is nothing for
         // teardown to reverse — unloading the guest cannot un-install the
         // plugins it asked for, any more than removing a package list

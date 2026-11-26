@@ -248,7 +248,7 @@ pub use plugin_options::{PluginTraceLevel, PluginTraceLevelOption};
 // Release plugins declared in `lattice.toml`'s `[plugins]` table.
 pub use plugins::{
     PLUGINS_TABLE, PluginDeclaration, PluginDeclarations, RejectedDeclaration,
-    parse_plugin_declarations,
+    parse_plugin_declarations, read_plugin_declarations,
 };
 // PU.1b: the `signcolumn` option value type — gates the gutter sign
 // columns (diagnostics severity + diff sign) so help / synthetic

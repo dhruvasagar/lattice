@@ -444,6 +444,14 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     if core_plugins_dir.is_some() || init_dir.is_some() || plugins_dir.is_some() {
         let loader = loader.clone();
         boot.runtime_handle().spawn(async move {
+            // The plugins `lattice.toml` declares, queued before init.rs so
+            // both sets are in the queue when it drains; which one wins a
+            // shared name is decided there, not by this order. Read here
+            // rather than handed over by the editor's config load, so the
+            // order of the two loads cannot matter.
+            if let Some(config) = lattice_config::default_user_config_path() {
+                loader.declare_from_config_file(&config);
+            }
             // 0. CORE plugins first (prebuilt runtime root, `Bundled` tier) — PM.1.
             //    They enable via a config gate (PM.3), NOT init.rs, so loading them
             //    before init.rs is correct: a user init.rs `on-plugin-loaded`
@@ -667,40 +675,65 @@ async fn build_init_if_needed(
     }
 }
 
-/// PM.7b / PMF.14: resolve and build everything `init.rs` declared via
-/// `require`, then reconcile it with what is loaded
-/// ([`PluginLoader::apply_required`]). Returns the `enable_mode` requests a
-/// [`RequirePhase::Boot`] run defers until the user-root scan has loaded the
-/// plugins.
+/// PM.7b / PMF.14: resolve and build every declared plugin, then reconcile it
+/// with what is loaded ([`PluginLoader::apply_required`]). Returns the
+/// `enable_mode` requests a [`RequirePhase::Boot`] run defers until the
+/// user-root scan has loaded the plugins.
+///
+/// [`run_required_in`] with the real git, network and toolchain, and the
+/// user's own plugin and cache roots.
+///
+/// [`RequirePhase::Boot`]: crate::RequirePhase::Boot
+pub(crate) async fn run_required(
+    loader: &crate::PluginLoader,
+    phase: crate::RequirePhase,
+) -> Vec<(String, String)> {
+    let Some(user_root) = crate::default_plugins_dir() else {
+        if !loader.take_required().is_empty() {
+            tracing::warn!("require: no config dir; cannot install declared plugins");
+        }
+        return Vec::new();
+    };
+    run_required_in(
+        loader,
+        phase,
+        user_root,
+        crate::default_source_cache_dir(),
+        crate::resolve::SystemGit,
+        crate::resolve::HttpFetcher,
+        crate::build::CargoComponentBuilder,
+    )
+    .await
+}
+
+/// Drain the declared plugins, install them into `user_root` through `git`,
+/// `fetcher` and `builder`, and reconcile the result with what is loaded.
 ///
 /// Each spec is independent: one broken source costs that plugin and nothing
 /// else. Resolution and builds run on `spawn_blocking` — they clone, download
 /// and compile — and only the loads return to the async context.
-pub(crate) async fn run_required(
+pub async fn run_required_in(
     loader: &crate::PluginLoader,
     phase: crate::RequirePhase,
+    user_root: std::path::PathBuf,
+    cache_root: std::path::PathBuf,
+    git: impl crate::resolve::GitRunner + 'static,
+    fetcher: impl crate::resolve::Fetcher + 'static,
+    builder: impl crate::build::ComponentBuilder + 'static,
 ) -> Vec<(String, String)> {
     let specs = loader.take_required();
     if specs.is_empty() {
         return Vec::new();
     }
-    let Some(user_root) = crate::default_plugins_dir() else {
-        tracing::warn!("require: no config dir; cannot install declared plugins");
-        return Vec::new();
-    };
-    let cache_root = crate::default_source_cache_dir();
-    tracing::info!(
-        count = specs.len(),
-        "installing plugins declared by init.rs"
-    );
+    tracing::info!(count = specs.len(), "installing declared plugins");
 
     let installs = match tokio::task::spawn_blocking({
         let user_root = user_root.clone();
         move || {
             crate::pipeline::install_all(
-                &crate::resolve::SystemGit,
-                &crate::resolve::HttpFetcher,
-                &crate::build::CargoComponentBuilder,
+                &git,
+                &fetcher,
+                &builder,
                 &specs,
                 &cache_root,
                 &user_root,

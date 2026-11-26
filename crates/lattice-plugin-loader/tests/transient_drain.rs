@@ -188,7 +188,8 @@ async fn a_plugin_menu_registers_under_the_name_the_guest_chose() {
     assert_eq!(spec.title, "org-mode (1 minors) for nothing");
 
     // Two rows naming the same command with different args — the property the
-    // seam exists for — plus the dismiss, and NOT the ghost row.
+    // seam exists for — the field and flag rows, the dismiss, and NOT the
+    // ghost row.
     let keys: Vec<&str> = spec.groups[0]
         .items
         .iter()
@@ -196,10 +197,10 @@ async fn a_plugin_menu_registers_under_the_name_the_guest_chose() {
         .collect();
     assert_eq!(
         keys,
-        vec!["t", "n", "w", "q"],
+        vec!["t", "n", "w", "s", "q"],
         "the row naming an unregistered command was dropped and the rest kept \
-         — including TR.3b's field row, which fires nothing and so has no \
-         command to resolve"
+         — including TR.3b's field row and the `s` flag row, which fire \
+         nothing and so have no command to resolve"
     );
 
     let expected = rig.commands.load().id_by_name(COMMAND).unwrap();

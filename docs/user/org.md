@@ -171,6 +171,7 @@ Confirm it loaded with `:plugins`, and reach for `:plugin-trace` if it did not.
 | **Clocking** | clock in and out, with the running clock in your modeline |
 | **Babel** | run source blocks in the background and keep their output under them as `#+RESULTS:`, byte-for-byte as emacs writes it — tables, drawers, values, append or replace — and tangle them out to files (`C-c C-v t`) |
 | **Export** | `C-c C-e` — HTML, Markdown, LaTeX and PDF, with emacs's dispatcher letters, `#+OPTIONS:` and tags. It runs in the background, shows the result beside the org file without taking your window, and a PDF open in lattice reloads in place on each export |
+| **Assistant** | tools for lattice's language-model chats over your agenda, entries, clocked time and roam notes, with `:org-plan-day`, `:org-review` and `:org-report` workflows; the same tools reach Claude Code through `lattice --mcp`. See `:help org.assistant` |
 
 The agenda is a **multibuffer**: its rows are real excerpts of your files, so
 editing a row edits the file and `:w` saves it. That is why it behaves like the

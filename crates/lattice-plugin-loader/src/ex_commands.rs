@@ -397,13 +397,14 @@ fn reload_config_spec(loader: Weak<PluginLoader>) -> ExCommandSpec {
             let Some(loader) = loader.upgrade() else {
                 return Ok(loader_gone());
             };
-            // Recompiles init.rs THEN reloads (unlike `:plugin-reload`, which
-            // re-instantiates the on-disk artifact). The success/failure detail
+            // Re-reads lattice.toml's `[plugins]`, recompiles init.rs THEN
+            // reloads (unlike `:plugin-reload`, which re-instantiates the
+            // on-disk artifact). The success/failure detail
             // — including the compiler error — lands in `*messages*`.
             loader.spawn_reload_config();
             Ok(echo(
                 EchoLevel::Info,
-                "reloading user config (init.rs): rebuilding — result in *messages*…",
+                "reloading user config (init.rs, and lattice.toml's plugins) — result in *messages*…",
             ))
         }),
         args_schema: Vec::new(),

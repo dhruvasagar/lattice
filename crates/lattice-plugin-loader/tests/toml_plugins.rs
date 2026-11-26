@@ -24,8 +24,8 @@ use lattice_mode::{ModeRegistry, ModeRegistryHandle, PluginMetaSink};
 use lattice_plugin_host::{PluginHost, TrustTier};
 use lattice_plugin_loader::resolve::{release_asset_name, release_asset_url};
 use lattice_plugin_loader::{
-    ComponentBuilder, Fetcher, GitRunner, LoaderServices, PluginLoader, PluginLoaderHandle,
-    PluginSource, RequirePhase, RequiredSpec, run_required_in,
+    ComponentBuilder, ConfigBuildStatus, Fetcher, GitRunner, InstallEnv, LoaderServices,
+    PluginLoader, PluginLoaderHandle, PluginSource, RequirePhase, RequiredSpec, run_required_in,
 };
 use lattice_runtime::EventBus;
 use sha2::Digest;
@@ -44,6 +44,12 @@ fn commands_with_builtins() -> CommandRegistryHandle {
 }
 
 fn loader(base: &Path) -> PluginLoaderHandle {
+    loader_with(base, None)
+}
+
+/// A loader that installs through `install` rather than the system's git,
+/// network and plugin root.
+fn loader_with(base: &Path, install: Option<InstallEnv>) -> PluginLoaderHandle {
     let host = Arc::new(PluginHost::with_dirs(base.join("cache"), base.join("data")).unwrap());
     Arc::new(PluginLoader::with_services(
         host,
@@ -57,6 +63,7 @@ fn loader(base: &Path) -> PluginLoaderHandle {
             ),
             config_registry: Some(Arc::new(ConfigRegistry::default())),
             meta_sink: Some(Arc::new(Sink) as Arc<dyn PluginMetaSink>),
+            install,
             ..Default::default()
         },
     ))
@@ -137,17 +144,19 @@ impl ComponentBuilder for NoToolchain {
     }
 }
 
+/// Install into `base/plugins` through `server`, with no git or toolchain.
+fn env(base: &Path, server: &Server) -> InstallEnv {
+    InstallEnv {
+        user_root: base.join("plugins"),
+        cache_root: base.join("sources"),
+        git: Arc::new(NoGit),
+        fetcher: Arc::new(server.clone()),
+        builder: Arc::new(NoToolchain),
+    }
+}
+
 async fn install(loader: &PluginLoader, base: &Path, server: &Server) -> Vec<(String, String)> {
-    run_required_in(
-        loader,
-        RequirePhase::Boot,
-        base.join("plugins"),
-        base.join("sources"),
-        NoGit,
-        server.clone(),
-        NoToolchain,
-    )
-    .await
+    run_required_in(loader, RequirePhase::Boot, env(base, server)).await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -317,5 +326,77 @@ async fn init_rs_wins_a_plugin_both_files_declare() {
         specs.len(),
         5,
         "the guest's four, plus the file's other one"
+    );
+}
+
+/// A user configured by `lattice.toml` alone adds a plugin and runs
+/// `:reload-config`: it installs, nothing is reported about an `init.rs` they
+/// never wrote, and a second reload with nothing changed fetches nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reload_config_with_no_init_rs_installs_a_newly_declared_plugin() {
+    let base = tempfile::tempdir().unwrap();
+    let no_init = base.path().join("init");
+    let config = write_config(base.path(), "tabstop = 4\n");
+    let server = Server::release("example/demo", "demo", "v1.0.0");
+    let loader = loader_with(base.path(), Some(env(base.path(), &server)));
+
+    // Boot: the file declares nothing yet.
+    loader.declare_from_config_file(&config);
+    assert!(install(&loader, base.path(), &server).await.is_empty());
+
+    std::fs::write(
+        &config,
+        "[plugins.demo]\nrelease = \"example/demo\"\nversion = \"v1.0.0\"\n",
+    )
+    .unwrap();
+    let report = loader.reload_config_at(&no_init).await.unwrap();
+    assert_eq!(report.build, ConfigBuildStatus::NoInit);
+    assert_eq!(report.id, None);
+    assert!(report.applied_new_config());
+    assert!(base.path().join("plugins/demo/demo.wasm").is_file());
+    assert_eq!(server.fetches(), 2);
+    assert!(
+        !loader.failed_loads().iter().any(|f| f.name == "init"),
+        "no init.rs is not an init failure: {:?}",
+        loader.failed_loads()
+    );
+
+    loader.reload_config_at(&no_init).await.unwrap();
+    assert_eq!(
+        server.fetches(),
+        2,
+        "an unchanged declaration fetches nothing"
+    );
+}
+
+/// A rejected entry the user then fixes, or deletes, stops being listed as
+/// broken on the next read; a still-broken one stays.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_reread_replaces_what_the_previous_read_rejected() {
+    let base = tempfile::tempdir().unwrap();
+    let no_init = base.path().join("init");
+    let config = write_config(base.path(), "[plugins]\nfixed = 1\ngone = 2\nstill = 3\n");
+    let server = Server::default();
+    let loader = loader_with(base.path(), Some(env(base.path(), &server)));
+    loader.declare_from_config_file(&config);
+    let names = |l: &PluginLoader| -> Vec<String> {
+        l.failed_loads().into_iter().map(|f| f.name).collect()
+    };
+    assert_eq!(names(&loader), ["fixed", "gone", "still"]);
+
+    std::fs::write(&config, "[plugins]\nfixed = \"owner/fixed\"\nstill = 3\n").unwrap();
+    loader.reload_config_at(&no_init).await.unwrap();
+    let failed = names(&loader);
+    assert!(failed.contains(&"still".to_string()), "{failed:?}");
+    assert!(!failed.contains(&"gone".to_string()), "{failed:?}");
+    // `fixed` is now a valid declaration; whatever its install did, it is no
+    // longer the parser's rejection.
+    assert!(
+        !loader
+            .failed_loads()
+            .iter()
+            .any(|f| f.name == "fixed" && f.dir == config),
+        "{:?}",
+        loader.failed_loads()
     );
 }

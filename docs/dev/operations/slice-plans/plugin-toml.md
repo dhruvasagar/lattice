@@ -18,7 +18,7 @@ Every non-trivial slice ships the four artefacts (doc + bench where perf-relevan
 | PT.1 | The parser: `PluginDeclaration` + `parse_plugin_declarations`, table tests, a parse bench. No wiring. | `lattice-config` | ✅ 18 tests; `config::plugins_table` 41 ns / 3.2 µs / 23 µs at 1 / 16 / 128 entries |
 | PT.2 | The walker reserves `plugins`; project config refuses it; `[plugin.<x>]` with `release` warns. | `lattice-config` | ✅ 3 tests |
 | PT.3 | Boot: one `declare` path with `DeclaredBy` origin; the install task reads `lattice.toml`, lowers, merges with `init.rs` (init wins), installs. | `lattice-config`, `lattice-plugin-loader` | ✅ 9 tests (5 unit, 4 integration + 1 fixture-gated); whole-crate suites pending the next batch run |
-| PT.4 | `:reload-config` reconciles `[plugins]`; no `init.rs` is benign. | `lattice-plugin-loader` | 📝 |
+| PT.4 | `:reload-config` reconciles `[plugins]`; no `init.rs` is benign. | `lattice-plugin-loader` | ✅ 2 tests |
 | PT.5 | `:plugins` shows each plugin's origin and the rejected TOML entries. | `lattice-plugin-loader` (view) | 📝 |
 | PT.6 | Docs sweep: user guide, `:help`, scaffold comment, `BENCHMARKS.md`, CHANGELOG. | docs, `lattice-cli` | 📝 |
 | PT.7 | A lockfile, or a `:plugin-pin` write-back of the resolved tag and digest. | — | ⛔ until an unpinned declaration's non-reproducibility bites a real user; needs a format decision and an answer for how `:plugin-update` moves it (design §4 Pinning). |
@@ -117,14 +117,30 @@ against the real plugin-manager fixture guest.
 
 ## PT.4 — `:reload-config`
 
-- `reload_config` re-reads `[plugins]`, `declare`s, and runs
-  `run_required(AfterBoot)`.
-- With no init directory content, the init build and load are skipped
-  without `record_failure(INIT_PLUGIN_ID)`, and the report says so.
+As built:
+
+- `reload_config` resolves the init directory and delegates to
+  `reload_config_at(init_dir)`, the seam the tests drive.
+- The loader remembers the file `declare_from_config_file` read at boot;
+  `reload_config_at` reads it again before anything else, so a plugin added
+  since boot joins the same `run_required(AfterBoot)` reconcile `init.rs`'s
+  requires take.
+- A re-read first drops the previous read's rejections (failure records whose
+  location is that file), so an entry the user fixed or deleted stops being
+  listed as broken.
+- With no `init.rs` in the directory (no `plugin.toml`, no `Cargo.toml`, no
+  component), the reload is that reconcile alone and reports
+  `ConfigBuildStatus::NoInit` with `id: None`; no `init` failure is recorded.
+- `LoaderServices::install: Option<InstallEnv>` (roots + git, fetcher,
+  builder; `InstallEnv::system()` when absent) replaces `run_required_in`'s
+  seven arguments, so the real reload path installs through a test's fake
+  network rather than the user's plugin root.
+- The `:reload-config` echo names both files.
 
 **Tests**: no `init.rs`, a declaration added after boot, `:reload-config`
-installs and loads it; no `init.rs` records no `init` failure; an unchanged
-declaration is left alone.
+installs it, reports `NoInit`, records no `init` failure, and a second reload
+fetches nothing; a re-read clears the rejections the user fixed or deleted
+and keeps the one still broken.
 
 ## PT.5 — `:plugins` provenance
 

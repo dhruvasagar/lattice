@@ -265,6 +265,8 @@ pub fn install(boot: &mut impl SubsystemBoot) {
         );
     }
     let services = LoaderServices {
+        // The editor installs with the real git, network and toolchain.
+        install: None,
         foreground_cancel,
         media_registry: boot
             .service::<lattice_mode::MediaSourceRegistryHandle>()
@@ -675,39 +677,65 @@ async fn build_init_if_needed(
     }
 }
 
+/// Where declared plugins install to, and the git, network and toolchain that
+/// install them.
+///
+/// The loader carries one ([`LoaderServices::install`](crate::LoaderServices));
+/// when it is absent, the editor's own ([`InstallEnv::system`]) is used. A test
+/// supplies its own so an install never touches the network or the user's
+/// plugin directory.
+#[derive(Clone)]
+pub struct InstallEnv {
+    /// The user plugin root: one directory per installed plugin.
+    pub user_root: std::path::PathBuf,
+    /// Where git sources are checked out.
+    pub cache_root: std::path::PathBuf,
+    /// Runs git for `Git` sources.
+    pub git: Arc<dyn crate::resolve::GitRunner>,
+    /// Downloads `Prebuilt` and `Release` sources.
+    pub fetcher: Arc<dyn crate::resolve::Fetcher>,
+    /// Builds sources into components.
+    pub builder: Arc<dyn crate::build::ComponentBuilder>,
+}
+
+impl InstallEnv {
+    /// The real git, network and toolchain, installing into the user's plugin
+    /// root. `None` when no config directory resolves, so there is nowhere to
+    /// install.
+    pub fn system() -> Option<Self> {
+        Some(Self {
+            user_root: crate::default_plugins_dir()?,
+            cache_root: crate::default_source_cache_dir(),
+            git: Arc::new(crate::resolve::SystemGit),
+            fetcher: Arc::new(crate::resolve::HttpFetcher),
+            builder: Arc::new(crate::build::CargoComponentBuilder),
+        })
+    }
+}
+
 /// PM.7b / PMF.14: resolve and build every declared plugin, then reconcile it
 /// with what is loaded ([`PluginLoader::apply_required`]). Returns the
 /// `enable_mode` requests a [`RequirePhase::Boot`] run defers until the
 /// user-root scan has loaded the plugins.
 ///
-/// [`run_required_in`] with the real git, network and toolchain, and the
-/// user's own plugin and cache roots.
+/// [`run_required_in`] with the loader's [`InstallEnv`], or the system's.
 ///
 /// [`RequirePhase::Boot`]: crate::RequirePhase::Boot
 pub(crate) async fn run_required(
     loader: &crate::PluginLoader,
     phase: crate::RequirePhase,
 ) -> Vec<(String, String)> {
-    let Some(user_root) = crate::default_plugins_dir() else {
+    let Some(env) = loader.install_env().or_else(InstallEnv::system) else {
         if !loader.take_required().is_empty() {
             tracing::warn!("require: no config dir; cannot install declared plugins");
         }
         return Vec::new();
     };
-    run_required_in(
-        loader,
-        phase,
-        user_root,
-        crate::default_source_cache_dir(),
-        crate::resolve::SystemGit,
-        crate::resolve::HttpFetcher,
-        crate::build::CargoComponentBuilder,
-    )
-    .await
+    run_required_in(loader, phase, env).await
 }
 
-/// Drain the declared plugins, install them into `user_root` through `git`,
-/// `fetcher` and `builder`, and reconcile the result with what is loaded.
+/// Drain the declared plugins, install them through `env`, and reconcile the
+/// result with what is loaded.
 ///
 /// Each spec is independent: one broken source costs that plugin and nothing
 /// else. Resolution and builds run on `spawn_blocking` — they clone, download
@@ -715,11 +743,7 @@ pub(crate) async fn run_required(
 pub async fn run_required_in(
     loader: &crate::PluginLoader,
     phase: crate::RequirePhase,
-    user_root: std::path::PathBuf,
-    cache_root: std::path::PathBuf,
-    git: impl crate::resolve::GitRunner + 'static,
-    fetcher: impl crate::resolve::Fetcher + 'static,
-    builder: impl crate::build::ComponentBuilder + 'static,
+    env: InstallEnv,
 ) -> Vec<(String, String)> {
     let specs = loader.take_required();
     if specs.is_empty() {
@@ -727,22 +751,20 @@ pub async fn run_required_in(
     }
     tracing::info!(count = specs.len(), "installing declared plugins");
 
-    let installs = match tokio::task::spawn_blocking({
-        let user_root = user_root.clone();
-        move || {
-            crate::pipeline::install_all(
-                &git,
-                &fetcher,
-                &builder,
-                &specs,
-                &cache_root,
-                &user_root,
-                // Uses what the user already has: deterministic, works
-                // offline, no network round trip per start. `:plugin-update`
-                // is the verb that goes looking for something newer.
-                crate::resolve::RefreshPolicy::UseCache,
-            )
-        }
+    let user_root = env.user_root.clone();
+    let installs = match tokio::task::spawn_blocking(move || {
+        crate::pipeline::install_all(
+            &*env.git,
+            &*env.fetcher,
+            &*env.builder,
+            &specs,
+            &env.cache_root,
+            &env.user_root,
+            // Uses what the user already has: deterministic, works
+            // offline, no network round trip per start. `:plugin-update`
+            // is the verb that goes looking for something newer.
+            crate::resolve::RefreshPolicy::UseCache,
+        )
     })
     .await
     {

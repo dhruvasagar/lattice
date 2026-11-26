@@ -257,6 +257,7 @@ docs = [
   "guides/plugin-authoring",
   "guides/plugin-patterns",
   "architecture/plugin-manifest",
+  "architecture/plugin-extension",
   "architecture/plugin-mode-options",
   "architecture/plugin-data-location",
 ]
@@ -344,6 +345,7 @@ docs = [
   "architecture/org-babel",
   "architecture/org-export",
   "architecture/org-roam",
+  "architecture/org-fcto",
 ]
 
 [[section]]

@@ -22,6 +22,11 @@
   </article>
   {% else %}
   {# Leaf section — show sidebar with pages #}
+  {% if section.path is starting_with("/dev/") %}
+  {% set current_dev_section = section.relative_path %}
+  {% set current_url = section.permalink %}
+  {% include "dev-nav.html" %}
+  {% else %}
   <aside class="sidebar">
     <nav>
       {% if section.ancestors and section.ancestors | length > 1 %}
@@ -41,6 +46,7 @@
       </ul>
     </nav>
   </aside>
+  {% endif %}
   <article class="docs-content">
     <h1>{{ section.title }}</h1>
     {{ section.content | safe }}

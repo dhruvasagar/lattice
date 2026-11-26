@@ -5,6 +5,11 @@
 
 {% block content %}
 <div class="docs-layout">
+  {% if page.path is starting_with("/dev/") %}
+  {% set current_dev_section = page.ancestors | last %}
+  {% set current_url = page.permalink %}
+  {% include "dev-nav.html" %}
+  {% else %}
   <aside class="sidebar">
     <nav>
       {% set parent = get_section(path=page.ancestors | last) %}
@@ -24,6 +29,7 @@
       </ul>
     </nav>
   </aside>
+  {% endif %}
   <article class="docs-content">
     <h1>{{ page.title }}</h1>
     {{ page.content | safe }}

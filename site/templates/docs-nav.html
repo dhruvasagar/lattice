@@ -50,6 +50,21 @@
               </li>
             {% endfor %}
           </ul>
+        {% elif sec.group | length > 1 %}
+          {# A guide section with several groups: every page shows, under its
+             group's heading, so a long section reads as a few short lists. #}
+          {% for group in sec.group %}
+            <p class="docs-nav-subhead">{{ group.title }}</p>
+            <ul>
+              {% for p in sec_section.pages %}
+                {% if p.extra.nav_group == group.title %}
+                  <li>
+                    <a href="{{ p.permalink }}"{% if p.permalink == current_url %} class="active" aria-current="page"{% endif %}>{{ p.extra.nav_label }}</a>
+                  </li>
+                {% endif %}
+              {% endfor %}
+            </ul>
+          {% endfor %}
         {% else %}
           <ul>
             {% for p in sec_section.pages %}

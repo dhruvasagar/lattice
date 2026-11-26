@@ -776,6 +776,20 @@ def sync_plugin_api_reference(slug, weight, description, topic_section,
     print(f'  dev/{slug}/ (index + {len(seams)} seam pages, plugin-api.json)')
 
 
+def dev_sidebar_label(title):
+    """A design fragment's H1, short enough for a sidebar.
+
+    Fragment titles are written as `Name — what it decides`, often with a
+    parenthetical such as `(developer reference)` or a slice tag. The sidebar
+    wants the name: the part before the dash, without a trailing
+    parenthetical or backticks (the sidebar shows text, not markdown). A title
+    that would collide with a neighbour's is given a label in dev-nav.toml.
+    """
+    label = title.split(' — ', 1)[0]
+    label = re.sub(r'\s*\([^()]*\)$', '', label).replace('`', '').strip()
+    return label or title
+
+
 def sync_dev_docs(topic_section, dev_pages, dev_sections, page_section, dev_labels):
     """Write each dev page into its dev-nav SECTION rather than its subdir.
 
@@ -811,6 +825,7 @@ def sync_dev_docs(topic_section, dev_pages, dev_sections, page_section, dev_labe
                 order[page] = len(order)
 
     counts = {}
+    nav_titles = {}
     for sub in DEV_SUBDIRS:
         src_dir = os.path.join(DEV_SRC, sub)
         if not os.path.isdir(src_dir):
@@ -821,7 +836,7 @@ def sync_dev_docs(topic_section, dev_pages, dev_sections, page_section, dev_labe
             key = f'{sub}/{name[:-3]}'
             if key == PLUGIN_API_INDEX:
                 continue  # published by sync_plugin_api_reference
-            slug, _group = page_section[key]
+            slug, group_title = page_section[key]
             with open(f, encoding='utf-8') as fh:
                 raw = fh.read()
             title = make_title(raw, name[:-3])
@@ -830,17 +845,38 @@ def sync_dev_docs(topic_section, dev_pages, dev_sections, page_section, dev_labe
             body = rewrite_links(
                 body, f, topic_section, dev_pages, page_section, is_user_doc=False
             )
-            # The sidebar label overrides the H1 only where the manifest says
-            # so; the page's own <h1> keeps the doc's real title.
-            nav_title = dev_labels.get(key, title)
+            # The page keeps the doc's real title as its <h1>; the sidebar
+            # gets the manifest's label, or a short form of that title.
+            nav_title = dev_labels.get(key) or dev_sidebar_label(title)
             dst = os.path.join(DEV_DST, slug, name)
             os.makedirs(os.path.dirname(dst), exist_ok=True)
             with open(dst, 'w', encoding='utf-8') as fh:
                 fh.write(
-                    f'+++\ntitle = "{toml_escape(nav_title)}"\n'
-                    f'weight = {order[key]}\n+++\n\n{body}'
+                    f'+++\ntitle = "{toml_escape(title)}"\n'
+                    f'weight = {order[key]}\n'
+                    f'[extra]\nnav_label = "{toml_escape(nav_title)}"\n'
+                    f'nav_group = "{toml_escape(group_title)}"\n+++\n\n{body}'
                 )
             counts[slug] = counts.get(slug, 0) + 1
+            nav_titles[key] = nav_title
+
+    # Each section's landing page lists its pages, under the manifest's group
+    # headings when it has more than one group: the sidebar shows the same
+    # grouping, so the two read alike.
+    for sec in dev_sections:
+        if sec.get('generated'):
+            continue
+        groups = sec.get('group', [])
+        body = []
+        for group in groups:
+            if len(groups) > 1:
+                body += [f"## {group['title']}", '']
+            for key in group['docs']:
+                name = key.split('/', 1)[1]
+                body.append(f"- [{nav_titles[key]}](@/dev/{sec['slug']}/{name}.md)")
+            body.append('')
+        with open(os.path.join(DEV_DST, sec['slug'], '_index.md'), 'a', encoding='utf-8') as fh:
+            fh.write('\n' + '\n'.join(body))
 
     for sec in dev_sections:
         if not sec.get('generated'):  # generated sections report themselves

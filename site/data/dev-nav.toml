@@ -48,20 +48,31 @@ slug = "foundations"
 title = "Foundations"
 description = "The substrate everything else composes from: modes, keymaps, buffers, the actor seam, configuration."
 [[section.group]]
+title = "Modes & keymaps"
 docs = [
-  "reference/crates",
   "architecture/mode-architecture",
   "architecture/keymap-architecture",
-  "architecture/kind-agnostic-buffers",
+  "notes/mode-keymap-authoring",
   "architecture/typed-motion-dispatch",
+]
+
+[[section.group]]
+title = "Buffers & the actor"
+docs = [
+  "reference/crates",
+  "architecture/kind-agnostic-buffers",
   "architecture/actor-seam-discipline",
   "architecture/host-provider-boundary",
+  "architecture/cancellation",
+  "architecture/session-persistence",
+]
+
+[[section.group]]
+title = "Configuration"
+docs = [
   "architecture/buffer-local-options",
   "architecture/config-and-init",
   "architecture/typed-configuration",
-  "architecture/cancellation",
-  "architecture/session-persistence",
-  "notes/mode-keymap-authoring",
 ]
 
 [[section]]
@@ -69,6 +80,17 @@ slug = "editing"
 title = "Editing & motions"
 description = "The vim grammar as implemented: operators, text objects, indentation, registers."
 [[section.group]]
+title = "Motions & text objects"
+docs = [
+  "architecture/search-operator",
+  "architecture/treesitter-motions",
+  "architecture/tree-sitter-text-objects",
+  "architecture/fold-architecture",
+  "architecture/narrow-mode",
+]
+
+[[section.group]]
+title = "Editing operations"
 docs = [
   "architecture/auto-indent",
   "architecture/text-reflow",
@@ -76,12 +98,12 @@ docs = [
   "architecture/table-mode",
   "architecture/select-mode",
   "architecture/multi-cursor",
-  "architecture/search-operator",
-  "architecture/narrow-mode",
-  "architecture/fold-architecture",
-  "architecture/treesitter-motions",
-  "architecture/tree-sitter-text-objects",
   "architecture/refactor",
+]
+
+[[section.group]]
+title = "Registers & keys"
+docs = [
   "architecture/yank-ring",
   "architecture/clipboard",
   "architecture/which-key",
@@ -93,31 +115,52 @@ slug = "rendering"
 title = "Rendering & display"
 description = "How a buffer becomes pixels — the cell grid, display lines, spans, theme resolution, and the two renderer peers."
 [[section.group]]
+title = "The pipeline"
 docs = [
   "architecture/cell-grid-renderer",
   "architecture/display-line",
-  "architecture/conceal",
-  "architecture/markdown-links",
+  "architecture/span-layering",
+  "architecture/incremental-highlight",
+  "architecture/decoration-retention",
+  "architecture/owner-write-caret",
+]
+
+[[section.group]]
+title = "Text layout"
+docs = [
   "architecture/soft-wrap",
   "architecture/horizontal-scroll",
   "architecture/virtual-rows",
+  "architecture/conceal",
+  "architecture/ligatures",
+  "architecture/indent-guides",
+  "architecture/markdown-links",
+]
+
+[[section.group]]
+title = "Images & PDFs"
+docs = [
   "architecture/inline-media",
   "architecture/pdf-mode",
-  "architecture/span-layering",
-  "architecture/incremental-highlight",
-  "architecture/indent-guides",
-  "architecture/gutter-signs",
-  "architecture/ligatures",
+]
+
+[[section.group]]
+title = "Theme & chrome"
+docs = [
   "architecture/theme-system",
   "architecture/theme-authoring",
+  "architecture/gutter-signs",
   "architecture/headerline",
   "architecture/modeline",
   "architecture/marginalia",
-  "architecture/decoration-retention",
-  "architecture/owner-write-caret",
+  "architecture/mouse",
+]
+
+[[section.group]]
+title = "The GPUI window"
+docs = [
   "architecture/gpui-window-chrome",
   "architecture/gui-default",
-  "architecture/mouse",
 ]
 
 [[section]]
@@ -125,21 +168,37 @@ slug = "buffers-and-views"
 title = "Buffers, panes & views"
 description = "Everything-is-a-buffer in practice: multibuffers, panes, pickers, popups, terminals, synthetic views."
 [[section.group]]
+title = "Multibuffers"
 docs = [
   "architecture/multibuffer-views",
   "architecture/multibuffer-is-a-regular-buffer",
   "architecture/multibuffer-stale-sources",
   "architecture/multibuffer-syntax",
+]
+
+[[section.group]]
+title = "Panes"
+docs = [
   "architecture/pane-groups",
   "architecture/pane-buffer-history",
   "architecture/pane-zoom",
+  "architecture/focused-surface",
+]
+
+[[section.group]]
+title = "Pickers, popups & the minibuffer"
+docs = [
   "architecture/picker",
   "architecture/picker-preview-highlight",
   "architecture/preview-isolation",
   "architecture/popup-api",
   "architecture/popup-unification",
-  "architecture/focused-surface",
   "architecture/rich-minibuffer",
+]
+
+[[section.group]]
+title = "Listings & other buffers"
+docs = [
   "architecture/directory-listing-mode",
   "architecture/listing-mode-ownership",
   "architecture/terminal-as-document",
@@ -166,6 +225,7 @@ docs = [
   "architecture/ide-protocol",
   "architecture/project-resolution",
   "architecture/project-commands",
+  "architecture/lighthouse",
 ]
 
 [[section]]
@@ -192,27 +252,48 @@ slug = "plugins"
 title = "Plugins & extensibility"
 description = "The WASM host, the seams, and how a plugin contributes to the same registries the builtins use."
 [[section.group]]
+title = "Writing a plugin"
 docs = [
   "guides/plugin-authoring",
   "guides/plugin-patterns",
-  "architecture/plugin-host",
-  "architecture/contributable-registries",
-  "architecture/plugin-languages",
+  "architecture/plugin-manifest",
+  "architecture/plugin-mode-options",
+  "architecture/plugin-data-location",
+]
+
+[[section.group]]
+title = "Installing & distributing"
+docs = [
   "architecture/plugin-manager",
   "architecture/plugin-distribution",
   "architecture/plugin-toml",
-  "architecture/plugin-manifest",
-  "architecture/plugin-data-location",
+]
+
+[[section.group]]
+title = "The host"
+docs = [
+  "architecture/plugin-host",
+  "architecture/contributable-registries",
+  "architecture/wit-ownership",
+  "architecture/guest-event-publishing",
+  "architecture/cross-file-writes",
   "architecture/plugin-observability",
+]
+
+[[section.group]]
+title = "Seams"
+docs = [
+  "architecture/plugin-languages",
   "architecture/plugin-treesitter-seam",
   "architecture/plugin-inline-decorations",
   "architecture/plugin-auto-pair",
   "architecture/plugin-multibuffer-views",
   "architecture/plugin-transients",
-  "architecture/plugin-mode-options",
-  "architecture/guest-event-publishing",
-  "architecture/wit-ownership",
-  "architecture/cross-file-writes",
+]
+
+[[section.group]]
+title = "Audits"
+docs = [
   "audit/plugin-host-architecture",
   "audit/plugin-observability-review",
 ]
@@ -292,10 +373,8 @@ docs = [
   "operations/verify",
   "operations/releasing",
   "architecture/release-pipeline",
-  "architecture/launch-0.9",
   "operations/embedded-docs-budget",
   "architecture/api-docs",
-  "architecture/lighthouse",
 ]
 
 [[section]]
@@ -305,6 +384,7 @@ description = "Point-in-time audits and working notes. Historical context rather
 [[section.group]]
 docs = [
   "audit/README",
+  "architecture/launch-0.9",
   "architecture/keymap-api-review",
   "architecture/comparison-zed",
   "audit/effect-dispatch",
@@ -331,6 +411,13 @@ docs = [
 "reference/crates" = "Crate map"
 "operations/benchmarks" = "Benchmark record"
 "operations/verify" = "Verification checklist"
+"architecture/org-capture" = "Org capture"
+"architecture/org-capture-drafts" = "Org capture drafts"
+"architecture/org-capture-templates" = "Org capture templates"
+"architecture/org-todo-keywords" = "Org TODO keywords"
+"architecture/lighthouse" = "Lighthouse: the LSP server manager"
+"architecture/wit-ownership" = "Who owns wit/"
+"architecture/completion-pipeline-unification" = "Completion and picker unification"
 "operations/releasing" = "Cutting a release"
 "architecture/launch-0.9" = "The 0.9 launch contract"
 "audit/README" = "About these audits"

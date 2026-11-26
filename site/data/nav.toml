@@ -26,7 +26,7 @@
 #
 #   REFERENCE holds per-surface keymap tables — one buffer kind, one minor
 #   mode, one language grammar. You arrive by search or cross-link, not by
-#   browsing. 95 of the 175 topics live here; keeping them out of the main
+#   browsing. Most of the corpus lives here; keeping them out of the main
 #   sidebar is the single biggest readability win in this layout.
 #
 #   That ratio keeps climbing — it was 74 of 113 when this file was written,
@@ -35,6 +35,12 @@
 #   more than half of the corpus, so its GROUPS are what readers
 #   actually navigate. Keep them meaningful; a group past ~25 entries wants
 #   splitting rather than another row.
+#
+#   A guide section can have groups too. With more than one, each needs a
+#   `title`, and the sidebar shows the titles as subheadings over every page.
+#   A guide section past about ten pages wants groups, and a page that is one
+#   surface's keymap (a picker, a buffer kind) belongs in Reference however
+#   closely it relates to a guide.
 
 # ---------------------------------------------------------------------------
 # Guides
@@ -76,51 +82,30 @@ docs = [
 [[section]]
 slug = "navigation"
 title = "Navigating your project"
-description = "Buffers, panes and splits, the fuzzy picker, filesystem views, and project-wide search."
+description = "Buffers and panes, the file views, finding anything with the picker and project search, and viewing images and PDFs."
 [[section.group]]
-title = "Buffers, views and search"
+title = "Buffers & files"
 docs = [
   "buffers",
-  "picker",
   "file-tree-mode",
   "oil-mode",
   "oil-global-mode",
+  "project",
+  "narrow-mode",
+]
+[[section.group]]
+title = "Finding things"
+docs = [
+  "picker",
   "project-search-mode",
   "multibuffer-mode",
+]
+[[section.group]]
+title = "Images & PDFs"
+docs = [
   "image-mode",
   "pdf-mode",
   "viewer-mode",
-  "narrow-mode",
-  "scan-view-mode",
-  "scan-view-clockreport-mode",
-]
-[[section.group]]
-title = "Pickers, one by one"
-description = "Each picker's own page — the one `<C-h>` opens inside it."
-docs = [
-  "picker-files",
-  "picker-file-pick",
-  "picker-dir-pick",
-  "picker-recent",
-  "picker-buffers",
-  "picker-grep",
-  "picker-lines",
-  "picker-outline",
-  "picker-jumps",
-  "picker-marks",
-  "picker-registers",
-  "picker-yank-ring",
-  "picker-commands",
-  "picker-history",
-  "picker-search-history",
-  "picker-pane-buffer-history",
-  "picker-snippets",
-  "picker-colorscheme",
-  "picker-magit",
-  "picker-lsp-locations",
-  "picker-lsp-instances",
-  "picker-lsp-message-request",
-  "picker-ai-sessions",
 ]
 
 [[section]]
@@ -135,7 +120,6 @@ docs = [
   "completion",
   "folding",
   "compilation-mode",
-  "project",
   "error-list",
 ]
 
@@ -157,12 +141,17 @@ slug = "llm"
 title = "Language models"
 description = "Call a model directly from the editor: chat in a buffer, ask about any text with a vim operator, review every edit, and control exactly what is sent."
 [[section.group]]
+title = "Using models"
 docs = [
   "llm-guide",
   "llm",
   "llm-chat-mode",
   "llm-mode",
   "llm-tools-mode",
+]
+[[section.group]]
+title = "Seeing what is sent"
+docs = [
   "llm-system-mode",
   "llm-context-mode",
   "llm-inspect-mode",
@@ -199,11 +188,16 @@ slug = "config"
 title = "Configuration & extension"
 description = "Typed options, the Rust/WASM `init.rs`, and the plugin host."
 [[section.group]]
+title = "Configuring"
 docs = [
   "options",
   "init",
   "emacs-keys-mode",
   "troubleshooting-keys",
+]
+[[section.group]]
+title = "Plugins"
+docs = [
   "plugins",
   "core-plugins",
   "org",
@@ -340,6 +334,43 @@ docs = [
 ]
 
 [[section.group]]
+title = "Pickers"
+description = "Each picker's own page — the one `<C-h>` opens inside it."
+docs = [
+  "picker-files",
+  "picker-file-pick",
+  "picker-dir-pick",
+  "picker-recent",
+  "picker-buffers",
+  "picker-grep",
+  "picker-lines",
+  "picker-outline",
+  "picker-jumps",
+  "picker-marks",
+  "picker-registers",
+  "picker-yank-ring",
+  "picker-commands",
+  "picker-history",
+  "picker-search-history",
+  "picker-pane-buffer-history",
+  "picker-snippets",
+  "picker-colorscheme",
+  "picker-magit",
+  "picker-lsp-locations",
+  "picker-lsp-instances",
+  "picker-lsp-message-request",
+  "picker-ai-sessions",
+]
+
+[[section.group]]
+title = "Plugin views"
+description = "Views a plugin builds from rows it scans, such as org's agenda and clock report."
+docs = [
+  "scan-view-mode",
+  "scan-view-clockreport-mode",
+]
+
+[[section.group]]
 title = "Terminal & REPL"
 description = "The two modal states a terminal buffer sits in, and the REPL input convention."
 docs = [
@@ -434,3 +465,16 @@ docs = [
 "mouse"                = "Mouse"
 "display"              = "Display & layout"
 "themes"               = "Themes & colorschemes"
+"image-mode"           = "Images"
+"pdf-mode"             = "PDFs"
+"viewer-mode"          = "Keys every viewer shares"
+"diff-conflict-mode"   = "Resolving conflicts"
+"llm-guide"            = "Start here"
+"llm"                  = "Configuring models"
+"llm-chat-mode"        = "Chat"
+"llm-mode"             = "Ask about any text"
+"llm-tools-mode"       = "Tools and MCP servers"
+"llm-system-mode"      = "The system prompt"
+"llm-context-mode"     = "What a request carries"
+"llm-inspect-mode"     = "Inspecting a request"
+"llm-requests-mode"    = "Every request"

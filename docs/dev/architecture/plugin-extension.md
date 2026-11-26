@@ -1,0 +1,133 @@
+# Plugins that extend plugins
+
+**Status: design, decided 2026-11-27.** First consumer:
+[`org-fcto.md`](org-fcto.md). Sequencing and status:
+[`../operations/slice-plans/org-fcto.md`](../operations/slice-plans/org-fcto.md).
+
+## 1. The gap
+
+A plugin can already call another plugin's commands, if the owner lists them
+in `exported_commands` (`manifest.rs`). That is half of extension. The other
+half, adding to what another plugin is configured with, has no seam:
+
+- **Options have one writer.** `set-option` on another plugin's option
+  replaces the whole value. Two plugins contributing agenda files would
+  overwrite each other, and either would overwrite the user. There is no
+  merge, and the host could not write one generically: org's
+  `capture-templates` is a string whose value is TOML, and only org knows how
+  two of them combine.
+- **Load order is unstated.** Plugins load in declaration order on the
+  `require` path and in directory order on the scan path. A plugin that needs
+  org's options to exist when it activates has no way to say so, and gets a
+  silent `false` from every call when it loads first.
+
+## 2. `requires`: load after, or not at all
+
+```toml
+id = "org-fcto"
+requires = ["org"]
+```
+
+- **A plugin whose requirements are not loaded is parked, not failed.** Each
+  successful load re-checks the parked set, and a plugin whose requirements
+  are now met loads then. This makes order independent of both paths: a
+  `lattice.toml` that declares org-fcto before org still works.
+- **When loading settles with a plugin still parked, it is recorded as
+  failed**, with the reason a user can act on: "requires `org`, which is not
+  installed". `:plugins` shows it like any other load failure.
+- **A cycle is a failure of every plugin in it**, named as a cycle. It is a
+  packaging bug; loading half of it would be a guess.
+- **Unloading a required plugin unloads its dependents first**, and
+  reloading it reloads them after. A dependent left loaded would hold
+  contributions to options that no longer exist and rows naming commands
+  that no longer resolve.
+- **Not a version constraint.** `requires` names ids. A plugin that needs a
+  minimum org version says so in its own docs; the plugin-API version already
+  guards the ABI. A semver field can be added when a real break needs it.
+
+## 3. Option contributions
+
+The owner of an option decides whether others may add to it, and how the
+additions combine. The host stores contributions and their provenance; it
+never merges.
+
+```wit
+/// Owner: let other plugins contribute values to this option of yours.
+/// `false` for an option that is not yours, or that a capability grant
+/// follows (grants are the user's alone to widen).
+accept-contributions: func(name: string) -> bool;
+
+/// Contributor: add `value` to another plugin's option, in the same text
+/// form `set-option` takes, validated against the option's type. Replaces
+/// this plugin's previous contribution to that option; an empty string
+/// withdraws it. `false` when the option does not accept contributions.
+contribute-option: func(name: string, value: string) -> bool;
+
+/// Owner: every live contribution to its option, in contributor load order.
+record option-contribution { plugin: string, value: string }
+option-contributions: func(name: string) -> list<option-contribution>;
+```
+
+- **The user's value is never touched.** `get-option` returns what the user
+  set, as today. The owner reads contributions beside it and decides what
+  they mean. Org's rules: `agenda-files` scans the user's entries (or the
+  project root, when unset) **and** each contributed entry;
+  `capture-templates` and `agenda-custom-commands` append contributed entries
+  after the user's, so a user key always wins a collision.
+- **The owner merges because only the owner can.** A list option could be
+  appended by the host, but two of org's three contributable options are TOML
+  in a string, and a host merge that handles some option types would be a
+  second rule beside the owner's. One rule: the owner reads, the owner
+  combines.
+- **Provenance is the teardown.** Each contribution is stored under the
+  contributor's manifest id. Unloading the contributor drops its
+  contributions with the rest of its teardown, by id, as the
+  contributable registries already do
+  ([`contributable-registries.md`](contributable-registries.md) §2). An owner
+  reloading keeps them: they are keyed by option name and come back into
+  effect when it accepts again.
+- **Contributions cannot widen a grant.** `accept-contributions` refuses an
+  option a capability grant follows. And a contributed agenda directory is
+  still read with org's own grant: a contribution pointing outside it fails
+  the read exactly as the same path typed by the user would.
+- **Visible.** `:describe-option org.agenda-files` lists each contribution
+  under its plugin's name, after the value. A user asking "why is this folder
+  in my agenda" gets the answer where they would look.
+- **Live.** Options are read live, so the owner sees a contribution on its
+  next read: the next agenda scan, the next capture menu. No event is needed
+  for the cases here; one can be added when an owner caches.
+
+## 4. Exported commands, the other half
+
+Unchanged, and recorded here so the whole extension surface is on one page.
+A plugin's commands are its own unless its manifest lists them in
+`exported_commands`; another plugin may then name them from an action, a
+picker row, a prompt or a transient row, and from `invoke-command`. Org-fcto
+names org's agenda-command and capture-group commands from its menu, so org
+exports those two.
+
+## 5. Rejected
+
+- **A host-side merge per option type.** Covers list options, not org's
+  TOML-in-a-string options, so the owner would need its own merge anyway.
+- **Contributions as `set-option` with an append flag.** The user's value and
+  the plugin's additions would become one value, so unloading the plugin
+  could not take back what it added, and `:describe-option` could not say who
+  added what.
+- **Events (`org/register-template`) instead of options.** The owner would
+  keep contributions in guest memory, which a reload of the owner loses and
+  nothing restores; teardown on the contributor's unload would need a second
+  event the contributor might never send.
+- **Ordering by a numeric load priority.** A number says nothing about why,
+  and two plugins picking priorities cannot know each other's.
+
+## 6. Paramount goals
+
+- **UX:** nothing changes on screen. A user sees contributions in
+  `:describe-option` and a requires failure in `:plugins`.
+- **#2 Extensibility:** protected; this is the seam. It stays WIT-complete: a
+  plugin in any language uses it with no SDK help.
+- **#1, #3, #4:** untouched. Contributions are read where options are read;
+  parking happens on the loader's existing task.
+- **Heuristic #6:** no crate. Contributions are an option-registry side table
+  in `lattice-config`; `requires` is the loader's.

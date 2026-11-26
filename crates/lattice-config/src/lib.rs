@@ -151,6 +151,7 @@ pub mod loader;
 mod modeline_zone;
 mod pane_options;
 mod plugin_options;
+pub mod plugins;
 // PR.2: the `project.root-markers` list option.
 mod root_markers;
 mod signcolumn;
@@ -244,6 +245,11 @@ pub use diagnostics_options::{DiagnosticsInline, DiagnosticsSeverity};
 // PO.4.3: the `plugin.trace-level` option value + decl type — the global default
 // plugin boundary-trace verbosity (the loader observes changes → the tracer gate).
 pub use plugin_options::{PluginTraceLevel, PluginTraceLevelOption};
+// Release plugins declared in `lattice.toml`'s `[plugins]` table.
+pub use plugins::{
+    PLUGINS_TABLE, PluginDeclaration, PluginDeclarations, RejectedDeclaration,
+    parse_plugin_declarations,
+};
 // PU.1b: the `signcolumn` option value type — gates the gutter sign
 // columns (diagnostics severity + diff sign) so help / synthetic
 // buffers render gutterless without the renderer knowing it's help.

@@ -71,6 +71,36 @@ target rather than just a slower number.
 
 ---
 
+## EX.11 — an org export, parse and each backend (2026-11-26)
+
+⚠️ **WSL2 dev box, native (not wasm), release.** `cargo test --release
+export_timing -- --ignored --nocapture` in `lattice-org-plugin`, an ignored
+timing test for the reason OB.5's is. The input is generated, shaped like
+real notes: headlines three deep with TODO keywords and tags, prose with
+emphasis, code, links and footnotes, lists, a table and a source block with
+its results per section. Mean of 20 runs; the slowest step is the worst of
+all of them.
+
+| Lines | Parse | HTML | Markdown | LaTeX | Steps (H/M/L) | Slowest step |
+|---|---|---|---|---|---|---|
+| 2,300 (49 KiB) | 1.4 ms | 2.3 ms | 2.8 ms | 2.6 ms | 8 / 6 / 7 | 3.2 ms |
+| 20,000 (430 KiB) | 12.8 ms | 23.8 ms | 26.0 ms | 27.7 ms | 33 / 19 / 23 | 4.6 ms |
+
+**Read the slowest step, not the total.** Each step is one call on the
+plugin's events seam (about 64 KiB of text, the plugin's `STEP_BYTES`;
+design [`../architecture/org-export.md`](../architecture/org-export.md) §7),
+so a
+step is the longest the plugin is busy at once, and the total is how long the
+user waits for the file, with the editor free throughout. Neither touches
+the keystroke path: the plugin runs on its own task. At wasm's expected 2–3×
+native, the worst step is ~15 ms, far inside the 5 s event budget. Fuel is
+not measured here (the host does not record it per call, EX.0's finding):
+the step size was set from EX.0's measured rate to about a tenth of the
+100M budget, and a wasm run that records `Store::get_fuel` per step is what
+would confirm it.
+
+---
+
 ## OB.5 — babel's header-argument merge (2026-11-22)
 
 ⚠️ **WSL2 dev box, native (not wasm), release.** `cargo test --release

@@ -1314,10 +1314,11 @@ checkboxes with statistics cookies, timestamps, links, refile, capture,
 agenda, tables (alignment, cell/row motion, row and column insert and
 move).
 
-**Out, as cuts rather than omissions:** export backends, table formulas,
-column view, org-roam. (Babel / source execution was cut here too; it is
-now designed in [`org-babel.md`](org-babel.md), once a host primitive let a
-user-installed plugin run a program.)
+**Out, as cuts rather than omissions:** table formulas, column view,
+org-roam. (Babel / source execution and export backends were cut here too;
+they are now designed in [`org-babel.md`](org-babel.md), once a host
+primitive let a user-installed plugin run a program, and
+[`org-export.md`](org-export.md), once `write-file` let one write a file.)
 
 **Was blocked on a host primitive, now built:** archive, refile and
 capture all move text into a file other than the buffer's own, and no

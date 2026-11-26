@@ -43,7 +43,7 @@ of them inside `org-export-mode` (design §0). Viewing the PDF in the editor is
 | EX.10b                    | Run on a copy, one consent, `n`, cancel **(plugin)**                        | ✅     |
 | EX.10c                    | Every export open goes through `display-buffer`, `org.export.open-in` **(plugin)** | ✅ |
 | **Phase 5 — finish**      |                                                                             |        |
-| EX.11                     | Bench, guide (`doc/export.md`), user docs, scope lines **(plugin + lattice)** | 📝   |
+| EX.11                     | Bench, guide (`doc/export.md`), user docs, scope lines **(plugin + lattice)** | ✅   |
 | EX.R2                     | org plugin release **(plugin)**                                             | 📝     |
 
 ## Ordering
@@ -1052,7 +1052,7 @@ the panes and that focus stayed on the org file; with the open swapped back
 to a focusing `open-buffer`, the open, reuse and tab cases fail.
 `an_unknown_open_in_is_named` covers the refusal.
 
-### EX.11 — finish (plugin + lattice) 📝
+### EX.11 — finish (plugin + lattice) ✅
 
 - A `cargo bench` in the plugin: parse, and each transcoder, over the
   reference file and the 20,000-line one; results recorded in
@@ -1063,6 +1063,13 @@ to a focusing `open-buffer`, the open, reuse and tab cases fail.
 - lattice's `docs/user/org.md` gains export; `org-mode.md` §10's scope line
   moves export out of the cuts, as babel's did.
 - CHANGELOG entries in both repositories.
+
+As built (plugin `af7b71f`): the bench is `export_timing`, an ignored timing
+test as babel's is, since the plugin is a cdylib `benches/` cannot link, over
+a generated 2,300- and 20,000-line file rather than real ones (the repository
+carries no real corpus). It records each backend's steps and the slowest
+step, the number one events call pays. `:help org.export` is pinned by
+`the_export_page_is_in_help_and_linked_from_its_commands`.
 
 ### EX.R1, EX.R2 — releases 📝
 

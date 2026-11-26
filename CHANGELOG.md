@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- **A plugin can require another plugin.** A manifest's `requires = ["org"]` names plugins that must be loaded first. A plugin whose requirements are not loaded waits, listed in `:plugins` as *waiting for `org`*, and loads as soon as they are, whatever order your `lattice.toml` or `init.rs` declares them in. Unloading a plugin unloads what requires it first and keeps those waiting, so reloading it brings them back. Two plugins that require each other are both refused, and `:plugins` names the cycle.
+
 ## 0.10.5 — 2026-11-26
 
 ### Added

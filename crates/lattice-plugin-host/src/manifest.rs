@@ -583,6 +583,15 @@ pub struct PluginManifest {
     /// interface, the way a library's `pub` is. A name the plugin does not
     /// register exports nothing.
     pub exported_commands: Vec<String>,
+    /// The plugins that must be loaded before this one (`requires = ["org"]`),
+    /// by manifest id, sorted and deduplicated.
+    ///
+    /// The loader parks a plugin whose requirements are not loaded and loads
+    /// it once they are, so the order plugins are declared or found in does
+    /// not matter; and it unloads a plugin's dependents before the plugin
+    /// itself. Ids only, not versions: the plugin-API version already guards
+    /// the ABI between them. Design: `docs/dev/architecture/plugin-extension.md` §2.
+    pub requires: Vec<String>,
     /// PMF.1: the oldest editor this plugin runs on (`min_lattice = "0.9.10"`),
     /// as `(major, minor, patch)`. A manifest-format change (an embedded
     /// manifest, an option-bound grant) is not a plugin-API change, so the WIT
@@ -627,6 +636,9 @@ struct RawManifest {
     /// D2: the commands other plugins may name.
     #[serde(default)]
     exported_commands: Vec<String>,
+    /// The plugins that must load first.
+    #[serde(default)]
+    requires: Vec<String>,
 }
 
 /// Why a manifest failed to parse. Every failure is a value — the host logs +
@@ -707,6 +719,17 @@ pub enum ManifestError {
         /// The capability as written.
         capability: String,
     },
+
+    /// A `requires` entry was not a plugin id, or named the plugin itself.
+    /// Refused rather than skipped: a requirement that can never be met parks
+    /// the plugin forever, and one on itself is the smallest cycle.
+    #[error("`requires` entry `{entry}`: {why}")]
+    Requires {
+        /// The entry, as written.
+        entry: String,
+        /// What is wrong with it.
+        why: &'static str,
+    },
 }
 
 /// Is `id` a single, safe path component — usable as a directory name that
@@ -748,6 +771,7 @@ impl PluginManifest {
             default_modes: Vec::new(),
             mode_gates: Vec::new(),
             exported_commands: Vec::new(),
+            requires: Vec::new(),
             min_lattice: None,
         }
     }
@@ -849,10 +873,30 @@ impl PluginManifest {
             .collect();
         exported_commands.sort();
         exported_commands.dedup();
+        let mut requires: Vec<String> = Vec::new();
+        for entry in raw.requires {
+            let id = entry.trim();
+            if !is_safe_plugin_id(id) {
+                return Err(ManifestError::Requires {
+                    entry,
+                    why: "not a plugin id",
+                });
+            }
+            if id == raw.id {
+                return Err(ManifestError::Requires {
+                    entry,
+                    why: "a plugin cannot require itself",
+                });
+            }
+            requires.push(id.to_string());
+        }
+        requires.sort();
+        requires.dedup();
         Ok(Self {
             min_lattice,
             mode_gates,
             exported_commands,
+            requires,
             id: raw.id,
             requested,
             editor_capabilities: editor,
@@ -1297,6 +1341,39 @@ mod tests {
         assert_eq!(m.exported_commands, vec!["org-agenda", "org-capture"]);
         let none = PluginManifest::from_toml_str("id = \"x\"\n").unwrap();
         assert!(none.exported_commands.is_empty());
+    }
+
+    /// `requires` is read, trimmed, sorted and deduplicated, and empty when
+    /// absent.
+    #[test]
+    fn requires_parse() {
+        let m = PluginManifest::from_toml_str(
+            "id = \"org-fcto\"\nrequires = [\" org \", \"org\", \"lighthouse\"]\n",
+        )
+        .unwrap();
+        assert_eq!(m.requires, vec!["lighthouse", "org"]);
+        let none = PluginManifest::from_toml_str("id = \"x\"\n").unwrap();
+        assert!(none.requires.is_empty());
+    }
+
+    /// A requirement that can never be met is refused at parse, by name: an
+    /// empty entry, a path, and the plugin itself (the smallest cycle).
+    #[test]
+    fn requires_refuses_what_can_never_be_met() {
+        for (entry, why) in [
+            ("", "not a plugin id"),
+            ("../org", "not a plugin id"),
+            ("org-fcto", "a plugin cannot require itself"),
+        ] {
+            let err = PluginManifest::from_toml_str(&format!(
+                "id = \"org-fcto\"\nrequires = [\"{entry}\"]\n"
+            ))
+            .unwrap_err();
+            assert!(
+                matches!(&err, ManifestError::Requires { why: w, .. } if *w == why),
+                "`{entry}` should be refused as {why:?}, got {err:?}"
+            );
+        }
     }
 
     #[test]

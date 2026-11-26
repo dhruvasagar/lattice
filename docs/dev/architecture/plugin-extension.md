@@ -32,9 +32,11 @@ requires = ["org"]
   successful load re-checks the parked set, and a plugin whose requirements
   are now met loads then. This makes order independent of both paths: a
   `lattice.toml` that declares org-fcto before org still works.
-- **When loading settles with a plugin still parked, it is recorded as
-  failed**, with the reason a user can act on: "requires `org`, which is not
-  installed". `:plugins` shows it like any other load failure.
+- **A parked plugin is visible at once.** It is recorded under *Failed to
+  load* with the reason a user can act on, "waiting for `org`, which is not
+  loaded", and the record clears when it loads. There is no "loading has
+  settled" moment to wait for: a plugin still waiting after boot shows the
+  same line it showed during it.
 - **A cycle is a failure of every plugin in it**, named as a cycle. It is a
   packaging bug; loading half of it would be a guess.
 - **Unloading a required plugin unloads its dependents first**, and

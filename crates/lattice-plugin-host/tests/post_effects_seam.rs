@@ -79,6 +79,13 @@ async fn start(wasm: &str, request: &str, wired: bool, capabilities: &str) -> Ha
     }
 }
 
+/// The manifest entry granting writes under `dir`, as a TOML literal
+/// string: in a basic string a Windows path's `\U` (`C:\Users`) is read as
+/// a unicode escape and the manifest does not parse.
+fn grant_entry(dir: &Path) -> String {
+    format!("'fs:write:{}'", dir.display())
+}
+
 /// One instance of the fixture, as plugin `id`, on `host`.
 async fn spawn_on(
     host: &PluginHost,
@@ -197,7 +204,7 @@ async fn a_posted_open_reaches_the_editor_only_inside_the_grant() {
     };
     let granted = TempDir::new().unwrap();
     let html = granted.path().join("notes.html");
-    let cap = format!("\"fs:write:{}\"", granted.path().display());
+    let cap = grant_entry(granted.path());
 
     let h = start(wasm, &format!("open {}", html.display()), true, &cap).await;
     wait_for(&h.data_dir, |l| l.starts_with("post:"))
@@ -233,7 +240,7 @@ async fn a_posted_external_open_is_limited_to_granted_files() {
     };
     let granted = TempDir::new().unwrap();
     let pdf = granted.path().join("notes.pdf");
-    let cap = format!("\"fs:write:{}\"", granted.path().display());
+    let cap = grant_entry(granted.path());
 
     let h = start(wasm, &format!("open-uri {}", pdf.display()), true, &cap).await;
     wait_for(&h.data_dir, |l| l.starts_with("post:"))

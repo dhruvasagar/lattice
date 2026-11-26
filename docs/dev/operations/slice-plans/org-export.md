@@ -41,7 +41,7 @@ of them inside `org-export-mode` (design §0). Viewing the PDF in the editor is
 | **Phase 4 — babel**       |                                                                             |        |
 | EX.10a                    | `:exports` decides what of a block is exported **(plugin)**                 | ✅     |
 | EX.10b                    | Run on a copy, one consent, `n`, cancel **(plugin)**                        | ✅     |
-| EX.10c                    | Every export open goes through `display-buffer`, `org.export.open-in` **(plugin)** | 📝 |
+| EX.10c                    | Every export open goes through `display-buffer`, `org.export.open-in` **(plugin)** | ✅ |
 | **Phase 5 — finish**      |                                                                             |        |
 | EX.11                     | Bench, guide (`doc/export.md`), user docs, scope lines **(plugin + lattice)** | 📝   |
 | EX.R2                     | org plugin release **(plugin)**                                             | 📝     |
@@ -1034,7 +1034,7 @@ run cancelled mid-way writes nothing.
   removed). Unit: splicing above the cursor moves a subtree export's line,
   a block that did not run keeps its old result, `:exports` × four.
 
-### EX.10c — the export never takes focus (plugin) 📝
+### EX.10c — the export never takes focus (plugin) ✅
 
 Needs EX.1g. Every open an export makes (`h o`, `m o`, `l o` in the
 editor, and the to-buffer sinks) posts `display-buffer` with
@@ -1043,6 +1043,14 @@ refused, named in the echo, as a bad `open-with` is. The system viewer route
 (`open-with = "system"`) is unchanged. Tests: after `h o`, the org buffer
 is still focused and the HTML is shown beside it; `l o` twice reuses the
 pane; `open-in = "tab"` keeps the tab.
+
+As built (plugin `de4db5a`): the sink carries the place
+(`Sink::Buffer { place }`, `Sink::Open(Viewer)`, `Sink::Pdf { open }`,
+`Viewer::{System, Editor(Place)}`) and one `show` builds the effect both
+openers post. `org_export` 26: the reuse, buffer, open and tab cases check
+the panes and that focus stayed on the org file; with the open swapped back
+to a focusing `open-buffer`, the open, reuse and tab cases fail.
+`an_unknown_open_in_is_named` covers the refusal.
 
 ### EX.11 — finish (plugin + lattice) 📝
 

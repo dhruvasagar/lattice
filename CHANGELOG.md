@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.10.4 — 2026-11-26
 
 ### Added
 - **Plugin API 0.7.0 — breaking.** The crates (`lattice-wit`, `lattice-plugin-sdk`, `lattice-plugin-sdk-derive`) and the WIT package (`lattice:plugin-host@0.7.0`) carry `write-file`, the `flag` row on transient menus, posted opens and confirms, a confirm's `no-action`, and `display-buffer`. The `flag` arm changes a type plugins return, so a plugin built for 0.6 does not load: move its pin to `lattice-wit = "0.7"` and rebuild. Your `init.rs` needs the same, and its `wit/init.wit` package line moved to `@0.7.0` by hand.

@@ -21,9 +21,20 @@ The plugin is released as `vX.Y.Z` tags; its
 current one and its `CHANGELOG.md` says what each changed.
 
 **Without building it.** Each release publishes org ready-built, so the
-simplest install needs no Rust toolchain. You need lattice 0.9.11 or later,
-and an `init.rs` (`lattice --scaffold-init` makes one). In its
-`register_plugins`:
+simplest install needs no Rust toolchain and no `init.rs`. In your
+`lattice.toml`:
+
+```toml
+[plugins.org]
+release = "dhruvasagar/lattice-org-plugin"   # add version = "v…" to stay on one release
+```
+
+then `:reload-config` (or restart). The table's fields are in
+[installing plugins from `lattice.toml`](help:plugins#installing-plugins-from-lattice-toml).
+
+**From `init.rs`.** The same install, declared in code. You need lattice
+0.9.11 or later and an `init.rs` (`lattice --scaffold-init` makes one). In
+its `register_plugins`:
 
 ```rust
 fn register_plugins() {

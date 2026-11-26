@@ -10,7 +10,7 @@ Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred (not 
 Every non-trivial slice ships the four artefacts (doc + bench where perf-relevant
 + tests including failure modes + graceful error handling).
 
-**Status: 🚧 in progress.**
+**Status: 🚧 PT.0–PT.6 ✅; PT.7 ⛔ deferred, so the plan stays active.**
 
 | Slice | What | Crates | Status |
 |---|---|---|---|
@@ -20,7 +20,7 @@ Every non-trivial slice ships the four artefacts (doc + bench where perf-relevan
 | PT.3 | Boot: one `declare` path with `DeclaredBy` origin; the install task reads `lattice.toml`, lowers, merges with `init.rs` (init wins), installs. | `lattice-config`, `lattice-plugin-loader` | ✅ 9 tests (5 unit, 4 integration + 1 fixture-gated); whole-crate suites pending the next batch run |
 | PT.4 | `:reload-config` reconciles `[plugins]`; no `init.rs` is benign. | `lattice-plugin-loader` | ✅ 2 tests |
 | PT.5 | `:plugins` shows each plugin's origin and the rejected TOML entries. | `lattice-plugin-loader`, `lattice-plugin-manager` | ✅ 3 tests |
-| PT.6 | Docs sweep: user guide, `:help`, scaffold comment, `BENCHMARKS.md`, CHANGELOG. | docs, `lattice-cli` | 📝 |
+| PT.6 | Docs sweep: user guide, `:help`, scaffold comment, `BENCHMARKS.md`, CHANGELOG. | docs, `lattice-cli` | ✅ |
 | PT.7 | A lockfile, or a `:plugin-pin` write-back of the resolved tag and digest. | — | ⛔ until an unpinned declaration's non-reproducibility bites a real user; needs a format decision and an answer for how `:plugin-update` moves it (design §4 Pinning). |
 
 ## Sequencing
@@ -165,7 +165,18 @@ precedence on a name both files declare.
 
 ## PT.6 — docs sweep
 
-User guide section with the schema and the reproducibility caveat; a `:help`
-topic or section; the `init.rs` scaffold comment pointing at the TOML path;
-`BENCHMARKS.md` row for `plugins_table`; CHANGELOG `## Unreleased` entry (if
-PT.3 did not already add it).
+As built:
+
+- `docs/user/plugins.md` (the `:help plugins` topic): a new
+  "Installing plugins from `lattice.toml`" section with the schema, the
+  shorthand, releases-only, per-entry rejection, `init.rs` precedence, the
+  project refusal, the `[plugin]` warning, and the reproducibility caveat; the
+  quick-reference `:reload-config` row and the user-plugins bullet name it.
+- `docs/user/init.md` and `docs/user/org.md` point at it; org's install now
+  leads with the two-line TOML form.
+- The `init.rs` scaffold's `register_plugins` comment names the TOML path and
+  the precedence.
+- `docs/dev/operations/benchmarks.md` gains the `config::plugins_table` rows.
+- The CHANGELOG entry landed with PT.3 and grew with PT.4 and PT.5.
+
+`scripts/docs-check.sh` (help anchors, site build) is the test.

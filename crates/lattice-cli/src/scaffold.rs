@@ -138,7 +138,9 @@ impl Guest for Config {
     // config loads, off the startup path; `:reload-config` applies a change.
     fn register_plugins() {
         // A plugin published as a GitHub release — downloaded ready-built, no
-        // Rust toolchain needed. Uncomment to install the org plugin:
+        // Rust toolchain needed. It can equally be declared in lattice.toml
+        // (`[plugins.org]` / `release = "owner/name"`); if both name it, this
+        // file wins. Uncomment to install the org plugin:
         //
         // use lattice::plugin_host::plugin_manager::{self, ReleaseSpec};
         // plugin_manager::require_release(&ReleaseSpec {

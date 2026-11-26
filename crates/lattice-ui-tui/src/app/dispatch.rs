@@ -1326,7 +1326,7 @@ impl App {
             // a synthetic buffer and then acts on it runs in order.
             Effect::OpenSyntheticBuffer { .. }
             | Effect::OpenSyntheticBufferAt { .. }
-            | Effect::DisplaySyntheticBuffer { .. } => {}
+            | Effect::DisplayBuffer { .. } => {}
             // PI.2b: dump the plugin-API catalog into a savable buffer.
             Effect::ExportPluginApi { format } => {
                 self.mutate_editor(move |e| e.do_export_plugin_api(format.as_deref()))
@@ -1665,7 +1665,7 @@ fn effect_mutates_or_yanks(effect: &Effect) -> bool {
         | Effect::OpenDashboard
         | Effect::OpenOilSource { .. }
         | Effect::InTarget { .. }
-        | Effect::DisplaySyntheticBuffer { .. }
+        | Effect::DisplayBuffer { .. }
         | Effect::ChangeDir(_)
         | Effect::PrintWorkingDir
         | Effect::PrintProjectRoot => false,
@@ -1837,7 +1837,7 @@ fn effect_mutates(effect: &Effect) -> bool {
         | Effect::OpenDashboard
         | Effect::OpenOilSource { .. }
         | Effect::InTarget { .. }
-        | Effect::DisplaySyntheticBuffer { .. }
+        | Effect::DisplayBuffer { .. }
         | Effect::ChangeDir(_)
         | Effect::PrintWorkingDir
         | Effect::PrintProjectRoot => false,

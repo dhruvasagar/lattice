@@ -20,7 +20,7 @@ of them inside `org-export-mode` (design §0). Viewing the PDF in the editor is
 | **Phase 1 — host**        |                                                                             |        |
 | EX.1                      | Plugin API 0.7.0, the whole of it: `write-file`, transient `flag`, posted opens and `confirm` **(lattice)** | ✅ |
 | EX.1f                     | A confirm's `no-action`: `n` as an answer (found by EX.10) **(lattice)**    | ✅     |
-| EX.1g                     | `display-buffer`: show a file or synthetic buffer in a split / vsplit / tab, focus kept **(lattice)** | 📝 |
+| EX.1g                     | `display-buffer`: show a file or synthetic buffer in a split / vsplit / tab, focus kept **(lattice)** | ✅ |
 | EX.R1                     | lattice release carrying EX.1; publish lattice-wit 0.7.0 **(lattice)**      | 📝     |
 | **Phase 2 — the mode and the parse** |                                                                  |        |
 | EX.2                      | `org-export-mode`: mode, layer, gate, options, dispatcher, event pipeline **(plugin)** | ✅ |
@@ -213,7 +213,7 @@ each green on its own, the version bump and re-pins last.
    Tests: `posted_confirm_raises_its_dialog.rs` (`n` fires the no-action
    with the carried args and not the yes; `q` dismisses; the unknown one
    refused), the picker's three-row spec, the boundary round-trip.
-7. 📝 **EX.1g `display-buffer`** (Dhruva, 2026-11-26: "let the export
+7. ✅ **EX.1g `display-buffer`** (Dhruva, 2026-11-26: "let the export
    always open in the background in a new split / tab (configurable),
    lets not change focus"; then "One display-buffer"). An export's open
    lands seconds after its chord, by which time the user is elsewhere, so
@@ -231,6 +231,16 @@ each green on its own, the version bump and re-pins last.
    showing the file reused, not split again; a posted file outside the
    grants refused naming the grant; the boundary round-trip; GPUI's
    classifier arm.
+   As built: rule 1 counts the active pane too (a buffer in front of the
+   user needs no second pane). A file not yet open is the one case that
+   moves focus, and only inside the effect: the target is made and
+   focused, the file opened through `do_edit`, and focus put back; an open
+   that fails closes the pane it made. `source` is boxed, since the
+   synthetic case inline made `DisplayBuffer` the largest `Effect`
+   variant and tripped `result_large_err` on every `Result<_, Effect>`.
+   `display_buffer.rs` (12; the file and tab cases fail with the focus
+   return removed), the authorizer's `a_posted_display_is_checked_as_an_open_is`,
+   the boundary's `display_buffer_crosses_the_boundary_in_both_directions`.
 
 Tests: a write inside the grant lands, and `ok` means it is on disk; outside
 the grant, refused; a symlink inside the grant pointing outside, refused (the
@@ -1029,7 +1039,7 @@ run cancelled mid-way writes nothing.
 Needs EX.1g. Every open an export makes (`h o`, `m o`, `l o` in the
 editor, and the to-buffer sinks) posts `display-buffer` with
 `org.export.open-in` (`vsplit` default, `split`, `tab`); a bad value is
-named in the echo and falls back to the default. The system viewer route
+refused, named in the echo, as a bad `open-with` is. The system viewer route
 (`open-with = "system"`) is unchanged. Tests: after `h o`, the org buffer
 is still focused and the HTML is shown beside it; `l o` twice reuses the
 pane; `open-in = "tab"` keeps the tab.

@@ -460,6 +460,18 @@ impl EffectAuthorizer {
                 path.display()
             ));
         }
+        Ok(NativeEffect::OpenBufferAtColumn {
+            path: Some(self.posted_path(path)?),
+            column: None,
+            force: false,
+        })
+    }
+
+    /// A path a post may open or show: absolute, since the host resolves a
+    /// relative one against the editor's working directory, which is not
+    /// what the grant was compared against; and inside the plugin's `fs`
+    /// grants, so it shows only what the plugin could already have written.
+    fn posted_path(&self, path: PathBuf) -> Result<PathBuf, String> {
         if !path.is_absolute() {
             return Err(format!(
                 "{}: refused to open {} — a posted open needs an absolute path",
@@ -470,10 +482,26 @@ impl EffectAuthorizer {
         if !self.permits_open(&path) {
             return Err(self.refusal_to("open", &path));
         }
-        Ok(NativeEffect::OpenBufferAtColumn {
-            path: Some(path),
-            column: None,
-            force: false,
+        Ok(path)
+    }
+
+    /// A posted `display-buffer`: a file is held to [`Self::posted_path`]; a
+    /// synthetic buffer is the plugin's own, as a posted
+    /// `open-synthetic-buffer` is.
+    fn posted_display(
+        &self,
+        source: lattice_grammar::DisplaySource,
+        target: lattice_core::ui::pane::DisplayTarget,
+    ) -> Result<NativeEffect, String> {
+        let source = match source {
+            lattice_grammar::DisplaySource::File(path) => {
+                lattice_grammar::DisplaySource::File(self.posted_path(path)?)
+            }
+            synthetic @ lattice_grammar::DisplaySource::Synthetic { .. } => synthetic,
+        };
+        Ok(NativeEffect::DisplayBuffer {
+            source: Box::new(source),
+            target,
         })
     }
 
@@ -736,6 +764,9 @@ impl EffectAuthorizer {
                 force,
             } => self.posted_or_warn(self.posted_open(path, force)),
             NativeEffect::OpenExternalUri { uri } => self.posted_or_warn(self.posted_external(uri)),
+            NativeEffect::DisplayBuffer { source, target } => {
+                self.posted_or_warn(self.posted_display(*source, target))
+            }
             refused => {
                 let name = match &refused {
                     NativeEffect::WriteToFile { cut: Some(_), .. } => {
@@ -1429,6 +1460,49 @@ mod tests {
             text.contains("open denied") && text.contains("secret.txt"),
             "{text}"
         );
+    }
+
+    /// A posted `display-buffer` of a file is held to the open's rules: kept
+    /// inside the grant, refused outside it naming the file, and refused for
+    /// a relative path. A synthetic one is the plugin's own buffer, kept.
+    #[test]
+    fn a_posted_display_is_checked_as_an_open_is() {
+        use lattice_core::ui::pane::DisplayTarget;
+        use lattice_grammar::DisplaySource;
+        let dir = tmp("posted-display-in");
+        let other = tmp("posted-display-out");
+        let auth = EffectAuthorizer::new(&grant(&dir, true), "org");
+        let display = |source| NativeEffect::DisplayBuffer {
+            source: Box::new(source),
+            target: DisplayTarget::VSplit,
+        };
+        let inside = dir.join("notes.html");
+        let out = auth.restrict_posted(display(DisplaySource::File(inside.clone())));
+        assert!(
+            matches!(&out, NativeEffect::DisplayBuffer { source, .. }
+                if matches!(source.as_ref(), DisplaySource::File(p) if *p == inside)),
+            "{out:?}"
+        );
+        let text = refused_text(
+            &auth.restrict_posted(display(DisplaySource::File(other.join("secret.txt")))),
+        );
+        assert!(
+            text.contains("open denied") && text.contains("secret.txt"),
+            "{text}"
+        );
+        let text = refused_text(
+            &auth.restrict_posted(display(DisplaySource::File(PathBuf::from("notes.html")))),
+        );
+        assert!(text.contains("absolute path"), "{text}");
+        let synthetic = DisplaySource::Synthetic {
+            name: "*Org HTML Export*".to_string(),
+            mode_id: "html-mode".to_string(),
+            content: None,
+            cursor: None,
+            activate_minor: None,
+        };
+        let out = auth.restrict_posted(display(synthetic));
+        assert!(matches!(out, NativeEffect::DisplayBuffer { .. }), "{out:?}");
     }
 
     /// The shapes a background open may not take: no path (reload whatever

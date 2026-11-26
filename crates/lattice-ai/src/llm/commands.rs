@@ -415,11 +415,15 @@ pub fn register(registry: &mut CommandRegistry, chats: LlmChatsHandle) {
             parse_args: Arc::new(parse_rest_as_text),
             apply: Arc::new(move |_ctx| {
                 Ok(match last.last_ask() {
-                    Some(name) => Effect::DisplaySyntheticBuffer {
-                        name,
-                        mode_id: LlmChatMode::mode_id().as_str().to_string(),
-                        content: None,
-                        split: lattice_core::ui::pane::SplitOrientation::Vertical,
+                    Some(name) => Effect::DisplayBuffer {
+                        source: Box::new(lattice_grammar::DisplaySource::Synthetic {
+                            name,
+                            mode_id: LlmChatMode::mode_id().as_str().to_string(),
+                            content: None,
+                            cursor: None,
+                            activate_minor: None,
+                        }),
+                        target: lattice_core::ui::pane::DisplayTarget::VSplit,
                     },
                     None => echo(
                         EchoLevel::Info,

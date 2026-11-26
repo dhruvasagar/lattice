@@ -134,8 +134,8 @@ pub use crate::dispatcher::{
     execute, execute_motion_only, execute_motion_only_reporting, execute_with_env, notice_text,
 };
 pub use crate::effect::{
-    CodeActionKindFilter, CommandRef, EchoLevel, Effect, FileAnchor, LspRequest, QuitScope,
-    SubstituteScope, Utf16Pos, YankKind,
+    CodeActionKindFilter, CommandRef, DisplaySource, EchoLevel, Effect, FileAnchor, LspRequest,
+    QuitScope, SubstituteScope, Utf16Pos, YankKind,
 };
 pub use crate::error::{CommandError, GrammarResult};
 pub use crate::introspect::{

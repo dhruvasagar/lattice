@@ -7236,6 +7236,68 @@
           "examples": []
         },
         {
+          "name": "display-target",
+          "kind": "enum",
+          "doc": "Where `display-buffer` makes a pane when none shows the buffer yet.\nMirrors `lattice_core::ui::pane::DisplayTarget`.",
+          "definition": "enum display-target {\n    split,\n    vsplit,\n    tab,\n}",
+          "members": [
+            {
+              "name": "split",
+              "type": null,
+              "doc": "A new pane below the active one."
+            },
+            {
+              "name": "vsplit",
+              "type": null,
+              "doc": "A new pane to the right of the active one."
+            },
+            {
+              "name": "tab",
+              "type": null,
+              "doc": "A new tab after the active one, not switched to."
+            }
+          ],
+          "examples": []
+        },
+        {
+          "name": "display-source",
+          "kind": "variant",
+          "doc": "What `display-buffer` shows.",
+          "definition": "variant display-source {\n    file(string),\n    synthetic(open-synthetic-buffer-payload),\n}",
+          "members": [
+            {
+              "name": "file",
+              "type": "string",
+              "doc": "A file, by absolute path, opened as `:e` opens it."
+            },
+            {
+              "name": "synthetic",
+              "type": "open-synthetic-buffer-payload",
+              "doc": "A named synthetic buffer, with `open-synthetic-buffer`'s fields\nand meaning."
+            }
+          ],
+          "examples": []
+        },
+        {
+          "name": "display-buffer-payload",
+          "kind": "record",
+          "doc": null,
+          "definition": "record display-buffer-payload {\n    source: display-source,\n    target: display-target,\n}",
+          "members": [
+            {
+              "name": "source",
+              "type": "display-source",
+              "doc": null
+            },
+            {
+              "name": "target",
+              "type": "display-target",
+              "doc": null
+            }
+          ],
+          "examples": []
+        },
+        {
           "name": "spawn-terminal-payload",
           "kind": "record",
           "doc": null,
@@ -8423,7 +8485,7 @@
           "name": "effect",
           "kind": "variant",
           "doc": "Mirrors `lattice_grammar::effect::Effect` (§4.4). Every arm is pure data;\n`Many`/`Global`/`AppAction` are absent by design (see the note above).",
-          "definition": "variant effect {\n    none,\n    declined,\n    edits(list<applied-edit>),\n    apply-edit(apply-edit-payload),\n    write-to-file(write-to-file-payload),\n    selection-change(selection-set),\n    cursor-move(position),\n    confirm(confirm-payload),\n    open-prompt(open-prompt-payload),\n    open-transient(open-transient-payload),\n    yank(yank-payload),\n    enter-mode(modal-state),\n    save-buffer(option<string>),\n    quit-editor(quit-payload),\n    open-buffer(open-buffer-payload),\n    open-buffer-at(open-buffer-at-payload),\n    open-external-uri(string),\n    open-buffer-at-column(open-buffer-at-column-payload),\n    spawn-terminal(spawn-terminal-payload),\n    terminal-input(list<u8>),\n    set-option(string),\n    set-local-option(string),\n    set-global-option(string),\n    clear-search-highlight,\n    set-colorscheme(string),\n    echo(echo-payload),\n    show-diagnostics-popup(list<tuple<string, u8>>),\n    lsp(lsp-request),\n    echo-registers,\n    echo-marks,\n    substitute(substitute-payload),\n    delete-current-line,\n    describe-command(describe-command-payload),\n    describe-buffer,\n    apropos(string),\n    describe-key(string),\n    list-keymap,\n    buffer-next,\n    buffer-prev,\n    list-buffers,\n    open-buffer-picker,\n    open-picker(open-picker-payload),\n    buffer-delete(bool),\n    open-file-tree(option<string>),\n    close-file-tree,\n    open-oil(option<string>),\n    describe-option(string),\n    describe-element(string),\n    list-options,\n    describe-plugin-api(option<string>),\n    list-plugin-apis,\n    export-plugin-api(option<string>),\n    list-commands,\n    describe-plugin(string),\n    list-plugins,\n    open-hover(string),\n    dismiss-popup,\n    dismiss-popup-named(string),\n    open-popup(open-popup-payload),\n    open-help-topic(option<string>),\n    list-diagnostics,\n    next-diagnostic,\n    prev-diagnostic,\n    open-lsp-log(option<string>),\n    open-messages,\n    open-dashboard,\n    toggle-lsp-trace(string),\n    open-lsp-trace-log(option<string>),\n    lsp-status,\n    lsp-server-log-listing,\n    lsp-restart(string),\n    lsp-progress-cancel(option<string>),\n    lsp-expand-region,\n    lsp-shrink-region,\n    set-lsp-log-level(set-lsp-log-level-payload),\n    lsp-log-clear(option<string>),\n    lsp-document-symbol,\n    lsp-workspace-symbol(string),\n    lsp-incoming-calls,\n    lsp-outgoing-calls,\n    lsp-supertypes,\n    lsp-subtypes,\n    lsp-moniker,\n    lsp-code-lens,\n    lsp-color-presentation,\n    lsp-format,\n    lsp-format-range,\n    lsp-signature-help,\n    lsp-complete,\n    lsp-rename(string),\n    lsp-code-action(code-action-request),\n    expand-snippet(range),\n    expand-snippet-over(expand-snippet-over-payload),\n    reload-snippets,\n    describe-events,\n    describe-diff,\n    diff-open,\n    diff-off(bool),\n    diffthis,\n    diffsplit(diffsplit-payload),\n    diff-get-cmd(option<u32>),\n    diff-put-cmd(option<u32>),\n    diff-accept,\n    diff-reject,\n    diff-accept-all,\n    diff-reject-all,\n    close-session-diffs(close-session-diffs-payload),\n    close-all-session-diffs(u64),\n    next-hunk,\n    prev-hunk,\n    describe-event(string),\n    list-modes,\n    describe-mode(string),\n    describe-active-modes,\n    describe-active-bindings,\n    describe-option-resolution(string),\n    customize(option<string>),\n    tutor(option<u32>),\n    toggle-mode(string),\n    app-action(app-effect),\n    record-jump,\n    open-ai-log(option<string>),\n    open-synthetic-buffer(open-synthetic-buffer-payload),\n    focus-buffer(u32),\n    invoke-command(command-ref),\n    track-range(track-range-payload),\n    untrack-range(untrack-range-payload),\n    insert-snippet(insert-snippet-payload),\n}",
+          "definition": "variant effect {\n    none,\n    declined,\n    edits(list<applied-edit>),\n    apply-edit(apply-edit-payload),\n    write-to-file(write-to-file-payload),\n    selection-change(selection-set),\n    cursor-move(position),\n    confirm(confirm-payload),\n    open-prompt(open-prompt-payload),\n    open-transient(open-transient-payload),\n    yank(yank-payload),\n    enter-mode(modal-state),\n    save-buffer(option<string>),\n    quit-editor(quit-payload),\n    open-buffer(open-buffer-payload),\n    open-buffer-at(open-buffer-at-payload),\n    open-external-uri(string),\n    open-buffer-at-column(open-buffer-at-column-payload),\n    spawn-terminal(spawn-terminal-payload),\n    terminal-input(list<u8>),\n    set-option(string),\n    set-local-option(string),\n    set-global-option(string),\n    clear-search-highlight,\n    set-colorscheme(string),\n    echo(echo-payload),\n    show-diagnostics-popup(list<tuple<string, u8>>),\n    lsp(lsp-request),\n    echo-registers,\n    echo-marks,\n    substitute(substitute-payload),\n    delete-current-line,\n    describe-command(describe-command-payload),\n    describe-buffer,\n    apropos(string),\n    describe-key(string),\n    list-keymap,\n    buffer-next,\n    buffer-prev,\n    list-buffers,\n    open-buffer-picker,\n    open-picker(open-picker-payload),\n    buffer-delete(bool),\n    open-file-tree(option<string>),\n    close-file-tree,\n    open-oil(option<string>),\n    describe-option(string),\n    describe-element(string),\n    list-options,\n    describe-plugin-api(option<string>),\n    list-plugin-apis,\n    export-plugin-api(option<string>),\n    list-commands,\n    describe-plugin(string),\n    list-plugins,\n    open-hover(string),\n    dismiss-popup,\n    dismiss-popup-named(string),\n    open-popup(open-popup-payload),\n    open-help-topic(option<string>),\n    list-diagnostics,\n    next-diagnostic,\n    prev-diagnostic,\n    open-lsp-log(option<string>),\n    open-messages,\n    open-dashboard,\n    toggle-lsp-trace(string),\n    open-lsp-trace-log(option<string>),\n    lsp-status,\n    lsp-server-log-listing,\n    lsp-restart(string),\n    lsp-progress-cancel(option<string>),\n    lsp-expand-region,\n    lsp-shrink-region,\n    set-lsp-log-level(set-lsp-log-level-payload),\n    lsp-log-clear(option<string>),\n    lsp-document-symbol,\n    lsp-workspace-symbol(string),\n    lsp-incoming-calls,\n    lsp-outgoing-calls,\n    lsp-supertypes,\n    lsp-subtypes,\n    lsp-moniker,\n    lsp-code-lens,\n    lsp-color-presentation,\n    lsp-format,\n    lsp-format-range,\n    lsp-signature-help,\n    lsp-complete,\n    lsp-rename(string),\n    lsp-code-action(code-action-request),\n    expand-snippet(range),\n    expand-snippet-over(expand-snippet-over-payload),\n    reload-snippets,\n    describe-events,\n    describe-diff,\n    diff-open,\n    diff-off(bool),\n    diffthis,\n    diffsplit(diffsplit-payload),\n    diff-get-cmd(option<u32>),\n    diff-put-cmd(option<u32>),\n    diff-accept,\n    diff-reject,\n    diff-accept-all,\n    diff-reject-all,\n    close-session-diffs(close-session-diffs-payload),\n    close-all-session-diffs(u64),\n    next-hunk,\n    prev-hunk,\n    describe-event(string),\n    list-modes,\n    describe-mode(string),\n    describe-active-modes,\n    describe-active-bindings,\n    describe-option-resolution(string),\n    customize(option<string>),\n    tutor(option<u32>),\n    toggle-mode(string),\n    app-action(app-effect),\n    record-jump,\n    open-ai-log(option<string>),\n    open-synthetic-buffer(open-synthetic-buffer-payload),\n    focus-buffer(u32),\n    invoke-command(command-ref),\n    track-range(track-range-payload),\n    untrack-range(untrack-range-payload),\n    insert-snippet(insert-snippet-payload),\n    display-buffer(display-buffer-payload),\n}",
           "members": [
             {
               "name": "none",
@@ -9064,6 +9126,11 @@
               "name": "insert-snippet",
               "type": "insert-snippet-payload",
               "doc": "RF.4e: expand a snippet body over a range of the active buffer,\nin one edit (one undo step), and start its session: the first\nstop is selected, and typing there types at every linked site.\nThe peer of `expand-snippet-over`, which names a registered\nsnippet; this one carries the body."
+            },
+            {
+              "name": "display-buffer",
+              "type": "display-buffer-payload",
+              "doc": "Show a buffer in a pane other than the active one and leave focus\nwhere it is: emacs's `display-buffer`, where the opens are\n`switch-to-buffer`. For output that lands while the user works\nelsewhere, as an export finishing after its chord does; a window\nthat moved under the keys would lose them. A pane already showing\nthe buffer, in any tab, is left as it is; a synthetic buffer also\nreuses a non-active pane whose major is its `mode-id`; otherwise a\npane is made at `target`. A posted `file` must be an absolute path\ninside the plugin's `fs` grants, as a posted open must. Appended\nlast so existing variant indices do not move."
             }
           ],
           "examples": []

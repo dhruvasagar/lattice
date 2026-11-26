@@ -580,11 +580,15 @@ struct Task {
 impl Task {
     fn show_session(&self, why: String) -> Vec<Effect> {
         vec![
-            Effect::DisplaySyntheticBuffer {
-                name: self.session.name.clone(),
-                mode_id: LlmChatMode::mode_id().as_str().to_string(),
-                content: None,
-                split: lattice_core::ui::pane::SplitOrientation::Vertical,
+            Effect::DisplayBuffer {
+                source: Box::new(lattice_grammar::DisplaySource::Synthetic {
+                    name: self.session.name.clone(),
+                    mode_id: LlmChatMode::mode_id().as_str().to_string(),
+                    content: None,
+                    cursor: None,
+                    activate_minor: None,
+                }),
+                target: lattice_core::ui::pane::DisplayTarget::VSplit,
             },
             echo(EchoLevel::Info, why),
         ]

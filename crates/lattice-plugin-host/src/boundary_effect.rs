@@ -19,8 +19,9 @@ use crate::lattice::plugin_host::types::{
     AppliedEdit as WitAppliedEdit, ApplyEditPayload as WitApplyEditPayload,
     CloseSessionDiffsPayload as WitCloseSessionDiffsPayload, ConfirmPayload as WitConfirmPayload,
     DescribeCommandPayload as WitDescribeCommandPayload, DiffsplitPayload as WitDiffsplitPayload,
-    EchoLevel as WitEchoLevel, EchoPayload as WitEchoPayload, Edit as WitEdit,
-    EditDelta as WitEditDelta, EditKind as WitEditKind, Effect as WitEffect,
+    DisplayBufferPayload as WitDisplayBufferPayload, DisplaySource as WitDisplaySource,
+    DisplayTarget as WitDisplayTarget, EchoLevel as WitEchoLevel, EchoPayload as WitEchoPayload,
+    Edit as WitEdit, EditDelta as WitEditDelta, EditKind as WitEditKind, Effect as WitEffect,
     ExpandSnippetOverPayload as WitExpandSnippetOverPayload, FileAnchor as WitFileAnchor,
     LspRequest as WitLspRequest, ModalState as WitModalState,
     OpenBufferAtColumnPayload as WitOpenBufferAtColumnPayload,
@@ -1096,10 +1097,28 @@ fn effect_to_wit(e: &NativeEffect) -> Result<WitEffect, String> {
                         (host-only oil listing from a registered source)"
                 .to_string());
         }
-        NativeEffect::DisplaySyntheticBuffer { .. } => {
-            return Err("Effect::DisplaySyntheticBuffer has no WIT mirror yet \
-                        (host-only pane placement that leaves focus put)"
-                .to_string());
+        NativeEffect::DisplayBuffer { source, target } => {
+            WitEffect::DisplayBuffer(WitDisplayBufferPayload {
+                source: match source.as_ref() {
+                    lattice_grammar::DisplaySource::File(path) => {
+                        WitDisplaySource::File(path.to_string_lossy().into_owned())
+                    }
+                    lattice_grammar::DisplaySource::Synthetic {
+                        name,
+                        mode_id,
+                        content,
+                        cursor,
+                        activate_minor,
+                    } => WitDisplaySource::Synthetic(WitOpenSyntheticBufferPayload {
+                        name: name.clone(),
+                        mode_id: mode_id.clone(),
+                        content: content.clone(),
+                        cursor: cursor.as_ref().map(NativePosition::to_wit).transpose()?,
+                        activate_minor: activate_minor.clone(),
+                    }),
+                },
+                target: display_target_to_wit(*target),
+            })
         }
         NativeEffect::InTarget { .. } => {
             return Err("Effect::InTarget has no WIT mirror yet \
@@ -1450,7 +1469,41 @@ fn effect_from_wit(w: WitEffect) -> Result<NativeEffect, String> {
             cursor: p.cursor.map(NativePosition::from_wit).transpose()?,
             activate_minor: p.activate_minor,
         },
+        WitEffect::DisplayBuffer(p) => NativeEffect::DisplayBuffer {
+            source: Box::new(match p.source {
+                WitDisplaySource::File(path) => {
+                    lattice_grammar::DisplaySource::File(std::path::PathBuf::from(path))
+                }
+                WitDisplaySource::Synthetic(s) => lattice_grammar::DisplaySource::Synthetic {
+                    name: s.name,
+                    mode_id: s.mode_id,
+                    content: s.content,
+                    cursor: s.cursor.map(NativePosition::from_wit).transpose()?,
+                    activate_minor: s.activate_minor,
+                },
+            }),
+            target: display_target_from_wit(p.target),
+        },
     })
+}
+
+/// `display-buffer`'s target across the boundary.
+fn display_target_to_wit(t: lattice_core::ui::pane::DisplayTarget) -> WitDisplayTarget {
+    use lattice_core::ui::pane::DisplayTarget as N;
+    match t {
+        N::Split => WitDisplayTarget::Split,
+        N::VSplit => WitDisplayTarget::Vsplit,
+        N::Tab => WitDisplayTarget::Tab,
+    }
+}
+
+fn display_target_from_wit(t: WitDisplayTarget) -> lattice_core::ui::pane::DisplayTarget {
+    use lattice_core::ui::pane::DisplayTarget as N;
+    match t {
+        WitDisplayTarget::Split => N::Split,
+        WitDisplayTarget::Vsplit => N::VSplit,
+        WitDisplayTarget::Tab => N::Tab,
+    }
 }
 
 /// RF.3b: the code-action kind family across the boundary.
@@ -1563,6 +1616,45 @@ mod tests {
 
     /// A confirm carrying nothing is still a confirm — the common case
     /// for a plugin that re-derives its own target.
+    /// `display-buffer` crosses both ways with every field, for either source.
+    #[test]
+    fn display_buffer_crosses_the_boundary_in_both_directions() {
+        use lattice_core::ui::pane::DisplayTarget;
+        use lattice_grammar::DisplaySource;
+        for (source, target) in [
+            (
+                DisplaySource::File(std::path::PathBuf::from("/notes/plan.html")),
+                DisplayTarget::VSplit,
+            ),
+            (
+                DisplaySource::Synthetic {
+                    name: "*Org HTML Export*".to_string(),
+                    mode_id: "html-mode".to_string(),
+                    content: Some("<p>hi</p>".to_string()),
+                    cursor: Some(NativePosition { line: 0, byte: 3 }),
+                    activate_minor: Some("org-export-html-output-mode".to_string()),
+                },
+                DisplayTarget::Tab,
+            ),
+        ] {
+            let native = NativeEffect::DisplayBuffer {
+                source: Box::new(source.clone()),
+                target,
+            };
+            let back = effect_from_wit(effect_to_wit(&native).unwrap()).unwrap();
+            match back {
+                NativeEffect::DisplayBuffer {
+                    source: s,
+                    target: t,
+                } => {
+                    assert_eq!(*s, source);
+                    assert_eq!(t, target);
+                }
+                other => panic!("expected DisplayBuffer, got {other:?}"),
+            }
+        }
+    }
+
     #[test]
     fn a_confirm_with_no_args_crosses_too() {
         let native = NativeEffect::Confirm {

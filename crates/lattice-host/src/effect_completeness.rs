@@ -122,7 +122,7 @@ pub fn effect_is_host_complete(effect: &Effect) -> bool {
         | Effect::OpenAiLog { .. }
         | Effect::OpenSyntheticBuffer { .. }
         | Effect::OpenSyntheticBufferAt { .. }
-        | Effect::DisplaySyntheticBuffer { .. }
+        | Effect::DisplayBuffer { .. }
         | Effect::OpenMessages
         | Effect::OpenDashboard
         | Effect::ToggleLspTrace { .. }

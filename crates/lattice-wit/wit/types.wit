@@ -747,6 +747,31 @@ interface types {
         /// chords off every other org buffer.
         activate-minor: option<string>,
     }
+
+    /// Where `display-buffer` makes a pane when none shows the buffer yet.
+    /// Mirrors `lattice_core::ui::pane::DisplayTarget`.
+    enum display-target {
+        /// A new pane below the active one.
+        split,
+        /// A new pane to the right of the active one.
+        vsplit,
+        /// A new tab after the active one, not switched to.
+        tab,
+    }
+
+    /// What `display-buffer` shows.
+    variant display-source {
+        /// A file, by absolute path, opened as `:e` opens it.
+        file(string),
+        /// A named synthetic buffer, with `open-synthetic-buffer`'s fields
+        /// and meaning.
+        synthetic(open-synthetic-buffer-payload),
+    }
+
+    record display-buffer-payload {
+        source: display-source,
+        target: display-target,
+    }
     record spawn-terminal-payload {
         /// PC.2: working directory to spawn in, overriding the active buffer's
         /// project root for this spawn only.
@@ -1031,6 +1056,17 @@ interface types {
         /// The peer of `expand-snippet-over`, which names a registered
         /// snippet; this one carries the body.
         insert-snippet(insert-snippet-payload),
+        /// Show a buffer in a pane other than the active one and leave focus
+        /// where it is: emacs's `display-buffer`, where the opens are
+        /// `switch-to-buffer`. For output that lands while the user works
+        /// elsewhere, as an export finishing after its chord does; a window
+        /// that moved under the keys would lose them. A pane already showing
+        /// the buffer, in any tab, is left as it is; a synthetic buffer also
+        /// reuses a non-active pane whose major is its `mode-id`; otherwise a
+        /// pane is made at `target`. A posted `file` must be an absolute path
+        /// inside the plugin's `fs` grants, as a posted open must. Appended
+        /// last so existing variant indices do not move.
+        display-buffer(display-buffer-payload),
     }
 
     // ---- The `app-effect` variant mirror (PH7.3b2) ----

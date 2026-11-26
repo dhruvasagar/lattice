@@ -3866,15 +3866,11 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
                 activate_minor.as_deref(),
             );
         }
-        // LL.10a: host-applied for the same ordering reason as the open
-        // above; focus never moves.
-        Effect::DisplaySyntheticBuffer {
-            name,
-            mode_id,
-            content,
-            split,
-        } => {
-            editor.display_synthetic_buffer(&name, &mode_id, content.as_deref(), split);
+        // Host-applied for the same ordering reason as the open above;
+        // focus never moves.
+        Effect::DisplayBuffer { source, target } => {
+            out.renderer_signals
+                .extend(editor.display_elsewhere(*source, target));
         }
         // MG.50: open, THEN position against the now-active buffer.
         Effect::OpenSyntheticBufferAt {
@@ -37420,36 +37416,84 @@ impl Editor {
         }
     }
 
-    /// LL.10a: [`Effect::DisplaySyntheticBuffer`](lattice_grammar::Effect::DisplaySyntheticBuffer)
-    /// — show `name` in a pane other than the active one and leave focus
-    /// where it is.
+    /// [`Effect::DisplayBuffer`](lattice_grammar::Effect::DisplayBuffer):
+    /// show `source` in a pane other than the active one and leave focus
+    /// where it is. See the effect for the pane-choice order.
     ///
-    /// The active pane's buffer, cursor, mode and scroll are never touched:
-    /// the chosen pane's fields are set directly instead of activating it,
-    /// so nothing a focus change runs (pane snapshot/load, buffer
-    /// activation, position history) happens. The buffer's major is still
-    /// activated when the buffer is created, by
-    /// `ensure_named_synthetic_document`, so it is fully set up before it
-    /// is first painted. See the effect for the pane-choice order.
-    pub fn display_synthetic_buffer(
+    /// A buffer that exists already (every synthetic source, and a file
+    /// that is open) is placed by setting the chosen pane's fields directly,
+    /// so nothing a focus change runs (pane snapshot / load, buffer
+    /// activation, position history) touches the active pane. A synthetic
+    /// buffer's major is activated when it is created, so it is set up
+    /// before it is first painted.
+    ///
+    /// A file that is not open yet can only be loaded into the active slot,
+    /// so the new pane is focused, the file opened there as `:e` opens it,
+    /// and focus returned, all before this returns, so nothing is drawn in
+    /// between. When that open fails, the pane made for it is closed again.
+    pub fn display_elsewhere(
         &mut self,
-        name: &str,
-        mode_id: &str,
-        content: Option<&str>,
-        split: lattice_core::ui::pane::SplitOrientation,
-    ) {
-        let reused = self.buffers.by_name(name).is_some();
-        let mode = lattice_mode::ModeId::new(mode_id);
-        let id = self.ensure_named_synthetic_document(
-            name,
-            mode,
-            crate::synthetic_buffers::SYNTHETIC_BUFFER_FLAGS,
-        );
-        if let Some(text) = content
-            && !reused
-        {
-            self.replace_owned_buffer(id, text);
+        source: lattice_grammar::DisplaySource,
+        target: lattice_core::ui::pane::DisplayTarget,
+    ) -> Vec<RendererSignal> {
+        use lattice_grammar::DisplaySource;
+        let mut signals = Vec::new();
+        let (id, reused) = match source {
+            DisplaySource::Synthetic {
+                name,
+                mode_id,
+                content,
+                cursor,
+                activate_minor,
+            } => {
+                let reused = self.buffers.by_name(&name).is_some();
+                let mode = lattice_mode::ModeId::new(&mode_id);
+                let id = self.ensure_named_synthetic_document(
+                    &name,
+                    mode,
+                    crate::synthetic_buffers::SYNTHETIC_BUFFER_FLAGS,
+                );
+                if let Some(text) = content
+                    && !reused
+                {
+                    self.replace_owned_buffer(id, &text);
+                }
+                if let Some(minor) = activate_minor {
+                    signals.extend(self.activate_mode_by_id(id, lattice_mode::ModeId::new(&minor)));
+                }
+                let fresh_cursor = cursor.filter(|_| !reused);
+                self.display_existing(id, Some(mode), fresh_cursor, target);
+                (id, reused)
+            }
+            DisplaySource::File(path) => {
+                let path = normalize_user_path_with_cwd(&path, self.current_dir.as_deref());
+                match self.find_document_by_path(&path) {
+                    Some(id) => {
+                        self.display_existing(id, None, None, target);
+                        (id, true)
+                    }
+                    None => return self.display_unopened_file(path, target),
+                }
+            }
+        };
+        if reused {
+            self.refresh_reopened_view(id);
         }
+        signals
+    }
+
+    /// Place buffer `id`, which exists, by the display rules: left where any
+    /// pane of any tab shows it; else into a non-active pane
+    /// of this tab whose major is `reuse_major`; else into a new pane at
+    /// `target`. `cursor` is where a pane given the buffer puts its caret.
+    fn display_existing(
+        &mut self,
+        id: BufferId,
+        reuse_major: Option<lattice_mode::ModeId>,
+        cursor: Option<lattice_protocol::position::Position>,
+        target: lattice_core::ui::pane::DisplayTarget,
+    ) {
+        use lattice_core::ui::pane::{DisplayTarget, SplitOrientation};
         let active = self.pane_tree.active_index();
         let others = || {
             self.pane_tree
@@ -37458,36 +37502,131 @@ impl Editor {
                 .enumerate()
                 .filter(move |(i, _)| *i != active)
         };
-        let showing = others().find_map(|(i, p)| (p.buffer_id == id).then_some(i));
-        let same_mode = || {
+        if self.pane_tree.active().buffer_id == id {
+            return;
+        }
+        if others().any(|(_, p)| p.buffer_id == id) {
+            // Under zoom only the active pane is drawn, so the pane showing
+            // it would stay hidden.
+            self.pane_tree.clear_zoom();
+            return;
+        }
+        let in_another_tab = self
+            .tabs
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i != self.active_tab)
+            .any(|(_, tab)| tab.panes.leaves().iter().any(|p| p.buffer_id == id));
+        if in_another_tab {
+            return;
+        }
+        let same_major = reuse_major.and_then(|mode| {
             others().find_map(|(i, p)| {
                 self.active_modes
                     .get(&p.buffer_id)
                     .is_some_and(|m| m.is_active_major(mode))
                     .then_some(i)
             })
-        };
-        let pane = match showing.or_else(same_mode) {
-            Some(idx) => {
-                // Under zoom only the active pane is drawn, so a reused pane
-                // would receive the buffer and show nothing.
+        });
+        let pane = match (same_major, target) {
+            (Some(idx), _) => {
                 self.pane_tree.clear_zoom();
                 idx
             }
             // `split_active` keeps the active pane active, and clears zoom.
-            None => self.pane_tree.split_active(split),
+            (None, DisplayTarget::Split) => {
+                self.pane_tree.split_active(SplitOrientation::Horizontal)
+            }
+            (None, DisplayTarget::VSplit) => {
+                self.pane_tree.split_active(SplitOrientation::Vertical)
+            }
+            (None, DisplayTarget::Tab) => {
+                let pane = lattice_core::ui::pane::PaneState {
+                    id: lattice_core::ui::pane::PaneId::next(),
+                    buffer: BufferKind::Document,
+                    buffer_id: id,
+                    cursor: cursor.unwrap_or_default(),
+                    scroll: 0,
+                    leftcol: 0,
+                    viewport_height: self.viewport_height,
+                    viewport_width: 0,
+                    committed_buffer_id: None,
+                    scroll_lines: None,
+                };
+                let mut tab = lattice_core::ui::tab::TabSlot::new();
+                tab.panes = lattice_core::ui::pane::PaneTree::single(pane);
+                self.tabs.insert(self.active_tab + 1, tab);
+                return;
+            }
         };
-        if showing.is_none() {
-            let leaf = &mut self.pane_tree.leaves_mut()[pane];
-            leaf.buffer = BufferKind::Document;
-            leaf.buffer_id = id;
-            leaf.cursor = Default::default();
-            leaf.scroll = 0;
-            leaf.leftcol = 0;
+        let leaf = &mut self.pane_tree.leaves_mut()[pane];
+        leaf.buffer = BufferKind::Document;
+        leaf.buffer_id = id;
+        leaf.cursor = cursor.unwrap_or_default();
+        leaf.scroll = 0;
+        leaf.leftcol = 0;
+    }
+
+    /// Open `path`, which no buffer holds yet, in a new pane at `target`,
+    /// then return focus to the pane and tab it was in.
+    fn display_unopened_file(
+        &mut self,
+        path: std::path::PathBuf,
+        target: lattice_core::ui::pane::DisplayTarget,
+    ) -> Vec<RendererSignal> {
+        use lattice_core::ui::pane::{DisplayTarget, SplitOrientation};
+        if path.is_dir() {
+            self.set_message(
+                EchoLevel::Error,
+                format!("{} is a directory, not a file to show", path.display()),
+            );
+            return Vec::new();
         }
-        if reused {
-            self.refresh_reopened_view(id);
+        let origin_tab = self.active_tab;
+        let origin_pane = self.pane_tree.active().id;
+        match target {
+            DisplayTarget::Split | DisplayTarget::VSplit => {
+                let orientation = if target == DisplayTarget::Split {
+                    SplitOrientation::Horizontal
+                } else {
+                    SplitOrientation::Vertical
+                };
+                self.snapshot_active_pane();
+                let made = self.pane_tree.split_active(orientation);
+                self.pane_tree.set_active(made);
+                self.load_active_pane();
+            }
+            DisplayTarget::Tab => self.do_new_tab(),
         }
+        let (opened, signals) = match self.do_edit(Some(path), false) {
+            DoEditOutcome::Opened(s) | DoEditOutcome::Activated(s) | DoEditOutcome::Reloaded(s) => {
+                (true, s)
+            }
+            DoEditOutcome::Directory(_) | DoEditOutcome::Failed | DoEditOutcome::NoFileName => {
+                (false, Vec::new())
+            }
+        };
+        match target {
+            DisplayTarget::Split | DisplayTarget::VSplit => {
+                self.snapshot_active_pane();
+                if !opened {
+                    self.pane_tree.close_active();
+                }
+                if let Some(back) = self.pane_tree.index_of(origin_pane) {
+                    self.pane_tree.set_active(back);
+                }
+                self.load_active_pane();
+            }
+            DisplayTarget::Tab => {
+                if !opened {
+                    self.do_close_tab();
+                }
+                if self.active_tab != origin_tab && origin_tab < self.tabs.len() {
+                    self.do_switch_to_tab(origin_tab);
+                }
+            }
+        }
+        signals
     }
 
     /// Re-run a reopened view's refresh, when its mode asked for that
@@ -46598,7 +46737,7 @@ pub fn effect_mutates_or_yanks(effect: &lattice_grammar::Effect) -> bool {
         | Effect::OpenOil { .. }
         | Effect::OpenOilSource { .. }
         | Effect::InTarget { .. }
-        | Effect::DisplaySyntheticBuffer { .. }
+        | Effect::DisplayBuffer { .. }
         // LM.2: in-place re-list / toggle — like OpenOil, navigation, not a
         // user edit-mutation or yank.
         | Effect::OilNavigate { .. }
@@ -46770,7 +46909,7 @@ pub fn effect_mutates(effect: &lattice_grammar::Effect) -> bool {
         | Effect::OpenOil { .. }
         | Effect::OpenOilSource { .. }
         | Effect::InTarget { .. }
-        | Effect::DisplaySyntheticBuffer { .. }
+        | Effect::DisplayBuffer { .. }
         // LM.2: in-place re-list / toggle — like OpenOil, navigation, not a
         // user edit-mutation or yank.
         | Effect::OilNavigate { .. }

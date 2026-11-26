@@ -572,11 +572,15 @@ fn inspect_effect(
 /// given to show.
 pub(crate) fn inspect_view() -> lattice_grammar::Effect {
     use super::modes::context::{INSPECT_BUFFER, LlmInspectMode};
-    lattice_grammar::Effect::DisplaySyntheticBuffer {
-        name: INSPECT_BUFFER.to_string(),
-        mode_id: LlmInspectMode::mode_id().as_str().to_string(),
-        content: None,
-        split: lattice_core::ui::pane::SplitOrientation::Vertical,
+    lattice_grammar::Effect::DisplayBuffer {
+        source: Box::new(lattice_grammar::DisplaySource::Synthetic {
+            name: INSPECT_BUFFER.to_string(),
+            mode_id: LlmInspectMode::mode_id().as_str().to_string(),
+            content: None,
+            cursor: None,
+            activate_minor: None,
+        }),
+        target: lattice_core::ui::pane::DisplayTarget::VSplit,
     }
 }
 

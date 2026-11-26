@@ -22,7 +22,7 @@ command mirror (§4.1) and cross as a typed error until then.
 
 _(none — a shared type interface)_
 
-## Types (166)
+## Types (169)
 
 ### variant `arg-value`
 
@@ -1300,6 +1300,56 @@ behaviour exactly.
   is capture-specific. Naming the minor here is what keeps those
   chords off every other org buffer.
 
+### enum `display-target`
+
+```wit
+enum display-target {
+    split,
+    vsplit,
+    tab,
+}
+```
+
+Where `display-buffer` makes a pane when none shows the buffer yet.
+Mirrors `lattice_core::ui::pane::DisplayTarget`.
+
+**Cases**
+
+- `split` — A new pane below the active one.
+- `vsplit` — A new pane to the right of the active one.
+- `tab` — A new tab after the active one, not switched to.
+
+### variant `display-source`
+
+```wit
+variant display-source {
+    file(string),
+    synthetic(open-synthetic-buffer-payload),
+}
+```
+
+What `display-buffer` shows.
+
+**Cases**
+
+- `file`: `string` — A file, by absolute path, opened as `:e` opens it.
+- `synthetic`: [`open-synthetic-buffer-payload`](#record-open-synthetic-buffer-payload) — A named synthetic buffer, with `open-synthetic-buffer`'s fields
+  and meaning.
+
+### record `display-buffer-payload`
+
+```wit
+record display-buffer-payload {
+    source: display-source,
+    target: display-target,
+}
+```
+
+**Fields**
+
+- `source`: [`display-source`](#variant-display-source)
+- `target`: [`display-target`](#enum-display-target)
+
 ### record `spawn-terminal-payload`
 
 ```wit
@@ -2088,6 +2138,7 @@ variant effect {
     track-range(track-range-payload),
     untrack-range(untrack-range-payload),
     insert-snippet(insert-snippet-payload),
+    display-buffer(display-buffer-payload),
 }
 ```
 
@@ -2271,6 +2322,16 @@ Mirrors `lattice_grammar::effect::Effect` (§4.4). Every arm is pure data;
   stop is selected, and typing there types at every linked site.
   The peer of `expand-snippet-over`, which names a registered
   snippet; this one carries the body.
+- `display-buffer`: [`display-buffer-payload`](#record-display-buffer-payload) — Show a buffer in a pane other than the active one and leave focus
+  where it is: emacs's `display-buffer`, where the opens are
+  `switch-to-buffer`. For output that lands while the user works
+  elsewhere, as an export finishing after its chord does; a window
+  that moved under the keys would lose them. A pane already showing
+  the buffer, in any tab, is left as it is; a synthetic buffer also
+  reuses a non-active pane whose major is its `mode-id`; otherwise a
+  pane is made at `target`. A posted `file` must be an absolute path
+  inside the plugin's `fs` grants, as a posted open must. Appended
+  last so existing variant indices do not move.
 
 ### variant `arg-kind`
 

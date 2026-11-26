@@ -16,7 +16,7 @@ Every non-trivial slice ships the four artefacts (doc + bench where perf-relevan
 |---|---|---|---|
 | PT.0 | Design made final; CLAUDE.md, `plugin-manager.md`, `config-and-init.md` amended; this plan; ledger entry. No code. | docs | ✅ |
 | PT.1 | The parser: `PluginDeclaration` + `parse_plugin_declarations`, table tests, a parse bench. No wiring. | `lattice-config` | ✅ 18 tests; `config::plugins_table` 41 ns / 3.2 µs / 23 µs at 1 / 16 / 128 entries |
-| PT.2 | The walker reserves `plugins`; project config refuses it; `[plugin.<x>]` with `release` warns. | `lattice-config` | 📝 |
+| PT.2 | The walker reserves `plugins`; project config refuses it; `[plugin.<x>]` with `release` warns. | `lattice-config` | ✅ 3 tests |
 | PT.3 | Boot: one `declare` path with `DeclaredBy` origin; the install task reads `lattice.toml`, lowers, merges with `init.rs` (init wins), installs. | `lattice-plugin-loader` | 📝 |
 | PT.4 | `:reload-config` reconciles `[plugins]`; no `init.rs` is benign. | `lattice-plugin-loader` | 📝 |
 | PT.5 | `:plugins` shows each plugin's origin and the rejected TOML entries. | `lattice-plugin-loader` (view) | 📝 |

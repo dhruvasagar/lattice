@@ -1,0 +1,40 @@
+# ~/.config/lattice/lattice.toml
+#
+# Shown on camera in both demos (demo-script.md §6, org-demo-script.md), which
+# run with HOME pointed at a throwaway directory: `~/notes` is the fixture.
+
+# Two lines install org from its GitHub release: no Rust toolchain, no init.rs.
+[plugins]
+org = "dhruvasagar/lattice-org-plugin"
+
+[org]
+directory      = "~/notes"
+roam-directory = "~/notes/roam"
+# agenda.org's own `#+TODO:` line, which org reads only when exporting: the
+# keys that change a keyword on screen read this option.
+todo-keywords  = ["sequence: TODO(t) NEXT(n) WAITING(w@/!) | DONE(d!) CANCELLED(c@/!)"]
+
+[[org.capture-templates]]
+key         = "t"
+description = "todo"
+target      = { file = "~/notes/inbox.org", headline = "Tasks" }
+body        = """
+* TODO %?
+%U
+"""
+
+# The languages a source block may run, and the permission to run them.
+[[org.babel.languages]]
+name    = "sh"
+command = "sh"
+
+[[org.babel.languages]]
+name    = "python"
+command = "python3"
+ext     = "py"
+value   = "python"
+
+# `l p` / `l o` compile the exported .tex with exactly this step.
+[[org.export.latex-pdf-process]]
+command = "latexmk"
+args    = ["-pdf", "-interaction=nonstopmode", "-output-directory=%o", "%f"]

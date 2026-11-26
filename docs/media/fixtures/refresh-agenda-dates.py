@@ -10,10 +10,11 @@ Every timestamp in the file is shifted by (today - `#+ANCHOR:`), and the
 anchor is then reset to today. Weekday names are recomputed, so `<... Wed>`
 stays correct. Running it twice in one day is a no-op.
 
-    python3 docs/media/fixtures/refresh-agenda-dates.py [--check]
+    python3 docs/media/fixtures/refresh-agenda-dates.py [--check] [FILE]
 
 `--check` reports whether a shift is needed without writing, for use in a
-pre-capture checklist.
+pre-capture checklist. `FILE` defaults to the committed fixture; the org demo
+passes the copy it made, so the recording never dirties the checkout.
 """
 
 import argparse
@@ -51,12 +52,20 @@ def main() -> int:
         action="store_true",
         help="report whether a shift is needed; do not write",
     )
+    parser.add_argument(
+        "file",
+        nargs="?",
+        type=pathlib.Path,
+        default=FIXTURE,
+        help="the org file to shift (default: the committed fixture)",
+    )
     args = parser.parse_args()
+    fixture = args.file
 
-    text = FIXTURE.read_text()
+    text = fixture.read_text()
     match = ANCHOR_RE.search(text)
     if not match:
-        print(f"{FIXTURE.name}: no `#+ANCHOR: YYYY-MM-DD` line", file=sys.stderr)
+        print(f"{fixture.name}: no `#+ANCHOR: YYYY-MM-DD` line", file=sys.stderr)
         return 1
 
     anchor = dt.date.fromisoformat(match.group(1))
@@ -64,19 +73,19 @@ def main() -> int:
     delta = today - anchor
 
     if not delta:
-        print(f"{FIXTURE.name}: already anchored on {today} — nothing to do")
+        print(f"{fixture.name}: already anchored on {today} — nothing to do")
         return 0
 
     if args.check:
         print(
-            f"{FIXTURE.name}: anchored on {anchor}, {delta.days:+d} days from "
+            f"{fixture.name}: anchored on {anchor}, {delta.days:+d} days from "
             f"today — run without --check before capturing"
         )
         return 1
 
     shifted = ANCHOR_RE.sub(f"#+ANCHOR: {today.isoformat()}", shift(text, delta))
-    FIXTURE.write_text(shifted)
-    print(f"{FIXTURE.name}: shifted {delta.days:+d} days, anchored on {today}")
+    fixture.write_text(shifted)
+    print(f"{fixture.name}: shifted {delta.days:+d} days, anchored on {today}")
     return 0
 
 

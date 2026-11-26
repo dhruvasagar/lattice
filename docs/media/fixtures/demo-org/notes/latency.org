@@ -1,0 +1,23 @@
+#+TITLE: Keystroke latency
+#+OPTIONS: toc:nil
+
+* Why it matters
+A keystroke should land on screen within one display frame, under any
+background load. Below a frame, faster is imperceptible; above it, the
+editor feels slow however fast it is on average.
+
+* The frame budget
+The budget at common refresh rates, computed rather than typed:
+
+#+begin_src python :results output
+for hz in (60, 120, 144):
+    print(f"{hz:>3} Hz  {1000 / hz:5.2f} ms")
+#+end_src
+
+* Where the time goes
+#+begin_src sh
+echo "parse, shape and paint stay off the input path"
+#+end_src
+
+* Notes                                                            :noexport:
+Kept out of the export: this heading carries the =noexport= tag.

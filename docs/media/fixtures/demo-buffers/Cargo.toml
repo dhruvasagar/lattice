@@ -1,0 +1,9 @@
+# The demo's buffers beat (demo-script.md §2). It builds, so the language
+# server attaches quietly on camera; the empty `[workspace]` keeps it out of
+# lattice's own workspace.
+[package]
+name = "demo-buffers"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]

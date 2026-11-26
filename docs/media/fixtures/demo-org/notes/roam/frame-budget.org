@@ -1,0 +1,7 @@
+:PROPERTIES:
+:ID:       5d1c0e7a-3f4b-4c2e-9a61-0b7d2f8e4a10
+:END:
+#+title: Frame budget
+
+The time one frame may take: 16.7 ms at 60 Hz, 8.3 ms at 120 Hz. Lattice's
+latency ceiling is one frame, under any background load.

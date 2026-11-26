@@ -374,10 +374,11 @@ under the hood of shots above); `notifications-mode`; `cancellation`;
 
 ## Motion
 
-Screencasts are planned in [`demo-script.md`](./demo-script.md) — seven
-sections with reset points, and a *Clips to cut* table mapping five moments
-to the surfaces that embed them. That file is the authority for motion; this
-one does not duplicate it.
+Screencasts are planned in two scripts, each with reset points and a
+*Clips to cut* table mapping its moments to the surfaces that embed them:
+[`demo-script.md`](./demo-script.md), the editor's introduction, and
+[`org-demo-script.md`](./org-demo-script.md), org's own tour. Those files
+are the authority for motion; this one does not duplicate them.
 
 ---
 

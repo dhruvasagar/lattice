@@ -5,7 +5,8 @@ Screenshots and motion clips for the README and the website.
 ## Motion comes from the demo video, not from VHS
 
 **Decided 2026-09-21.** Clips for the site and README are cut from the
-introductory demo video (`demo-script.md`) rather than rendered from
+demo videos (`demo-script.md`, the editor's introduction, and
+`org-demo-script.md`, org's own tour) rather than rendered from
 `.tape` files. One capture session produces both the video and its clips,
 and nothing has to be installed to regenerate them.
 
@@ -65,7 +66,9 @@ Org-mode and the agent buffers are hand-capture only for a further
 reason: they need a fixture org file rather than a contributor's real
 notes, the org plugin is not in the release's bundled core-plugin set,
 and `:opencode` drives a real, non-deterministic model conversation that
-no fixed timeline can script.
+no fixed timeline can script. The org fixtures live in
+`fixtures/demo-org/` (a `lattice.toml` that installs and configures org,
+and the notes it points at) beside `fixtures/demo-agenda.org`.
 
 ## Size budget
 

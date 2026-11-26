@@ -62,6 +62,7 @@ impl Callbacks for Component {
         callback: u32,
         _ctx: OperatorContext,
         _doc: &Document,
+        _tree: Option<&TreeSnapshot>,
     ) -> Result<Vec<Effect>, String> {
         Err(format!("no operator {callback}"))
     }

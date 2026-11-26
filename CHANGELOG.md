@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- **The `init.rs` grammar example in `:help init` compiles again.** Its callbacks had not followed the plugin API since operators, motions, text objects, actions and ex-commands started receiving the buffer and its parse tree, so a config copied from it failed to build. It now has the current signatures and builds against plugin API 0.7.
+
 ## 0.10.4 — 2026-11-26
 
 ### Added

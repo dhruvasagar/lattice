@@ -436,11 +436,13 @@ You implement two halves of the `grammar-plugin` world:
 wit_bindgen::generate!({ world: "grammar-plugin", path: "wit" });
 
 use exports::lattice::plugin_host::grammar_callbacks::Guest as Callbacks;
+use lattice::plugin_host::buffer::Document;
 use lattice::plugin_host::grammar;
+use lattice::plugin_host::tree_sitter::TreeSnapshot;
 use lattice::plugin_host::types::{
-    ActionContext, Args, EchoLevel, EchoPayload, Effect, ExCommandContext, LatencyClass,
-    MotionContext, MotionResult, MotionSpec, OperatorContext, Position, Range, SurfaceForm,
-    TextObjectContext, TextObjectSpec, OperatorSpec, ActionSpec, ExCommandSpec,
+    ActionContext, ActionSpec, Args, EchoLevel, EchoPayload, Effect, ExCommandContext,
+    ExCommandSpec, LatencyClass, MotionContext, MotionResult, MotionSpec, OperatorContext,
+    OperatorSpec, Position, Range, SurfaceForm, TextObjectContext, TextObjectSpec,
 };
 
 struct Component;
@@ -478,7 +480,14 @@ impl Guest for Component {
         grammar::register_operator(
             "shout",
             "Uppercase the operated range (demo: echoes instead)",
-            &OperatorSpec { repeatable: true, args_schema: Vec::new(), blockwise_per_row: false },
+            &OperatorSpec {
+                repeatable: true,
+                args_schema: Vec::new(),
+                blockwise_per_row: false,
+                post_motion_char: false,
+                chord: None,
+                doubled: None,
+            },
             OP_SHOUT,
         );
 
@@ -512,8 +521,14 @@ impl Guest for Component {
 impl Callbacks for Component {
     // A motion returns the target position (+ whether it's linewise). Pure
     // arithmetic over the projected context — cursor is `ctx.from`, count is
-    // `ctx.count` (honor `2gld` → 10 lines).
-    fn apply_motion(callback: u32, ctx: MotionContext) -> Result<MotionResult, String> {
+    // `ctx.count` (honor `2gld` → 10 lines). Every callback also receives the
+    // buffer (`doc`, to read text) and its parse tree, when there is one.
+    fn apply_motion(
+        callback: u32,
+        ctx: MotionContext,
+        _doc: &Document,
+        _tree: Option<&TreeSnapshot>,
+    ) -> Result<MotionResult, String> {
         match callback {
             MOT_DOWN5 => Ok(MotionResult {
                 target: Position { line: ctx.from.line + 5 * ctx.count.max(1), byte: 0 },
@@ -524,7 +539,12 @@ impl Callbacks for Component {
     }
 
     // A text object returns the range it resolved (here: line start → cursor).
-    fn apply_text_object(callback: u32, ctx: TextObjectContext) -> Result<Range, String> {
+    fn apply_text_object(
+        callback: u32,
+        ctx: TextObjectContext,
+        _doc: &Document,
+        _tree: Option<&TreeSnapshot>,
+    ) -> Result<Range, String> {
         match callback {
             TXO_TO_BOL => Ok(Range {
                 start: Position { line: ctx.at.line, byte: 0 },
@@ -540,6 +560,7 @@ impl Callbacks for Component {
         callback: u32,
         ctx: OperatorContext,
         _doc: &Document,
+        _tree: Option<&TreeSnapshot>,
     ) -> Result<Vec<Effect>, String> {
         match callback {
             OP_SHOUT => Ok(vec![Effect::Echo(EchoPayload {
@@ -550,7 +571,12 @@ impl Callbacks for Component {
         }
     }
 
-    fn apply_action(callback: u32, _ctx: ActionContext) -> Result<Vec<Effect>, String> {
+    fn apply_action(
+        callback: u32,
+        _ctx: ActionContext,
+        _doc: &Document,
+        _tree: Option<&TreeSnapshot>,
+    ) -> Result<Vec<Effect>, String> {
         match callback {
             ACT_HELLO => Ok(vec![Effect::Echo(EchoPayload {
                 level: EchoLevel::Info,
@@ -569,7 +595,12 @@ impl Callbacks for Component {
     }
 
     // Apply `:greet` — read the parsed Args from the context, return Effects.
-    fn apply_ex_command(callback: u32, ctx: ExCommandContext) -> Result<Vec<Effect>, String> {
+    fn apply_ex_command(
+        callback: u32,
+        ctx: ExCommandContext,
+        _doc: &Document,
+        _tree: Option<&TreeSnapshot>,
+    ) -> Result<Vec<Effect>, String> {
         match callback {
             EXC_GREET_APPLY => {
                 let who = match ctx.args { Args::String(s) if !s.is_empty() => s, _ => "world".into() };

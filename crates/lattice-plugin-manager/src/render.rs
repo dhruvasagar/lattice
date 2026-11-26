@@ -24,6 +24,16 @@ pub const HEADER_LINES: usize = 3;
 
 /// Short health label for the status column. Kept terse; the crash provenance
 /// (which export trapped, and how) trails the row so the column stays narrow.
+/// The SOURCE cell: where the plugin comes from, and the configuration file
+/// that declared it, so a user with both `init.rs` and `lattice.toml` can tell
+/// which one to edit.
+fn source_cell(p: &PluginStatus) -> String {
+    match p.declared_by {
+        Some(by) => format!("{} ({})", p.source.label(), by.label()),
+        None => p.source.label(),
+    }
+}
+
 fn health_label(health: &PluginHealth) -> &'static str {
     match health {
         PluginHealth::Healthy => "ok",
@@ -285,7 +295,7 @@ pub fn render_status_styled(
     // up down the table.
     let source_w = plugins
         .iter()
-        .map(|p| p.source.label().len())
+        .map(|p| source_cell(p).len())
         .chain(std::iter::once("SOURCE".len()))
         .max()
         .unwrap_or(6);
@@ -344,7 +354,7 @@ pub fn render_status_styled(
             }),
         );
         line.push_str("  ");
-        let source = p.source.label();
+        let source = source_cell(p);
         push_cell(&mut line, &mut row_spans, &source, source_w, Some(dim));
         line.push_str("  ");
         let build = p.build.label();
@@ -622,6 +632,7 @@ mod tests {
             option_bound: vec![],
             health,
             source: SourceRecord::Unknown,
+            declared_by: None,
             build: BuildState::NotBuilt,
             build_error: None,
         }
@@ -875,6 +886,57 @@ mod tests {
         assert!(out.contains("git@abc1234"), "short rev in the cell: {out}");
         assert!(out.contains("stale"));
         assert!(out.contains("bundled"));
+    }
+
+    /// With two configuration files, the row says which one to edit.
+    #[test]
+    fn the_source_cell_names_the_file_that_declared_the_plugin() {
+        let release = SourceRecord::Release {
+            repo: "owner/org".into(),
+            version: "v0.2.0".into(),
+            sha256: None,
+            api: "0.7.0".into(),
+            latest: false,
+        };
+        let declared = |name: &str, by| PluginStatus {
+            declared_by: Some(by),
+            ..sourced(name, release.clone(), BuildState::NotBuilt)
+        };
+        let out = render_status(&[
+            declared("from-toml", lattice_plugin_loader::DeclaredBy::LatticeToml),
+            declared("from-init", lattice_plugin_loader::DeclaredBy::InitRs),
+            sourced("shipped", SourceRecord::Bundled, BuildState::NotBuilt),
+        ]);
+        let line = |name: &str| out.lines().find(|l| l.contains(name)).unwrap().to_string();
+        assert!(
+            line("from-toml").contains("release owner/org@v0.2.0 (lattice.toml)"),
+            "{out}"
+        );
+        assert!(line("from-init").contains("(init.rs)"), "{out}");
+        let shipped = line("shipped");
+        assert!(shipped.contains("bundled"), "{out}");
+        assert!(
+            !shipped.contains("(init.rs)") && !shipped.contains("(lattice.toml)"),
+            "{out}"
+        );
+    }
+
+    /// An entry `lattice.toml` could not accept is listed with the file to
+    /// fix and the parser's reason, since it never became a plugin to show
+    /// in the table.
+    #[test]
+    fn a_rejected_lattice_toml_entry_is_a_failure_row_naming_the_file() {
+        let rejected = FailedLoad {
+            name: "org".to_string(),
+            dir: std::path::PathBuf::from("/home/u/.config/lattice/lattice.toml"),
+            tier: TrustTier::UserInstalled,
+            error: "`plugins.org`: `git` is not a release source; declare it in init.rs"
+                .to_string(),
+        };
+        let out = render_status_with_failures(&[], &[rejected]);
+        let row = out.lines().find(|l| l.contains("org")).unwrap();
+        assert!(row.contains("lattice.toml"), "{out}");
+        assert!(out.contains("declare it in init.rs"), "{out}");
     }
 
     fn failure(name: &str, error: &str) -> FailedLoad {

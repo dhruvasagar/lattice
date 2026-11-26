@@ -120,6 +120,10 @@ eventual-consistency the UX contract already permits for plugin cold-start.
 > loses the use-package expressiveness the user asked for. A TOML list *may* land
 > later as declarative sugar over the same `require` for the trivial case, but the
 > `require` API is canonical.
+>
+> **Landed as that sugar, for release sources only:** `[plugins.<id>]` in
+> `lattice.toml` lowers to the same `RequiredSpec`, with `init.rs` winning on a
+> shared id ([`plugin-toml.md`](plugin-toml.md)).
 
 ## 4. The source model + cache layout
 
@@ -619,7 +623,8 @@ enablement.
   a **search path** (`$LATTICE_RUNTIME` → build-time prefix → exe-relative → dev
   workspace), the standard editor mechanism, not one brittle path.
 - **A TOML-only plugin list.** Rejected as the *canonical* surface (not
-  programmable); may return as sugar over `require` (§3).
+  programmable); returned as sugar over `require` for release sources
+  ([`plugin-toml.md`](plugin-toml.md)).
 - **Build on the boot/actor thread.** Rejected: a cold build is seconds-to-minutes;
   it must be `spawn_blocking`, boot loads what's already cached and picks up the
   fresh build when it lands.
@@ -631,7 +636,8 @@ enablement.
 ## 12. Settled decisions
 
 1. **Declaration surface** — init.rs `require` for *user* plugins (§3); core
-   plugins are **discovered**, not required (§7). TOML list rejected as canonical.
+   plugins are **discovered**, not required (§7). TOML list rejected as canonical;
+   release-only `[plugins.<id>]` sugar over `require` in [`plugin-toml.md`](plugin-toml.md).
 2. **Toolchain model** — core plugins prebuilt (no toolchain); user `Git`/`Local`
    build-from-source **plus** `Prebuilt` download for the no-toolchain path (§7).
 3. **Core-plugin shipping** — prebuilt `.wasm` in a runtime root found via a search

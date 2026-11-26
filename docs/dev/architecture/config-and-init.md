@@ -166,7 +166,10 @@ above all, which needs the mode registered — from `plugin-loaded`.
 logic, loops, conditionals, keymaps, custom commands, deferred handlers) are two
 front-ends over the SAME config registry — the "static settings stay declarative,
 logic stays code, one toolchain" split (CLAUDE.md). TOML covers what it can
-express; `init.rs` is the escape hatch. Both **set** option values through the
+express; `init.rs` is the escape hatch. TOML may also declare **release** plugins
+(`[plugins.<id>]`), lowered to the same `require` queue `init.rs` fills, so a
+user with no Rust toolchain still gets plugins ([`plugin-toml.md`](plugin-toml.md)).
+Both **set** option values through the
 same path: TOML at boot, `init.rs` via the config-seam **`set-option`** (CI.7),
 which wraps the `:set name=value` machinery (coerce + validate + `OptionChanged`).
 Without `set-option`, `init.rs` could only *declare* options, not override values

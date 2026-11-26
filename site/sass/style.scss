@@ -1013,6 +1013,28 @@ img { max-width: 100%; height: auto; }
   padding: 1px 7px;
 }
 
+// A group heading inside a guide section: scaffolding, not a link.
+.docs-nav-subhead {
+  margin: 10px 20px 2px 28px;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: $text-muted;
+}
+
+// The developer sidebar's link to a section's landing page.
+.docs-nav .docs-nav-overview {
+  display: block;
+  padding: 5px 20px 5px 28px;
+  font-size: 0.8125rem;
+  color: $text-muted;
+  border-left: 3px solid transparent;
+
+  &:hover { color: $brand-blue; text-decoration: none; }
+  &.active { color: $brand-blue; border-left-color: $brand-blue; }
+}
+
 .docs-nav-groups {
   > .docs-nav-group > a {
     display: flex;
@@ -1456,6 +1478,9 @@ img { max-width: 100%; height: auto; }
     color: $dark-text-muted;
     background: rgba($dark-text-muted, 0.16);
   }
+
+  .docs-nav-subhead,
+  .docs-nav .docs-nav-overview { color: $dark-text-muted; }
 
   .docs-nav-groups {
     .docs-nav-group.open > a { color: lighten($brand-blue, 18%); }

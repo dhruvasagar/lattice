@@ -159,8 +159,36 @@ fn bench_parse_and_set_command(c: &mut Criterion) {
     });
 }
 
+fn bench_plugins_table(c: &mut Criterion) {
+    // The `[plugins]` table is read once per boot and once per
+    // `:reload-config`, off the boot thread; this guards against it ever
+    // becoming more than noise beside the file read itself.
+    let mut group = c.benchmark_group("config::plugins_table");
+    for n in [1usize, 16, 128] {
+        let mut text = String::from("[plugins]\n");
+        for i in 0..n {
+            if i % 2 == 0 {
+                text.push_str(&format!("p{i} = \"owner/plugin-{i}@v1.{i}.0\"\n"));
+            }
+        }
+        for i in (1..n).step_by(2) {
+            text.push_str(&format!(
+                "[plugins.p{i}]\nrelease = \"owner/plugin-{i}\"\nversion = \"v1.{i}.0\"\n\
+                 sha256 = \"{}\"\nenable-mode = \"p{i}-mode\"\n",
+                "a".repeat(64)
+            ));
+        }
+        let root: toml::Table = text.parse().unwrap();
+        group.bench_function(n.to_string(), |b| {
+            b.iter(|| lattice_config::parse_plugin_declarations(black_box(&root)))
+        });
+    }
+    group.finish();
+}
+
 criterion_group!(
     benches,
+    bench_plugins_table,
     bench_typed_get,
     bench_typed_with,
     bench_lookup_by_name,

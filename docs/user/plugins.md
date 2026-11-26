@@ -47,7 +47,7 @@ feature uses — it is not a second-class bolt-on.
 | `:plugin-clean` | List staged plugin directories nothing loads any more; `:plugin-clean!` removes them. |
 | `:plugins` | Open the **manager view** — a buffer listing every loaded plugin with health, tier, source, build state and capabilities, plus the full error for anything that failed to build or load. |
 | `:plugin-trace` | Open `*plugin-trace*` — the live boundary-trace firehose across all plugins. |
-| `:reload-config` | Rebuild your `init.rs` and reload it. A build that fails keeps the previous config running and shows the compiler error in `:plugins`. |
+| `:reload-config` | Install what `lattice.toml`'s `[plugins]` table now declares, then rebuild your `init.rs` and reload it. A build that fails keeps the previous config running and shows the compiler error in `:plugins`. |
 | `:set plugin.trace-level=debug` | Raise the global trace verbosity (see [observability](#observability-what-a-plugin-is-doing)). |
 | `:list-plugin-apis` / `:describe-plugin-api [<seam>]` | Browse the plugin **API catalog** (the WIT seams). |
 | `:list-plugins` / `:describe-plugin <name>` | List / describe the currently-loaded plugins. |
@@ -68,9 +68,10 @@ Lattice has **two plugin roots**:
   default via a `<id>.enabled` gate. `auto-pair` is the first. You configure or
   disable them, you don't install them. See **[`core-plugins`](help:core-plugins)**.
 - **User plugins** live in `~/.config/lattice/plugins/` — you install them:
-  declare them in `init.rs` ([below](#installing-plugins-from-init-rs)) as a
-  released build lattice downloads or a git/local source it builds, or drop a
-  built component in that directory yourself. These load at the user-installed
+  declare a released build in `lattice.toml`
+  ([below](#installing-plugins-from-lattice-toml)), declare a release or a
+  git/local source in `init.rs` ([below](#installing-plugins-from-init-rs)),
+  or drop a built component in that directory yourself. These load at the user-installed
   tier under a capability grant.
 
 Everything below applies to both; the difference is only *where they come from* and
@@ -109,6 +110,56 @@ at boot with a trusted (bundled) capability set. Anything *programmable* —
 keymaps, autocmds/hooks, custom commands — lives there as code; static option
 overrides stay in TOML. `:reload-config` re-loads it, and a rebuilt `init.wasm`
 is auto-detected and reloaded without a manual command.
+
+### Installing plugins from `lattice.toml`
+
+A plugin that publishes releases can be declared in `lattice.toml`, with no
+`init.rs` and no Rust toolchain:
+
+```toml
+[plugins.org]
+release = "dhruvasagar/lattice-org-plugin"   # required: owner/name
+version = "v0.5.0"                           # optional; omitted = the newest built for this editor
+# sha256 = "…"                               # optional; the 64-hex digest from the release's .sha256 file
+# enable-mode = "…"                          # optional; a minor mode to switch on once it loads (org needs none)
+
+[plugins]
+auto-pair-extras = "someone/lattice-auto-pair-extras@v1.2.0"   # shorthand: owner/name[@tag]
+
+[org]                                        # the plugin's own options, as before
+directory = "~/notes"
+```
+
+The key is the plugin's id. Each field means what it means in
+[`require_release`](#a-released-build-no-rust-toolchain-needed): the same
+download, checks, pinning and `:plugin-update` behaviour, the same messages
+when it is refused. Lattice installs the plugins after startup, off the
+startup path, and a warm start uses what is installed without touching the
+network. `:reload-config` installs a plugin you have added since.
+
+- **Releases only.** A git, local or URL source needs a build, so it is
+  declared in `init.rs`. A `git = …` / `path = …` key is refused with that
+  reason.
+- **Mistakes cost only that entry.** An unknown key, a malformed `sha256` or
+  an unsafe id is listed under failed loads in `:plugins` with the reason and
+  the file, and every other entry still installs. Fix it and
+  `:reload-config`.
+- **`init.rs` wins.** When both files declare the same id, the `init.rs`
+  declaration is the one installed, whole, and a warning names both files.
+  `:plugins` shows which file declared each plugin:
+  `release owner/name@v0.2.0 (lattice.toml)`.
+- **Not from a project.** A project's `.lattice/config.toml` cannot declare
+  plugins: it can arrive in a cloned repository.
+- **`[plugins]`, not `[plugin]`.** `[plugin.org] release = …` is warned about,
+  since `plugin.*` holds plugin-host options.
+- **Deleting an entry does not uninstall the plugin**, as with `init.rs`; see
+  [Switching and removing](#switching-and-removing).
+- **An unpinned entry is not reproducible.** Without `version` (and `sha256`),
+  two machines can install different releases. Pin both to get the same bytes
+  everywhere.
+
+`:reload-config` re-reads only the `[plugins]` table of `lattice.toml`; the
+file's other settings still take effect on restart.
 
 ### Installing plugins from `init.rs`
 

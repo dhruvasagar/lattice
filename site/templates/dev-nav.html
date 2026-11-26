@@ -1,0 +1,50 @@
+{# Developer-docs sidebar.
+   Every section of site/data/dev-nav.toml, in manifest order, so a reader can
+   move between sections from any page. Only the section you are in starts
+   open. A section with several groups shows them as subheadings. Expects
+   `current_dev_section` (the current section's `_index.md` path) and
+   `current_url` in context. #}
+{% set nav = load_data(path="data/dev-nav.toml") %}
+
+<aside class="docs-sidebar">
+  <nav class="docs-nav" aria-label="Developer documentation">
+    <a class="docs-nav-home{% if current_dev_section == 'dev/_index.md' %} active{% endif %}"
+       href="{{ get_url(path='/dev/') }}">All developer docs</a>
+
+    {% for sec in nav.section %}
+      {% set path = "dev/" ~ sec.slug ~ "/_index.md" %}
+      {% set sec_section = get_section(path=path) %}
+      {% set groups = sec.group | default(value=[]) %}
+      <details class="docs-nav-section"{% if path == current_dev_section %} open{% endif %}>
+        <summary>
+          <span class="docs-nav-title">{{ sec.title }}</span>
+          <span class="docs-nav-count">{{ sec_section.pages | length }}</span>
+        </summary>
+        <a class="docs-nav-overview{% if sec_section.permalink == current_url %} active{% endif %}"
+           href="{{ sec_section.permalink }}">Overview</a>
+        {% if groups | length > 1 %}
+          {% for group in groups %}
+            <p class="docs-nav-subhead">{{ group.title }}</p>
+            <ul>
+              {% for p in sec_section.pages %}
+                {% if p.extra.nav_group == group.title %}
+                  <li>
+                    <a href="{{ p.permalink }}"{% if p.permalink == current_url %} class="active" aria-current="page"{% endif %}>{{ p.extra.nav_label | default(value=p.title) }}</a>
+                  </li>
+                {% endif %}
+              {% endfor %}
+            </ul>
+          {% endfor %}
+        {% else %}
+          <ul>
+            {% for p in sec_section.pages %}
+              <li>
+                <a href="{{ p.permalink }}"{% if p.permalink == current_url %} class="active" aria-current="page"{% endif %}>{{ p.extra.nav_label | default(value=p.title) }}</a>
+              </li>
+            {% endfor %}
+          </ul>
+        {% endif %}
+      </details>
+    {% endfor %}
+  </nav>
+</aside>

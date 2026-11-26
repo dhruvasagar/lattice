@@ -332,11 +332,20 @@ pub fn load_default_paths(
 /// carry settings with a trust table of their own, enforced where they are
 /// resolved. Applying them here would write them into the global layer, above
 /// every check. `llm` goes to `.lattice/llm.toml` instead.
-const PROJECT_REFUSED_TABLES: &[(&str, &str)] = &[(
-    "llm",
-    "LLM settings are not read from the project config; put them in .lattice/llm.toml, \
-     where the trust table applies",
-)];
+/// `plugins` declares code to download and run, so a cloned repository must
+/// never be able to name it.
+const PROJECT_REFUSED_TABLES: &[(&str, &str)] = &[
+    (
+        "llm",
+        "LLM settings are not read from the project config; put them in .lattice/llm.toml, \
+         where the trust table applies",
+    ),
+    (
+        crate::plugins::PLUGINS_TABLE,
+        "plugins are not declared from the project config, which can arrive in a cloned \
+         repository; declare them in your own lattice.toml or init.rs",
+    ),
+];
 
 /// [`load_file`] for the project config: the same walk, minus the tables in
 /// [`PROJECT_REFUSED_TABLES`], each reported as a warning naming the key.
@@ -539,6 +548,19 @@ fn walk_table(
     table: &toml::Table,
 ) {
     for (key, value) in table {
+        if prefix.is_empty() {
+            // Plugin declarations, read by the plugin loader
+            // (`crate::plugins`). Not options: walking them would hold every
+            // entry for a plugin named `plugins` and report it unclaimed.
+            if key == crate::plugins::PLUGINS_TABLE {
+                continue;
+            }
+            if key == MISTAKEN_PLUGINS_TABLE
+                && let toml::Value::Table(sub) = value
+            {
+                warn_mistaken_plugin_declarations(source, out, sub);
+            }
+        }
         let mut path: Vec<String> = prefix.to_vec();
         path.push(key.clone());
         let dotted = path.join(".");
@@ -568,6 +590,35 @@ fn walk_table(
             scalar => {
                 apply_scalar(registry, source, out, &dotted, scalar);
             }
+        }
+    }
+}
+
+/// The singular `plugin`, one letter from [`crate::plugins::PLUGINS_TABLE`]
+/// and already taken: `plugin.trace-level` is an option, and the host buckets
+/// `[plugin.<x>]` tables as structural sections nothing reads.
+const MISTAKEN_PLUGINS_TABLE: &str = "plugin";
+
+/// Warn for each `[plugin.<x>]` table that carries a `release` key: it is a
+/// plugin declaration under the wrong table, and would otherwise vanish into a
+/// structural section or an unknown-option warning that names the wrong cause.
+fn warn_mistaken_plugin_declarations(
+    source: &Source<'_>,
+    out: &mut LoadOutcome,
+    table: &toml::Table,
+) {
+    for (id, value) in table {
+        if value.as_table().is_some_and(|t| t.contains_key("release")) {
+            out.messages.push(LoadMessage {
+                level: LoadMessageLevel::Warning,
+                source: source.to_path_buf(),
+                body: format!(
+                    "`{MISTAKEN_PLUGINS_TABLE}.{id}` declares a release, but plugins are \
+                     declared under `[{plugins}.{id}]`; this one is not installed",
+                    plugins = crate::plugins::PLUGINS_TABLE,
+                ),
+                option: None,
+            });
         }
     }
 }
@@ -1476,6 +1527,80 @@ mod tests {
         );
         assert!(!out.raw_tree.contains_key("llm"));
         assert_eq!(r.get_int_by_name("tabstop"), Some(3), "the rest applies");
+    }
+
+    /// The `[plugins]` table is the plugin loader's, not the option
+    /// walker's: no message, nothing held, nothing reported unclaimed later.
+    #[test]
+    fn the_plugins_table_is_not_walked_as_options() {
+        let r = registry_with_options();
+        let p = write_temp(
+            "plugins-table",
+            "tabstop = 5\n[plugins]\nshort = \"owner/short@v1\"\n\
+             [plugins.org]\nrelease = \"owner/org\"\nenable-mode = \"org-mode\"\n",
+        );
+        let out = load_file(&r, &p, &["plugin"]);
+        assert!(out.messages.is_empty(), "{:?}", out.messages);
+        assert!(r.unclaimed_held().is_empty(), "{:?}", r.unclaimed_held());
+        assert!(out.structural.is_empty(), "{:?}", out.structural);
+        assert!(
+            out.raw_tree.contains_key("plugins"),
+            "the tree keeps it for the loader"
+        );
+        assert_eq!(r.get_int_by_name("tabstop"), Some(5), "the rest applies");
+    }
+
+    /// A cloned repository's `.lattice/config.toml` must never install code.
+    #[test]
+    fn the_project_config_cannot_declare_plugins() {
+        let r = registry_with_options();
+        let p = write_temp(
+            "project-plugins",
+            "tabstop = 3\n[plugins.org]\nrelease = \"evil/org\"\n",
+        );
+        let out = load_project_file(&r, &p, &[]);
+        assert_eq!(out.messages.len(), 1, "{:?}", out.messages);
+        let body = &out.messages[0].body;
+        assert!(
+            body.contains("`plugins.org`") || body.contains("`plugins`"),
+            "{body}"
+        );
+        assert!(body.contains("your own lattice.toml"), "{body}");
+        assert!(!out.raw_tree.contains_key("plugins"));
+        assert!(
+            crate::parse_plugin_declarations(&out.raw_tree)
+                .declared
+                .is_empty()
+        );
+        assert_eq!(r.get_int_by_name("tabstop"), Some(3), "the rest applies");
+    }
+
+    /// `[plugin.org]` is one letter off and already taken; with a `release`
+    /// key it is a declaration in the wrong place, and the user is told so
+    /// whether or not the caller buckets `plugin` as a structural prefix.
+    #[test]
+    fn a_release_under_the_singular_plugin_table_is_pointed_at_plugins() {
+        for prefixes in [&["plugin"][..], &[][..]] {
+            let r = registry_with_options();
+            let p = write_temp(
+                "plugin-singular",
+                "[plugin.org]\nrelease = \"owner/org\"\n[plugin.other]\nclippy = true\n",
+            );
+            let out = load_file(&r, &p, prefixes);
+            let hints: Vec<_> = out
+                .messages
+                .iter()
+                .filter(|m| m.body.contains("[plugins.org]"))
+                .collect();
+            assert_eq!(hints.len(), 1, "{prefixes:?}: {:?}", out.messages);
+            assert!(
+                !out.messages
+                    .iter()
+                    .any(|m| m.body.contains("[plugins.other]")),
+                "a table without `release` is not a declaration: {:?}",
+                out.messages
+            );
+        }
     }
 
     #[test]

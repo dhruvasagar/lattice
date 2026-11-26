@@ -265,6 +265,8 @@ pub fn install(boot: &mut impl SubsystemBoot) {
         );
     }
     let services = LoaderServices {
+        // The editor installs with the real git, network and toolchain.
+        install: None,
         foreground_cancel,
         media_registry: boot
             .service::<lattice_mode::MediaSourceRegistryHandle>()
@@ -444,6 +446,14 @@ pub fn install(boot: &mut impl SubsystemBoot) {
     if core_plugins_dir.is_some() || init_dir.is_some() || plugins_dir.is_some() {
         let loader = loader.clone();
         boot.runtime_handle().spawn(async move {
+            // The plugins `lattice.toml` declares, queued before init.rs so
+            // both sets are in the queue when it drains; which one wins a
+            // shared name is decided there, not by this order. Read here
+            // rather than handed over by the editor's config load, so the
+            // order of the two loads cannot matter.
+            if let Some(config) = lattice_config::default_user_config_path() {
+                loader.declare_from_config_file(&config);
+            }
             // 0. CORE plugins first (prebuilt runtime root, `Bundled` tier) — PM.1.
             //    They enable via a config gate (PM.3), NOT init.rs, so loading them
             //    before init.rs is correct: a user init.rs `on-plugin-loaded`
@@ -667,49 +677,94 @@ async fn build_init_if_needed(
     }
 }
 
-/// PM.7b / PMF.14: resolve and build everything `init.rs` declared via
-/// `require`, then reconcile it with what is loaded
-/// ([`PluginLoader::apply_required`]). Returns the `enable_mode` requests a
-/// [`RequirePhase::Boot`] run defers until the user-root scan has loaded the
-/// plugins.
+/// Where declared plugins install to, and the git, network and toolchain that
+/// install them.
+///
+/// The loader carries one ([`LoaderServices::install`](crate::LoaderServices));
+/// when it is absent, the editor's own ([`InstallEnv::system`]) is used. A test
+/// supplies its own so an install never touches the network or the user's
+/// plugin directory.
+#[derive(Clone)]
+pub struct InstallEnv {
+    /// The user plugin root: one directory per installed plugin.
+    pub user_root: std::path::PathBuf,
+    /// Where git sources are checked out.
+    pub cache_root: std::path::PathBuf,
+    /// Runs git for `Git` sources.
+    pub git: Arc<dyn crate::resolve::GitRunner>,
+    /// Downloads `Prebuilt` and `Release` sources.
+    pub fetcher: Arc<dyn crate::resolve::Fetcher>,
+    /// Builds sources into components.
+    pub builder: Arc<dyn crate::build::ComponentBuilder>,
+}
+
+impl InstallEnv {
+    /// The real git, network and toolchain, installing into the user's plugin
+    /// root. `None` when no config directory resolves, so there is nowhere to
+    /// install.
+    pub fn system() -> Option<Self> {
+        Some(Self {
+            user_root: crate::default_plugins_dir()?,
+            cache_root: crate::default_source_cache_dir(),
+            git: Arc::new(crate::resolve::SystemGit),
+            fetcher: Arc::new(crate::resolve::HttpFetcher),
+            builder: Arc::new(crate::build::CargoComponentBuilder),
+        })
+    }
+}
+
+/// PM.7b / PMF.14: resolve and build every declared plugin, then reconcile it
+/// with what is loaded ([`PluginLoader::apply_required`]). Returns the
+/// `enable_mode` requests a [`RequirePhase::Boot`] run defers until the
+/// user-root scan has loaded the plugins.
+///
+/// [`run_required_in`] with the loader's [`InstallEnv`], or the system's.
+///
+/// [`RequirePhase::Boot`]: crate::RequirePhase::Boot
+pub(crate) async fn run_required(
+    loader: &crate::PluginLoader,
+    phase: crate::RequirePhase,
+) -> Vec<(String, String)> {
+    let Some(env) = loader.install_env().or_else(InstallEnv::system) else {
+        if !loader.take_required().is_empty() {
+            tracing::warn!("require: no config dir; cannot install declared plugins");
+        }
+        return Vec::new();
+    };
+    run_required_in(loader, phase, env).await
+}
+
+/// Drain the declared plugins, install them through `env`, and reconcile the
+/// result with what is loaded.
 ///
 /// Each spec is independent: one broken source costs that plugin and nothing
 /// else. Resolution and builds run on `spawn_blocking` — they clone, download
 /// and compile — and only the loads return to the async context.
-pub(crate) async fn run_required(
+pub async fn run_required_in(
     loader: &crate::PluginLoader,
     phase: crate::RequirePhase,
+    env: InstallEnv,
 ) -> Vec<(String, String)> {
     let specs = loader.take_required();
     if specs.is_empty() {
         return Vec::new();
     }
-    let Some(user_root) = crate::default_plugins_dir() else {
-        tracing::warn!("require: no config dir; cannot install declared plugins");
-        return Vec::new();
-    };
-    let cache_root = crate::default_source_cache_dir();
-    tracing::info!(
-        count = specs.len(),
-        "installing plugins declared by init.rs"
-    );
+    tracing::info!(count = specs.len(), "installing declared plugins");
 
-    let installs = match tokio::task::spawn_blocking({
-        let user_root = user_root.clone();
-        move || {
-            crate::pipeline::install_all(
-                &crate::resolve::SystemGit,
-                &crate::resolve::HttpFetcher,
-                &crate::build::CargoComponentBuilder,
-                &specs,
-                &cache_root,
-                &user_root,
-                // Uses what the user already has: deterministic, works
-                // offline, no network round trip per start. `:plugin-update`
-                // is the verb that goes looking for something newer.
-                crate::resolve::RefreshPolicy::UseCache,
-            )
-        }
+    let user_root = env.user_root.clone();
+    let installs = match tokio::task::spawn_blocking(move || {
+        crate::pipeline::install_all(
+            &*env.git,
+            &*env.fetcher,
+            &*env.builder,
+            &specs,
+            &env.cache_root,
+            &env.user_root,
+            // Uses what the user already has: deterministic, works
+            // offline, no network round trip per start. `:plugin-update`
+            // is the verb that goes looking for something newer.
+            crate::resolve::RefreshPolicy::UseCache,
+        )
     })
     .await
     {

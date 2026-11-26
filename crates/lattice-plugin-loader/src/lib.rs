@@ -65,6 +65,7 @@
 //! `docs/dev/operations/slice-plans/plugin-loader.md`.
 
 pub mod build;
+pub mod declare;
 pub mod discovery;
 pub mod events;
 mod ex_commands;
@@ -80,18 +81,23 @@ pub use build::{
     BuildOutcome, CargoComponentBuilder, ComponentBuilder, Stamp, Toolchain, ToolchainProblem,
     USER_WORLD_FILE, WASM_TARGET, artifact_path, build_plugin, source_stamp,
 };
+pub use declare::DeclaredBy;
 pub use discovery::{
     DiscoveredPlugin, default_core_plugins_dir, default_init_dir, default_plugins_dir,
     default_source_cache_dir, discover, discover_one,
 };
 pub use events::{LanguagesRegistered, PluginStatusChanged};
 pub use install::{
-    autoload_enabled, disable_autoload, enable_autoload, flush_plugin_stores, install,
+    InstallEnv, autoload_enabled, disable_autoload, enable_autoload, flush_plugin_stores, install,
+    run_required_in,
 };
 pub use pipeline::{Install, RequiredSpec, install_all, install_required, to_required_spec};
 pub use resolve::{
     Fetcher, GitRunner, HttpFetcher, PluginSource, Resolved, SystemGit, git_cache_dir, resolve,
 };
+
+/// Each declared plugin's source and the file that declared it, by name.
+type DeclaredSources = std::collections::HashMap<String, (SourceRecord, DeclaredBy)>;
 pub use source_record::SourceRecord;
 
 use std::sync::{Arc, Mutex};
@@ -567,6 +573,9 @@ pub enum RequirePhase {
 /// [`PluginLoader::with_services`] signature.
 #[derive(Default, Clone)]
 pub struct LoaderServices {
+    /// Where declared plugins install, and what installs them. Absent: the
+    /// editor's own ([`InstallEnv::system`]).
+    pub install: Option<InstallEnv>,
     /// CG.10: keys `:plugin-update` / `:plugin-rebuild` per plugin and the
     /// bulk runs (`cancellation.md` §9), so a second trigger while one runs
     /// is refused rather than starting a second build of the same plugin.
@@ -848,7 +857,7 @@ pub struct PluginLoader {
     /// that also contributes a keymap goes down the same path — and threading
     /// a second return value through every arm to serve one of them would put
     /// the cost on all of them.
-    required: Mutex<Vec<pipeline::RequiredSpec>>,
+    required: Mutex<Vec<(DeclaredBy, pipeline::RequiredSpec)>>,
     /// Where each `require`d plugin was declared to come from, by name — kept
     /// after `required` is drained.
     ///
@@ -857,7 +866,10 @@ pub struct PluginLoader {
     /// plugin a user most needs to rebuild from `:plugins` — the one that has
     /// never built — would answer "no buildable source", its source having
     /// been named in `init.rs` a minute earlier.
-    declared: Mutex<std::collections::HashMap<String, SourceRecord>>,
+    declared: Mutex<DeclaredSources>,
+    /// The configuration file whose `[plugins]` table was declared from, so a
+    /// reload re-reads the same file boot did.
+    config_file: Mutex<Option<std::path::PathBuf>>,
     /// WT.4: plugins that tried to load and could not, for `:plugins`.
     ///
     /// In memory, not on disk. A load failure is a fact about *this* boot
@@ -906,6 +918,15 @@ pub enum PluginLoaderError {
 /// declares.
 pub(crate) const INIT_PLUGIN_ID: &str = "init";
 
+/// Does `dir` hold a user config to load: a manifest, a cargo project, or a
+/// component that carries its own manifest? An absent or empty directory is a
+/// user configured by `lattice.toml` alone.
+fn init_present(dir: &std::path::Path) -> bool {
+    dir.join("plugin.toml").is_file()
+        || dir.join("Cargo.toml").is_file()
+        || crate::discover_one(dir).is_ok()
+}
+
 /// How the source → artifact build went during [`reload_config`] — a
 /// `:reload-config` or a plugins-view rebuild of the `init` row. Carried in
 /// [`ReloadConfigReport`] so the surface (the `*messages*` echo, the plugins
@@ -923,6 +944,8 @@ pub enum ConfigBuildStatus {
     /// The init dir holds no cargo project — a hand-built `init.wasm` was
     /// reloaded as-is (nothing to compile).
     HandBuilt,
+    /// There is no `init.rs`: only `lattice.toml`'s plugins were reconciled.
+    NoInit,
     /// The build failed. A previous artifact (if any) is still loaded, so the
     /// editor keeps running the LAST good config — but the edit did NOT take.
     /// Carries the compiler diagnostics (the tail of cargo's stderr).
@@ -934,8 +957,9 @@ pub enum ConfigBuildStatus {
 /// compiler error.
 #[derive(Debug, Clone)]
 pub struct ReloadConfigReport {
-    /// The host id of the (re)loaded `init` plugin.
-    pub id: PluginId,
+    /// The host id of the (re)loaded `init` plugin; `None` when there is no
+    /// `init.rs`.
+    pub id: Option<PluginId>,
     /// How the build went.
     pub build: ConfigBuildStatus,
 }
@@ -959,6 +983,9 @@ impl ReloadConfigReport {
             }
             ConfigBuildStatus::HandBuilt => {
                 "config reloaded: re-applied the prebuilt init.wasm (no cargo project)".to_string()
+            }
+            ConfigBuildStatus::NoInit => {
+                "config reloaded: no init.rs; installed what lattice.toml declares".to_string()
             }
             ConfigBuildStatus::BuildFailed(error) => format!(
                 "config reload FAILED to rebuild init.rs — still running the previous \
@@ -1046,6 +1073,7 @@ impl PluginLoader {
             building_count: std::sync::atomic::AtomicUsize::new(0),
             required: Mutex::new(Vec::new()),
             declared: Mutex::new(std::collections::HashMap::new()),
+            config_file: Mutex::new(None),
             failed: Mutex::new(Vec::new()),
         }
     }
@@ -1087,6 +1115,7 @@ impl PluginLoader {
             building_count: std::sync::atomic::AtomicUsize::new(0),
             required: Mutex::new(Vec::new()),
             declared: Mutex::new(std::collections::HashMap::new()),
+            config_file: Mutex::new(None),
             failed: Mutex::new(Vec::new()),
         }
     }
@@ -1785,6 +1814,7 @@ impl PluginLoader {
                 option_bound: r.option_bound.clone(),
                 health: r.health.clone(),
                 source: r.source.clone(),
+                declared_by: self.declared_by(&r.name),
                 build: build_state_of(r, activity.get(&r.name)),
                 build_error: match activity.get(&r.name) {
                     Some(BuildActivity::Failed(error)) => Some(error.clone()),
@@ -2651,7 +2681,7 @@ impl PluginLoader {
                 .declared
                 .lock()
                 .ok()
-                .and_then(|d| d.get(name).cloned())
+                .and_then(|d| d.get(name).map(|(source, _)| source.clone()))
                 .unwrap_or(SourceRecord::Unknown),
             marked => marked,
         };
@@ -3009,11 +3039,104 @@ impl PluginLoader {
     /// Drained exactly once per boot by the install task. Draining rather than
     /// reading is what stops a second call from resolving, building and
     /// loading the same set twice.
+    ///
+    /// Both front-ends' declarations meet here, so this is where a plugin
+    /// named by `init.rs` and `lattice.toml` is resolved to one spec
+    /// ([`declare::merge_declared`]): `init.rs`'s.
     pub fn take_required(&self) -> Vec<pipeline::RequiredSpec> {
-        self.required
+        let queue = self
+            .required
             .lock()
             .map(|mut q| std::mem::take(&mut *q))
-            .unwrap_or_default()
+            .unwrap_or_default();
+        declare::merge_declared(queue)
+    }
+
+    /// Queue `specs` for install and remember where each was declared.
+    ///
+    /// The one path both front-ends declare through. The queue is drained by
+    /// [`take_required`](Self::take_required); the record of where each plugin
+    /// came from outlives it, so `:plugins` can rebuild a plugin whose first
+    /// install never staged anything. That record follows the precedence the
+    /// drain applies: a `lattice.toml` declaration never replaces an
+    /// `init.rs` one.
+    pub fn declare(&self, by: DeclaredBy, specs: Vec<pipeline::RequiredSpec>) {
+        if specs.is_empty() {
+            return;
+        }
+        if let Ok(mut declared) = self.declared.lock() {
+            for spec in &specs {
+                let outranked = declared
+                    .get(&spec.name)
+                    .is_some_and(|(_, kept)| kept.outranks(by));
+                if !outranked {
+                    declared.insert(
+                        spec.name.clone(),
+                        (SourceRecord::from_plugin_source(&spec.source), by),
+                    );
+                }
+            }
+        }
+        if let Ok(mut queue) = self.required.lock() {
+            queue.extend(specs.into_iter().map(|spec| (by, spec)));
+        }
+    }
+
+    /// Declare the release plugins in the `[plugins]` table of the
+    /// configuration file at `config`, the user's `lattice.toml`.
+    ///
+    /// An entry that cannot be declared is logged and recorded under its id,
+    /// so `:plugins` says why it is not there, with the file as its location.
+    /// A missing or unparseable file declares nothing and says nothing here:
+    /// the editor's config load reports a broken file.
+    ///
+    /// The file is remembered for [`reload_config`](Self::reload_config), and
+    /// a re-read replaces what the previous read rejected: an entry the user
+    /// fixed or deleted must not stay listed as broken.
+    pub fn declare_from_config_file(&self, config: &std::path::Path) {
+        if let Ok(mut remembered) = self.config_file.lock() {
+            *remembered = Some(config.to_path_buf());
+        }
+        let cleared = self.failed.lock().is_ok_and(|mut failed| {
+            let before = failed.len();
+            failed.retain(|f| f.dir != config);
+            failed.len() != before
+        });
+        if cleared {
+            // Released above: a subscriber's first move is `failed_loads`.
+            self.publish_status_changed();
+        }
+        let Some(declarations) = lattice_config::read_plugin_declarations(config) else {
+            return;
+        };
+        let (specs, rejected) = declare::lower_declarations(declarations);
+        for r in rejected {
+            tracing::warn!(
+                plugin = %r.id,
+                file = %config.display(),
+                "plugin not declared: {}",
+                r.reason
+            );
+            self.record_failure(&r.id, config, TrustTier::UserInstalled, &r.reason);
+        }
+        if !specs.is_empty() {
+            tracing::debug!(count = specs.len(), file = %config.display(), "plugins declared");
+        }
+        self.declare(DeclaredBy::LatticeToml, specs);
+    }
+
+    /// Which configuration file declared `name`, if one did. When both did,
+    /// `init.rs`: the file whose declaration is the one installed.
+    pub fn declared_by(&self, name: &str) -> Option<DeclaredBy> {
+        self.declared
+            .lock()
+            .ok()
+            .and_then(|d| d.get(name).map(|(_, by)| *by))
+    }
+
+    /// The install environment this loader was given, if any.
+    pub(crate) fn install_env(&self) -> Option<InstallEnv> {
+        self.env.install.clone()
     }
 
     /// Unload the plugin named `target` (its manifest id, or its numeric plugin
@@ -3194,6 +3317,33 @@ impl PluginLoader {
                     "no config directory for init.rs (set XDG_CONFIG_HOME / HOME)".to_string(),
                 )
             })?;
+        self.reload_config_at(&init_dir).await
+    }
+
+    /// [`reload_config`](Self::reload_config) with `init_dir` as the user's
+    /// `init.rs` directory.
+    ///
+    /// The `[plugins]` table of the file boot declared from is read again
+    /// first, so a plugin added to `lattice.toml` since is installed by the
+    /// same reconcile as `init.rs`'s. With no `init.rs` in `init_dir` that
+    /// reconcile is the whole reload: a user configured by `lattice.toml`
+    /// alone is not reported an `init` failure for a file they never wrote.
+    pub async fn reload_config_at(
+        &self,
+        init_dir: &std::path::Path,
+    ) -> Result<ReloadConfigReport, PluginLoaderError> {
+        let config_file = self.config_file.lock().ok().and_then(|f| f.clone());
+        if let Some(config) = config_file {
+            self.declare_from_config_file(&config);
+        }
+        if !init_present(init_dir) {
+            crate::install::run_required(self, RequirePhase::AfterBoot).await;
+            return Ok(ReloadConfigReport {
+                id: None,
+                build: ConfigBuildStatus::NoInit,
+            });
+        }
+        let init_dir = init_dir.to_path_buf();
         // Compile source → artifact in place first (the step reload cannot do).
         self.set_build_activity(INIT_PLUGIN_ID, Some(BuildActivity::Running));
         let outcome = crate::install::build_init(&init_dir).await;
@@ -3223,7 +3373,10 @@ impl PluginLoader {
             _ => self.set_build_activity(INIT_PLUGIN_ID, None),
         }
         match self.sync_init(&init_dir, TrustTier::Bundled).await {
-            Ok(id) => Ok(ReloadConfigReport { id, build }),
+            Ok(id) => Ok(ReloadConfigReport {
+                id: Some(id),
+                build,
+            }),
             Err(err) => {
                 // Nothing loaded. With a failed build behind it, the build's
                 // diagnostics are the cause and the load error ("no .wasm in
@@ -3261,11 +3414,11 @@ impl PluginLoader {
         runtime.spawn(async move {
             match this.reload_config().await {
                 Ok(report) if report.applied_new_config() => {
-                    tracing::info!(id = report.id.0, "{}", report.summary());
+                    tracing::info!(id = ?report.id, "{}", report.summary());
                 }
                 Ok(report) => {
                     // Build failed; the previous config is still running.
-                    tracing::warn!(id = report.id.0, "{}", report.summary());
+                    tracing::warn!(id = ?report.id, "{}", report.summary());
                 }
                 Err(err) => tracing::error!(
                     error = %error_chain(&err),
@@ -4497,20 +4650,10 @@ impl PluginLoader {
             count = specs.len(),
             "config guest declared plugins via require"
         );
-        if !specs.is_empty() {
-            let specs: Vec<_> = specs.into_iter().map(pipeline::to_required_spec).collect();
-            if let Ok(mut declared) = self.declared.lock() {
-                for spec in &specs {
-                    declared.insert(
-                        spec.name.clone(),
-                        SourceRecord::from_plugin_source(&spec.source),
-                    );
-                }
-            }
-            if let Ok(mut queue) = self.required.lock() {
-                queue.extend(specs);
-            }
-        }
+        self.declare(
+            DeclaredBy::InitRs,
+            specs.into_iter().map(pipeline::to_required_spec).collect(),
+        );
         // The seam contributes no registry entries, so there is nothing for
         // teardown to reverse — unloading the guest cannot un-install the
         // plugins it asked for, any more than removing a package list

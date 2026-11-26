@@ -119,9 +119,9 @@ A plugin that publishes releases can be declared in `lattice.toml`, with no
 ```toml
 [plugins.org]
 release = "dhruvasagar/lattice-org-plugin"   # required: owner/name
-version = "v0.2.0"                           # optional; omitted = the newest built for this editor
-sha256 = "3f0c…"                             # optional; pins the bytes, not just the tag
-enable-mode = "org-mode"                     # optional; a minor mode to switch on once it loads
+version = "v0.5.0"                           # optional; omitted = the newest built for this editor
+# sha256 = "…"                               # optional; the 64-hex digest from the release's .sha256 file
+# enable-mode = "…"                          # optional; a minor mode to switch on once it loads (org needs none)
 
 [plugins]
 auto-pair-extras = "someone/lattice-auto-pair-extras@v1.2.0"   # shorthand: owner/name[@tag]

@@ -32,6 +32,38 @@ release = "dhruvasagar/lattice-org-plugin"   # add version = "v…" to stay on o
 then `:reload-config` (or restart). The table's fields are in
 [installing plugins from `lattice.toml`](help:plugins#installing-plugins-from-lattice-toml).
 
+The plugin and its settings can share the file. `[plugins.org]` installs org;
+`[org]` and the tables under it are org's own options, held until org loads
+and declares them:
+
+```toml
+# ~/.config/lattice/lattice.toml
+
+# Install org from its GitHub releases.
+[plugins.org]
+release = "dhruvasagar/lattice-org-plugin"
+# version = "v…"                    # optional: stay on one release; omitted, the newest built for this editor
+
+# Configure it.
+[org]
+directory = "~/notes"               # where org may write
+roam-directory = "~/notes/roam"
+agenda-files = ["~/notes", "~/work/notes"]
+
+[[org.capture-templates]]
+key = "t"
+description = "todo"
+target = { file = "~/notes/inbox.org", headline = "Tasks" }
+body = """
+* TODO %?
+%U
+"""
+```
+
+The two tables are independent. Removing `[plugins.org]` does not
+uninstall org, and `[org]` has no effect until org is installed. A typo in an
+option is reported in `*messages*` once org has loaded.
+
 **From `init.rs`.** The same install, declared in code. You need lattice
 0.9.11 or later and an `init.rs` (`lattice --scaffold-init` makes one). In
 its `register_plugins`:

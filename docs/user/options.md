@@ -171,6 +171,24 @@ key = "t"
 target = { file = "~/notes/inbox.org" }
 ```
 
+A release plugin can be installed from the same file, so one
+file both installs a plugin and configures it. `[plugins.<id>]`
+declares the install; the plugin's own table holds its options:
+
+```toml
+[plugins.org]
+release = "dhruvasagar/lattice-org-plugin"
+
+[org]
+directory = "~/notes"
+agenda-files = ["~/notes"]
+```
+
+See [installing plugins from `lattice.toml`](help:plugins#installing-plugins-from-lattice-toml)
+for the `[plugins]` table's fields. `plugins` itself is not an
+option namespace, and a project's `.lattice/config.toml` cannot
+declare plugins.
+
 It is checked when the plugin declares the option: a misfit keeps
 the default, and `*messages*` names the field that failed. A name
 no plugin declares (a typo) is reported once plugins have loaded.

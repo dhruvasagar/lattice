@@ -186,8 +186,43 @@ fn bench_plugins_table(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_option_contributions(c: &mut Criterion) {
+    // An owner reads its contributions where it reads the option: org reads
+    // `agenda-files`' on every agenda scan and `capture-templates`' on every
+    // capture menu open. One lock and a clone of the list.
+    let mut group = c.benchmark_group("config::option_contributions");
+    for n in [0usize, 1, 8] {
+        let reg = ConfigRegistry::new();
+        reg.try_register(
+            lattice_config::option::Option::<lattice_config::ConfigValue>::structured(
+                "org.agenda-files",
+                lattice_config::ConfigSchema::list(lattice_config::ConfigSchema::string()),
+                lattice_config::ConfigValue::List(Vec::new()),
+                "Files.",
+            ),
+        )
+        .unwrap();
+        reg.accept_contributions("org.agenda-files");
+        for i in 0..n {
+            reg.contribute(
+                "org.agenda-files",
+                &format!("plugin-{i}"),
+                Some(lattice_config::ConfigValue::List(vec![
+                    lattice_config::ConfigValue::Str(format!("~/org/dir-{i}")),
+                ])),
+            )
+            .unwrap();
+        }
+        group.bench_function(n.to_string(), |b| {
+            b.iter(|| reg.contributions(black_box("org.agenda-files")))
+        });
+    }
+    group.finish();
+}
+
 criterion_group!(
     benches,
+    bench_option_contributions,
     bench_plugins_table,
     bench_typed_get,
     bench_typed_with,

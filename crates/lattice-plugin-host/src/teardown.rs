@@ -150,6 +150,14 @@ pub struct PluginTeardown {
     /// nobody left to update or clear it. A prefix has nothing to forget. Same
     /// reasoning as the compilation parser factories, reversed by provenance.
     pub modeline_namespace: Option<String>,
+    /// The plugin's manifest id, under which every contribution it made to
+    /// another plugin's option is stored (`ConfigRegistry::contribute`).
+    ///
+    /// By provenance rather than a token list, for `modeline_namespace`'s
+    /// reason: a plugin may contribute at any point in its life, and a list
+    /// collected at load would miss a late contribution and leave it in
+    /// another plugin's configuration with nobody left to withdraw it.
+    pub option_contributor: Option<String>,
 }
 
 impl PluginTeardown {
@@ -174,6 +182,7 @@ impl PluginTeardown {
             theme_elements: Vec::new(),
             signs: Vec::new(),
             modeline_namespace: None,
+            option_contributor: None,
         }
     }
 
@@ -249,6 +258,9 @@ impl PluginTeardown {
             if reg.config.unregister(name) {
                 report.config_options += 1;
             }
+        }
+        if let Some(contributor) = &self.option_contributor {
+            report.option_contributions += reg.config.withdraw_contributions(contributor);
         }
         for name in &self.events_defined {
             unregister_runtime_event(name);
@@ -422,6 +434,9 @@ pub struct TeardownReport {
     pub pickers: usize,
     pub modes: usize,
     pub config_options: usize,
+    /// Contributions this plugin had made to other plugins' options, now
+    /// withdrawn.
+    pub option_contributions: usize,
     pub events_defined: usize,
     pub subscriptions: usize,
     pub keymap_bindings: usize,
@@ -543,6 +558,26 @@ mod tests {
         let config = ConfigRegistry::new();
         config.register(ConfigOption::<i64>::new("native.opt", 1, "native"));
         config.register(ConfigOption::<i64>::new("p7.opt", 8, "plugin"));
+        // ...and a contribution the plugin made to another option, beside one
+        // from someone else that must survive.
+        config
+            .try_register(ConfigOption::<lattice_config::ConfigValue>::structured(
+                "owner.files",
+                lattice_config::ConfigSchema::list(lattice_config::ConfigSchema::string()),
+                lattice_config::ConfigValue::List(Vec::new()),
+                "owner",
+            ))
+            .unwrap();
+        config.accept_contributions("owner.files");
+        let files = |s: &str| {
+            lattice_config::ConfigValue::List(vec![lattice_config::ConfigValue::Str(s.into())])
+        };
+        config
+            .contribute("owner.files", "p7", Some(files("a")))
+            .unwrap();
+        config
+            .contribute("owner.files", "other", Some(files("b")))
+            .unwrap();
 
         // --- Events: a native subscriber + the plugin's subscription. ---
         let bus = EventBus::new();
@@ -562,6 +597,7 @@ mod tests {
         teardown.picker_sources = vec!["p7:things".to_string()];
         teardown.modes = vec![mode_id];
         teardown.config_options = vec!["p7.opt".to_string()];
+        teardown.option_contributor = Some("p7".to_string());
         teardown.subscriptions = vec![plugin_sub];
 
         let mut decorations = GutterDecorationSourceRegistry::new();
@@ -601,6 +637,7 @@ mod tests {
                 pickers: 1,
                 modes: 0,
                 config_options: 1,
+                option_contributions: 1,
                 events_defined: 0,
                 subscriptions: 1,
                 keymap_bindings: 0,
@@ -635,6 +672,15 @@ mod tests {
         // Config: plugin option gone, native survives.
         assert!(config.lookup("p7.opt").is_none());
         assert!(config.lookup("native.opt").is_some());
+        assert_eq!(
+            config
+                .contributions("owner.files")
+                .iter()
+                .map(|c| c.contributor.as_str())
+                .collect::<Vec<_>>(),
+            ["other"],
+            "only the unloaded plugin's contribution is withdrawn"
+        );
         // Events: the plugin's subscription is gone, the native one still fires.
         assert!(!bus.unsubscribe(plugin_sub), "plugin sub already removed");
         assert!(bus.unsubscribe(native_sub), "native sub was untouched");

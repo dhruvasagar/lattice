@@ -4,6 +4,7 @@
 
 ### Added
 - **A plugin can require another plugin.** A manifest's `requires = ["org"]` names plugins that must be loaded first. A plugin whose requirements are not loaded waits, listed in `:plugins` as *waiting for `org`*, and loads as soon as they are, whatever order your `lattice.toml` or `init.rs` declares them in. Unloading a plugin unloads what requires it first and keeps those waiting, so reloading it brings them back. Two plugins that require each other are both refused, and `:plugins` names the cycle.
+- **A plugin can add to another plugin's option without overwriting yours.** An option's owner can accept contributions (`accept-contributions`); another plugin then adds a value under its own name (`contribute-option`), checked against the option's shape, and the owner reads them beside your value (`option-contributions`) and decides how they combine. Your own value is never changed, `:describe-option` lists what each plugin contributed, and unloading a plugin takes its contributions away. An option a plugin's file or process access follows cannot accept contributions. These are new plugin-API calls, published with the next API release.
 
 ## 0.10.5 — 2026-11-26
 

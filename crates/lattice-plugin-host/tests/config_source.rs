@@ -69,7 +69,7 @@ async fn plugin_declares_options_into_the_shared_registry_end_to_end() {
     // The guest declared them with SHORT names (`enabled` / `count` / `label`);
     // the host AUTO-NAMESPACES by plugin id, so they register (and report) as
     // `config-fixture.*` — no plugin can collide in the global option namespace.
-    assert_eq!(names.len(), 4, "four options declared: {names:?}");
+    assert_eq!(names.len(), 5, "five options declared: {names:?}");
     assert!(names.iter().any(|n| n == "config-fixture.enabled"));
     assert!(names.iter().any(|n| n == "config-fixture.templates"));
 
@@ -189,4 +189,87 @@ async fn plugin_declares_options_into_the_shared_registry_end_to_end() {
             .get_formatted(),
         "7"
     );
+}
+
+/// Spawn the fixture under `id` against `registry`, returning the options it
+/// registered and the contributions line it logged.
+async fn spawn_as(
+    host: &PluginHost,
+    component: &lattice_plugin_host::Component,
+    id: &str,
+    data_base: &std::path::Path,
+    registry: &Arc<ConfigRegistry>,
+) -> (Vec<String>, String) {
+    let manifest = PluginManifest::new(id, Vec::new(), CapabilitySet::empty());
+    let (_id, names) = host
+        .spawn_config_plugin(
+            component,
+            &manifest,
+            TrustTier::Bundled,
+            PluginBudget::default(),
+            registry,
+        )
+        .await
+        .expect("config fixture registers its options");
+    let log = std::fs::read_to_string(data_base.join(id).join("data").join("option.log"))
+        .unwrap_or_default();
+    let line = log
+        .lines()
+        .rev()
+        .find(|l| l.starts_with("accept="))
+        .unwrap_or_default()
+        .to_string();
+    (names, line)
+}
+
+/// Contributions through the real wire, from both ends: an owner accepts on
+/// its own option and may not contribute to it; another plugin's
+/// contribution lands under that plugin's id; an owner that unloads and
+/// loads again reads it back from the guest; and the contributor's teardown
+/// takes it away.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_plugin_contributes_to_another_plugins_option_end_to_end() {
+    let Some(wasm) = guest_wasm() else {
+        eprintln!("SKIP: config fixture guest not built (add the wasm32-wasip2 target)");
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let data_base = dir.path().join("data");
+    let host = PluginHost::with_dirs(dir.path().join("cache"), &data_base).expect("host builds");
+    let component = host.compile(&std::fs::read(wasm).unwrap()).unwrap();
+    let registry = Arc::new(ConfigRegistry::default());
+
+    let (owner_names, owner) =
+        spawn_as(&host, &component, "contrib-owner", &data_base, &registry).await;
+    assert_eq!(
+        owner, "accept=true contribute=false contributions=",
+        "the owner accepts, and may not contribute to its own option"
+    );
+
+    let (_, giver) = spawn_as(&host, &component, "contrib-giver", &data_base, &registry).await;
+    assert!(giver.starts_with("accept=true contribute=true"), "{giver}");
+    let held = registry.contributions("contrib-owner.tags");
+    assert_eq!(held.len(), 1);
+    assert_eq!(held[0].contributor, "contrib-giver");
+    assert_eq!(
+        registry.lookup("contrib-owner.tags").unwrap().get_value(),
+        lattice_config::ConfigValue::List(Vec::new()),
+        "the owner's own value is untouched"
+    );
+
+    // The owner unloads and loads again: its options go, the contribution
+    // stays, and the reloaded owner reads it through the guest.
+    for name in &owner_names {
+        registry.unregister(name);
+    }
+    let (_, reloaded) = spawn_as(&host, &component, "contrib-owner", &data_base, &registry).await;
+    assert_eq!(
+        reloaded, "accept=true contribute=false contributions=contrib-giver:[from-guest]",
+        "the owner sees the contribution its dependent left"
+    );
+
+    // Withdrawing by provenance (what the contributor's teardown does,
+    // proven in `teardown.rs`) leaves the owner with nothing contributed.
+    assert_eq!(registry.withdraw_contributions("contrib-giver"), 1);
+    assert!(registry.contributions("contrib-owner.tags").is_empty());
 }

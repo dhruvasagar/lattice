@@ -10,7 +10,7 @@ Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred (not 
 Every non-trivial slice ships the four artefacts (doc + bench where perf-relevant
 + tests including failure modes + graceful error handling).
 
-**Status: 🚧 FT.0–FT.1 ✅; FT.2 next.**
+**Status: 🚧 FT.0–FT.2 ✅; FT.3 (the API publish) next, which Dhruva runs.**
 
 Three repos, in dependency order: lattice (host), lattice-org-plugin (org),
 lattice-org-fcto-plugin (new). **One plugin-API publish** for the whole
@@ -23,7 +23,7 @@ it before publishing.
 |---|---|---|---|
 | FT.0 | Design fragments `org-fcto.md` and `plugin-extension.md`; this plan; ledger entry. No code. | docs | ✅ |
 | FT.1 | Manifest `requires = [ids]`: parse + validate (no self, no empty id); the loader parks a plugin whose requirements are not loaded, retries the parked set after each load, records the remainder as failed with the missing id or the cycle; unloading a required plugin unloads its dependents first. No WIT change (manifest only). | `lattice-plugin-host` (manifest), `lattice-plugin-loader` | ✅ 2 manifest unit + 8 loader integration tests (`tests/requires.rs`); a parked plugin is recorded in `failed` at once rather than at a settle point |
-| FT.2 | Option contributions: `accept-contributions` / `contribute-option` / `option-contributions` on `config.wit`; a per-option side table in the config registry keyed by contributor id; validation against the option's type; refusal for grant-followed and non-accepting options; teardown by provenance on contributor unload; `:describe-option` lists contributions. Bench: `option-contributions` read at 0 / 1 / 8 contributors. | `lattice-wit`, `lattice-config`, `lattice-plugin-host`, `lattice-help` | 📝 |
+| FT.2 | Option contributions: `accept-contributions` / `contribute-option` / `option-contributions` on `config.wit`; a per-option side table in the config registry keyed by contributor id; validation against the option's type; refusal for grant-followed and non-accepting options; teardown by provenance on contributor unload; `:describe-option` lists contributions. Bench: `option-contributions` read at 0 / 1 / 8 contributors. | `lattice-wit`, `lattice-config`, `lattice-plugin-host`, `lattice-host` | ✅ values are typed `config-value`s, not text; 4 registry unit tests, teardown withdrawal in `teardown.rs`'s test, end to end through the `config-guest` fixture (owner, contributor, owner reload); bench 34 / 73 / 240 ns. `:describe-option` is built in `lattice-host`, not `lattice-help`. |
 | FT.3 | Plugin-API publish: bump `lattice-wit` and `lattice-plugin-api` (minor), CHANGELOG, refresh the user world. **Dhruva publishes.** | `lattice-wit`, `lattice-plugin-api` | 📝 |
 
 ## Org — lattice-org-plugin

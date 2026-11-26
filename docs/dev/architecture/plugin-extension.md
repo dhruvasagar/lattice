@@ -13,9 +13,10 @@ half, adding to what another plugin is configured with, has no seam:
 - **Options have one writer.** `set-option` on another plugin's option
   replaces the whole value. Two plugins contributing agenda files would
   overwrite each other, and either would overwrite the user. There is no
-  merge, and the host could not write one generically: org's
-  `capture-templates` is a string whose value is TOML, and only org knows how
-  two of them combine.
+  merge, and the host could not write a correct one: how a contributed
+  capture template ranks against the user's, or whether an unset
+  `agenda-files` still means the project root, is org's rule, not the
+  host's.
 - **Load order is unstated.** Plugins load in declaration order on the
   `require` path and in directory order on the scan path. A plugin that needs
   org's options to exist when it activates has no way to say so, and gets a
@@ -59,14 +60,16 @@ never merges.
 /// follows (grants are the user's alone to widen).
 accept-contributions: func(name: string) -> bool;
 
-/// Contributor: add `value` to another plugin's option, in the same text
-/// form `set-option` takes, validated against the option's type. Replaces
-/// this plugin's previous contribution to that option; an empty string
-/// withdraws it. `false` when the option does not accept contributions.
-contribute-option: func(name: string, value: string) -> bool;
+/// Contributor: add `value` to another plugin's option, validated against
+/// the option's schema as `set-option-value` validates. Replaces this
+/// plugin's previous contribution to that option; `none` withdraws it.
+/// `false` when the option does not accept contributions or the value does
+/// not fit.
+contribute-option: func(name: string, value: option<config-value>) -> bool;
 
-/// Owner: every live contribution to its option, in contributor load order.
-record option-contribution { plugin: string, value: string }
+/// Owner: every live contribution to its option, in the order they were
+/// first made.
+record option-contribution { plugin: string, value: config-value }
 option-contributions: func(name: string) -> list<option-contribution>;
 ```
 
@@ -76,10 +79,14 @@ option-contributions: func(name: string) -> list<option-contribution>;
   project root, when unset) **and** each contributed entry;
   `capture-templates` and `agenda-custom-commands` append contributed entries
   after the user's, so a user key always wins a collision.
-- **The owner merges because only the owner can.** A list option could be
-  appended by the host, but two of org's three contributable options are TOML
-  in a string, and a host merge that handles some option types would be a
-  second rule beside the owner's. One rule: the owner reads, the owner
+- **The owner merges because the merge has meaning only the owner knows.**
+  All three of org's contributable options are lists, and a host append would
+  produce a list. But "unset scans the project root" has to survive a
+  contribution, a user's template key has to beat a contributed one, and a
+  contributed entry that does not parse has to be skipped and named with the
+  plugin that sent it rather than failing the user's own. Each is the owner's
+  rule for its own option, and a host merge would either flatten them or need
+  a rule language to express them. One rule: the owner reads, the owner
   combines.
 - **Provenance is the teardown.** Each contribution is stored under the
   contributor's manifest id. Unloading the contributor drops its
@@ -110,8 +117,10 @@ exports those two.
 
 ## 5. Rejected
 
-- **A host-side merge per option type.** Covers list options, not org's
-  TOML-in-a-string options, so the owner would need its own merge anyway.
+- **A host-side merge per option type** (append for lists). It cannot keep
+  an owner's rules: an unset default that must still apply, a precedence
+  between the user's entries and contributed ones, and per-contributor error
+  reporting, which needs provenance the merged value has lost.
 - **Contributions as `set-option` with an append flag.** The user's value and
   the plugin's additions would become one value, so unloading the plugin
   could not take back what it added, and `:describe-option` could not say who

@@ -3420,6 +3420,101 @@ impl crate::config_host::bindings::lattice::plugin_host::config::Host for Plugin
         )
     }
 
+    /// `accept-contributions`: let other plugins contribute to one of this
+    /// plugin's OWN options.
+    ///
+    /// Own namespace only, with no fallback to the raw name: accepting
+    /// contributions for someone else's option would let a plugin open
+    /// another's configuration to strangers. And never an option a
+    /// capability grant follows, because a contribution would then widen
+    /// what a plugin may touch without the user writing it.
+    fn accept_contributions(&mut self, name: String) -> bool {
+        let (Some(registry), Some(id)) = (self.config_registry.as_ref(), self.plugin_name.as_ref())
+        else {
+            return false;
+        };
+        let full = format!("{id}.{name}");
+        if registry.lookup(&full).is_none() {
+            tracing::warn!(option = %full, "accept-contributions: not one of this plugin's options");
+            return false;
+        }
+        if self
+            .grant_guard
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .refuses(&full, None)
+        {
+            tracing::warn!(
+                option = %full,
+                "accept-contributions refused: a capability grant follows `{full}`, \
+                 and only your configuration may widen what a plugin can reach"
+            );
+            return false;
+        }
+        registry.accept_contributions(&full)
+    }
+
+    /// `contribute-option`: add to, or withdraw from, ANOTHER plugin's option,
+    /// under this plugin's manifest id.
+    ///
+    /// A plugin's own option is refused: it is the owner and sets the value.
+    /// Allowing it would make the plugin both writer and contributor of one
+    /// option, and its contribution would outlive nothing.
+    fn contribute_option(
+        &mut self,
+        name: String,
+        value: Option<crate::config_host::bindings::lattice::plugin_host::config::ConfigValue>,
+    ) -> bool {
+        let (Some(registry), Some(id)) = (self.config_registry.as_ref(), self.plugin_name.as_ref())
+        else {
+            return false;
+        };
+        if name.starts_with(&format!("{id}.")) {
+            tracing::warn!(option = %name, "contribute-option refused: a plugin sets its own options");
+            return false;
+        }
+        let value = match value
+            .as_ref()
+            .map(crate::boundary_config::value_from_wit)
+            .transpose()
+        {
+            Ok(v) => v,
+            Err(error) => {
+                tracing::warn!(option = %name, %error, "contribute-option: malformed value");
+                return false;
+            }
+        };
+        match registry.contribute(&name, id, value) {
+            Ok(()) => true,
+            Err(error) => {
+                tracing::warn!(option = %name, plugin = %id, %error, "contribute-option refused");
+                false
+            }
+        }
+    }
+
+    /// `option-contributions`: what other plugins contributed to one of this
+    /// plugin's own options. Own namespace only, as `accept-contributions`.
+    fn option_contributions(
+        &mut self,
+        name: String,
+    ) -> Vec<crate::config_host::bindings::lattice::plugin_host::config::OptionContribution> {
+        let (Some(registry), Some(id)) = (self.config_registry.as_ref(), self.plugin_name.as_ref())
+        else {
+            return Vec::new();
+        };
+        registry
+            .contributions(&format!("{id}.{name}"))
+            .into_iter()
+            .map(|c| {
+                crate::config_host::bindings::lattice::plugin_host::config::OptionContribution {
+                    plugin: c.contributor,
+                    value: crate::boundary_config::value_to_wit(&c.value),
+                }
+            })
+            .collect()
+    }
+
     /// TC.3: `register-structured-option` — declare an option whose value has
     /// structure. The schema-taking peer of `register-option`, with the same
     /// namespacing and the same collision rule.

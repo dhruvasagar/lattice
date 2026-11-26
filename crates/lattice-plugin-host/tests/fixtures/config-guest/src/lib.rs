@@ -195,7 +195,78 @@ impl Guest for Component {
             .append(true)
             .open("/data/option.log")
             .map(|mut f| writeln!(f, "rejected={rejected}"));
+
+        contributions();
     }
+}
+
+/// The option the host test loads this fixture as the OWNER of; a second
+/// instance under another id is the contributor.
+const OWNER_TAGS: &str = "contrib-owner.tags";
+
+/// Contributions, from both sides, in one guest so the same component can be
+/// loaded as either: it declares a `tags` list and accepts contributions to
+/// it, contributes to the owner's `tags` (refused when it IS the owner), and
+/// logs what has been contributed to its own.
+fn contributions() {
+    use std::io::Write;
+    let _ = config::register_structured_option(
+        "tags",
+        &config::ConfigSchema {
+            nodes: vec![
+                config::SchemaNode::Scalar(config::OptionType::String),
+                config::SchemaNode::ListOf(0),
+            ],
+            root: 1,
+        },
+        &config::ConfigValue {
+            nodes: vec![config::ValueNode::List(vec![])],
+            root: 0,
+        },
+        "Tags other plugins may add to.",
+    );
+
+    // @example config.accept-contributions: Let other plugins add to one of your options
+    // The short name, as declared. Call it once per load, after the option
+    // is registered; the host refuses an option a capability grant follows.
+    let accepted = config::accept_contributions("tags");
+    // @end-example
+
+    // @example config.contribute-option: Add a value to another plugin's option
+    // The full name, owner's namespace included. The value is checked
+    // against that option's schema; `None` would withdraw it again.
+    let contributed = config::contribute_option(
+        OWNER_TAGS,
+        Some(&config::ConfigValue {
+            nodes: vec![
+                config::ValueNode::String("from-guest".to_string()),
+                config::ValueNode::List(vec![0]),
+            ],
+            root: 1,
+        }),
+    );
+    // @end-example
+
+    // @example config.option-contributions: Read what other plugins contributed to your option
+    // Each entry names the plugin it came from, so a contribution that does
+    // not make sense can be skipped and reported by name.
+    let seen: Vec<String> = config::option_contributions("tags")
+        .iter()
+        .map(|c| format!("{}:{}", c.plugin, describe(&c.value)))
+        .collect();
+    // @end-example
+
+    let _ = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("/data/option.log")
+        .map(|mut f| {
+            writeln!(
+                f,
+                "accept={accepted} contribute={contributed} contributions={}",
+                seen.join(";")
+            )
+        });
 }
 
 /// Flatten a value arena to one line the host test can assert on, resolving

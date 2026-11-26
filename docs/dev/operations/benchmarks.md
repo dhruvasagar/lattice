@@ -3578,6 +3578,19 @@ cost alone.
 | `config::plugins_table/16`    | **3.2µs**  | Mixed shorthand and full tables. |
 | `config::plugins_table/128`   | **23µs**   | Far past any real config; linear in entries. |
 
+### Option contributions (`config::option_contributions`)
+
+An option's owner reading what other plugins contributed to it
+(`ConfigRegistry::contributions`), as org does on every agenda scan and
+capture-menu open. One registry lock and a clone of the list; never on the
+keystroke path. Design: `../architecture/plugin-extension.md` §3.
+
+| Bench                             | Time        | Notes |
+|-----------------------------------|-------------|-------|
+| `config::option_contributions/0`  | **34ns**    | Nothing contributed: the common case. |
+| `config::option_contributions/1`  | **73ns**    | One contributor (org-fcto's agenda folder). |
+| `config::option_contributions/8`  | **240ns**   | Eight contributors; linear in the values cloned. |
+
 ---
 
 ## Picker (`crates/lattice-picker/benches/picker.rs`)

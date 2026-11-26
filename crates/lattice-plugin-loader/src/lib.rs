@@ -1509,6 +1509,7 @@ impl PluginLoader {
                 // per-drain token list would miss the late ones and leave an
                 // orphan descriptor rendering forever.
                 t.modeline_namespace = Some(manifest.id.clone());
+                t.option_contributor = Some(manifest.id.clone());
                 t
             },
             tier,

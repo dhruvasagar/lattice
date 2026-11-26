@@ -124,6 +124,33 @@ struct Inner {
     /// D1: options a project's `.lattice/config.toml` may not set — see
     /// [`ConfigRegistry::refuse_from_project`].
     project_refused: std::collections::HashSet<String>,
+    /// Values plugins contributed to other plugins' options, by canonical
+    /// option name, in the order each contributor first contributed — see
+    /// [`ConfigRegistry::contribute`].
+    ///
+    /// Keyed by name rather than stored on the option so they outlive the
+    /// owner's unregister: an owner reloading comes back to the
+    /// contributions its dependents made, rather than to none.
+    contributions: HashMap<String, Vec<OptionContribution>>,
+    /// Canonical names of the options whose owner accepts contributions —
+    /// see [`ConfigRegistry::accept_contributions`]. Cleared for an option
+    /// when it is unregistered, so a contribution reaches only a live owner
+    /// that asked for it.
+    accepting: std::collections::HashSet<String>,
+}
+
+/// One plugin's contribution to another plugin's option.
+///
+/// The host stores these and never merges them into the option's value: the
+/// owner reads them beside the user's value and combines them by its own
+/// rules. Design: `docs/dev/architecture/plugin-extension.md` §3.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OptionContribution {
+    /// The contributing plugin's manifest id: the provenance a user sees in
+    /// `:describe-option`, and the key its unload withdraws by.
+    pub contributor: String,
+    /// The contributed value, already validated against the option's schema.
+    pub value: crate::ConfigValue,
 }
 
 /// A value held for an option that does not exist yet, kept in the shape the
@@ -134,7 +161,7 @@ struct Inner {
 /// `agenda-files = ["~/a", "~/b"]`) is the option's whole value, and flattening
 /// it to text before the plugin declares the option would lose the structure
 /// its schema checks.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HeldValue {
     /// A scalar, in the text form `:set` takes.
     Text(String),
@@ -926,11 +953,136 @@ impl ConfigRegistry {
             Some(&i) => i,
             None => return false,
         };
+        if let Some(canonical) = inner.by_id[idx].as_ref().map(|o| o.name().to_string()) {
+            inner.accepting.remove(&canonical);
+        }
         inner.by_name.retain(|_, v| *v != idx);
         inner.by_typeid.retain(|_, v| *v != idx);
         inner.by_id[idx] = None;
         inner.free_list.push(idx);
         true
+    }
+
+    /// Let other plugins contribute values to `name` (see
+    /// [`contribute`](Self::contribute)). `false` when no such option is
+    /// registered.
+    ///
+    /// Who may call this is the caller's business: the plugin host lets an
+    /// option's owner accept for its own options only, and refuses an option
+    /// a capability grant follows.
+    pub fn accept_contributions(&self, name: &str) -> bool {
+        let mut inner = self.inner.lock().expect("ConfigRegistry poisoned");
+        let Some(canonical) = canonical_name(&inner, name) else {
+            return false;
+        };
+        inner.accepting.insert(canonical);
+        true
+    }
+
+    /// Whether `name`'s owner accepts contributions.
+    pub fn accepts_contributions(&self, name: &str) -> bool {
+        let inner = self.inner.lock().expect("ConfigRegistry poisoned");
+        canonical_name(&inner, name).is_some_and(|c| inner.accepting.contains(&c))
+    }
+
+    /// Record `contributor`'s contribution to `name`, replacing its earlier
+    /// one in place (so the order stays "first contributed"), or withdraw it
+    /// when `value` is `None`.
+    ///
+    /// Refused when the option does not exist, does not accept contributions,
+    /// or `value` does not fit its schema; the error says which, with the
+    /// schema path for a misfit. Withdrawing a contribution that was never
+    /// made is not an error.
+    pub fn contribute(
+        &self,
+        name: &str,
+        contributor: &str,
+        value: std::option::Option<crate::ConfigValue>,
+    ) -> Result<(), String> {
+        let mut inner = self.inner.lock().expect("ConfigRegistry poisoned");
+        let option = inner
+            .by_name
+            .get(name)
+            .and_then(|i| inner.by_id[*i].clone())
+            .ok_or_else(|| format!("no option `{name}`"))?;
+        let canonical = option.name().to_string();
+        if !inner.accepting.contains(&canonical) {
+            return Err(format!("`{canonical}` does not accept contributions"));
+        }
+        let list = inner.contributions.entry(canonical).or_default();
+        let Some(value) = value else {
+            list.retain(|c| c.contributor != contributor);
+            return Ok(());
+        };
+        crate::schema::validate(&option.schema(), &value).map_err(|e| e.to_string())?;
+        match list.iter_mut().find(|c| c.contributor == contributor) {
+            Some(existing) => existing.value = value,
+            None => list.push(OptionContribution {
+                contributor: contributor.to_string(),
+                value,
+            }),
+        }
+        Ok(())
+    }
+
+    /// Every contribution to `name`, in the order each was first made. Empty
+    /// when the option's owner does not accept contributions, even if some
+    /// are held for it: they come back into effect when it accepts again.
+    pub fn contributions(&self, name: &str) -> Vec<OptionContribution> {
+        let inner = self.inner.lock().expect("ConfigRegistry poisoned");
+        let Some(canonical) = canonical_name(&inner, name) else {
+            return Vec::new();
+        };
+        if !inner.accepting.contains(&canonical) {
+            return Vec::new();
+        }
+        inner
+            .contributions
+            .get(&canonical)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// The `:describe-option` section listing what other plugins contributed
+    /// to `name`, one line per plugin with its value as TOML, or `None` when
+    /// nothing is. Here rather than in the help builder so a user's "why is
+    /// this folder in my agenda" gets the same answer wherever it is shown.
+    pub fn describe_contributions(&self, name: &str) -> std::option::Option<Vec<String>> {
+        let contributions = self.contributions(name);
+        if contributions.is_empty() {
+            return None;
+        }
+        let mut lines = vec![
+            "## Contributed by plugins".to_string(),
+            String::new(),
+            "Read by the option's owner beside the value above; removed when the \
+             contributing plugin unloads."
+                .to_string(),
+            String::new(),
+        ];
+        lines.extend(contributions.iter().map(|c| {
+            format!(
+                "- {}: {}",
+                c.contributor,
+                crate::schema::config_value_to_toml(&c.value)
+            )
+        }));
+        Some(lines)
+    }
+
+    /// Withdraw every contribution `contributor` made, to any option. The
+    /// plugin host's teardown calls this when the contributor unloads.
+    /// Returns how many were withdrawn.
+    pub fn withdraw_contributions(&self, contributor: &str) -> usize {
+        let mut inner = self.inner.lock().expect("ConfigRegistry poisoned");
+        let mut withdrawn = 0;
+        for list in inner.contributions.values_mut() {
+            let before = list.len();
+            list.retain(|c| c.contributor != contributor);
+            withdrawn += before - list.len();
+        }
+        inner.contributions.retain(|_, list| !list.is_empty());
+        withdrawn
     }
 
     /// OC.11c: record that an assignment to `name` failed.
@@ -1291,6 +1443,15 @@ impl std::fmt::Debug for ConfigRegistry {
     }
 }
 
+/// The name `name` (or an alias of it) was registered under, if it was.
+fn canonical_name(inner: &Inner, name: &str) -> std::option::Option<String> {
+    inner
+        .by_name
+        .get(name)
+        .and_then(|i| inner.by_id[*i].as_ref())
+        .map(|o| o.name().to_string())
+}
+
 /// Runtime-registered options that have no compile-time declaration — i.e.
 /// plugin options — grouped by their dotted namespace.
 ///
@@ -1330,6 +1491,157 @@ pub fn plugin_option_groups(
 mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
     use super::*;
+
+    /// A structured `list<string>` option, the shape of `org.agenda-files`.
+    fn list_option(r: &ConfigRegistry, name: &str) {
+        r.try_register(Option::<crate::ConfigValue>::structured(
+            name.to_string(),
+            crate::ConfigSchema::list(crate::ConfigSchema::string()),
+            crate::ConfigValue::List(Vec::new()),
+            "Files.".to_string(),
+        ))
+        .unwrap();
+    }
+
+    fn strings(items: &[&str]) -> crate::ConfigValue {
+        crate::ConfigValue::List(
+            items
+                .iter()
+                .map(|s| crate::ConfigValue::Str((*s).to_string()))
+                .collect(),
+        )
+    }
+
+    /// The owner sees each contributor's value, in first-contributed order; a
+    /// re-contribution replaces in place, `None` withdraws, and the user's
+    /// own value is untouched throughout.
+    #[test]
+    fn contributions_are_kept_per_contributor_beside_the_value() {
+        let r = ConfigRegistry::new();
+        list_option(&r, "org.agenda-files");
+        assert!(r.accept_contributions("org.agenda-files"));
+
+        r.contribute(
+            "org.agenda-files",
+            "fcto",
+            Some(strings(&["~/org/clients"])),
+        )
+        .unwrap();
+        r.contribute("org.agenda-files", "other", Some(strings(&["~/x"])))
+            .unwrap();
+        r.contribute("org.agenda-files", "fcto", Some(strings(&["~/org/c2"])))
+            .unwrap();
+        let got = r.contributions("org.agenda-files");
+        assert_eq!(
+            got.iter()
+                .map(|c| c.contributor.as_str())
+                .collect::<Vec<_>>(),
+            ["fcto", "other"],
+            "a replacement keeps its place"
+        );
+        assert_eq!(got[0].value, strings(&["~/org/c2"]));
+        assert_eq!(
+            r.lookup("org.agenda-files").unwrap().get_value(),
+            strings(&[]),
+            "the user's value is not touched"
+        );
+
+        r.contribute("org.agenda-files", "fcto", None).unwrap();
+        assert_eq!(r.contributions("org.agenda-files").len(), 1);
+        r.contribute("org.agenda-files", "never", None)
+            .expect("withdrawing nothing is not an error");
+    }
+
+    /// Nothing is accepted for an option whose owner did not ask, for an
+    /// unknown option, or in a shape the option cannot hold — and each
+    /// refusal says which.
+    #[test]
+    fn a_contribution_is_refused_unless_accepted_and_well_shaped() {
+        let r = ConfigRegistry::new();
+        list_option(&r, "org.agenda-files");
+        let err = r
+            .contribute("org.agenda-files", "fcto", Some(strings(&["a"])))
+            .unwrap_err();
+        assert!(err.contains("does not accept"), "{err}");
+        assert!(!r.accept_contributions("no.such"));
+        assert!(
+            r.contribute("no.such", "fcto", None)
+                .unwrap_err()
+                .contains("no option")
+        );
+
+        r.accept_contributions("org.agenda-files");
+        let err = r
+            .contribute(
+                "org.agenda-files",
+                "fcto",
+                Some(crate::ConfigValue::Str("~/org".into())),
+            )
+            .unwrap_err();
+        assert!(err.contains("expected"), "a misfit names the schema: {err}");
+        assert!(r.contributions("org.agenda-files").is_empty());
+    }
+
+    /// `:describe-option` names each contributing plugin with its value, and
+    /// has no section at all when nothing is contributed.
+    #[test]
+    fn describe_contributions_names_each_plugin() {
+        let r = ConfigRegistry::new();
+        list_option(&r, "org.agenda-files");
+        r.accept_contributions("org.agenda-files");
+        assert_eq!(r.describe_contributions("org.agenda-files"), None);
+        r.contribute(
+            "org.agenda-files",
+            "org-fcto",
+            Some(strings(&["~/org/clients"])),
+        )
+        .unwrap();
+        let lines = r.describe_contributions("org.agenda-files").unwrap();
+        assert_eq!(lines[0], "## Contributed by plugins");
+        assert_eq!(lines.last().unwrap(), r#"- org-fcto: ["~/org/clients"]"#);
+    }
+
+    /// An owner that unloads stops seeing contributions, and one that comes
+    /// back and accepts again sees the ones its dependents left — while a
+    /// contributor's own unload takes back everything it made.
+    #[test]
+    fn contributions_survive_the_owner_and_go_with_the_contributor() {
+        let r = ConfigRegistry::new();
+        list_option(&r, "org.agenda-files");
+        list_option(&r, "org.other");
+        r.accept_contributions("org.agenda-files");
+        r.accept_contributions("org.other");
+        r.contribute("org.agenda-files", "fcto", Some(strings(&["a"])))
+            .unwrap();
+        r.contribute("org.other", "fcto", Some(strings(&["b"])))
+            .unwrap();
+        r.contribute("org.other", "keep", Some(strings(&["c"])))
+            .unwrap();
+
+        r.unregister("org.agenda-files");
+        assert!(r.contributions("org.agenda-files").is_empty());
+        list_option(&r, "org.agenda-files");
+        assert!(
+            r.contributions("org.agenda-files").is_empty(),
+            "re-registered but not yet accepting"
+        );
+        r.accept_contributions("org.agenda-files");
+        assert_eq!(
+            r.contributions("org.agenda-files").len(),
+            1,
+            "back in effect"
+        );
+
+        assert_eq!(r.withdraw_contributions("fcto"), 2);
+        assert!(r.contributions("org.agenda-files").is_empty());
+        assert_eq!(
+            r.contributions("org.other")
+                .iter()
+                .map(|c| c.contributor.as_str())
+                .collect::<Vec<_>>(),
+            ["keep"]
+        );
+    }
 
     /// RF.2e: the buffer's value where the snapshot has one, the global
     /// value where it does not, and nothing for an unknown name.

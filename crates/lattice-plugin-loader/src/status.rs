@@ -125,6 +125,9 @@ pub struct PluginStatus {
     /// marker. Persisted rather than remembered, so it is still right on the
     /// boot *after* the one that installed it.
     pub source: SourceRecord,
+    /// Which configuration file declared the plugin, when one did: `init.rs`
+    /// or `lattice.toml`. `None` for a core plugin or one installed by hand.
+    pub declared_by: Option<crate::DeclaredBy>,
     /// PM.8a: whether the cached artifact matches its source.
     pub build: BuildState,
     /// The diagnostics of the build that failed, when `build` is

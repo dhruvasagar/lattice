@@ -1814,6 +1814,7 @@ impl PluginLoader {
                 option_bound: r.option_bound.clone(),
                 health: r.health.clone(),
                 source: r.source.clone(),
+                declared_by: self.declared_by(&r.name),
                 build: build_state_of(r, activity.get(&r.name)),
                 build_error: match activity.get(&r.name) {
                     Some(BuildActivity::Failed(error)) => Some(error.clone()),
@@ -3122,6 +3123,15 @@ impl PluginLoader {
             tracing::debug!(count = specs.len(), file = %config.display(), "plugins declared");
         }
         self.declare(DeclaredBy::LatticeToml, specs);
+    }
+
+    /// Which configuration file declared `name`, if one did. When both did,
+    /// `init.rs`: the file whose declaration is the one installed.
+    pub fn declared_by(&self, name: &str) -> Option<DeclaredBy> {
+        self.declared
+            .lock()
+            .ok()
+            .and_then(|d| d.get(name).map(|(_, by)| *by))
     }
 
     /// The install environment this loader was given, if any.

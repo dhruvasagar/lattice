@@ -7526,7 +7526,7 @@ package is the component alone and PRL.6 is superseded.
 Design: [`../architecture/plugin-manifest.md`](../architecture/plugin-manifest.md).
 Slice plan: [`slice-plans/plugin-manifest.md`](slice-plans/plugin-manifest.md).
 
-## Release plugins in `lattice.toml` (PT, 2026-11-26 — 🚧 PT.0–PT.4 ✅)
+## Release plugins in `lattice.toml` (PT, 2026-11-26 — 🚧 PT.0–PT.5 ✅)
 
 A user with no Rust toolchain declares release plugins in `lattice.toml`
 (`[plugins.<id>]`, or `<id> = "owner/name@tag"`). They lower to the same

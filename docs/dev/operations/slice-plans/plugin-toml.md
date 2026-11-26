@@ -19,7 +19,7 @@ Every non-trivial slice ships the four artefacts (doc + bench where perf-relevan
 | PT.2 | The walker reserves `plugins`; project config refuses it; `[plugin.<x>]` with `release` warns. | `lattice-config` | ✅ 3 tests |
 | PT.3 | Boot: one `declare` path with `DeclaredBy` origin; the install task reads `lattice.toml`, lowers, merges with `init.rs` (init wins), installs. | `lattice-config`, `lattice-plugin-loader` | ✅ 9 tests (5 unit, 4 integration + 1 fixture-gated); whole-crate suites pending the next batch run |
 | PT.4 | `:reload-config` reconciles `[plugins]`; no `init.rs` is benign. | `lattice-plugin-loader` | ✅ 2 tests |
-| PT.5 | `:plugins` shows each plugin's origin and the rejected TOML entries. | `lattice-plugin-loader` (view) | 📝 |
+| PT.5 | `:plugins` shows each plugin's origin and the rejected TOML entries. | `lattice-plugin-loader`, `lattice-plugin-manager` | ✅ 3 tests |
 | PT.6 | Docs sweep: user guide, `:help`, scaffold comment, `BENCHMARKS.md`, CHANGELOG. | docs, `lattice-cli` | 📝 |
 | PT.7 | A lockfile, or a `:plugin-pin` write-back of the resolved tag and digest. | — | ⛔ until an unpinned declaration's non-reproducibility bites a real user; needs a format decision and an answer for how `:plugin-update` moves it (design §4 Pinning). |
 
@@ -144,11 +144,24 @@ and keeps the one still broken.
 
 ## PT.5 — `:plugins` provenance
 
-Each declared plugin's row names `lattice.toml` or `init.rs`; a rejected TOML
-entry is a failure row with the parser's reason. Origin comes from `declared`,
-so a plugin that never built still shows it.
+As built:
 
-**Tests**: the view model for one of each origin and one rejection.
+- `PluginStatus::declared_by: Option<DeclaredBy>`, read from the loader's
+  `declared` map through the public `PluginLoader::declared_by(name)`. When
+  both files declare a plugin it is `init.rs`, the declaration that installed.
+  `None` for a core plugin or one installed by hand.
+- The SOURCE cell appends the declaring file: `release owner/org@v0.2.0
+  (lattice.toml)`. The column width follows, so the table stays aligned.
+- A rejected entry needed no new path: PT.3 records it as a `FailedLoad` whose
+  location is the config file, and the existing "Failed to load" section shows
+  the name, the file and the parser's reason.
+- Both renderers paint the view from the same buffer text, so there is no
+  per-renderer change.
+
+**Tests**: the SOURCE cell for a `lattice.toml` plugin, an `init.rs` plugin
+and a bundled one (no suffix); a rejected entry's failure row names
+`lattice.toml` and carries the reason; `declared_by` follows the `init.rs`
+precedence on a name both files declare.
 
 ## PT.6 — docs sweep
 

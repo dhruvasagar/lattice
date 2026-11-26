@@ -322,6 +322,14 @@ async fn init_rs_wins_a_plugin_both_files_declare() {
         "init.rs's spec, not the file's"
     );
     assert!(specs.iter().any(|s| s.name == "toml-only"));
+    // What `:plugins` will say declared each one follows the same precedence.
+    use lattice_plugin_loader::DeclaredBy;
+    assert_eq!(loader.declared_by("release-demo"), Some(DeclaredBy::InitRs));
+    assert_eq!(
+        loader.declared_by("toml-only"),
+        Some(DeclaredBy::LatticeToml)
+    );
+    assert_eq!(loader.declared_by("never-declared"), None);
     assert_eq!(
         specs.len(),
         5,

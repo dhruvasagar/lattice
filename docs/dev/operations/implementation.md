@@ -7526,6 +7526,16 @@ package is the component alone and PRL.6 is superseded.
 Design: [`../architecture/plugin-manifest.md`](../architecture/plugin-manifest.md).
 Slice plan: [`slice-plans/plugin-manifest.md`](slice-plans/plugin-manifest.md).
 
+## Release plugins in `lattice.toml` (PT, 2026-11-26 — 🚧 PT.0 ✅)
+
+A user with no Rust toolchain declares release plugins in `lattice.toml`
+(`[plugins.<id>]`, or `<id> = "owner/name@tag"`). They lower to the same
+`RequiredSpec` queue `init.rs`'s `require-release` fills; `init.rs` wins on a
+shared id; a project config may not declare plugins. No WIT change, no new
+crate. Lockfile deferred (PT.7).
+Design: [`../architecture/plugin-toml.md`](../architecture/plugin-toml.md).
+Slice plan: [`slice-plans/plugin-toml.md`](slice-plans/plugin-toml.md).
+
 ## Oil listing sources (LS, 2026-11-03 — ✅ LS.1–LS.5)
 
 Oil lists from an `OilSource`, the filesystem by default, carried per

@@ -200,6 +200,7 @@ docs = [
   "architecture/plugin-languages",
   "architecture/plugin-manager",
   "architecture/plugin-distribution",
+  "architecture/plugin-toml",
   "architecture/plugin-manifest",
   "architecture/plugin-data-location",
   "architecture/plugin-observability",

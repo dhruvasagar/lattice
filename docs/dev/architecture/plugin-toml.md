@@ -1,8 +1,7 @@
 # Release plugins declared in `lattice.toml`
 
-**Status: proposal, under review (2026-11-25). Nothing here is built or
-decided.** Drafted by a design pass over the source; every `file:line` was
-read there. Section 7 lists what could not be verified.
+**Status: decided 2026-11-26.** Option (B), `[plugins.<id>]` keyed tables.
+Sequencing and status: [`../operations/slice-plans/plugin-toml.md`](../operations/slice-plans/plugin-toml.md).
 
 ## The ask
 
@@ -16,78 +15,74 @@ read there. Section 7 lists what could not be verified.
 A user declares **release** plugins (prebuilt `.wasm` from a published
 release; not git, path or build-from-source) in `lattice.toml`, and needs no
 Rust toolchain. `init.rs` keeps every capability it has. This is a second,
-leaner front-end over the same install path, not a replacement.
+leaner front-end over the same install path, not a replacement:
+`plugin-manager.md` §3 / §11 already allow a TOML list "as declarative sugar
+over the same `require` for the trivial case", and this is that sugar.
 
 ## 1. How it works today
 
 **Registration from `init.rs`.**
 - The `register-plugins` export calls `plugin_manager::require(PluginSpec)` or
-  `require_release(ReleaseSpec)` (`crates/lattice-wit/wit/plugin-manager.wit:30-110`).
-- `require-release` is a new function, not a fourth variant case, so old
-  compiled `init.rs` files still link (`plugin-distribution.md` §3).
-- The host only records (`crates/lattice-plugin-host/src/lib.rs:2326-2360`):
-  - an unsafe name returns `false` and is logged, never trapped;
-  - a release is recorded with `pinned: false`, since it is never built.
-- The record is `RequiredPlugin { name, source: RequiredSource, enable_mode, pinned }`
-  (`plugin_manager_host.rs:44-80`). It is mirrored into the loader's
-  `RequiredSpec` / `PluginSource::Release { repo, version, sha256 }`
-  (`lattice-plugin-loader/src/pipeline.rs:40-82`, `resolve.rs:36-55`).
-  Mirroring rather than sharing the type keeps a WIT-facing type safe from
-  loader refactors.
+  `require_release(ReleaseSpec)` (`crates/lattice-wit/wit/plugin-manager.wit`).
+- The host only records. An unsafe name (`is_safe_plugin_name`,
+  `plugin_manager_host.rs`) returns `false` and is logged, never trapped.
+- The record is mirrored into the loader's `RequiredSpec` /
+  `PluginSource::Release { repo, version, sha256 }` (`pipeline.rs`,
+  `to_required_spec`). Mirroring rather than sharing keeps a WIT-facing type
+  safe from loader refactors.
+- `PluginLoader` puts each declaration in two places
+  (`lib.rs`, the plugin-manager drain):
+  - `required`, the queue the install step drains once;
+  - `declared`, a name → `SourceRecord` map that outlives the drain, so that
+    `:plugins` can rebuild a plugin whose first install never staged a
+    `.source` marker.
 
-**Boot order** (`lattice-plugin-loader/src/install.rs:433-560`). One spawned
-task, off the boot thread:
-1. Core plugins are discovered.
+**Boot order** (`install.rs`). One spawned task, off the boot thread:
+1. Core plugins are discovered and loaded.
 2. `init.rs` is built, loaded and awaited.
-3. `run_required(Boot)` takes the queue (`lib.rs:3012`) and calls `install_all`
-   on `spawn_blocking` with `RefreshPolicy::UseCache` (`install.rs:679-722`).
+3. `run_required(Boot)` drains the queue and calls `install_all` on
+   `spawn_blocking` with `RefreshPolicy::UseCache`.
 4. The user-root scan loads everything installed.
-5. `enable_required_modes` runs, then `report_unclaimed_options`.
+5. `enable_required_modes`, then `report_unclaimed_options`.
 
-**Per release spec** (`pipeline.rs:119`, `resolve.rs:374-440`):
-1. Build the asset name `<id>-<ver>-api<M>.<m>.wasm` for this editor's API
-   generation.
-2. Check the embedded manifest id against the name.
+Step 2 sits inside `if let Some(init_dir)`, but `default_init_dir()` is `Some`
+whenever a config root resolves, whether or not the directory exists. With no
+`init.rs` the load fails at `debug!` and step 3 still runs, on an empty queue.
+The boot path is therefore already toolchain-free; it only lacks a second
+source for the queue.
+
+**Per release spec** (`pipeline.rs`, `resolve.rs`):
+1. `check_release_spec` refuses a repo that is not `owner/name` or a tag with
+   characters GitHub does not allow.
+2. Build the asset name `<id>-<ver>-api<M>.<m>.wasm` for this editor's API
+   generation; an unpinned spec takes the newest compatible release.
 3. Fetch `<asset>.sha256` and the asset through the hardened
-   `download_to_file`, then verify the digest, and the spec's `sha256` if
-   pinned.
-4. Stage into `<user_root>/<id>/` and write the `.source` marker.
+   `download_to_file`; verify the digest, and the spec's `sha256` if pinned.
+4. Check the embedded manifest id against the name, stage into
+   `<user_root>/<id>/`, write the `.source` marker.
 
 A failure is `Install::Skipped` plus `record_failure`, which `:plugins`
 shows. One bad spec costs only that plugin.
 
-**Cache and lock.**
-- There is no lockfile. The record is the per-plugin `.source` marker
-  (`source_record.rs:41-72`): `kind=release, repo, version, sha256, api, latest`.
-- A warm boot with the artifact present and the marker matching does no
-  network I/O.
-- `:plugin-update` works from the marker and declines on a pinned tag
-  (`lib.rs:2779-2785`).
-- `sha256` is recorded only when the user pinned it (`resolve.rs:431`). An
-  unpinned install does not record the digest it got.
+**Cache and lock.** No lockfile; the record is the per-plugin `.source` marker
+(`kind=release, repo, version, sha256, api, latest`). A warm boot with the
+artifact present and the marker matching does no network I/O.
+`:plugin-update` works from the marker and declines on a pinned tag. `sha256`
+is recorded only when the user pinned it.
 
 **`lattice.toml` today.**
 - `lattice_config::load_default_paths` reads the user's `lattice.toml`, then
-  the project's `.lattice/config.toml` (`lattice-config/src/loader.rs:285-328`).
-  It is called only from `Editor::load_persistent_config`.
+  the project's `.lattice/config.toml`. Its production caller is
+  `Editor::load_persistent_config`, once at boot. **Nothing re-reads it after
+  boot**: `:reload-config` rebuilds and reloads `init.rs` only.
 - Keys under an unloaded plugin's namespace (`[org]`) are held and applied
-  when the plugin declares the option (`loader.rs:736-760`). A plugin's
-  *options* already work in TOML.
-- An untrusted project config refuses some tables (`PROJECT_REFUSED_TABLES`,
-  `loader.rs:331`).
-- Nothing in it declares a plugin.
-
-**The two gaps for a toolchain-free user.**
-1. `run_required` runs only inside `if let Some(init_dir)`
-   (`install.rs:467-543`). A TOML-fed queue would never run without an init
-   directory.
-2. `:reload-config` reconciles requires only through `sync_init`
-   (`lib.rs:3125-3144`).
-
-**Existing position.** `plugin-manager.md` §3 / §11 reject a TOML list as the
-*canonical* registration but allow it later "as declarative sugar over the
-same `require` for the trivial case". `plugin-manager.md` §12.1 and
-`config-and-init.md` §5 state the same split. This proposal is that sugar.
+  when the plugin declares the option (`awaits_plugin`, `loader.rs`). A
+  plugin's *options* already work in TOML.
+- An untrusted project config refuses some tables (`PROJECT_REFUSED_TABLES`).
+- The `plugin` name is taken twice: `plugin.trace-level` is a registered option
+  group, and the host passes `"plugin"` as a structural prefix, so a
+  `[plugin.X]` table is bucketed into `pending_config_structural_sections`,
+  which no production code drains.
 
 ## 2. Static setting, or logic?
 
@@ -98,24 +93,24 @@ declarative; logic stays code").
 
 Two tensions, stated:
 
-- **Wording.** "TOML covers static option overrides only" (CLAUDE.md, One
-  extension substrate). A plugin declaration is not an option override. The
-  principle holds; that sentence, and `plugin-manager.md` §12.1, need a
-  one-line amendment.
-- **Trust.** `lattice.toml` is inert today; this makes it something that
-  fetches and runs third-party code at boot. That code is still
-  capability-gated and sandboxed, but the vector is new. It drives three
-  rules below:
+- **Wording.** CLAUDE.md said "TOML covers static option overrides only". A
+  plugin declaration is not an option override. The principle holds; the
+  sentence is amended to "static option overrides and release-plugin
+  declarations", and `plugin-manager.md` §3 / §11 / §12 and
+  `config-and-init.md` §5 point here.
+- **Trust.** `lattice.toml` was inert; it now fetches and runs third-party
+  code at boot. That code is still capability-gated and sandboxed by its
+  manifest, but the vector is new. It drives three rules:
   - project config may not declare plugins;
   - key validation is strict;
   - the `sha256` pin is documented.
 
-## 3. Options
+## 3. Options considered
 
 All three lower to the existing `RequiredSpec` / `PluginSource::Release`.
 None adds a WIT function or a crate.
 
-### (A) A `[[plugins]]` array of tables
+### (A) A `[[plugins]]` array of tables — rejected
 
 ```toml
 [[plugins]]
@@ -124,23 +119,18 @@ repo = "owner/lattice-org-plugin"
 version = "v0.2.0"
 ```
 
-> **UX (higher court):** neutral. It installs with the same eventual
-> consistency as `init.rs` and is off the keystroke path.
+> **UX (higher court):** neutral; installs with the same eventual
+> consistency as `init.rs`, off the keystroke path.
 > **Paramount goals:** protects #2 (no-toolchain users get plugins) and #1
 > (warm boot stays network-free); sacrifices none.
-> **Heuristic #1:** the weaker fit.
-> - Arrays allow duplicate `name`s silently, so uniqueness is hand-written
->   code.
-> - The id is a value here, but the *key* everywhere else (`[org]`,
->   `org.enabled`, the install directory).
->
-> **Heuristic #2:** anchored on #2, not on other tools.
-> **Heuristic #3:** see B and C.
-> **Heuristic #6:** no new crate.
-> **Mode ownership:** no chord, command or action touched; `enable-mode`
-> stays an opaque string on the existing path.
+> **Heuristic #1:** the weaker fit. Arrays allow duplicate `name`s silently,
+> so uniqueness is hand-written code; and the id is a value here but the
+> *key* everywhere else (`[org]`, `org.enabled`, the install directory).
+> **Heuristic #2:** anchored on #2. **Heuristic #3:** see B and C.
+> **Heuristic #6:** no new crate. **Mode ownership:** no chord, command or
+> action touched.
 
-### (B) `[plugins.<id>]` keyed tables, with a one-line shorthand
+### (B) `[plugins.<id>]` keyed tables, with a one-line shorthand — chosen
 
 ```toml
 [plugins.org]
@@ -152,182 +142,178 @@ enable-mode = "org-mode"               # optional; the same string init.rs takes
 [plugins]
 auto-pair-extras = "someone/lattice-auto-pair-extras@v1.2.0"   # shorthand: repo[@tag]
 
-[org]                                  # the plugin's own options, which work today
+[org]                                  # the plugin's own options, unchanged
 directory = "~/notes"
 ```
 
 > **UX:** as A, and it reads beside the plugin's own `[org]` options under
 > the same key.
 > **Paramount goals:** as A.
-> **Heuristic #1:** the best fit.
-> - A duplicate id is a TOML parse error by construction.
-> - The id is the key, as everywhere else.
-> - The string shorthand is the trivial case and the table the full one,
->   both lowered through one path.
->
-> **Heuristic #2:** anchored on #2.
-> **Heuristic #3:** the shorthand makes it a mild superset of A.
+> **Heuristic #1:** the best fit. A duplicate id is a TOML parse error by
+> construction; the id is the key, as everywhere else; the shorthand is the
+> trivial case and the table the full one, lowered through one path.
+> **Heuristic #2:** anchored on #2. **Heuristic #3:** the shorthand makes it
+> a mild superset of A.
+> **Heuristic #6:** no new crate. `lattice-config` parses into a neutral
+> `PluginDeclaration` (it already depends on `toml`; the loader does not);
+> `lattice-plugin-loader` lowers it to `RequiredSpec`, the same
+> mirror-not-share pattern as `to_required_spec`.
+> **Mode ownership:** as A; `enable-mode` stays an opaque string.
+
+`toml` 0.8 without `preserve_order` iterates a table alphabetically, not in
+file order. Harmless: installs are independent.
+
+### (C) A separate `plugins.toml` — rejected
+
+> **UX:** neutral to slightly better on trust (a shared dotfile fragment
+> cannot install code by accident); worse on discoverability (a second file
+> to learn).
+> **Paramount goals:** #2 as A.
+> **Heuristic #1:** cleaner on trust and on lockfile placement, but the
+> argument is trust, not a paramount goal. **Heuristic #2:** not anchored on
+> a paramount goal.
 > **Heuristic #6:** no new crate.
-> - Parse into a neutral `PluginDeclaration` in `lattice-config`, which
->   already depends on `toml`; the loader does not
->   (`lattice-plugin-loader/Cargo.toml:45-63`).
-> - The loader lowers it to `RequiredSpec`, the same mirror-not-share
->   pattern as `to_required_spec`.
->
-> **Mode ownership:** as A.
-> **Cost:** `toml::Table` iterates alphabetically (a `BTreeMap`, unless
-> `preserve_order` is on; unverified), not in file order. Harmless, since
-> installs are independent.
 
-### (C) A separate `plugins.toml`
+Rejected because the ask names `lattice.toml`, the trust argument is answered
+by the project-config refusal (§4), and the lowering is identical, so moving
+the table later costs only a parser entry point.
 
-> **UX:** neutral to slightly better.
-> - `lattice.toml` stays pure settings.
-> - A shared dotfile fragment cannot install code by accident.
-> - The table cannot collide with the option walker.
->
-> **Paramount goals:** #2 as A; it costs discoverability, a second file to
-> learn.
-> **Heuristic #1:** cleaner on trust and on lockfile placement
-> (`plugins.lock` beside it), and it resolves the CLAUDE.md wording rather
-> than amending it.
-> **Heuristic #2:** anchored on a trust argument, not a paramount goal.
-> **Heuristic #3:** this is the third option.
-> **Heuristic #6:** no new crate.
-> **Cost:** the ask names `lattice.toml`, and it adds a file and a config
-> path to document.
+## 4. Behaviour
 
-## 4. Behaviour, under (B)
+### Schema and validation
 
-**Schema and validation.**
-- A table must have `release`, and may have `version`, `sha256` and
-  `enable-mode`.
-- A string is `repo` or `repo@tag`.
-- The id must pass `is_safe_plugin_name` (`plugin_manager_host.rs`), the same
-  gate `init.rs` passes.
-- `release` must be `owner/name`; `sha256` must be 64 hex characters.
+`lattice-config` checks shape; the existing pipeline checks meaning. One
+validation path for each fact, shared with `init.rs`:
 
-**A non-release spec in TOML.**
-- `git`, `path`, `url` and `build` are not release keys. The entry is
-  skipped with one `warn!`: "builds from source; declare it in init.rs".
-- An unknown key also skips the whole entry. A typo such as `sha265`, dropped
-  quietly, would install unpinned and defeat the pin.
-- Each rejection is also `record_failure`d, so `:plugins` shows it.
-- Log and skip, never panic. One bad entry does not stop the others, as
-  `pipeline.rs`'s `one_broken_spec_does_not_stop_the_others` already pins
-  for `init.rs`.
+| check | where | why there |
+|---|---|---|
+| Value is a table or a string | `lattice-config` parser | shape |
+| Table keys ⊆ `release`, `version`, `sha256`, `enable-mode`; `release` present; every value a string | parser | shape; an unknown key is a typo (`sha265`) that, dropped, would install unpinned |
+| String is `repo` or `repo@tag` | parser | shape |
+| `sha256`, when present, is 64 hex characters | parser | a malformed pin must never read as "no pin" |
+| Id is a safe path component | loader lowering, `is_safe_plugin_name` | the gate `init.rs` passes; `lattice-config` cannot depend on `lattice-plugin-host` |
+| Repo is `owner/name`, tag is well-formed | `resolve::check_release_spec`, at install | already there, already records failures |
 
-**`init.rs` and TOML naming the same plugin.**
-- `init.rs` wins. It is the superset and the more specific layer.
-- TOML specs are queued first and deduplicated by id, the last one winning.
-- One `warn!` names both when they differ; a `debug!` when they are
-  identical.
-- Never an error, never a refused boot.
-- The whole spec is replaced, not merged field by field: "TOML's version,
+**A non-release key** (`git`, `path`, `url`, `build`, `rev`) skips the entry
+with a message naming why: "builds from source; declare it in init.rs". Any
+other unknown key also skips the whole entry.
+
+Every rejection is a `warn!` and a `record_failure` under the declared id, so
+`:plugins` shows it. Log and skip, never panic. One bad entry does not stop
+the others.
+
+### The `plugins` table is not an option namespace
+
+`lattice-config`'s walker reserves the top-level `plugins` key in every load:
+it is not applied, not held, and never reported unclaimed. The reservation
+lives in the walker, not in the host's structural-prefix list, so every
+caller of `load_default_paths` gets it.
+
+A `[plugin.<x>]` table carrying a `release` key gets a warning, "did you mean
+`[plugins.<x>]`?", since the structural bucket it would otherwise land in is
+never read.
+
+### Project config refuses it
+
+`plugins` joins `PROJECT_REFUSED_TABLES`: a cloned repository's
+`.lattice/config.toml` never installs code. Same rule, same warning shape as
+`llm`.
+
+### Who reads the file
+
+The loader reads the user's `lattice.toml` itself
+(`lattice_config::default_user_config_path`) at the top of the install task,
+so the order relative to `Editor::load_persistent_config` cannot matter. A
+parse error is `debug!` on this side; the editor's own load already reports
+it to the user, and reporting it twice is noise.
+
+### `init.rs` and TOML naming the same plugin
+
+- **`init.rs` wins.** It is the superset and the more specific layer.
+- The whole spec is replaced, never merged field by field: "TOML's version,
   init.rs's sha256" would surprise.
+- One `warn!` names both when the specs differ; `debug!` when identical.
+- Never an error, never a refused boot.
 
-**Options and grants.**
+TOML ids are unique by construction (a shorthand and a table under one id is a
+TOML duplicate-key error).
+
+### One declaration path, with provenance
+
+Both front-ends go through one `PluginLoader` helper that fills `required` and
+`declared` together, tagging each spec with its origin
+(`DeclaredBy::InitRs` / `DeclaredBy::LatticeToml`). The merge happens when the
+queue is drained, after `init.rs` has loaded, so precedence is decided in one
+place with both sets visible. `:plugins` shows the origin of each declared
+plugin and the TOML entries the parser rejected.
+
+### Options and grants
+
 - Nothing new for options: `[org]` is already held and applied.
 - No `grants` key. Grants follow the plugin's own options
-  (`plugin-manifest.md` §2), and the distribution design already rejected a
-  `grants` field, so TOML cannot widen a plugin past its manifest.
+  (`plugin-manifest.md` §2), so TOML cannot widen a plugin past its manifest.
 
-**Enable and disable.**
-- `<id>.enabled` keeps working (`lib.rs:1664-1726`; registered for plugins
-  that declare a default mode).
-- No declaration-level `enabled = false` in v1. The user-root scan loads
-  every installed plugin whether or not it is declared, so removing or
-  disabling a declaration unloads nothing. That is true of `init.rs` today.
-  See question 3.
+### Enable and disable
 
-**Pinning and the lockfile.**
-- v1 reuses `version` + `sha256` in the declaration and the existing
-  `.source` markers; there is no lockfile.
-- The guide must say that an unpinned declaration records no digest, so it
-  is not reproducible across machines.
-- A `lattice.lock` (resolved tag and digest, perhaps written by a
-  `:plugin-pin`) is deferred, PT.7.
+- `<id>.enabled` keeps working for plugins that declare a default mode.
+- No declaration-level `enabled = false`. The user-root scan loads every
+  installed plugin whether or not it is declared, so removing a declaration
+  unloads nothing. That is true of `init.rs` today, and the two front-ends
+  must not differ on it. Uninstalling stays the `:plugins` view's `clean`
+  verb.
 
-**`:plugin-*` and the manager view.**
-- TOML specs join the same `required` queue. From there, `apply_required`,
-  the markers, `:plugins`, `:plugin-update`, `:plugin-load` / `-unload` /
-  `-reload` and describe work unchanged.
-- One addition: the view shows where a plugin was declared (`lattice.toml`
-  or `init.rs`). Nothing records that today (PT.5).
+### `:reload-config`
 
-**No `init.rs` at all.** Boot works with no Rust toolchain once two things
-change:
-1. `run_required` moves out of the `init_dir` gate, with the TOML specs
-   queued before it.
-2. `:reload-config` re-reads TOML without `sync_init`.
+`:reload-config` re-reads the `[plugins]` table and reconciles it through
+`run_required(AfterBoot)`: a newly declared plugin is installed and loaded, an
+unchanged one left alone. With no `init.rs` on disk, the init rebuild step is
+a benign skip, not a recorded `init` failure.
 
-Then a toolchain-free user needs `lattice.toml` and, for the first install
-only, the network. Warm boots do no network I/O and no build.
+It does **not** re-apply the rest of `lattice.toml`; option edits there still
+take a restart, as they do today. Live reload of the whole file is a separate,
+pre-existing gap (it crosses into `Editor::load_persistent_config` and both
+renderers' signal handling), not this feature.
 
-**Project config.**
-- `plugins` joins `PROJECT_REFUSED_TABLES` (`loader.rs:331`): a cloned
-  repository's `.lattice/config.toml` never installs code, the same rule as
-  for `llm`.
-- The option walker must not treat `plugins` as an option namespace, or it
-  would hold the entries and report them unclaimed.
+### Pinning
 
-## 5. Recommendation
+v1 reuses `version` + `sha256` and the existing `.source` markers; there is no
+lockfile. The guide says plainly that an unpinned declaration records no
+digest and is not reproducible across machines. A lockfile is deferred (slice
+plan PT.7).
 
-**(B)**, on heuristic #1:
-- the id is already the key for options, the gate and the install directory;
-- TOML gives uniqueness free;
-- the shorthand covers the common case without a second mechanism.
+## 5. Paramount-goal alignment
 
-It protects paramount #2 (a no-toolchain user gets plugins) and keeps #1
-(the warm boot does no network I/O; installs stay off the boot thread).
+- **#1 Performance.** Parsing one table at boot is microseconds and off the
+  boot thread; a warm boot does no network I/O, pinned by a counting-fetcher
+  test. Installs stay on `spawn_blocking`.
+- **#2 Extensibility.** The point of the feature: plugins without a toolchain.
+  WIT unchanged; the SDK gains nothing the wire lacks.
+- **#3 Modal editing.** Untouched.
+- **#4 Asynchronicity.** Same off-thread install task; nothing new on the
+  actor or UI thread.
 
-Choose **(C)** if "`lattice.toml` stays inert data" outweighs "one file". The
-lowering is identical; only the file differs.
+## 6. Settled decisions
 
-**Impact surface.**
+1. **Surface** — (B) `[plugins.<id>]` in `lattice.toml`, with a `repo[@tag]`
+   shorthand. (C) rejected (§3).
+2. **Name** — `plugins`. `plugin` is taken by an option group and a
+   structural prefix (§1).
+3. **Removal** — no declaration-level disable; `<id>.enabled` and `clean`
+   cover it, as for `init.rs`.
+4. **Conflict** — `init.rs` wins, whole spec, `warn!` on a difference.
+5. **Lockfile** — deferred; v1 is `version` + optional `sha256`.
+6. **`:reload-config`** — reconciles `[plugins]` only; whole-file live reload
+   is out of scope.
 
-| artefact | what |
-|---|---|
-| Design | This fragment. Amendments to `plugin-manager.md` §3 / §11 / §12, `config-and-init.md` §5, `plugin-distribution.md` (the TOML front-end) and the CLAUDE.md sentence. `implementation.md`, the user guide and a `:help` topic. |
-| Crates | `lattice-config`: parse, `PluginDeclaration`, project refusal, walker reservation. `lattice-plugin-loader`: lowering, enqueue, hoisted `run_required`, reload path, provenance. `lattice-plugin-manager`: provenance in `:plugins`. `lattice-cli/src/scaffold.rs`: a comment pointing at the TOML path. No WIT change, no new crate. |
-| Tests | Parser table tests: valid table, shorthand, non-release keys, unknown key, unsafe name, bad repo, bad sha256, empty `[plugins]`. Project refusal. `init.rs`-vs-TOML precedence, including the warning. A boot with no `init.rs` installing a TOML release through a fake fetcher. A warm boot asserting zero fetches with a counting fetcher. One broken entry not stopping the others. `:reload-config` with no `init.rs`. Patterned on `lattice-plugin-loader/tests/require_drain.rs` and `release_round_trip.rs`. |
-| Bench | A `plugins_table` parse-and-lower bench in `lattice-config/benches/options.rs` (N entries). The real regression guard, "a warm boot does no network I/O", is a test. |
-| Errors | Every rejection is a `warn!` plus `record_failure`, never a panic. Installs stay on `spawn_blocking`. |
+## 7. Rejected alternatives
 
-## 6. Slice plan (proposed IDs; check for collisions)
-
-| slice | what |
-|---|---|
-| PT.0 | This fragment made final, the doc and CLAUDE.md amendments, a slice plan under `docs/dev/operations/slice-plans/`. No code. |
-| PT.1 | The parser in `lattice-config`: `parse_plugin_declarations(&toml::Table) -> (Vec<PluginDeclaration>, Vec<Diagnostic>)`, with its table tests. No wiring. |
-| PT.2 | The walker reserves `plugins` (not held, not reported unclaimed). Project config refuses it with a warning. |
-| PT.3 | Boot wiring: the install task reads the user's `lattice.toml`, lowers it and queues it before `init.rs`, deduplicating with `init.rs` winning; `run_required` hoisted out of the `init_dir` gate. Tests: a boot with no `init.rs`, and a warm boot with no fetch. |
-| PT.4 | `:reload-config` re-reads TOML (the after-boot reconcile) with no `init.rs`. |
-| PT.5 | `:plugins` shows provenance and the rejected entries. |
-| PT.6 | Docs sweep: guide, `:help`, the scaffold comment, the ledger, `BENCHMARKS.md`. |
-| PT.7 | ⛔ A lockfile or a `:plugin-pin` write-back; needs a decision. |
-
-## 7. Open questions
-
-1. **(B) or (C)?** Is amending "TOML = static option overrides only"
-   acceptable, or should the plugin list live in its own file?
-2. **The name.** `[plugins.<id>]` sits beside the structural `plugin` prefix
-   and `plugin.trace-level`. Is that acceptable, or should it be
-   `[plugin.<id>]`, `[install.<id>]` or similar? What consumes the structural
-   `plugin` sections (`pending_config_structural_sections`) was not verified.
-3. **Removal.** Removing a declaration, or disabling it, does not unload an
-   installed plugin, because the user-root scan loads everything on disk.
-   Should a declaration-level disable also gate the scan, or does disabling
-   stay `<id>.enabled`?
-4. **Conflict.** "`init.rs` wins, warn on a difference", or an error that
-   skips both?
-5. **Lockfile.** Is v1 acceptable with only an explicit `sha256` pin, given
-   an unpinned declaration is not reproducible across machines? Promote
-   PT.7?
-6. **Not verified, to check before PT.3:**
-   - whether `load_persistent_config` runs before the loader task reads the
-     file (proposed: the loader reads it itself, so the order cannot matter);
-   - whether `default_init_dir()` is `Some` when the directory is absent;
-   - how a duplicate `require` of one name from `init.rs` behaves today
-     (`install_all` maps over the list, so presumably both run);
-   - whether `toml` has `preserve_order` on.
+- **A `[[plugins]]` array** (§3 A): uniqueness by hand, id as a value.
+- **A separate `plugins.toml`** (§3 C): a second file for a trust problem the
+  project-config refusal already solves.
+- **Merging TOML and `init.rs` specs field by field**: a spec assembled from
+  two files is one nobody wrote.
+- **Accepting `git` / `path` sources in TOML**: they build from source, which
+  needs the toolchain this feature exists to avoid; and a build step in a
+  static file is logic.
+- **Validating repo and tag in `lattice-config`**: duplicates
+  `check_release_spec`, and two validators drift.

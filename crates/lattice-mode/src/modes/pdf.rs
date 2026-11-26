@@ -258,22 +258,32 @@ pub fn page_labels(pages: usize) -> String {
 /// Clean, because the modified flag means "the user changed this" and the
 /// user changed nothing: without it every PDF would open marked modified and
 /// `:q` would refuse to leave it.
+///
+/// The text it already has is not written again. A reload of a PDF whose
+/// pages did not change starts with these very labels (they are carried
+/// over so the cursor keeps its page), and an edit that changes nothing
+/// would still mark the buffer modified until the clean lands. When the text
+/// does change, the clean is queued with the edit rather than after its
+/// reply: the actor's mailbox is in order, so only the gap between handling
+/// the two is left, where a reply round trip would leave the buffer shown
+/// modified for as long as the scheduler took.
 async fn write_owned_text(handle: &dyn lattice_runtime::Document, text: String) {
     let snap = handle.snapshot();
+    if snap.text() == text {
+        return;
+    }
     let last_line = snap.buffer.rope_line_count().saturating_sub(1);
     let last_len = snap.buffer.line(last_line).unwrap_or_default().len() as u32;
     let all = lattice_protocol::Range::new(
         lattice_protocol::position::Position::new(0, 0),
         lattice_protocol::position::Position::new(last_line, last_len),
     );
-    if let Err(e) = handle
-        .apply_edit_batch(vec![lattice_protocol::edit::Edit::replace(all, text)])
-        .await
-    {
+    let written = handle.apply_edit_batch(vec![lattice_protocol::edit::Edit::replace(all, text)]);
+    let cleaned = handle.mark_clean();
+    if let Err(e) = written.await {
         tracing::warn!(error = %e, "pdf-mode: writing the page labels failed");
-        return;
     }
-    if let Err(e) = handle.mark_clean().await {
+    if let Err(e) = cleaned.await {
         tracing::debug!(error = %e, "pdf-mode: marking the labels clean failed");
     }
 }
@@ -408,6 +418,36 @@ pub fn is_pdf_path(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn labelled(pages: usize) -> lattice_runtime::handle::RopeDocumentHandle {
+        lattice_runtime::handle::spawn_document(
+            lattice_core::BufferId(1),
+            lattice_core::Document::from_text(&page_labels(pages)),
+            Arc::new(arc_swap::ArcSwap::from_pointee(
+                lattice_grammar::registry::CommandRegistry::new(),
+            )),
+        )
+    }
+
+    /// A reload whose pages did not change already holds its labels, so
+    /// nothing is written and the buffer is never, even briefly, modified.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn labels_already_in_the_buffer_are_not_written_again() {
+        let handle = labelled(3);
+        let before = handle.text_version();
+        write_owned_text(&handle, page_labels(3)).await;
+        assert_eq!(handle.text_version(), before, "no edit");
+        assert!(!handle.dirty());
+    }
+
+    /// New labels land, and the buffer is clean once they have.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn changed_labels_are_written_and_left_clean() {
+        let handle = labelled(3);
+        write_owned_text(&handle, page_labels(5)).await;
+        assert_eq!(handle.text(), page_labels(5));
+        assert!(!handle.dirty());
+    }
 
     /// A scratch file holding `bytes`, removed when the guard drops.
     struct Scratch(PathBuf);

@@ -13,6 +13,7 @@
 
 ### Fixed
 - **On Windows, a plugin can open a file it made by its `file:///C:/…` URI.** The URI was read as the path `/C:/…`, which names nothing there, so the open was refused as outside the plugin's directories.
+- **Reloading a PDF no longer marks it modified for a moment.** A reload rewrote the page list even when the pages had not changed, and the buffer showed as modified until it was marked clean again.
 - **A PDF being recompiled no longer flickers to an error or a stub.** A compile writes its PDF a piece at a time, and a reload that caught it halfway showed "not a readable PDF", or the first few pages with your place moved to the last of them. A PDF that has not been written to its end is now left on screen as it was, and the finished file reloads at the page you were reading.
 - **A plugin can no longer write outside its granted directories through a broken symlink.** A symlink in a granted directory that pointed at a file that did not exist yet passed the check, and the write then created that file wherever the link pointed. Such a link is now refused for reading, writing and deleting.
 - **A plugin's request to open a `file://localhost/…` URI is refused**, naming the form to use. It was checked against the plugin's grants as a relative path while the system opener read the absolute one; a plugin posts the absolute path (`file:///…` or `/…`).

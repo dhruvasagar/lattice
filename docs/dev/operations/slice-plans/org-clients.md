@@ -10,7 +10,7 @@ Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred (not 
 Every non-trivial slice ships the four artefacts (doc + bench where perf-relevant
 + tests including failure modes + graceful error handling).
 
-**Status: 🚧 FT.0–FT.10 ✅; FT.3 published as plugin API 0.7.1, with lattice 0.10.6 and org 0.6.1 released on it; FT.11 ✅ but its release, org-clients v0.1.0; FT.12 and FT.13 ⛔.**
+**Status: FT.0–FT.11 ✅, released: plugin API 0.7.1, lattice 0.10.6, org 0.6.1, org-clients 0.1.1 (its first release). FT.12 and FT.13 ⛔, so the plan stays active.**
 
 Three repos, in dependency order: lattice (host), lattice-org-plugin (org),
 lattice-org-clients-plugin (new). **One plugin-API publish** for the whole
@@ -42,7 +42,7 @@ it before publishing.
 |---|---|---|
 | FT.9 | Scaffold: manifest (`requires = ["org"]`, fs grant following `org-clients.directory`), `org-clients-mode` (global), options `org-clients.directory` / `org-clients.key`, the three contributions made at activation (agenda folder, the `e` capture group with its five templates, the `e` dashboard command). Integration test: with org loaded, org's capture menu shows the group and an agenda scan includes a client file. | ✅ `lattice-org-clients-plugin` `0800e00`. Contributions are made at load AND again on `option-changed` for `org-clients.directory` / `org-clients.key` / `org.directory`, so `:set` needs no reload. No fs grant yet: org reads the folder under its own; the write grant arrives with FT.10's onboard. 5 integration tests load both real components, incl. org absent ⇒ org-clients waits and says so |
 | FT.10 | `:org-clients-onboard` (name → slug → skeleton → open; refuses an existing slug), `:org-clients-find` (picker of the folder), `:org-clients-archive` (move the confirmed client file into `archive/`). | ✅ `lattice-org-clients-plugin` `d5fb8ed`. Onboard writes through `write-to-file` with `create_parents` (the first client makes the folder) then opens the file; an existing slug is refused by name. Archive asks, refuses unsaved edits (a rewrite of the file's own bytes is refused while its buffer is modified), writes the copy, and a follow-up command removes the original only when the copy on disk matches; an archived file of the same name is never overwritten. Away-from-command warnings use `ui::notify`: the component is instantiated on the grammar seam, whose linker has no `logging`. 10 integration tests |
-| FT.11 | `<leader>e` menu (find, dashboard, capture, onboard, archive) with the guess in its title; `:help org-clients`; README with the Unscheduled `match = "-client"` line; first release. | 🚧 `lattice-org-clients-plugin` `8d1c29a`: menu, help and README ✅; dashboard and capture rows hand over to org's exported commands, so the guess is org's. Re-pinned to 0.7.1 with `min_lattice` 0.10.6 (`80a2309`); the first release, v0.1.0, is Dhruva's and under way. 15 integration tests, both plugins installed under their real embedded manifests |
+| FT.11 | `<leader>e` menu (find, dashboard, capture, onboard, archive) with the guess in its title; `:help org-clients`; README with the Unscheduled `match = "-client"` line; first release. | ✅ `lattice-org-clients-plugin` `8d1c29a`: menu, help and README ✅; dashboard and capture rows hand over to org's exported commands, so the guess is org's. Re-pinned to 0.7.1 with `min_lattice` 0.10.6 (`80a2309`); first released as **v0.1.1** (2026-11-27). 15 integration tests, both plugins installed under their real embedded manifests |
 
 ## Deferred
 

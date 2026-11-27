@@ -877,6 +877,16 @@ pub struct PluginLoader {
     /// about a plugin they have since rebuilt, which is the same reasoning
     /// [`BuildState::Failed`] is in-memory for.
     failed: Mutex<Vec<FailedLoad>>,
+    /// Plugins waiting for a plugin they `require` to load, with the tier
+    /// each was being loaded at.
+    ///
+    /// A plugin's requirements are checked as it loads; one that is not met
+    /// parks it here instead of failing it, and every successful load
+    /// retries the set. That makes the outcome independent of the order
+    /// plugins are declared or discovered in, on every path into the loader.
+    /// A parked plugin is also recorded in `failed` with the reason, so
+    /// `:plugins` shows what it is waiting for, and is cleared when it loads.
+    parked: Mutex<Vec<(DiscoveredPlugin, TrustTier)>>,
 }
 
 /// Why a plugin failed to load. Every variant is graceful-degradation input for
@@ -911,6 +921,11 @@ pub enum PluginLoaderError {
     /// from bytes in a test, or its source dir is gone).
     #[error("plugin `{0}` has no on-disk source to reload from")]
     NotReloadable(String),
+    /// The plugin `requires` a plugin that is not loaded, so it is parked and
+    /// loads as soon as that plugin does. The message is the whole reason —
+    /// which plugin is missing, or the cycle it is part of.
+    #[error("{0}")]
+    RequirementsUnmet(String),
 }
 
 /// The canonical id of the user-config plugin — the `:reload-config` /
@@ -997,6 +1012,35 @@ impl ReloadConfigReport {
 
 /// Match a loaded record against a `:plugin-unload` / `:plugin-reload` target —
 /// its manifest id (the common case) or its numeric host-issued plugin id.
+/// The chain of parked plugins leading from `from` back to `to` through
+/// their `requires`, or `None` when there is none. `parked` is `(id,
+/// requires)`. Depth-first with a visited set, so a cycle that does not pass
+/// through `to` cannot loop it.
+fn requirement_path(parked: &[(String, Vec<String>)], from: &str, to: &str) -> Option<Vec<String>> {
+    fn walk(parked: &[(String, Vec<String>)], at: &str, to: &str, seen: &mut Vec<String>) -> bool {
+        if seen.iter().any(|s| s == at) {
+            return false;
+        }
+        seen.push(at.to_string());
+        let Some((_, requires)) = parked.iter().find(|(id, _)| id == at) else {
+            seen.pop();
+            return false;
+        };
+        if requires.iter().any(|r| r == to) {
+            return true;
+        }
+        for r in requires {
+            if walk(parked, r, to, seen) {
+                return true;
+            }
+        }
+        seen.pop();
+        false
+    }
+    let mut seen = Vec::new();
+    walk(parked, from, to, &mut seen).then_some(seen)
+}
+
 fn record_matches(record: &LoadedRecord, target: &str) -> bool {
     record.name == target || target.parse::<u32>().ok() == Some(record.id.0)
 }
@@ -1075,6 +1119,7 @@ impl PluginLoader {
             declared: Mutex::new(std::collections::HashMap::new()),
             config_file: Mutex::new(None),
             failed: Mutex::new(Vec::new()),
+            parked: Mutex::new(Vec::new()),
         }
     }
 
@@ -1117,6 +1162,7 @@ impl PluginLoader {
             declared: Mutex::new(std::collections::HashMap::new()),
             config_file: Mutex::new(None),
             failed: Mutex::new(Vec::new()),
+            parked: Mutex::new(Vec::new()),
         }
     }
 
@@ -1275,6 +1321,12 @@ impl PluginLoader {
                     loaded += 1;
                     self.clear_failure(&plugin.manifest.id);
                 }
+                // Waiting for a plugin this scan may not have reached yet is
+                // the normal case for a dependent, not a failure worth a
+                // `warn!`; the record still says what it is waiting for.
+                Err(PluginLoaderError::RequirementsUnmet(reason)) => {
+                    self.record_failure(&plugin.manifest.id, &plugin.dir, tier, &reason);
+                }
                 Err(err) => {
                     // WT.4: `warn!` reaches `*messages*`, and the record reaches
                     // `:plugins`. Both, because they answer different questions:
@@ -1299,7 +1351,130 @@ impl PluginLoader {
     /// Load one already-discovered plugin: compile, then either drive the
     /// lifecycle spine (empty `provides`) or drain each declared seam, and
     /// record its provenance. Returns the host-issued [`PluginId`].
+    ///
+    /// A plugin whose `requires` are not all loaded is **parked** rather than
+    /// loaded or failed, and the call returns
+    /// [`RequirementsUnmet`](PluginLoaderError::RequirementsUnmet). Every
+    /// successful load then retries the parked set, so a dependent declared
+    /// before what it depends on still loads, right after it.
     pub async fn load_discovered(
+        &self,
+        plugin: &DiscoveredPlugin,
+        tier: TrustTier,
+    ) -> Result<PluginId, PluginLoaderError> {
+        if let Some(reason) = self.unmet_requirements(&plugin.manifest) {
+            tracing::debug!(plugin = %plugin.manifest.id, %reason, "parked until its requirements load");
+            self.park(plugin.clone(), tier);
+            return Err(PluginLoaderError::RequirementsUnmet(reason));
+        }
+        let id = self.load_ready(plugin, tier).await?;
+        self.load_parked_now_ready().await;
+        Ok(id)
+    }
+
+    /// Why `manifest`'s requirements are not met, or `None` when every plugin
+    /// it `requires` is loaded.
+    ///
+    /// A requirement that is itself parked and needs this plugin back is
+    /// named as a cycle: both would otherwise wait forever, each reported as
+    /// missing the other, which reads as two install problems rather than
+    /// one packaging bug.
+    fn unmet_requirements(&self, manifest: &lattice_plugin_host::PluginManifest) -> Option<String> {
+        let missing: Vec<&String> = manifest
+            .requires
+            .iter()
+            .filter(|r| !self.is_loaded(r))
+            .collect();
+        if missing.is_empty() {
+            return None;
+        }
+        let parked: Vec<(String, Vec<String>)> = self
+            .parked
+            .lock()
+            .expect("plugin-loader parked-set mutex poisoned")
+            .iter()
+            .map(|(p, _)| (p.manifest.id.clone(), p.manifest.requires.clone()))
+            .collect();
+        for m in &missing {
+            if let Some(path) = requirement_path(&parked, m, &manifest.id) {
+                return Some(format!(
+                    "`{}` and {} require each other (a cycle), so none of them can load",
+                    manifest.id,
+                    path.iter()
+                        .map(|p| format!("`{p}`"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ));
+            }
+        }
+        let names: Vec<String> = missing.iter().map(|m| format!("`{m}`")).collect();
+        Some(format!(
+            "waiting for {}, which {} not loaded",
+            names.join(", "),
+            if names.len() == 1 { "is" } else { "are" }
+        ))
+    }
+
+    /// Hold `plugin` until its requirements load, replacing any earlier
+    /// parked copy of the same plugin: a second scan root reaching it must
+    /// not queue it twice.
+    fn park(&self, plugin: DiscoveredPlugin, tier: TrustTier) {
+        let mut parked = self
+            .parked
+            .lock()
+            .expect("plugin-loader parked-set mutex poisoned");
+        parked.retain(|(p, _)| p.manifest.id != plugin.manifest.id);
+        parked.push((plugin, tier));
+    }
+
+    /// Load every parked plugin whose requirements are now met, repeating
+    /// until a pass loads nothing, so a chain (`c` needs `b` needs `a`)
+    /// settles in one call.
+    async fn load_parked_now_ready(&self) {
+        loop {
+            let ready = {
+                let snapshot: Vec<lattice_plugin_host::PluginManifest> = self
+                    .parked
+                    .lock()
+                    .expect("plugin-loader parked-set mutex poisoned")
+                    .iter()
+                    .map(|(p, _)| p.manifest.clone())
+                    .collect();
+                let Some(id) = snapshot
+                    .iter()
+                    .find(|m| m.requires.iter().all(|r| self.is_loaded(r)))
+                    .map(|m| m.id.clone())
+                else {
+                    return;
+                };
+                let mut parked = self
+                    .parked
+                    .lock()
+                    .expect("plugin-loader parked-set mutex poisoned");
+                let Some(pos) = parked.iter().position(|(p, _)| p.manifest.id == id) else {
+                    return;
+                };
+                parked.remove(pos)
+            };
+            let (plugin, tier) = ready;
+            match self.load_ready(&plugin, tier).await {
+                Ok(_) => self.clear_failure(&plugin.manifest.id),
+                Err(err) => {
+                    let detail = error_chain(&err);
+                    tracing::warn!(
+                        plugin = %plugin.manifest.id,
+                        error = %detail,
+                        "plugin failed to load once its requirements did; skipped"
+                    );
+                    self.record_failure(&plugin.manifest.id, &plugin.dir, tier, &detail);
+                }
+            }
+        }
+    }
+
+    /// [`load_discovered`](Self::load_discovered) past the requirements check:
+    /// compile, drain, record.
+    async fn load_ready(
         &self,
         plugin: &DiscoveredPlugin,
         tier: TrustTier,
@@ -1334,6 +1509,7 @@ impl PluginLoader {
                 // per-drain token list would miss the late ones and leave an
                 // orphan descriptor rendering forever.
                 t.modeline_namespace = Some(manifest.id.clone());
+                t.option_contributor = Some(manifest.id.clone());
                 t
             },
             tier,
@@ -3146,6 +3322,49 @@ impl PluginLoader {
     /// teardown and `JoinHandle::abort` don't await — so an ex-command `apply`
     /// closure can call it directly. Idempotent per the teardown contract.
     pub fn unload(&self, target: &str) -> Option<TeardownReport> {
+        // A parked plugin is not loaded, but asking to unload it means the
+        // user no longer wants it to load when its requirements do.
+        self.parked
+            .lock()
+            .expect("plugin-loader parked-set mutex poisoned")
+            .retain(|(p, _)| p.manifest.id != target);
+        // Dependents first, and parked rather than dropped: one left loaded
+        // would hold contributions to options that are about to stop existing
+        // and rows naming commands that no longer resolve. Parked, they load
+        // again with this plugin, which is what makes a reload of it whole.
+        let (name, dependents): (String, Vec<(String, Option<std::path::PathBuf>, TrustTier)>) = {
+            let loaded = self
+                .loaded
+                .lock()
+                .expect("plugin-loader loaded-set mutex poisoned");
+            let name = loaded
+                .iter()
+                .find(|r| record_matches(r, target))?
+                .name
+                .clone();
+            let dependents = loaded
+                .iter()
+                .filter(|r| r.manifest.requires.contains(&name))
+                .map(|r| (r.name.clone(), r.source_dir.clone(), r.tier))
+                .collect();
+            (name, dependents)
+        };
+        for (dependent, dir, tier) in dependents {
+            let _ = self.unload(&dependent);
+            let Some(dir) = dir else { continue };
+            match discovery::load_one(&dir) {
+                Ok(Some(plugin)) => {
+                    let reason = format!("waiting for `{name}`, which is not loaded");
+                    self.record_failure(&plugin.manifest.id, &dir, tier, &reason);
+                    self.park(plugin, tier);
+                }
+                Ok(None) | Err(_) => tracing::debug!(
+                    plugin = %dependent,
+                    dir = %dir.display(),
+                    "dependent unloaded and not re-readable; not parked"
+                ),
+            }
+        }
         let record = {
             let mut loaded = self
                 .loaded

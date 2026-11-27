@@ -307,6 +307,60 @@
       "examples": [],
       "functions": [
         {
+          "name": "accept-contributions",
+          "display_name": "accept-contributions",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [
+            {
+              "name": "name",
+              "type": "string"
+            }
+          ],
+          "result": "bool",
+          "signature": "accept-contributions: func(name: string) -> bool",
+          "doc": "**Owner:** let other plugins contribute to this option of yours.\n\nThe short name, as declared: `agenda-files` for `org.agenda-files`.\n`false` for an option that is not yours, and for one a capability\ngrant follows — what a plugin may read, write or run is widened by the\nuser alone. Call it after registering the option, once per load.",
+          "examples": [
+            {
+              "id": "config-guest:config.accept-contributions",
+              "caption": "Let other plugins add to one of your options",
+              "source": "crates/lattice-plugin-host/tests/fixtures/config-guest/src/lib.rs",
+              "language": "rust",
+              "code": "// The short name, as declared. Call it once per load, after the option\n// is registered; the host refuses an option a capability grant follows.\nlet accepted = config::accept_contributions(\"tags\");"
+            }
+          ]
+        },
+        {
+          "name": "contribute-option",
+          "display_name": "contribute-option",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [
+            {
+              "name": "name",
+              "type": "string"
+            },
+            {
+              "name": "value",
+              "type": "option<config-value>"
+            }
+          ],
+          "result": "bool",
+          "signature": "contribute-option: func(name: string, value: option<config-value>) -> bool",
+          "doc": "**Contributor:** add `value` to another plugin's option, by its full\nname (`org.agenda-files`).\n\nValidated against the option's schema as `set-option-value` is.\nReplaces this plugin's earlier contribution to the same option, in\nplace; `none` withdraws it. `false` when the option does not exist,\nits owner does not accept contributions, or the value does not fit.\nThe owner reads contributions live, so one made after the owner's\nfirst read takes effect on its next.",
+          "examples": [
+            {
+              "id": "config-guest:config.contribute-option",
+              "caption": "Add a value to another plugin's option",
+              "source": "crates/lattice-plugin-host/tests/fixtures/config-guest/src/lib.rs",
+              "language": "rust",
+              "code": "// The full name, owner's namespace included. The value is checked\n// against that option's schema; `None` would withdraw it again.\nlet contributed = config::contribute_option(\n    OWNER_TAGS,\n    Some(&config::ConfigValue {\n        nodes: vec![\n            config::ValueNode::String(\"from-guest\".to_string()),\n            config::ValueNode::List(vec![0]),\n        ],\n        root: 1,\n    }),\n);"
+            }
+          ]
+        },
+        {
           "name": "get-option",
           "display_name": "get-option",
           "kind": "freestanding",
@@ -382,6 +436,31 @@
               "source": "plugins/project/src/lib.rs",
               "language": "rust",
               "code": "/// The configured rows, or the defaults.\nfn switch_commands() -> Vec<switch::SwitchCommand> {\n    match lattice::plugin_host::config::get_option_value(switch::OPTION) {\n        Some(value) => switch::from_value(&value),\n        // Unregistered or unreadable — the same answer either way, and it is\n        // the useful one: a menu with no rows looks exactly like a broken chord.\n        None => switch::defaults(),\n    }\n}"
+            }
+          ]
+        },
+        {
+          "name": "option-contributions",
+          "display_name": "option-contributions",
+          "kind": "freestanding",
+          "resource": null,
+          "async": false,
+          "params": [
+            {
+              "name": "name",
+              "type": "string"
+            }
+          ],
+          "result": "list<option-contribution>",
+          "signature": "option-contributions: func(name: string) -> list<option-contribution>",
+          "doc": "**Owner:** every contribution to this option of yours, in the order\neach was first made. The short name, as for `accept-contributions`.\nEmpty when nothing is contributed, or the option does not accept\ncontributions.",
+          "examples": [
+            {
+              "id": "config-guest:config.option-contributions",
+              "caption": "Read what other plugins contributed to your option",
+              "source": "crates/lattice-plugin-host/tests/fixtures/config-guest/src/lib.rs",
+              "language": "rust",
+              "code": "// Each entry names the plugin it came from, so a contribution that does\n// not make sense can be skipped and reported by name.\nlet seen: Vec<String> = config::option_contributions(\"tags\")\n    .iter()\n    .map(|c| format!(\"{}:{}\", c.plugin, describe(&c.value)))\n    .collect();"
             }
           ]
         },
@@ -730,6 +809,25 @@
               "name": "source",
               "type": "string",
               "doc": "The config file the assignment came from, or empty for a runtime\n`:set`. That distinction is \"go fix your config\" versus \"the thing\nyou just typed did not take\", and a guest reporting one as the\nother sends the user to the wrong place."
+            }
+          ],
+          "examples": []
+        },
+        {
+          "name": "option-contribution",
+          "kind": "record",
+          "doc": "One plugin's contribution to an option.",
+          "definition": "record option-contribution {\n    plugin: string,\n    value: config-value,\n}",
+          "members": [
+            {
+              "name": "plugin",
+              "type": "string",
+              "doc": "The contributing plugin's manifest id."
+            },
+            {
+              "name": "value",
+              "type": "config-value",
+              "doc": null
             }
           ],
           "examples": []
@@ -12574,7 +12672,7 @@
           "params": [],
           "result": "list<string>",
           "signature": "roots: func() -> list<string>",
-          "doc": "AF.1: the paths this source wants scanned. Called per scan.\n\nEach entry is a **file** or a **directory**: the host walks a directory\n(applying `extensions` as it does today) and takes a file as given\nwithout asking whether anyone claims its extension — naming a file IS\nthe claim. `~` is expanded host-side. Relative paths resolve against the\neditor's working directory.\n\n**Empty means \"no opinion\", not \"scan nothing\".** The host then uses the\nroot it would have used anyway, so a source that does not implement this\nbehaves exactly as it did before, and a user who has configured nothing\nkeeps the project-root scan.\n\n**Per scan, unlike `extensions` and `view-mode`.** Those are facts about\nthe source and are resolved once at load. This one comes from user\nconfiguration and has to follow a `:set` without a reload — caching it\nwould make the setting appear not to work until the editor restarted,\nwhich is the worst shape of \"configured and behaving as if it were not\".\n\nThe grant is unchanged: every path still passes the host's `fs` check,\nso naming a directory does not acquire the right to read it. A path\noutside the grant, or one that does not exist, is skipped with a log and\nthe rest of the scan continues — `error-parser`'s rule, because one bad\nentry in a config list is the same failure class as one bad file.\n\n## Why the source answers this and not the host\n\nThe host owns the walk, so the host owning the *list* is the obvious\ndesign. It is not the one here, because the list is the user's\nconfiguration and every source's users already have a name for it in\nwhatever ecosystem the source came from. A host-side setting would have\nto pick one of those names, or invent a neutral one nobody's fingers\nknow.\n\nSo each source configures its own file set under its own option, and the\nhost never learns any option's name — it asks and merges. Two sources\nwith completely different configuration vocabularies coexist without a\nline of host code knowing either.",
+          "doc": "AF.1: the paths this source wants scanned. Called per scan.\n\nEach entry is a **file** or a **directory**: the host walks a directory\n(applying `extensions` as it does today) and takes a file as given\nwithout asking whether anyone claims its extension — naming a file IS\nthe claim. `~` is expanded host-side. Relative paths resolve against the\neditor's working directory.\n\n**Empty means \"no opinion\", not \"scan nothing\".** The host then uses the\nroot it would have used anyway, so a source that does not implement this\nbehaves exactly as it did before, and a user who has configured nothing\nkeeps the project-root scan.\n\n**An empty entry names that project root.** A source returns `[\"\"]`\nplus its own paths to keep the default and add to it: org does when its\nuser set no `agenda-files` and another plugin contributed a folder.\n\n**Per scan, unlike `extensions` and `view-mode`.** Those are facts about\nthe source and are resolved once at load. This one comes from user\nconfiguration and has to follow a `:set` without a reload — caching it\nwould make the setting appear not to work until the editor restarted,\nwhich is the worst shape of \"configured and behaving as if it were not\".\n\nThe grant is unchanged: every path still passes the host's `fs` check,\nso naming a directory does not acquire the right to read it. A path\noutside the grant, or one that does not exist, is skipped with a log and\nthe rest of the scan continues — `error-parser`'s rule, because one bad\nentry in a config list is the same failure class as one bad file.\n\n## Why the source answers this and not the host\n\nThe host owns the walk, so the host owning the *list* is the obvious\ndesign. It is not the one here, because the list is the user's\nconfiguration and every source's users already have a name for it in\nwhatever ecosystem the source came from. A host-side setting would have\nto pick one of those names, or invent a neutral one nobody's fingers\nknow.\n\nSo each source configures its own file set under its own option, and the\nhost never learns any option's name — it asks and merges. Two sources\nwith completely different configuration vocabularies coexist without a\nline of host code knowing either.",
           "examples": []
         },
         {

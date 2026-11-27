@@ -285,6 +285,47 @@ interface config {
     ///
     /// Resolves the caller's OWN namespace first, like `get-option`.
     option-diagnostic: func(name: string) -> option<config-diagnostic>;
+
+    // ---- Contributions: a plugin adding to another plugin's option ----
+    //
+    // The owner of an option decides whether others may add to it, and how
+    // the additions combine; the host stores each contribution under the
+    // plugin that made it and never merges. The user's value is never
+    // touched, `:describe-option` lists every contribution by plugin, and a
+    // contributor's unload withdraws all of its contributions. Design:
+    // `docs/dev/architecture/plugin-extension.md` §3.
+
+    /// **Owner:** let other plugins contribute to this option of yours.
+    ///
+    /// The short name, as declared: `agenda-files` for `org.agenda-files`.
+    /// `false` for an option that is not yours, and for one a capability
+    /// grant follows — what a plugin may read, write or run is widened by the
+    /// user alone. Call it after registering the option, once per load.
+    accept-contributions: func(name: string) -> bool;
+
+    /// **Contributor:** add `value` to another plugin's option, by its full
+    /// name (`org.agenda-files`).
+    ///
+    /// Validated against the option's schema as `set-option-value` is.
+    /// Replaces this plugin's earlier contribution to the same option, in
+    /// place; `none` withdraws it. `false` when the option does not exist,
+    /// its owner does not accept contributions, or the value does not fit.
+    /// The owner reads contributions live, so one made after the owner's
+    /// first read takes effect on its next.
+    contribute-option: func(name: string, value: option<config-value>) -> bool;
+
+    /// One plugin's contribution to an option.
+    record option-contribution {
+        /// The contributing plugin's manifest id.
+        plugin: string,
+        value: config-value,
+    }
+
+    /// **Owner:** every contribution to this option of yours, in the order
+    /// each was first made. The short name, as for `accept-contributions`.
+    /// Empty when nothing is contributed, or the option does not accept
+    /// contributions.
+    option-contributions: func(name: string) -> list<option-contribution>;
 }
 
 /// The world a config/options plugin implements. Imports the `config` register +

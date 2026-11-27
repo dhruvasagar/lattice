@@ -122,6 +122,23 @@ fn project_root_from_cwd() -> PathBuf {
     lattice_core::project::root_from_cwd().unwrap_or_else(|| PathBuf::from("."))
 }
 
+/// The paths one source named, as the walk takes them: `~` expanded, and an
+/// empty entry standing for the project root.
+///
+/// The empty entry is how a source ADDS to the default instead of replacing
+/// it. A source whose user configured nothing still has to keep the project
+/// root when something else (another plugin's contribution) gives it a path
+/// to name, and the project root is the host's to compute, not the guest's.
+fn source_roots(named: &[String], project_root: impl Fn() -> PathBuf) -> Vec<PathBuf> {
+    named
+        .iter()
+        .map(|r| match r.trim() {
+            "" => project_root(),
+            path => PathBuf::from(shellexpand_tilde(path)),
+        })
+        .collect()
+}
+
 /// Per-view scan state. OM.A3's `gr` reads the root back out of this so a
 /// refresh re-scans what the view already shows rather than resetting to the
 /// current working directory.
@@ -680,12 +697,7 @@ pub fn spawn_scan_view_scan(
         if roots.is_empty() {
             for source in &live {
                 match source.roots().await {
-                    Ok(named) => roots.extend(
-                        named
-                            .iter()
-                            .map(|r| PathBuf::from(shellexpand_tilde(r.trim())))
-                            .filter(|p| !p.as_os_str().is_empty()),
-                    ),
+                    Ok(named) => roots.extend(source_roots(&named, project_root_from_cwd)),
                     // A source that cannot say where to look must not be able
                     // to make the agenda scan nothing.
                     Err(e) => tracing::debug!(
@@ -3361,6 +3373,32 @@ mod af2_roots {
         let exts = vec!["org".to_string()];
         let got = collect_candidates(&[one, two], &exts, 3);
         assert_eq!(got.len(), 3, "three across both roots, not three from each");
+    }
+
+    /// A source names the project root with an empty entry, which is how it
+    /// keeps the default and adds to it rather than replacing it.
+    #[test]
+    fn an_empty_root_entry_is_the_project_root() {
+        let got = source_roots(
+            &[
+                "".to_string(),
+                "  ".to_string(),
+                "/srv/org/clients".to_string(),
+            ],
+            || PathBuf::from("/work/project"),
+        );
+        assert_eq!(
+            got,
+            vec![
+                PathBuf::from("/work/project"),
+                PathBuf::from("/work/project"),
+                PathBuf::from("/srv/org/clients"),
+            ]
+        );
+        assert!(
+            source_roots(&[], || PathBuf::from("/work/project")).is_empty(),
+            "naming nothing is still no opinion, not the project root"
+        );
     }
 
     /// With nothing configured the options are EMPTY, not the project root —

@@ -28,6 +28,7 @@ fn config_root() -> Option<PathBuf> {
 
 /// A plugin found on disk, ready to load: its parsed manifest, the component
 /// bytes, and the directory it came from (for diagnostics).
+#[derive(Clone)]
 pub struct DiscoveredPlugin {
     pub manifest: PluginManifest,
     pub component_bytes: Vec<u8>,

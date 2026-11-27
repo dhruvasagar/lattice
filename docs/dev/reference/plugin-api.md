@@ -58,7 +58,7 @@ Each world's entry points — the `register-*` functions the host calls on load 
 | [`buffer`](plugin-api/buffer.md) | imports | - | 6 | 2 | Mirrors the native `Document` / `Buffer` read seam (plugin-host.md §4.2, §9.6). |
 | [`command`](plugin-api/command.md) | types | - | 0 | 0 | Mirrors `CommandRegistry` + `CommandInvocation` + the closed `Effect` enum (lattice-grammar). |
 | [`completion-source`](plugin-api/completion-source.md) | exports | - | 2 | 0 | Mirrors `lattice_completion` completion sources (PH7.6). |
-| [`config`](plugin-api/config.md) | imports | - | 9 | 7 | Mirrors `ConfigRegistry` (lattice-config). |
+| [`config`](plugin-api/config.md) | imports | - | 12 | 8 | Mirrors `ConfigRegistry` (lattice-config). |
 | [`context`](plugin-api/context.md) | exports | - | 1 | 0 | The structural-**context** producer API (treesitter-context.md, TC.2): the scopes a pane pins above its text once their own header lines have scrolled away — the `nvim-treesitter-context` / sticky-scroll idea. |
 | [`dashboard`](plugin-api/dashboard.md) | imports | - | 1 | 7 | CR.4: plugin-contributed dashboard sections. |
 | [`decorations`](plugin-api/decorations.md) | exports | - | 1 | 0 | The decoration **producer** API (plugin-host.md §5 `decorations`, PH7.9), mirroring `Mode::gutter_decorations` + `GutterDecoration` (lattice-mode). |

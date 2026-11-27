@@ -8,7 +8,7 @@
 //! `:plugin-reload` / `:reload-config` grew the footprint unbounded. PL8.F made
 //! the native option `name`/`doc` `Cow<'static, str>`, so the plugin's owned
 //! strings free with the entry on `ConfigRegistry::unregister`. This test drives
-//! the real load → reload loop through the `config-guest` fixture (registers 3
+//! the real load → reload loop through the `config-guest` fixture (registers 5
 //! options) and asserts the live option count stays bounded across N reloads,
 //! and that a final unload reclaims every option (the owned strings drop).
 
@@ -105,16 +105,17 @@ async fn reloading_a_config_plugin_keeps_the_option_footprint_bounded() {
     assert_eq!(config.len(), 0, "registry starts empty");
     let loader = rig(base.path(), config.clone());
 
-    // Initial load: the fixture registers exactly 4 options — three scalars and
-    // (TC.3) one structured. The structured one is the interesting member here:
-    // its schema and its value are OWNED trees hanging off the registry entry,
-    // so if teardown reclaimed entries but not what they point at, this is the
-    // option that would show it.
+    // Initial load: the fixture registers exactly 5 options — three scalars and
+    // two structured (`templates`, and the `tags` list it accepts contributions
+    // to). The structured ones are the interesting members here: their schemas
+    // and values are OWNED trees hanging off the registry entry, so if teardown
+    // reclaimed entries but not what they point at, these are the options that
+    // would show it.
     let n = loader
         .discover_and_load(&plugins_dir, TrustTier::Bundled)
         .await;
     assert_eq!(n, 1, "the config plugin loads");
-    const FIXTURE_OPTIONS: usize = 4;
+    const FIXTURE_OPTIONS: usize = 5;
     assert_eq!(
         config.len(),
         FIXTURE_OPTIONS,
@@ -131,8 +132,8 @@ async fn reloading_a_config_plugin_keeps_the_option_footprint_bounded() {
 
     // The reclamation contract: reload N times. Each reload unloads (dropping the
     // prior options' entries — and, post-PL8.F, their owned `Cow` name/doc bytes)
-    // and re-registers. The LIVE option count must stay at 4 forever, not grow
-    // 4 → 8 → 12 → … The pre-PL8.F entry removal already kept `len()` bounded; the
+    // and re-registers. The LIVE option count must stay at 5 forever, not grow
+    // 5 → 10 → 15 → … The pre-PL8.F entry removal already kept `len()` bounded; the
     // point PL8.F adds is that the *strings* now free with those entries rather
     // than leaking as `&'static str`.
     for round in 1..=12 {

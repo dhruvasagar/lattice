@@ -82,6 +82,7 @@ fn every_documented_manifest_parses() {
             "default_modes",
             "mode_gates",
             "exported_commands",
+            "requires",
             "min_lattice",
         ];
         for line in toml.lines() {

@@ -7526,6 +7526,17 @@ package is the component alone and PRL.6 is superseded.
 Design: [`../architecture/plugin-manifest.md`](../architecture/plugin-manifest.md).
 Slice plan: [`slice-plans/plugin-manifest.md`](slice-plans/plugin-manifest.md).
 
+## org-clients and plugins extending plugins (FT, 2026-11-27 — 🚧 FT.0–FT.2, FT.4–FT.7 ✅; FT.8 release + FT.3 publish open)
+
+A client-engagement plugin on org (one `.org` file per client, a visible
+client guess instead of global state) and the host seam it establishes: a
+manifest `requires` that orders loading, and option contributions the owning
+plugin merges. Spans lattice, lattice-org-plugin and a new
+lattice-org-clients-plugin; one plugin-API publish (FT.3).
+Design: [`../architecture/org-clients.md`](../architecture/org-clients.md),
+[`../architecture/plugin-extension.md`](../architecture/plugin-extension.md).
+Slice plan: [`slice-plans/org-clients.md`](slice-plans/org-clients.md).
+
 ## Release plugins in `lattice.toml` (PT, 2026-11-26 — 🚧 PT.0–PT.6 ✅, PT.7 ⛔)
 
 A user with no Rust toolchain declares release plugins in `lattice.toml`

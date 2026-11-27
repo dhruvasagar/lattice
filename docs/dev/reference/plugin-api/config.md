@@ -17,7 +17,61 @@ component-model language (Go, JS, Zig, Python, ...) calls these directly. The
 Rust `lattice-plugin-sdk` `#[derive(PluginOption)]` (PH7.10b) is optional
 ergonomics that expands to these same calls; it adds no capability not here.
 
-## Functions (9)
+## Functions (12)
+
+### `accept-contributions`
+
+```wit
+accept-contributions: func(name: string) -> bool
+```
+
+**Owner:** let other plugins contribute to this option of yours.
+
+The short name, as declared: `agenda-files` for `org.agenda-files`.
+`false` for an option that is not yours, and for one a capability
+grant follows — what a plugin may read, write or run is widened by the
+user alone. Call it after registering the option, once per load.
+
+**Example — Let other plugins add to one of your options** · [`crates/lattice-plugin-host/tests/fixtures/config-guest/src/lib.rs`](../../../../crates/lattice-plugin-host/tests/fixtures/config-guest/src/lib.rs)
+
+```rust
+// The short name, as declared. Call it once per load, after the option
+// is registered; the host refuses an option a capability grant follows.
+let accepted = config::accept_contributions("tags");
+```
+
+### `contribute-option`
+
+```wit
+contribute-option: func(name: string, value: option<config-value>) -> bool
+```
+
+**Contributor:** add `value` to another plugin's option, by its full
+name (`org.agenda-files`).
+
+Validated against the option's schema as `set-option-value` is.
+Replaces this plugin's earlier contribution to the same option, in
+place; `none` withdraws it. `false` when the option does not exist,
+its owner does not accept contributions, or the value does not fit.
+The owner reads contributions live, so one made after the owner's
+first read takes effect on its next.
+
+**Example — Add a value to another plugin's option** · [`crates/lattice-plugin-host/tests/fixtures/config-guest/src/lib.rs`](../../../../crates/lattice-plugin-host/tests/fixtures/config-guest/src/lib.rs)
+
+```rust
+// The full name, owner's namespace included. The value is checked
+// against that option's schema; `None` would withdraw it again.
+let contributed = config::contribute_option(
+    OWNER_TAGS,
+    Some(&config::ConfigValue {
+        nodes: vec![
+            config::ValueNode::String("from-guest".to_string()),
+            config::ValueNode::List(vec![0]),
+        ],
+        root: 1,
+    }),
+);
+```
 
 ### `get-option`
 
@@ -104,6 +158,28 @@ fn switch_commands() -> Vec<switch::SwitchCommand> {
         None => switch::defaults(),
     }
 }
+```
+
+### `option-contributions`
+
+```wit
+option-contributions: func(name: string) -> list<option-contribution>
+```
+
+**Owner:** every contribution to this option of yours, in the order
+each was first made. The short name, as for `accept-contributions`.
+Empty when nothing is contributed, or the option does not accept
+contributions.
+
+**Example — Read what other plugins contributed to your option** · [`crates/lattice-plugin-host/tests/fixtures/config-guest/src/lib.rs`](../../../../crates/lattice-plugin-host/tests/fixtures/config-guest/src/lib.rs)
+
+```rust
+// Each entry names the plugin it came from, so a contribution that does
+// not make sense can be skipped and reported by name.
+let seen: Vec<String> = config::option_contributions("tags")
+    .iter()
+    .map(|c| format!("{}:{}", c.plugin, describe(&c.value)))
+    .collect();
 ```
 
 ### `option-diagnostic`
@@ -328,7 +404,7 @@ let _ = config::set_option_value(
 );
 ```
 
-## Types (7)
+## Types (8)
 
 ### enum `option-type`
 
@@ -462,4 +538,20 @@ OC.11c: one failed assignment to an option.
   `:set`. That distinction is "go fix your config" versus "the thing
   you just typed did not take", and a guest reporting one as the
   other sends the user to the wrong place.
+
+### record `option-contribution`
+
+```wit
+record option-contribution {
+    plugin: string,
+    value: config-value,
+}
+```
+
+One plugin's contribution to an option.
+
+**Fields**
+
+- `plugin`: `string` — The contributing plugin's manifest id.
+- `value`: [`config-value`](#record-config-value)
 

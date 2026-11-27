@@ -43672,6 +43672,10 @@ impl Editor {
             lines.push(String::new());
             lines.extend(shape);
         }
+        if let Some(contributed) = self.config.describe_contributions(spec.name()) {
+            lines.push(String::new());
+            lines.extend(contributed);
+        }
         lines.push(String::new());
         lines.push(spec.doc().to_string());
         Some(lattice_help::HelpContent::from_lines(

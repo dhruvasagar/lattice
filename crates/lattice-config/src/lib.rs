@@ -283,7 +283,8 @@ pub use origin::OptionOrigin;
 pub use overrides::{OptionKey, OptionOverride, OptionOverrideSet, OverridePriority};
 pub use parse::{ParsedSet, parse_set};
 pub use registry::{
-    ConfigError, ConfigRegistry, EventPublisher, HeldSource, HeldValue, plugin_option_groups,
+    ConfigError, ConfigRegistry, EventPublisher, HeldSource, HeldValue, OptionContribution,
+    plugin_option_groups,
 };
 pub use resolved::ResolvedOptions;
 pub use resolver::Resolver;

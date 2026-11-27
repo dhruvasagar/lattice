@@ -41,7 +41,7 @@ client. Those are the load this design removes.
 
 ```
 ~/org/                     org.directory
-  clients/                 org-clients.directory (default: <org.directory>/clients)
+  clients/                 org-clients.directory (default: ~/org/clients)
     acme.org               one client, one file
     globex.org
     archive/               ended engagements; never scanned, never offered
@@ -64,13 +64,24 @@ An `agenda-files` directory entry means the `.org` files directly in it.
 So `clients/archive/` drops out of the agenda and out of every chooser with
 no exclusion rule. Archiving is a file move, and reversing it is a move back.
 
-**The folder sits inside org's grant by default.** Org scans the contributed
-folder and lists it for the chooser, so it reads the folder under its own fs
-grant, which follows `org.directory`. The default,
-`<org.directory>/clients`, is inside that grant. A folder elsewhere needs the
-user to widen org's grant: one plugin never widens another's, which is why a
-grant-followed option refuses contributions
+**The folder must sit inside org's grant, and has a fixed default.** Org
+scans the contributed folder and lists it for the chooser, so it reads the
+folder under its own fs grant, which follows `org.directory`. org-clients
+writes the folder (onboarding, archiving) under a grant of its own, and a
+manifest grant can follow only the plugin's own option, resolved at load. So
+`org-clients.directory` defaults to `~/org/clients`, the grant's default,
+which is inside org's default. A user with another `org.directory` sets
+`org-clients.directory` as well; when the folder is outside `org.directory`
+the plugin says so in `*messages*`, naming the option, rather than leaving
+the agenda silently without clients. One plugin never widens another's
+grant, which is why a grant-followed option refuses contributions
 ([`plugin-extension.md`](plugin-extension.md) §3).
+
+*Rejected for now:* a grant following a required plugin's option with a
+sub-path (`fs:write:{org.directory|~/org}/clients`), which would make the
+default zero-config for every `org.directory`, at the cost of a new manifest
+rule; and org doing the writes through an exported command, which would
+export a generic file-writing command any plugin could call.
 
 Stages beyond "active" and "archived" (prospect, paused) were cut. A stage is
 a concept to hold, and a tag in the file (`#+FILETAGS: :prospect:`) expresses

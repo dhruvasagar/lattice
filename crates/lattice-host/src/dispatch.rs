@@ -120,8 +120,10 @@ fn changed_lsp_servers(before: &toml::Table, after: &toml::Table) -> Vec<String>
 pub struct ConfigReloadLanded {
     /// The reading itself.
     pub outcome: lattice_config::LoadOutcome,
-    /// The project root whose `.lattice/config.toml` was read, if any.
+    /// The project root the reading looked in for `.lattice/config.toml`.
     pub workspace_root: Option<std::path::PathBuf>,
+    /// Whether that project file existed and was read.
+    pub read_project: bool,
 }
 
 /// IN.8b: what an external formatter run produced, carried back to the
@@ -40711,9 +40713,11 @@ impl Editor {
                 project.as_deref(),
                 &CONFIG_STRUCTURAL_PREFIXES,
             );
+            let read_project = project.as_deref().is_some_and(std::path::Path::exists);
             let _ = tx.send(ConfigReloadLanded {
                 outcome,
                 workspace_root,
+                read_project,
             });
             async_landed.notify_one();
         });
@@ -40738,6 +40742,7 @@ impl Editor {
         let ConfigReloadLanded {
             outcome,
             workspace_root,
+            read_project,
         } = landed;
         for reverted in &outcome.reverted {
             tracing::info!(
@@ -40775,7 +40780,7 @@ impl Editor {
         tracing::info!(
             target: "lattice::config",
             "config: re-read lattice.toml{} ({issues} issue{}); reloading plugins and init.rs",
-            if workspace_root.is_some() {
+            if read_project {
                 " and the project's .lattice/config.toml"
             } else {
                 ""

@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+### Documentation
+- **org-clients is listed.** The plugin that keeps one org file per client has a page under [plugins](https://dhruvasagar.github.io/lattice/plugins/), and the README, `:help org` and the FAQ point at it. `:help plugins` explains what `:plugins` shows for a plugin waiting on another it requires. The FAQ no longer says org has to be built from source.
+
 ## 0.10.6 — 2026-11-27
 
 ### Added

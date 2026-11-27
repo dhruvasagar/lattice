@@ -177,6 +177,14 @@ The agenda is a **multibuffer**: its rows are real excerpts of your files, so
 editing a row edits the file and `:w` saves it. That is why it behaves like the
 rest of the editor rather than like a list of strings.
 
+## Plugins built on org
+
+- **[org-clients](https://github.com/dhruvasagar/lattice-org-clients-plugin)**:
+  one org file per client. Every client's tasks join your agenda, the capture
+  menu gains a `Client` group, the agenda dispatcher a per-client dashboard,
+  and `<leader>e` opens a menu to find, onboard and archive clients. It adds
+  to org's options rather than overwriting yours.
+
 ## Configuration
 
 Every option is namespaced `org.*`. Set them in `lattice.toml` (any shape, see

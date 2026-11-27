@@ -292,6 +292,17 @@ first lists what it would delete).
 `:plugins` shows where each plugin came from: `release owner/name@v0.1.2`,
 `git@abc1234`, `local`.
 
+### A plugin that needs another
+
+Some plugins build on another one:
+[org-clients](https://github.com/dhruvasagar/lattice-org-clients-plugin) adds
+clients to org, and declares `requires = ["org"]` in its manifest. Install
+both, in any order. Until org is loaded, org-clients waits: `:plugins` lists
+it under the failed loads as *waiting for `org`, which is not loaded*, and it
+loads the moment org does. If org fails to load, org-clients stays out with
+it. Unloading or reloading org takes org-clients down first and brings it
+back afterwards.
+
 ---
 
 ## The `:plugins` manager view

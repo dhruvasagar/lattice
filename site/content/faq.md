@@ -55,7 +55,7 @@ There is an `emacs-keys-mode` minor mode that provides `C-x` leader-style bindin
 
 ### Does it have an equivalent of org-mode?
 
-Yes, as an out-of-repo WASM plugin — [`dhruvasagar/lattice-org-plugin`](https://github.com/dhruvasagar/lattice-org-plugin), documented at [org-mode](@/docs/config/org.md). It isn't bundled with the editor or the installer; you clone and build it yourself. The everything-is-a-buffer architecture is what makes it possible without any editor-side special-casing.
+Yes, as an out-of-repo WASM plugin — [`dhruvasagar/lattice-org-plugin`](https://github.com/dhruvasagar/lattice-org-plugin), documented at [org-mode](@/docs/config/org.md). It isn't bundled with the editor or the installer: each release is published ready-built, and one `[plugins.org]` table in `lattice.toml` installs it. [org-clients](@/plugins/org-clients.md), which keeps one org file per client, is built on top of it. The everything-is-a-buffer architecture is what makes it possible without any editor-side special-casing.
 
 ### Can I use elisp?
 

@@ -64,3 +64,11 @@ weight = 20
 body = "authored"
 repo = "https://github.com/dhruvasagar/lattice-org-plugin"
 description = "Org-mode as a WebAssembly component — outline, TODO workflow, agenda, capture, roam and clocking. Also the reference for writing your own plugin."
+
+[[plugin]]
+id = "org-clients"
+kind = "external"
+weight = 21
+body = "authored"
+repo = "https://github.com/dhruvasagar/lattice-org-clients-plugin"
+description = "One org file per client, on the org plugin: every client's tasks in your agenda, a `Client` capture group and a per-client dashboard, behind one key. Also the example of a plugin built on another."

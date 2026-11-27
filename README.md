@@ -106,6 +106,14 @@ on the multibuffer, pickers, completion, transients, signs, decorations,
 themes, and its own `:help` pages — **without a single line in lattice's
 tree.** Nothing in lattice knows what a headline is.
 
+**A plugin can build on another.**
+[`lattice-org-clients-plugin`](https://github.com/dhruvasagar/lattice-org-clients-plugin)
+keeps one org file per client and adds them to org: every client's tasks in
+your agenda, a `Client` group in the capture menu, a per-client dashboard. It
+does that by contributing to org's options and calling the commands org
+exports, with no agenda or capture code of its own, and nothing in lattice or
+org names it.
+
 Every plugin, bundled or not: [plugins](https://dhruvasagar.github.io/lattice/plugins/).
 
 The API is WIT, and you build against a published version of it rather than a

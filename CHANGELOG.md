@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.10.6 — 2026-11-27
 
 ### Added
 - **An agenda source can add to the project root instead of replacing

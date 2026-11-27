@@ -73,12 +73,12 @@ async fn a_dependent_loaded_first_waits_then_loads_with_its_requirement() {
 
     let reason = unmet(
         loader
-            .load_discovered(&plugin("org-fcto", &["org"]), TrustTier::UserInstalled)
+            .load_discovered(&plugin("org-clients", &["org"]), TrustTier::UserInstalled)
             .await,
     );
     assert_eq!(reason, "waiting for `org`, which is not loaded");
     assert!(
-        !loader.is_loaded("org-fcto"),
+        !loader.is_loaded("org-clients"),
         "a parked plugin is not loaded"
     );
 
@@ -88,7 +88,7 @@ async fn a_dependent_loaded_first_waits_then_loads_with_its_requirement() {
         .expect("org loads");
     assert!(loader.is_loaded("org"));
     assert!(
-        loader.is_loaded("org-fcto"),
+        loader.is_loaded("org-clients"),
         "the parked dependent loads as soon as its requirement does"
     );
 }
@@ -150,7 +150,7 @@ async fn a_met_requirement_loads_at_once() {
         .await
         .unwrap();
     loader
-        .load_discovered(&plugin("org-fcto", &["org"]), TrustTier::UserInstalled)
+        .load_discovered(&plugin("org-clients", &["org"]), TrustTier::UserInstalled)
         .await
         .expect("loads straight away");
 }
@@ -161,20 +161,20 @@ async fn a_met_requirement_loads_at_once() {
 async fn a_parked_plugin_is_visible_until_it_loads() {
     let base = tempfile::tempdir().unwrap();
     let loader = PluginLoader::new(host(base.path()));
-    let fcto = on_disk(base.path(), "org-fcto", &["org"]);
+    let clients = on_disk(base.path(), "org-clients", &["org"]);
     let org = on_disk(base.path(), "org", &[]);
 
-    unmet(loader.load_path(&fcto, TrustTier::UserInstalled).await);
+    unmet(loader.load_path(&clients, TrustTier::UserInstalled).await);
     let failed = loader.failed_loads();
     assert_eq!(failed.len(), 1);
-    assert_eq!(failed[0].name, "org-fcto");
+    assert_eq!(failed[0].name, "org-clients");
     assert_eq!(failed[0].error, "waiting for `org`, which is not loaded");
 
     loader
         .load_path(&org, TrustTier::UserInstalled)
         .await
         .unwrap();
-    assert!(loader.is_loaded("org-fcto"));
+    assert!(loader.is_loaded("org-clients"));
     assert!(
         loader.failed_loads().is_empty(),
         "loading clears the waiting record: {:?}",
@@ -189,19 +189,19 @@ async fn unloading_a_requirement_parks_its_dependents_and_a_reload_restores_them
     let base = tempfile::tempdir().unwrap();
     let loader = PluginLoader::new(host(base.path()));
     let org = on_disk(base.path(), "org", &[]);
-    let fcto = on_disk(base.path(), "org-fcto", &["org"]);
+    let clients = on_disk(base.path(), "org-clients", &["org"]);
     loader
         .load_path(&org, TrustTier::UserInstalled)
         .await
         .unwrap();
     loader
-        .load_path(&fcto, TrustTier::UserInstalled)
+        .load_path(&clients, TrustTier::UserInstalled)
         .await
         .unwrap();
 
     loader.unload("org").expect("org was loaded");
     assert!(!loader.is_loaded("org"));
-    assert!(!loader.is_loaded("org-fcto"), "the dependent went first");
+    assert!(!loader.is_loaded("org-clients"), "the dependent went first");
     let failed = loader.failed_loads();
     assert_eq!(failed.len(), 1, "{failed:?}");
     assert_eq!(failed[0].error, "waiting for `org`, which is not loaded");
@@ -211,7 +211,7 @@ async fn unloading_a_requirement_parks_its_dependents_and_a_reload_restores_them
         .await
         .unwrap();
     assert!(
-        loader.is_loaded("org-fcto"),
+        loader.is_loaded("org-clients"),
         "the dependent came back with it"
     );
 }
@@ -223,13 +223,13 @@ async fn reloading_a_requirement_reloads_its_dependents() {
     let base = tempfile::tempdir().unwrap();
     let loader = PluginLoader::new(host(base.path()));
     let org = on_disk(base.path(), "org", &[]);
-    let fcto = on_disk(base.path(), "org-fcto", &["org"]);
+    let clients = on_disk(base.path(), "org-clients", &["org"]);
     loader
         .load_path(&org, TrustTier::UserInstalled)
         .await
         .unwrap();
     loader
-        .load_path(&fcto, TrustTier::UserInstalled)
+        .load_path(&clients, TrustTier::UserInstalled)
         .await
         .unwrap();
 
@@ -237,7 +237,7 @@ async fn reloading_a_requirement_reloads_its_dependents() {
         .reload("org", TrustTier::UserInstalled)
         .await
         .unwrap();
-    assert!(loader.is_loaded("org") && loader.is_loaded("org-fcto"));
+    assert!(loader.is_loaded("org") && loader.is_loaded("org-clients"));
     assert!(
         loader.failed_loads().is_empty(),
         "{:?}",
@@ -253,13 +253,16 @@ async fn unloading_a_parked_plugin_stops_it_loading_later() {
     let loader = PluginLoader::new(host(base.path()));
     unmet(
         loader
-            .load_discovered(&plugin("org-fcto", &["org"]), TrustTier::UserInstalled)
+            .load_discovered(&plugin("org-clients", &["org"]), TrustTier::UserInstalled)
             .await,
     );
-    assert!(loader.unload("org-fcto").is_none(), "it was never loaded");
+    assert!(
+        loader.unload("org-clients").is_none(),
+        "it was never loaded"
+    );
     loader
         .load_discovered(&plugin("org", &[]), TrustTier::UserInstalled)
         .await
         .unwrap();
-    assert!(!loader.is_loaded("org-fcto"));
+    assert!(!loader.is_loaded("org-clients"));
 }

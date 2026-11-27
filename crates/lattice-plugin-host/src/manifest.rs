@@ -1348,7 +1348,7 @@ mod tests {
     #[test]
     fn requires_parse() {
         let m = PluginManifest::from_toml_str(
-            "id = \"org-fcto\"\nrequires = [\" org \", \"org\", \"lighthouse\"]\n",
+            "id = \"org-clients\"\nrequires = [\" org \", \"org\", \"lighthouse\"]\n",
         )
         .unwrap();
         assert_eq!(m.requires, vec!["lighthouse", "org"]);
@@ -1363,10 +1363,10 @@ mod tests {
         for (entry, why) in [
             ("", "not a plugin id"),
             ("../org", "not a plugin id"),
-            ("org-fcto", "a plugin cannot require itself"),
+            ("org-clients", "a plugin cannot require itself"),
         ] {
             let err = PluginManifest::from_toml_str(&format!(
-                "id = \"org-fcto\"\nrequires = [\"{entry}\"]\n"
+                "id = \"org-clients\"\nrequires = [\"{entry}\"]\n"
             ))
             .unwrap_err();
             assert!(

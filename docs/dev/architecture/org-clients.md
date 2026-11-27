@@ -1,14 +1,14 @@
-# org-fcto — client engagements on org
+# org-clients — one org file per client
 
 **Status: design, decided 2026-11-27.** Sequencing and status:
-[`../operations/slice-plans/org-fcto.md`](../operations/slice-plans/org-fcto.md).
+[`../operations/slice-plans/org-clients.md`](../operations/slice-plans/org-clients.md).
 The host mechanism it needs, plugins extending plugins, is its own fragment:
 [`plugin-extension.md`](plugin-extension.md).
 
 ## The ask
 
 A port of the emacs package `org-fractional-cto` as a separate plugin,
-`lattice-org-fcto-plugin`, that loads after org and extends its agenda and
+`lattice-org-clients-plugin`, that loads after org and extends its agenda and
 capture. It is also the first plugin built on another plugin, so it
 establishes how that is done.
 
@@ -41,7 +41,7 @@ client. Those are the load this design removes.
 
 ```
 ~/org/                     org.directory
-  clients/                 org-fcto.directory (default: <org.directory>/clients)
+  clients/                 org-clients.directory (default: <org.directory>/clients)
     acme.org               one client, one file
     globex.org
     archive/               ended engagements; never scanned, never offered
@@ -123,11 +123,11 @@ is a reading of the buffer and the clock, both of which you can see.
 This is a generic org primitive, a **chooser**: "pick one `.org` file
 directly in this folder, guessing from the buffer and the clock". It is
 declared with `choose = "<dir>"`, and the same primitive serves capture
-(§5) and the agenda (§6). org-fcto only declares where its folder is.
+(§5) and the agenda (§6). org-clients only declares where its folder is.
 
 ## 4. The ordinary agenda includes every client
 
-org-fcto **contributes** its folder to `org.agenda-files`
+org-clients **contributes** its folder to `org.agenda-files`
 ([`plugin-extension.md`](plugin-extension.md) §3). Your own value is not
 replaced. If you never set `agenda-files`, the project root is still scanned
 and the clients folder is scanned beside it. Org says so by returning an empty entry
@@ -149,7 +149,7 @@ planning:
 So the rule is: **a client task reaches your planning agenda when it has a
 date or is priority A.** The rest belongs to the client's dashboard.
 
-The Unscheduled row is the one that can flood. org-fcto does **not** edit
+The Unscheduled row is the one that can flood. org-clients does **not** edit
 `org.agenda-sections` to fix it: that option is your planning view, and a
 plugin reshaping it silently is cognitive load of exactly the kind this
 design removes. Its documentation gives the one line that does it,
@@ -158,14 +158,14 @@ design removes. Its documentation gives the one line that does it,
 
 ## 5. Capture: one row in your menu, a sub-menu beneath it
 
-`<leader>oc` keeps every template you configured. org-fcto contributes one
+`<leader>oc` keeps every template you configured. org-clients contributes one
 group row:
 
 ```
-Capture                         Engagement · Client: Acme (clocked in) · c change
+Capture                         Capture · Client · acme (clocked in) · c change
   t  Todo                         t  Task
   j  Journal                      w  Waiting on…
-  e  Engagement…        ──▶       m  Meeting notes   (clocks in)
+  e  Client…            ──▶       m  Meeting notes   (clocks in)
                                   d  Decision
                                   n  Note
 ```
@@ -188,27 +188,27 @@ is a Note; a call is a Meeting.
   `description` and no `target` is a group. Templates whose keys extend its
   key (`et`, `ew`) leave the top menu and appear in the group's sub-menu,
   under their remaining key. This is how `org-capture-templates` has always
-  written prefixes (`("e" "Engagement")`), so an emacs config with prefix
+  written prefixes (`("e" "Client")`), so an emacs config with prefix
   rows ports unchanged. The sub-menu is a drill-down: the group row opens the
   capture menu again with the group as its argument, which the transient seam
   already supports; no host change.
-- **`choose` on a group.** `{ key = "e", description = "Engagement", choose =
+- **`choose` on a group.** `{ key = "e", description = "Client", choose =
   "~/org/clients" }`. A member template whose target omits `file` takes the
   group's chosen file. The sub-menu's title shows the guess and where it came
   from; `c` opens the chooser picker and reopens the sub-menu with its
   answer. With no guess, firing a template opens the picker first.
 - **Contributions to `org.capture-templates`**, appended after your own.
   Duplicate keys already resolve first-wins, so yours always win. The group
-  key is `org-fcto.key` (default `e`) so a collision is fixed in one option.
+  key is `org-clients.key` (default `e`) so a collision is fixed in one option.
 
 ## 6. The dashboard is an agenda command
 
-org-fcto contributes one entry to `org.agenda-custom-commands`:
+org-clients contributes one entry to `org.agenda-custom-commands`:
 
 ```toml
 [[command]]
 key = "e"
-description = "Engagement"
+description = "Client"
 choose = "~/org/clients"
 
   [[command.section]]
@@ -247,14 +247,14 @@ clients needs no new key.
 accepting filter terms after the key (`["e", "file:acme.org"]`), which the
 scan-args grammar already parses; today the action passes only the key.
 
-## 7. What org-fcto itself is
+## 7. What org-clients itself is
 
-A small plugin. Its mode, `org-fcto-mode`, is global and owns:
+A small plugin. Its mode, `org-clients-mode`, is global and owns:
 
 - **`<leader>e`**, one menu, so there is one key to remember:
 
   ```
-  Engagement · Client: Acme (from buffer)
+  Clients · acme (from buffer)
     f  find client          a  dashboard
     c  capture…             o  onboard a client
     A  archive this client
@@ -264,15 +264,15 @@ A small plugin. Its mode, `org-fcto-mode`, is global and owns:
   the guess and the chooser behave identically wherever you start. Org
   exports the commands they name (`exported_commands`,
   [`plugin-extension.md`](plugin-extension.md) §4).
-- **`:org-fcto-onboard`.** Asks for the client's name, writes
+- **`:org-clients-onboard`.** Asks for the client's name, writes
   `clients/<slug>.org` from the skeleton, opens it. Refuses an existing slug
   and names the file.
-- **`:org-fcto-find`.** A picker of the clients folder; opens the file.
-- **`:org-fcto-archive`.** Moves the client file (the guessed one, confirmed)
+- **`:org-clients-find`.** A picker of the clients folder; opens the file.
+- **`:org-clients-archive`.** Moves the client file (the guessed one, confirmed)
   into `clients/archive/`. Its tasks leave every agenda at the next scan.
 - **The contributions** of §4–6, made at activation and withdrawn by the host
   when the plugin unloads.
-- **Options:** `org-fcto.directory` (where clients live), `org-fcto.key` (the
+- **Options:** `org-clients.directory` (where clients live), `org-clients.key` (the
   group key in org's menus).
 
 It holds no client list, no active client and no per-client configuration.
@@ -289,7 +289,7 @@ It holds no client list, no active client and no per-client configuration.
   buffer guess work from code repos, at the cost of configuration per client,
   which §1 rules out. Deferred: the clock covers the case, and a mapping can
   be added as a third guess source later without changing anything here.
-- **org-fcto setting `org.agenda-files` or `org.agenda-sections` with
+- **org-clients setting `org.agenda-files` or `org.agenda-sections` with
   `set-option`.** That replaces the user's value, and is a plugin silently
   editing the user's configuration. Contributions (§4) add beside it, show in
   `:describe-option`, and vanish when the plugin does.
@@ -321,8 +321,8 @@ It holds no client list, no active client and no per-client configuration.
   teardown.
 - **#3 Vim modal editing:** untouched.
 - **#4 Asynchronicity:** untouched. Scans stay off the UI thread as today.
-- **Heuristic #6:** no crate. org-fcto is a plugin repo; org's features land
+- **Heuristic #6:** no crate. org-clients is a plugin repo; org's features land
   in org; the host mechanism lands in `lattice-config` and
   `lattice-plugin-host`, which own options and plugins.
-- **A feature set is a mode:** `org-fcto-mode` owns every key, command and
+- **A feature set is a mode:** `org-clients-mode` owns every key, command and
   contribution of the feature; the org primitives it uses are org's.

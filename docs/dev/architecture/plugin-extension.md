@@ -1,8 +1,8 @@
 # Plugins that extend plugins
 
 **Status: design, decided 2026-11-27.** First consumer:
-[`org-fcto.md`](org-fcto.md). Sequencing and status:
-[`../operations/slice-plans/org-fcto.md`](../operations/slice-plans/org-fcto.md).
+[`org-clients.md`](org-clients.md). Sequencing and status:
+[`../operations/slice-plans/org-clients.md`](../operations/slice-plans/org-clients.md).
 
 ## 1. The gap
 
@@ -25,14 +25,14 @@ half, adding to what another plugin is configured with, has no seam:
 ## 2. `requires`: load after, or not at all
 
 ```toml
-id = "org-fcto"
+id = "org-clients"
 requires = ["org"]
 ```
 
 - **A plugin whose requirements are not loaded is parked, not failed.** Each
   successful load re-checks the parked set, and a plugin whose requirements
   are now met loads then. This makes order independent of both paths: a
-  `lattice.toml` that declares org-fcto before org still works.
+  `lattice.toml` that declares org-clients before org still works.
 - **A parked plugin is visible at once.** It is recorded under *Failed to
   load* with the reason a user can act on, "waiting for `org`, which is not
   loaded", and the record clears when it loads. There is no "loading has
@@ -111,7 +111,7 @@ option-contributions: func(name: string) -> list<option-contribution>;
 Unchanged, and recorded here so the whole extension surface is on one page.
 A plugin's commands are its own unless its manifest lists them in
 `exported_commands`; another plugin may then name them from an action, a
-picker row, a prompt or a transient row, and from `invoke-command`. Org-fcto
+picker row, a prompt or a transient row, and from `invoke-command`. Org-clients
 names org's agenda-command and capture-group commands from its menu, so org
 exports those two.
 

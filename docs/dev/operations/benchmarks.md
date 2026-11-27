@@ -3588,7 +3588,7 @@ keystroke path. Design: `../architecture/plugin-extension.md` §3.
 | Bench                             | Time        | Notes |
 |-----------------------------------|-------------|-------|
 | `config::option_contributions/0`  | **34ns**    | Nothing contributed: the common case. |
-| `config::option_contributions/1`  | **73ns**    | One contributor (org-fcto's agenda folder). |
+| `config::option_contributions/1`  | **73ns**    | One contributor (org-clients's agenda folder). |
 | `config::option_contributions/8`  | **240ns**   | Eight contributors; linear in the values cloned. |
 
 ---

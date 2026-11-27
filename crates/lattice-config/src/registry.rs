@@ -1523,20 +1523,24 @@ mod tests {
 
         r.contribute(
             "org.agenda-files",
-            "fcto",
+            "org-clients",
             Some(strings(&["~/org/clients"])),
         )
         .unwrap();
         r.contribute("org.agenda-files", "other", Some(strings(&["~/x"])))
             .unwrap();
-        r.contribute("org.agenda-files", "fcto", Some(strings(&["~/org/c2"])))
-            .unwrap();
+        r.contribute(
+            "org.agenda-files",
+            "org-clients",
+            Some(strings(&["~/org/c2"])),
+        )
+        .unwrap();
         let got = r.contributions("org.agenda-files");
         assert_eq!(
             got.iter()
                 .map(|c| c.contributor.as_str())
                 .collect::<Vec<_>>(),
-            ["fcto", "other"],
+            ["org-clients", "other"],
             "a replacement keeps its place"
         );
         assert_eq!(got[0].value, strings(&["~/org/c2"]));
@@ -1546,7 +1550,8 @@ mod tests {
             "the user's value is not touched"
         );
 
-        r.contribute("org.agenda-files", "fcto", None).unwrap();
+        r.contribute("org.agenda-files", "org-clients", None)
+            .unwrap();
         assert_eq!(r.contributions("org.agenda-files").len(), 1);
         r.contribute("org.agenda-files", "never", None)
             .expect("withdrawing nothing is not an error");
@@ -1560,12 +1565,12 @@ mod tests {
         let r = ConfigRegistry::new();
         list_option(&r, "org.agenda-files");
         let err = r
-            .contribute("org.agenda-files", "fcto", Some(strings(&["a"])))
+            .contribute("org.agenda-files", "org-clients", Some(strings(&["a"])))
             .unwrap_err();
         assert!(err.contains("does not accept"), "{err}");
         assert!(!r.accept_contributions("no.such"));
         assert!(
-            r.contribute("no.such", "fcto", None)
+            r.contribute("no.such", "org-clients", None)
                 .unwrap_err()
                 .contains("no option")
         );
@@ -1574,7 +1579,7 @@ mod tests {
         let err = r
             .contribute(
                 "org.agenda-files",
-                "fcto",
+                "org-clients",
                 Some(crate::ConfigValue::Str("~/org".into())),
             )
             .unwrap_err();
@@ -1592,13 +1597,13 @@ mod tests {
         assert_eq!(r.describe_contributions("org.agenda-files"), None);
         r.contribute(
             "org.agenda-files",
-            "org-fcto",
+            "org-clients",
             Some(strings(&["~/org/clients"])),
         )
         .unwrap();
         let lines = r.describe_contributions("org.agenda-files").unwrap();
         assert_eq!(lines[0], "## Contributed by plugins");
-        assert_eq!(lines.last().unwrap(), r#"- org-fcto: ["~/org/clients"]"#);
+        assert_eq!(lines.last().unwrap(), r#"- org-clients: ["~/org/clients"]"#);
     }
 
     /// An owner that unloads stops seeing contributions, and one that comes
@@ -1611,9 +1616,9 @@ mod tests {
         list_option(&r, "org.other");
         r.accept_contributions("org.agenda-files");
         r.accept_contributions("org.other");
-        r.contribute("org.agenda-files", "fcto", Some(strings(&["a"])))
+        r.contribute("org.agenda-files", "org-clients", Some(strings(&["a"])))
             .unwrap();
-        r.contribute("org.other", "fcto", Some(strings(&["b"])))
+        r.contribute("org.other", "org-clients", Some(strings(&["b"])))
             .unwrap();
         r.contribute("org.other", "keep", Some(strings(&["c"])))
             .unwrap();
@@ -1632,7 +1637,7 @@ mod tests {
             "back in effect"
         );
 
-        assert_eq!(r.withdraw_contributions("fcto"), 2);
+        assert_eq!(r.withdraw_contributions("org-clients"), 2);
         assert!(r.contributions("org.agenda-files").is_empty());
         assert_eq!(
             r.contributions("org.other")

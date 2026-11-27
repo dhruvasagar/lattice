@@ -345,7 +345,7 @@ docs = [
   "architecture/org-babel",
   "architecture/org-export",
   "architecture/org-roam",
-  "architecture/org-fcto",
+  "architecture/org-clients",
 ]
 
 [[section]]

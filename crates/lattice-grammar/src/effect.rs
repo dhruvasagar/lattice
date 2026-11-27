@@ -1550,6 +1550,11 @@ pub enum Effect {
         /// Cursor target in the opened buffer, 0-based `(line, byte)`.
         position: lattice_protocol::position::Position,
     },
+    /// `:reload-config` -- read the config files again and re-apply them,
+    /// then reload `[plugins]` and `init.rs`, in boot's order. The host reads
+    /// the files off the editor thread and applies what it derives from them
+    /// when the reading lands; see `config-and-init.md` §6a.
+    ReloadConfig,
     /// `:messages` -- open the `*messages*` buffer (the emacs
     /// `*Messages*` analogue). Renders a chronological view
     /// of every echo / minibuffer notification; live-tails as

@@ -161,18 +161,26 @@ async fn every_loader_command_registers_under_its_plain_name() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn reload_config_echoes_and_takes_no_arg() {
+async fn reload_config_asks_the_host_first_and_takes_no_arg() {
     let base = tempfile::tempdir().unwrap();
     let (_loader, commands) = loader_with_ex_commands(base.path());
-    // `:reload-config` takes no argument — invoking it (no `init` loaded here)
-    // still echoes the "reloading…" acknowledgement and spawns the reload (which
-    // no-ops on a missing `init`, reported in *messages*), never a panic.
+    // `:reload-config` takes no argument. It hands the config files to the
+    // host first (`Effect::ReloadConfig`), which calls the loader back for
+    // `[plugins]` and `init.rs` once they are applied — so the loader starts
+    // nothing itself here — and echoes the "reloading…" acknowledgement.
     let effect = invoke(&commands, "reload-config", None);
-    let (level, text) = echo_text(&effect);
+    let Effect::Many(parts) = &effect else {
+        panic!("expected the reload and an echo, got {effect:?}");
+    };
+    assert!(
+        matches!(parts.first(), Some(Effect::ReloadConfig)),
+        "the files come first: {parts:?}"
+    );
+    let (level, text) = echo_text(&parts[1]);
     assert_eq!(*level, EchoLevel::Info);
     assert!(
-        text.contains("init.rs"),
-        "acknowledges the config reload: {text}"
+        text.contains("lattice.toml") && text.contains("init.rs"),
+        "acknowledges the whole reload: {text}"
     );
 }
 

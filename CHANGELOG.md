@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Changed
+- **`:reload-config` reloads the whole configuration.** It used to rebuild `init.rs` and pick up new `[plugins]` only, so any other edit to `lattice.toml` needed a restart. Now it re-reads `lattice.toml` and the project's `.lattice/config.toml` first, then `[plugins]`, then `init.rs`, the same order as startup. An option whose line you deleted goes back to its default, unless you changed it since with `:set`; `*messages*` lists each one.
+
 ### Fixed
 - **An inline image takes one line in the terminal, not eight.** The terminal shows an image as its caption (the alt text, or the file name), but each one reserved eight rows with the caption in the middle, so an org note with images was mostly blank space. Now the caption takes one row. The GUI, which draws the picture, is unchanged.
 

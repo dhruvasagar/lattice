@@ -2242,6 +2242,9 @@ pub struct Editor {
     /// `ExternalFormatOutcome`.
     pub pending_external_format_rx:
         Option<tokio::sync::mpsc::UnboundedReceiver<crate::dispatch::ExternalFormatOutcome>>,
+    /// `:reload-config`: the reading of the config files in flight, if one is.
+    pub pending_config_reload_rx:
+        Option<tokio::sync::mpsc::UnboundedReceiver<crate::dispatch::ConfigReloadLanded>>,
     /// `:{range}!cmd`: the result of the filter that is running, if one is.
     pub pending_filter_rx:
         Option<tokio::sync::mpsc::UnboundedReceiver<crate::shell_filter::FilterOutcome>>,

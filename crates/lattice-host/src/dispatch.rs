@@ -81,6 +81,25 @@ use crate::state::{
 /// [`Editor::push_position_history`].
 pub const POSITION_HISTORY_CAP: usize = 100;
 
+/// Dotted prefixes of the config tables the host hands to their owners whole
+/// instead of walking them as options. Boot and `:reload-config` read with the
+/// same list.
+const CONFIG_STRUCTURAL_PREFIXES: [&str; 5] = [
+    "completion.per-language",
+    "plugin",
+    "lsp",
+    "llm.providers",
+    "llm.profiles",
+];
+
+/// What a `:reload-config` reading sends back to the editor thread.
+pub struct ConfigReloadLanded {
+    /// The reading itself.
+    pub outcome: lattice_config::LoadOutcome,
+    /// The project root whose `.lattice/config.toml` was read, if any.
+    pub workspace_root: Option<std::path::PathBuf>,
+}
+
 /// IN.8b: what an external formatter run produced, carried back to the
 /// editor thread.
 ///
@@ -3872,6 +3891,7 @@ pub(crate) fn handle_effect(editor: &mut Editor, effect: Effect, out: &mut Dispa
             out.renderer_signals
                 .extend(editor.display_elsewhere(*source, target));
         }
+        Effect::ReloadConfig => editor.start_config_reload(),
         // MG.50: open, THEN position against the now-active buffer.
         Effect::OpenSyntheticBufferAt {
             name,
@@ -20433,6 +20453,7 @@ impl Editor {
         // else; the O(major-modes × open buffers) walk runs on plugin load /
         // reload only.
         self.drain_catalog_changes();
+        signals.extend(self.drain_pending_config_reload());
         signals.extend(self.activate_late_registered_minors());
         self.maybe_refold_after_async_population();
         // OA.4d: folds must follow the document, including when the document
@@ -40617,14 +40638,122 @@ impl Editor {
         &mut self,
         workspace_root: Option<&std::path::Path>,
     ) -> Vec<RendererSignal> {
-        let prefixes = [
-            "completion.per-language",
-            "plugin",
-            "lsp",
-            "llm.providers",
-            "llm.profiles",
-        ];
-        let outcome = lattice_config::load_default_paths(&self.config, workspace_root, &prefixes);
+        let outcome = lattice_config::load_default_paths(
+            &self.config,
+            workspace_root,
+            &CONFIG_STRUCTURAL_PREFIXES,
+        );
+        self.apply_loaded_config(outcome)
+    }
+
+    /// `:reload-config`: read the config files again, off the editor thread.
+    ///
+    /// The registry takes the files' options there, in the same order boot
+    /// applies them; what the host derives from them is re-derived when the
+    /// reading lands ([`Self::drain_pending_config_reload`]), and only then is
+    /// `init.rs` reloaded, so it still applies after the files, as at boot. A
+    /// second reload while one is reading supersedes it: the channel is
+    /// replaced, and the earlier reading's result is dropped unapplied.
+    pub fn start_config_reload(&mut self) {
+        self.start_config_reload_with(|| {
+            (
+                lattice_config::default_user_config_path(),
+                lattice_core::project::root_from_cwd(),
+            )
+        });
+    }
+
+    /// [`Self::start_config_reload`] reading the files `locate` names: the
+    /// user's config file and the project root, found off the editor thread
+    /// since finding the root walks the filesystem.
+    pub fn start_config_reload_with(
+        &mut self,
+        locate: impl FnOnce() -> (Option<std::path::PathBuf>, Option<std::path::PathBuf>)
+        + Send
+        + 'static,
+    ) {
+        let registry = self.config.clone();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<ConfigReloadLanded>();
+        self.pending_config_reload_rx = Some(rx);
+        let async_landed = self.async_landed.clone();
+        lattice_runtime::runtime::spawn_blocking_on_lsp_runtime(move || {
+            let (user, workspace_root) = locate();
+            let project = workspace_root
+                .as_deref()
+                .map(lattice_config::project_config_path);
+            let outcome = lattice_config::load_paths(
+                &registry,
+                user.as_deref(),
+                project.as_deref(),
+                &CONFIG_STRUCTURAL_PREFIXES,
+            );
+            let _ = tx.send(ConfigReloadLanded {
+                outcome,
+                workspace_root,
+            });
+            async_landed.notify_one();
+        });
+    }
+
+    /// Apply a reload's reading once it lands, then hand over to the plugin
+    /// loader for `[plugins]` and `init.rs`.
+    ///
+    /// The structural sections and `completion.per-language` start again
+    /// from what boot started with, so a section the user deleted goes too.
+    /// Each other owner of a table re-reads its own on
+    /// [`lattice_config::ConfigFilesReloaded`].
+    #[must_use]
+    pub fn drain_pending_config_reload(&mut self) -> Vec<RendererSignal> {
+        let Some(mut rx) = self.pending_config_reload_rx.take() else {
+            return Vec::new();
+        };
+        let Ok(landed) = rx.try_recv() else {
+            self.pending_config_reload_rx = Some(rx);
+            return Vec::new();
+        };
+        let ConfigReloadLanded {
+            outcome,
+            workspace_root,
+        } = landed;
+        for reverted in &outcome.reverted {
+            tracing::info!(
+                target: "lattice::config",
+                "config: `{}` is no longer set in the config files; back to its default ({}, was {})",
+                reverted.name,
+                reverted.now,
+                reverted.was,
+            );
+        }
+        let issues = outcome.messages.len();
+        self.pending_config_structural_sections.clear();
+        self.per_language_completion = lattice_completion::per_language_defaults();
+        let signals = self.apply_loaded_config(outcome);
+        self.apply_per_language_toml_overrides();
+        tracing::info!(
+            target: "lattice::config",
+            "config: re-read lattice.toml{} ({issues} issue{}); reloading plugins and init.rs",
+            if workspace_root.is_some() {
+                " and the project's .lattice/config.toml"
+            } else {
+                ""
+            },
+            if issues == 1 { "" } else { "s" },
+        );
+        self.event_bus
+            .publish_typed(lattice_config::ConfigFilesReloaded { workspace_root });
+        match self
+            .services
+            .get::<lattice_plugin_loader::PluginLoaderHandle>()
+        {
+            Some(loader) => loader.spawn_reload_config(),
+            None => tracing::debug!("no plugin loader; :reload-config re-read the files only"),
+        }
+        signals
+    }
+
+    /// Apply one reading of the config files: the registry already holds
+    /// their options; this re-derives what the host caches from them.
+    fn apply_loaded_config(&mut self, outcome: lattice_config::LoadOutcome) -> Vec<RendererSignal> {
         // Re-derive host theme + hot-path option cache.
         self.sync_host_theme_from_config();
         self.rebuild_option_cache();
@@ -46771,6 +46900,7 @@ pub fn effect_mutates_or_yanks(effect: &lattice_grammar::Effect) -> bool {
         | Effect::OpenAiLog { .. }
         | Effect::OpenSyntheticBuffer { .. }
         | Effect::OpenSyntheticBufferAt { .. }
+        | Effect::ReloadConfig
         | Effect::OpenMessages
         | Effect::OpenDashboard
         | Effect::ToggleLspTrace { .. }
@@ -46943,6 +47073,7 @@ pub fn effect_mutates(effect: &lattice_grammar::Effect) -> bool {
         | Effect::OpenAiLog { .. }
         | Effect::OpenSyntheticBuffer { .. }
         | Effect::OpenSyntheticBufferAt { .. }
+        | Effect::ReloadConfig
         | Effect::OpenMessages
         | Effect::OpenDashboard
         | Effect::ToggleLspTrace { .. }

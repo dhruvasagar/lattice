@@ -3624,7 +3624,7 @@ impl PluginLoader {
     /// `info!` / `warn!` / `error!` route to `*messages*` via `MessagesLayer`
     /// (the one-shot, user-actionable log-level rule), so the compiler error on
     /// a failed rebuild is visible to `:messages` without a keypress.
-    pub(crate) fn spawn_reload_config(self: &Arc<Self>) {
+    pub fn spawn_reload_config(self: &Arc<Self>) {
         let Some(runtime) = self.env.runtime.clone() else {
             tracing::warn!("no runtime wired; :reload-config cannot run");
             return;

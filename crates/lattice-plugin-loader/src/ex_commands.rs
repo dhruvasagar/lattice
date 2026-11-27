@@ -9,6 +9,11 @@
 //! plugin-contributed ex-commands). The mode-ownership acid test holds
 //! maximally.
 //!
+//! The one exception is `:reload-config`. Its first half re-reads the config
+//! files, which the host applies at boot and derives its own caches from, so it
+//! asks the host to do that (`Effect::ReloadConfig`); the host then calls back
+//! into the loader for `[plugins]` and `init.rs`.
+//!
 //! Sync vs async: `unload` is synchronous (teardown + `JoinHandle::abort` don't
 //! await), so its `apply` does the work and echoes the result immediately.
 //! `load` / `reload` are async (compile / instantiate / spawn), so their `apply`
@@ -100,13 +105,15 @@ pub(crate) fn register_all(registry: &mut CommandRegistry, loader: &Arc<PluginLo
     );
     registry.register_ex_command(
         "reload-config",
-        "Reload the user's `init.rs` configuration (`:reload-config`) — recompile \
-         `init.rs` in place, then re-instantiate the `init` plugin from \
-         `<config>/lattice/init/` with a fresh, untripped quarantine, so edited \
-         keymaps / commands / options (e.g. `tabstop`) take effect without \
-         restarting. Runs asynchronously; the detailed result — rebuilt / already \
-         current / a build failure with the compiler error — is reported in \
-         `*messages*`. On a build failure the previous config keeps running.",
+        "Reload the whole configuration (`:reload-config`), in boot's order: \
+         `lattice.toml` and the project's `.lattice/config.toml` (an option whose \
+         line you deleted goes back to its default, unless you changed it since), \
+         then `[plugins]`, then `init.rs` — recompiled in place and the `init` \
+         plugin re-instantiated from `<config>/lattice/init/` with a fresh, \
+         untripped quarantine. Runs asynchronously; the detailed result — what \
+         reverted, rebuilt / already current / a build failure with the compiler \
+         error — is reported in `*messages*`. On a build failure the previous \
+         `init.rs` keeps running.",
         reload_config_spec(Arc::downgrade(loader)),
     );
 }
@@ -394,18 +401,20 @@ fn reload_config_spec(loader: Weak<PluginLoader>) -> ExCommandSpec {
         // `:reload-config` takes no argument — ignore any trailing text.
         parse_args: Arc::new(|_line: &str, _bang: bool| Ok(Args::None)),
         apply: Arc::new(move |_ctx: &ExCommandContext| {
-            let Some(loader) = loader.upgrade() else {
+            if loader.upgrade().is_none() {
                 return Ok(loader_gone());
-            };
-            // Re-reads lattice.toml's `[plugins]`, recompiles init.rs THEN
-            // reloads (unlike `:plugin-reload`, which re-instantiates the
-            // on-disk artifact). The success/failure detail
-            // — including the compiler error — lands in `*messages*`.
-            loader.spawn_reload_config();
-            Ok(echo(
-                EchoLevel::Info,
-                "reloading user config (init.rs, and lattice.toml's plugins) — result in *messages*…",
-            ))
+            }
+            // The host reads the config files first and then calls the
+            // loader's half (`[plugins]`, then `init.rs` recompiled and
+            // reloaded), so `init.rs` still applies after the files. The
+            // detail — including a compiler error — lands in `*messages*`.
+            Ok(Effect::Many(vec![
+                Effect::ReloadConfig,
+                echo(
+                    EchoLevel::Info,
+                    "reloading config (lattice.toml, plugins, init.rs) — result in *messages*…",
+                ),
+            ]))
         }),
         args_schema: Vec::new(),
         surface_form: SurfaceForm::Keyword,

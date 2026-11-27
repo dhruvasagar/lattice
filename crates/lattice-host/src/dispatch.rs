@@ -788,7 +788,7 @@ impl Editor {
         // in-core when the owner write applied; the host now picks up
         // the result.
         self.maybe_adopt_owner_write();
-        let outcome = self.dispatch(action);
+        let mut outcome = self.dispatch(action);
         // GD.0b: "nothing for the renderer to do first", not "no effects". A
         // motion's `CursorMove` and an operator's `Edits` + `Yank` are
         // finished once the host has applied them; declining the fuse for
@@ -814,7 +814,17 @@ impl Editor {
             }
             self.maybe_reparse_syntax();
             self.sync_keymap_overlays();
-            Some(self.run_tick_pending())
+            let signals = self.run_tick_pending();
+            // An async result the tick applied (a plugin picker's accept,
+            // which usually resolves within the `<CR>` that started it) may
+            // leave effects only a renderer applies. Both renderers' fused
+            // branches apply `outcome.effects` and nothing else, so the queue
+            // goes back in the outcome; left queued, it waits for a wake
+            // nothing sends, and the prompt it holds shows on the next key.
+            outcome
+                .effects
+                .append(&mut self.drain_pending_renderer_effects());
+            Some(signals)
         } else {
             None
         };
@@ -2013,6 +2023,11 @@ impl Editor {
         self.last_message.is_some().hash(&mut h);
         // Lifecycle chrome.
         self.should_quit.hash(&mut h);
+        // Effects an off-renderer path queued (an async picker accept, a fill
+        // target, a picker's delete verb). Only a renderer applies them, from
+        // its repaint wake, and the actor sends that wake only when this hash
+        // moves; without it a queued prompt waited for the next key.
+        self.pending_renderer_effects.is_empty().hash(&mut h);
         self.terminal_width.hash(&mut h);
         // PL8.E: WASM gutter decorations arrive off-keystroke (a producer task
         // writes the cache + bumps this generation). Fold it in so a decoration

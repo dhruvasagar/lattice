@@ -92,6 +92,30 @@ const CONFIG_STRUCTURAL_PREFIXES: [&str; 5] = [
     "llm.profiles",
 ];
 
+/// The servers whose `[lsp.<server>]` table differs between two readings of
+/// the config files, added and removed ones included, in name order. Scalar
+/// keys directly under `[lsp]` (the deprecated `log-level`) are editor
+/// settings, not a server's.
+fn changed_lsp_servers(before: &toml::Table, after: &toml::Table) -> Vec<String> {
+    let servers = |tree: &toml::Table| -> std::collections::BTreeMap<String, toml::Table> {
+        tree.get("lsp")
+            .and_then(toml::Value::as_table)
+            .map(|lsp| {
+                lsp.iter()
+                    .filter_map(|(k, v)| v.as_table().map(|t| (k.clone(), t.clone())))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let (before, after) = (servers(before), servers(after));
+    let names: std::collections::BTreeSet<&String> = before.keys().chain(after.keys()).collect();
+    names
+        .into_iter()
+        .filter(|name| before.get(*name) != after.get(*name))
+        .cloned()
+        .collect()
+}
+
 /// What a `:reload-config` reading sends back to the editor thread.
 pub struct ConfigReloadLanded {
     /// The reading itself.
@@ -40725,10 +40749,19 @@ impl Editor {
             );
         }
         let issues = outcome.messages.len();
+        let lsp_before = self.lsp_config_tree.load_full();
         self.pending_config_structural_sections.clear();
         self.per_language_completion = lattice_completion::per_language_defaults();
-        let signals = self.apply_loaded_config(outcome);
+        let mut signals = self.apply_loaded_config(outcome);
         self.apply_per_language_toml_overrides();
+        // A running server read its settings when it started, or when it last
+        // asked; one whose `[lsp.<server>]` table changed is told so.
+        let lsp_after = self.lsp_config_tree.load_full();
+        signals.extend(
+            changed_lsp_servers(&lsp_before, &lsp_after)
+                .into_iter()
+                .map(RendererSignal::LspConfigChanged),
+        );
         tracing::info!(
             target: "lattice::config",
             "config: re-read lattice.toml{} ({issues} issue{}); reloading plugins and init.rs",

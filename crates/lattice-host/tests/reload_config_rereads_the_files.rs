@@ -145,3 +145,42 @@ async fn a_bad_line_keeps_the_old_value() {
         "and the failure is recorded for :describe-option"
     );
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_changed_server_table_tells_that_server() {
+    use lattice_host::dispatch::RendererSignal;
+    let (_dir, user) =
+        user_config("[lsp.rust-analyzer]\ncheckOnSave = true\n[lsp.gopls]\nstaticcheck = true\n");
+    let mut editor = Editor::boot(CoreDocument::from_text("x\n"));
+    reload(&mut editor, &user, None);
+    settle(&mut editor).await;
+    std::fs::write(
+        &user,
+        "[lsp.rust-analyzer]\ncheckOnSave = false\n[lsp.gopls]\nstaticcheck = true\n",
+    )
+    .unwrap();
+    reload(&mut editor, &user, None);
+    // Collect what the landing tick hands the renderer.
+    let mut signals = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while editor.pending_config_reload_rx.is_some() {
+        let left = deadline.saturating_duration_since(Instant::now());
+        let woken = editor.async_landed.clone();
+        if tokio::time::timeout(left, woken.notified()).await.is_err() {
+            panic!("the reload never woke the editor");
+        }
+        signals.extend(editor.run_tick_pending());
+    }
+    let told: Vec<&str> = signals
+        .iter()
+        .filter_map(|s| match s {
+            RendererSignal::LspConfigChanged(server) => Some(server.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        told,
+        vec!["rust-analyzer"],
+        "only the server whose table changed"
+    );
+}

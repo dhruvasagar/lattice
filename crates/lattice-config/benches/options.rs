@@ -220,8 +220,39 @@ fn bench_option_contributions(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_reload_reverts(c: &mut Criterion) {
+    // `:reload-config`'s registry half, once per command and off the editor
+    // thread: a reading that sets `n` options, then one that no longer does and
+    // so resets each to its default. Each iteration is both readings, so the
+    // file I/O is included; the revert pass must stay noise beside it.
+    let mut group = c.benchmark_group("config::reload_revert");
+    let dir = std::env::temp_dir().join(format!("lattice-bench-reload-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    for n in [1usize, 16, 128] {
+        let reg = ConfigRegistry::new();
+        let mut text = String::new();
+        for i in 0..n {
+            reg.register(Option::<i64>::new(format!("opt{i}"), 0, ""));
+            text.push_str(&format!("opt{i} = {}\n", i + 1));
+        }
+        let set = dir.join(format!("set-{n}.toml"));
+        let empty = dir.join(format!("empty-{n}.toml"));
+        std::fs::write(&set, text).unwrap();
+        std::fs::write(&empty, "").unwrap();
+        group.bench_function(n.to_string(), |b| {
+            b.iter(|| {
+                lattice_config::load_paths(&reg, Some(&set), None, &[]);
+                let out = lattice_config::load_paths(&reg, Some(&empty), None, &[]);
+                assert_eq!(out.reverted.len(), n);
+            })
+        });
+    }
+    group.finish();
+}
+
 criterion_group!(
     benches,
+    bench_reload_reverts,
     bench_option_contributions,
     bench_plugins_table,
     bench_typed_get,

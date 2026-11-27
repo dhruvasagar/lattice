@@ -69,6 +69,21 @@ pub struct LoadOutcome {
     /// by dotted-path to surface server-namespaced config the
     /// typed registry doesn't know about.
     pub raw_tree: toml::Table,
+    /// Options a previous reading of the files set and this one no longer
+    /// mentions, reset to their defaults by [`load_default_paths`]. Empty at
+    /// boot, when there was no previous reading.
+    pub reverted: Vec<RevertedOption>,
+}
+
+/// An option reset to its default because the config files stopped setting it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RevertedOption {
+    /// The option's canonical name.
+    pub name: String,
+    /// The value the file had given it.
+    pub was: String,
+    /// The default it holds now.
+    pub now: String,
 }
 
 impl LoadOutcome {
@@ -82,6 +97,7 @@ impl LoadOutcome {
             self.structural.insert(k, v);
         }
         deep_merge_table(&mut self.raw_tree, other.raw_tree);
+        self.reverted.extend(other.reverted);
     }
 }
 
@@ -287,6 +303,24 @@ pub fn load_default_paths(
     workspace_root: Option<&Path>,
     structural_prefixes: &[&str],
 ) -> LoadOutcome {
+    let user = default_user_config_path();
+    let project = workspace_root.map(project_config_path);
+    load_paths(
+        registry,
+        user.as_deref(),
+        project.as_deref(),
+        structural_prefixes,
+    )
+}
+
+/// [`load_default_paths`] with the two files named: the user's, then the
+/// project's. Either may be absent, or name a file that does not exist.
+pub fn load_paths(
+    registry: &ConfigRegistry,
+    user: Option<&Path>,
+    project: Option<&Path>,
+    structural_prefixes: &[&str],
+) -> LoadOutcome {
     let mut out = LoadOutcome::default();
     // OC.11c: cleared ONCE per load, not once per file. A load is a fresh
     // reading of the whole configuration, so the previous reading's failures
@@ -300,17 +334,20 @@ pub fn load_default_paths(
     // own, cleared when it reloads.
     registry.clear_held(crate::registry::HeldSource::ConfigFile);
     registry.clear_held(crate::registry::HeldSource::ProjectFile);
-    if let Some(user) = default_user_config_path()
+    // What the previous reading applied; this reading records afresh, and the
+    // difference is what the user removed.
+    let previous = registry.take_file_applied();
+    if let Some(user) = user
         && user.exists()
     {
-        out.extend(load_file(registry, &user, structural_prefixes));
+        out.extend(load_file(registry, user, structural_prefixes));
     }
-    if let Some(root) = workspace_root {
-        let proj = project_config_path(root);
-        if proj.exists() {
-            out.extend(load_project_file(registry, &proj, structural_prefixes));
-        }
+    if let Some(proj) = project
+        && proj.exists()
+    {
+        out.extend(load_project_file(registry, proj, structural_prefixes));
     }
+    out.reverted = revert_unmentioned(registry, previous, &out.messages);
     // Recorded from the messages rather than at each push site: the loader
     // stays IO-agnostic and builds `LoadMessage`s in a dozen places, and one
     // pass over the result is both simpler and impossible to miss an arm of.
@@ -325,6 +362,61 @@ pub fn load_default_paths(
         }
     }
     out
+}
+
+/// Reset each option `previous` recorded and this reading did not to its
+/// default — when it still holds the value the file gave it.
+///
+/// Three cases keep their value instead. One the files still name but whose
+/// new value failed (a warning in `messages`): a failed assignment is a no-op,
+/// so the old value stands and stays the file's. One changed since the file
+/// set it (`:set`, `init.rs`): that is a newer word than the file's. And one no
+/// longer registered (its plugin unloaded): there is nothing to reset.
+fn revert_unmentioned(
+    registry: &ConfigRegistry,
+    previous: std::collections::HashMap<String, String>,
+    messages: &[LoadMessage],
+) -> Vec<RevertedOption> {
+    let failed: std::collections::HashSet<String> = messages
+        .iter()
+        .filter_map(|m| m.option.as_deref())
+        .map(|name| {
+            registry
+                .lookup(name)
+                .map_or_else(|| name.to_string(), |o| o.name().to_string())
+        })
+        .collect();
+    let mut reverted = Vec::new();
+    let mut names: Vec<(String, String)> = previous.into_iter().collect();
+    names.sort();
+    for (name, was) in names {
+        if registry.has_file_applied(&name) {
+            continue;
+        }
+        if failed.contains(&name) {
+            registry.restore_file_applied(name, was);
+            continue;
+        }
+        let Some(opt) = registry.lookup(&name) else {
+            continue;
+        };
+        if opt.get_formatted() != was {
+            continue;
+        }
+        match registry.parse_and_set_command(&format!("{name}&")) {
+            Ok(_) => reverted.push(RevertedOption {
+                now: opt.get_formatted(),
+                name,
+                was,
+            }),
+            Err(err) => tracing::warn!(
+                target: "lattice::config",
+                option = %name,
+                "could not reset to its default after its config line went: {err}"
+            ),
+        }
+    }
+    reverted
 }
 
 /// Top-level tables a project's `.lattice/config.toml` may not set. A project
@@ -798,19 +890,22 @@ fn apply_assignment(
         }
     }
     let assign = format!("{dotted}={value}");
-    if let Err(err) = registry.parse_and_set_command(&assign) {
-        let body = match err {
-            ConfigError::UnknownOption(name) => format!("unknown option `{name}`"),
-            ConfigError::Validation(msg) => format!("`{dotted}`: {msg}"),
-            ConfigError::Parse(msg) => format!("`{dotted}`: parse error: {msg}"),
-            other => format!("`{dotted}`: {other}"),
-        };
-        out.messages.push(LoadMessage {
-            level: LoadMessageLevel::Warning,
-            source: source.to_path_buf(),
-            body,
-            option: Some(dotted.to_string()),
-        });
+    match registry.parse_and_set_command(&assign) {
+        Ok(_) => registry.record_file_applied(dotted),
+        Err(err) => {
+            let body = match err {
+                ConfigError::UnknownOption(name) => format!("unknown option `{name}`"),
+                ConfigError::Validation(msg) => format!("`{dotted}`: {msg}"),
+                ConfigError::Parse(msg) => format!("`{dotted}`: parse error: {msg}"),
+                other => format!("`{dotted}`: {other}"),
+            };
+            out.messages.push(LoadMessage {
+                level: LoadMessageLevel::Warning,
+                source: source.to_path_buf(),
+                body,
+                option: Some(dotted.to_string()),
+            });
+        }
     }
 }
 
@@ -878,6 +973,7 @@ fn apply_tree_if_composite(
         });
         return true;
     }
+    registry.record_file_applied(dotted);
     // Held as well as set, as a scalar is (`apply_assignment`): a plugin's
     // options go when it reloads, and this brings the value back with them.
     if dotted.contains('.') {
@@ -1034,6 +1130,108 @@ mod tests {
             "Pane separator glyph.",
         ));
         r
+    }
+
+    /// Read `user` (and `project`) as a reload does, against `r`.
+    fn reload(r: &ConfigRegistry, user: &Path, project: Option<&Path>) -> LoadOutcome {
+        load_paths(r, Some(user), project, &[])
+    }
+
+    #[test]
+    fn a_deleted_line_reverts_its_option_to_the_default() {
+        let r = registry_with_options();
+        let file = write_temp("revert-deleted", "tabstop = 4\nnumber = false\n");
+        let boot = reload(&r, &file, None);
+        assert!(boot.reverted.is_empty(), "boot has no previous reading");
+        assert_eq!(r.get_int_by_name("tabstop"), Some(4));
+        std::fs::write(&file, "number = false\n").unwrap();
+        let out = reload(&r, &file, None);
+        assert_eq!(r.get_int_by_name("tabstop"), Some(8), "back to the default");
+        assert_eq!(r.get_bool_by_name("number"), Some(false), "still set");
+        assert_eq!(
+            out.reverted,
+            vec![RevertedOption {
+                name: "tabstop".into(),
+                was: "4".into(),
+                now: "8".into(),
+            }]
+        );
+        assert_eq!(r.file_applied("tabstop"), None);
+    }
+
+    #[test]
+    fn a_value_set_since_the_file_is_not_reverted() {
+        let r = registry_with_options();
+        let file = write_temp("revert-set-since", "tabstop = 4\n");
+        reload(&r, &file, None);
+        r.parse_and_set_command("tabstop=2").unwrap();
+        std::fs::write(&file, "").unwrap();
+        let out = reload(&r, &file, None);
+        assert_eq!(r.get_int_by_name("tabstop"), Some(2), "the :set is newer");
+        assert!(out.reverted.is_empty());
+    }
+
+    #[test]
+    fn a_line_that_now_fails_keeps_the_old_value_and_stays_the_files() {
+        let r = registry_with_options();
+        let file = write_temp("revert-now-fails", "scrolloff = 5\n");
+        reload(&r, &file, None);
+        std::fs::write(&file, "scrolloff = 99\n").unwrap();
+        let out = reload(&r, &file, None);
+        assert_eq!(
+            r.get_int_by_name("scrolloff"),
+            Some(5),
+            "a failed set is a no-op"
+        );
+        assert!(out.reverted.is_empty());
+        assert_eq!(out.messages.len(), 1, "and it says why: {:?}", out.messages);
+        // Still recorded as the file's: deleting the bad line later reverts it.
+        std::fs::write(&file, "").unwrap();
+        let out = reload(&r, &file, None);
+        assert_eq!(r.get_int_by_name("scrolloff"), Some(0));
+        assert_eq!(out.reverted.len(), 1);
+    }
+
+    #[test]
+    fn the_project_files_value_is_the_one_recorded() {
+        let r = registry_with_options();
+        let user = write_temp("revert-user", "tabstop = 2\n");
+        let proj = write_temp("revert-proj", "tabstop = 6\n");
+        reload(&r, &user, Some(&proj));
+        assert_eq!(r.file_applied("tabstop").as_deref(), Some("6"));
+        // The project stops setting it; the user's file still does.
+        std::fs::write(&proj, "").unwrap();
+        let out = reload(&r, &user, Some(&proj));
+        assert_eq!(r.get_int_by_name("tabstop"), Some(2));
+        assert!(out.reverted.is_empty(), "still set by the user's file");
+    }
+
+    #[test]
+    fn a_namespaced_option_reverts_and_its_held_value_goes() {
+        let r = registry_with_options();
+        let file = write_temp("revert-dotted", "[ui]\nseparator = \"|\"\n");
+        reload(&r, &file, None);
+        assert_eq!(r.get_string_by_name("ui.separator").as_deref(), Some("|"));
+        std::fs::write(&file, "").unwrap();
+        let out = reload(&r, &file, None);
+        assert_eq!(r.get_string_by_name("ui.separator").as_deref(), Some("│"));
+        assert_eq!(out.reverted.len(), 1);
+        assert_eq!(r.held_value("ui.separator"), None);
+    }
+
+    #[test]
+    fn an_option_with_no_previous_record_is_left_alone() {
+        let r = registry_with_options();
+        r.parse_and_set_command("tabstop=3").unwrap();
+        let file = write_temp("revert-unrecorded", "");
+        reload(&r, &file, None);
+        let out = reload(&r, &file, None);
+        assert_eq!(
+            r.get_int_by_name("tabstop"),
+            Some(3),
+            "the file never set it"
+        );
+        assert!(out.reverted.is_empty());
     }
 
     fn write_temp(name: &str, contents: &str) -> PathBuf {

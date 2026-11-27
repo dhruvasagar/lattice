@@ -183,6 +183,7 @@ mod parse;
 #[cfg(test)]
 mod proc_macro_tests;
 mod registry;
+mod reload_event;
 mod resolved;
 mod resolver;
 
@@ -229,9 +230,9 @@ pub use group::{
     ends_with_mode_suffix,
 };
 pub use loader::{
-    LoadMessage, LoadMessageLevel, LoadOutcome, cache_home, cache_home_from, config_home,
-    default_user_config_path, load_default_paths, load_file, lookup_dotted_path, migrate_path,
-    project_config_path,
+    LoadMessage, LoadMessageLevel, LoadOutcome, RevertedOption, cache_home, cache_home_from,
+    config_home, default_user_config_path, load_default_paths, load_file, load_paths,
+    lookup_dotted_path, migrate_path, project_config_path,
 };
 // ML.5: the modeline zone-layout value type (`ui.modeline.{left,center,
 // right}`). The first list-valued option; see `modeline_zone`.
@@ -286,5 +287,6 @@ pub use registry::{
     ConfigError, ConfigRegistry, EventPublisher, HeldSource, HeldValue, OptionContribution,
     plugin_option_groups,
 };
+pub use reload_event::ConfigFilesReloaded;
 pub use resolved::ResolvedOptions;
 pub use resolver::Resolver;

@@ -10,7 +10,7 @@ Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred (not 
 Every non-trivial slice ships the four artefacts (doc + bench where perf-relevant
 + tests including failure modes + graceful error handling).
 
-**Status: 🚧 FT.0–FT.2 ✅ and the host side of FT.4 on lattice `org-clients`; FT.4–FT.8 ✅ on org `org-clients` (org's release waits on FT.3); FT.3 (the API publish) is Dhruva's; FT.9–FT.11 next.**
+**Status: 🚧 FT.0–FT.2 ✅ and the host side of FT.4 on lattice `org-clients`; FT.4–FT.8 ✅ on org `org-clients` (org's release waits on FT.3); FT.3 (the API publish) is Dhruva's; FT.9 ✅; FT.10–FT.11 next.**
 
 Three repos, in dependency order: lattice (host), lattice-org-plugin (org),
 lattice-org-clients-plugin (new). **One plugin-API publish** for the whole
@@ -40,7 +40,7 @@ it before publishing.
 
 | Slice | What | Status |
 |---|---|---|
-| FT.9 | Scaffold: manifest (`requires = ["org"]`, fs grant following `org-clients.directory`), `org-clients-mode` (global), options `org-clients.directory` / `org-clients.key`, the three contributions made at activation (agenda folder, the `e` capture group with its five templates, the `e` dashboard command). Integration test: with org loaded, org's capture menu shows the group and an agenda scan includes a client file. | 📝 |
+| FT.9 | Scaffold: manifest (`requires = ["org"]`, fs grant following `org-clients.directory`), `org-clients-mode` (global), options `org-clients.directory` / `org-clients.key`, the three contributions made at activation (agenda folder, the `e` capture group with its five templates, the `e` dashboard command). Integration test: with org loaded, org's capture menu shows the group and an agenda scan includes a client file. | ✅ `lattice-org-clients-plugin` `0800e00`. Contributions are made at load AND again on `option-changed` for `org-clients.directory` / `org-clients.key` / `org.directory`, so `:set` needs no reload. No fs grant yet: org reads the folder under its own; the write grant arrives with FT.10's onboard. 5 integration tests load both real components, incl. org absent ⇒ org-clients waits and says so |
 | FT.10 | `:org-clients-onboard` (name → slug → skeleton → open; refuses an existing slug), `:org-clients-find` (picker of the folder), `:org-clients-archive` (move the confirmed client file into `archive/`). | 📝 |
 | FT.11 | `<leader>e` menu (find, dashboard, capture, onboard, archive) with the guess in its title; `:help org-clients`; README with the Unscheduled `match = "-client"` line; first release. | 📝 |
 

@@ -292,7 +292,10 @@ built-in ones, so the editor matches the file the user is looking at.
 **What a reload does not redo.** Anything that took its value at startup and
 never reads it again — the GUI window's decorations, MCP servers already
 running — keeps what it started with; the reload says so in `*messages*`
-rather than leaving the user to wonder.
+rather than leaving the user to wonder. The owner of such an option marks it
+(`ConfigRegistry::mark_startup_only`), since only the owner knows it reads the
+value once; a reading that changes a marked option lists it in
+`LoadOutcome::startup_only_changed`.
 
 Rejected: **re-apply only** (vim `:source`, emacs `load-file`) — a deleted line
 keeps applying until restart and the editor drifts from the file, while plugin
@@ -303,7 +306,7 @@ Ownership: the config registry owns the record of what a file applied
 (`lattice-config`); the host owns the order and its own caches; each other
 table's owner re-reads it on `ConfigFilesReloaded`. No subsystem learns about
 another's table. Slice plan:
-[`../operations/slice-plans/config-reload.md`](../operations/slice-plans/config-reload.md).
+[`../operations/slice-plans/archive/config-reload.md`](../operations/slice-plans/archive/config-reload.md).
 
 ## 7. Paramount-goal alignment
 

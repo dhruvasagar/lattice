@@ -1,13 +1,13 @@
 # Whole-config reload — slice plan (CR)
 
 > **Slice plan.** Sequencing, slice IDs, dependencies, status icons.
-> Design contract: [`../../architecture/config-and-init.md`](../../architecture/config-and-init.md) §6a.
+> Design contract: [`../../../architecture/config-and-init.md`](../../../architecture/config-and-init.md) §6a.
 
 Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred (not yet) · ❌ dropped (not at all).
 Every non-trivial slice ships the four artefacts (doc + bench where perf-relevant
 + tests including failure modes + graceful error handling).
 
-**Status: 🚧 CR.0–CR.4 ✅; CR.5 📝.**
+**Status: ✅ CR.0–CR.5 complete (2026-11-27); archived.**
 
 `:reload-config` re-read only `[plugins]` and `init.rs`. Edits anywhere else in
 `lattice.toml` — options, the theme, `[lsp]`, `completion.per-language`,
@@ -22,7 +22,7 @@ to its default.
 | CR.2 | `:reload-config` emits `Effect::ReloadConfig`; the host reads the files off the editor thread, applies its caches on landing (theme, option cache, `[lsp]` tree, `completion.per-language` rebuilt from defaults), logs reverts and warnings, publishes `ConfigFilesReloaded`, then hands over to the loader for `[plugins]` + `init.rs`. Both renderers' effect classifiers. Test: the change is visible with no further keypress. | `lattice-grammar`, `lattice-plugin-loader`, `lattice-host`, `lattice-ui-tui`, `lattice-ui-gpui` | ✅ 6 tests (`reload_config_rereads_the_files`); the loader surface test updated |
 | CR.3 | The LLM layer re-reads `[llm]` on `ConfigFilesReloaded`; running requests keep the config they started with; MCP servers keep running as started and the reload says so. | `lattice-ai` | ✅ 2 tests |
 | CR.4 | LSP: running servers are told their settings changed (`workspace/didChangeConfiguration`) when the `[lsp]` tree differs. | `lattice-host` (the existing `LspConfigChanged` signal both peers already fan out) | ✅ 1 test |
-| CR.5 | Startup-only settings that a reload cannot change are named in `*messages*`; user docs, `:help reload-config`, CHANGELOG, `BENCHMARKS.md`. | docs, owners of boot-only settings | 📝 |
+| CR.5 | Startup-only settings that a reload cannot change are named in `*messages*` (`ConfigRegistry::mark_startup_only`, marked by their owners: the GUI window options, the terminal's key reporting); snippet packs re-read; user docs (`options`, `plugins`, `init`, `llm`, `lsp`), CHANGELOG, `benchmarks.md`. | `lattice-config`, `lattice-host`, `lattice-ui-tui`, `lattice-ui-gpui`, docs | ✅ 2 tests |
 
 ## Sequencing
 

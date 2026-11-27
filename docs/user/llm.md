@@ -51,7 +51,7 @@ system = "~/.config/lattice/llm/editor.md"   # a file, read when a request start
 tools  = []
 ```
 
-Providers and profiles load at startup. Scalar settings are options and apply at once.
+Providers and profiles load at startup and again on `:reload-config`. Scalar settings are options and apply at once.
 
 ## Options
 

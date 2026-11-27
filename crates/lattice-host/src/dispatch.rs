@@ -40748,12 +40748,22 @@ impl Editor {
                 reverted.was,
             );
         }
+        for name in &outcome.startup_only_changed {
+            tracing::info!(
+                target: "lattice::config",
+                "config: `{name}` changed; it is read once at startup, so it takes effect \
+                 the next time lattice starts"
+            );
+        }
         let issues = outcome.messages.len();
         let lsp_before = self.lsp_config_tree.load_full();
         self.pending_config_structural_sections.clear();
         self.per_language_completion = lattice_completion::per_language_defaults();
         let mut signals = self.apply_loaded_config(outcome);
         self.apply_per_language_toml_overrides();
+        // `snippet.dirs` may have changed; reading the packs again is what
+        // boot does after the files, and it stays quiet here as there.
+        self.load_snippets_at_startup();
         // A running server read its settings when it started, or when it last
         // asked; one whose `[lsp.<server>]` table changed is told so.
         let lsp_after = self.lsp_config_tree.load_full();

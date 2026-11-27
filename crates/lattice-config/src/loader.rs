@@ -73,6 +73,10 @@ pub struct LoadOutcome {
     /// mentions, reset to their defaults by [`load_default_paths`]. Empty at
     /// boot, when there was no previous reading.
     pub reverted: Vec<RevertedOption>,
+    /// Options marked startup-only
+    /// ([`ConfigRegistry::mark_startup_only`]) whose value this reading
+    /// changed, in name order: they take effect at the next start.
+    pub startup_only_changed: Vec<String>,
 }
 
 /// An option reset to its default because the config files stopped setting it.
@@ -98,6 +102,7 @@ impl LoadOutcome {
         }
         deep_merge_table(&mut self.raw_tree, other.raw_tree);
         self.reverted.extend(other.reverted);
+        self.startup_only_changed.extend(other.startup_only_changed);
     }
 }
 
@@ -337,6 +342,14 @@ pub fn load_paths(
     // What the previous reading applied; this reading records afresh, and the
     // difference is what the user removed.
     let previous = registry.take_file_applied();
+    let startup_only: Vec<(String, std::option::Option<String>)> = registry
+        .startup_only()
+        .into_iter()
+        .map(|name| {
+            let value = registry.lookup(&name).map(|o| o.get_formatted());
+            (name, value)
+        })
+        .collect();
     if let Some(user) = user
         && user.exists()
     {
@@ -348,6 +361,11 @@ pub fn load_paths(
         out.extend(load_project_file(registry, proj, structural_prefixes));
     }
     out.reverted = revert_unmentioned(registry, previous, &out.messages);
+    out.startup_only_changed = startup_only
+        .into_iter()
+        .filter(|(name, was)| registry.lookup(name).map(|o| o.get_formatted()) != *was)
+        .map(|(name, _)| name)
+        .collect();
     // Recorded from the messages rather than at each push site: the loader
     // stays IO-agnostic and builds `LoadMessage`s in a dozen places, and one
     // pass over the result is both simpler and impossible to miss an arm of.
@@ -1217,6 +1235,22 @@ mod tests {
         assert_eq!(r.get_string_by_name("ui.separator").as_deref(), Some("│"));
         assert_eq!(out.reverted.len(), 1);
         assert_eq!(r.held_value("ui.separator"), None);
+    }
+
+    #[test]
+    fn a_startup_only_option_that_changed_is_named() {
+        let r = registry_with_options();
+        r.mark_startup_only("number");
+        let file = write_temp("startup-only", "number = false\ntabstop = 2\n");
+        let out = reload(&r, &file, None);
+        assert_eq!(out.startup_only_changed, vec!["number".to_string()]);
+        // Read again unchanged: nothing to name.
+        let out = reload(&r, &file, None);
+        assert!(out.startup_only_changed.is_empty());
+        // Its line goes: the revert is a change too.
+        std::fs::write(&file, "tabstop = 2\n").unwrap();
+        let out = reload(&r, &file, None);
+        assert_eq!(out.startup_only_changed, vec!["number".to_string()]);
     }
 
     #[test]

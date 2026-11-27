@@ -184,3 +184,47 @@ async fn a_changed_server_table_tells_that_server() {
         "only the server whose table changed"
     );
 }
+
+/// What reached `*messages*` while `run` ran on this thread.
+async fn messages_during<F: std::future::Future<Output = ()>>(run: F) -> Vec<String> {
+    use std::sync::{Arc, Mutex};
+    use tracing_subscriber::layer::SubscriberExt;
+    let ring = Arc::new(Mutex::new(lattice_runtime::MessagesRing::with_capacity(64)));
+    let bus = Arc::new(lattice_runtime::EventBus::new());
+    let layer = lattice_runtime::MessagesLayer::new(ring.clone(), bus);
+    let _guard = tracing::subscriber::set_default(tracing_subscriber::registry().with(layer));
+    run.await;
+    ring.lock()
+        .unwrap()
+        .records()
+        .iter()
+        .map(|record| record.text.clone())
+        .collect()
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_changed_startup_only_option_is_named_and_a_revert_is_reported() {
+    let (_dir, user) = user_config("tabstop = 6\n");
+    let mut editor = Editor::boot(CoreDocument::from_text("x\n"));
+    reload(&mut editor, &user, None);
+    settle(&mut editor).await;
+    editor.config.mark_startup_only("tabstop");
+    std::fs::write(&user, "").unwrap();
+    let lines = messages_during(async {
+        reload(&mut editor, &user, None);
+        settle(&mut editor).await;
+    })
+    .await;
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("`tabstop` is no longer set") && l.contains("back to its default")),
+        "the revert is reported: {lines:?}"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("`tabstop` changed") && l.contains("next time lattice starts")),
+        "the startup-only change is named: {lines:?}"
+    );
+}

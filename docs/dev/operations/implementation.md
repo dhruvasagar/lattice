@@ -7537,7 +7537,7 @@ Design: [`../architecture/org-clients.md`](../architecture/org-clients.md),
 [`../architecture/plugin-extension.md`](../architecture/plugin-extension.md).
 Slice plan: [`slice-plans/org-clients.md`](slice-plans/org-clients.md).
 
-## Whole-config reload (CR, 2026-11-27 — 🚧 CR.0 ✅, CR.1–CR.5 📝)
+## Whole-config reload (CR, 2026-11-27 — ✅ CR.0–CR.5)
 
 `:reload-config` re-applies the whole configuration in boot's order —
 `lattice.toml` and the project file, then `[plugins]`, then `init.rs` — instead
@@ -7545,7 +7545,7 @@ of `[plugins]` and `init.rs` alone. An option whose line was deleted reverts to
 its default unless something changed it since; each table's owner re-reads its
 own on `ConfigFilesReloaded`. No new crate.
 Design: [`../architecture/config-and-init.md`](../architecture/config-and-init.md) §6a.
-Slice plan: [`slice-plans/config-reload.md`](slice-plans/config-reload.md).
+Slice plan: [`slice-plans/archive/config-reload.md`](slice-plans/archive/config-reload.md).
 
 ## Release plugins in `lattice.toml` (PT, 2026-11-26 — 🚧 PT.0–PT.6 ✅, PT.7 ⛔)
 

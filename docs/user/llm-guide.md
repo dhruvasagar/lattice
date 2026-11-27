@@ -671,7 +671,8 @@ whether each runs, asks or is reviewed. A plugin's tools need no configuration: 
 them like any source's (`org.*`). `r` starts the server on a line again, `dd` stops it. A server that failed to
 start is not retried until you press `r`; one that was running and exited is started
 again by the next request that needs it. Changes to `[llm.mcp]` apply on the next start
-of lattice.
+of lattice; `:reload-config` re-reads the rest of `[llm]` and says so when `[llm.mcp]`
+changed.
 
 Reference: [`llm-tools-mode`](help:llm-tools-mode).
 

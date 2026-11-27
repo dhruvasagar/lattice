@@ -90,6 +90,11 @@ pub fn run(document: Document, startup_lesson: Option<u32>) -> Result<()> {
             .map(|v| *v)
             .unwrap_or(true),
     );
+    // Asked of the terminal this once, so `:reload-config` names a change to it
+    // rather than appearing to apply it.
+    app.options()
+        .config
+        .mark_startup_only("ui.keyboard_enhancement");
     // built-ins 2026-06-13: load embedded + user snippet packs once
     // at startup (after config so `snippet_dirs` overrides apply).
     // Quiet — logs, no echo.

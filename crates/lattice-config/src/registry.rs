@@ -128,6 +128,9 @@ struct Inner {
     /// name, formatted as the option held it right after — see
     /// [`ConfigRegistry::record_file_applied`].
     file_applied: HashMap<String, String>,
+    /// Options read once at startup — see
+    /// [`ConfigRegistry::mark_startup_only`].
+    startup_only: std::collections::BTreeSet<String>,
     /// Values plugins contributed to other plugins' options, by canonical
     /// option name, in the order each contributor first contributed — see
     /// [`ConfigRegistry::contribute`].
@@ -604,6 +607,35 @@ impl ConfigRegistry {
             by_source.remove(&source);
         }
         inner.held.retain(|_, by_source| !by_source.is_empty());
+    }
+
+    /// Note that `name` is read once, at startup, by its owner, so a later
+    /// change to it waits for the next start.
+    ///
+    /// The owner marks it, because only the owner knows: the GUI reads the
+    /// window's decorations before the window opens, the terminal peer asks
+    /// the terminal for key reporting once. A reload that changes a marked
+    /// option says so instead of appearing to have applied it.
+    pub fn mark_startup_only(&self, name: &str) {
+        let canonical = self
+            .lookup(name)
+            .map_or_else(|| name.to_string(), |o| o.name().to_string());
+        self.inner
+            .lock()
+            .expect("ConfigRegistry poisoned")
+            .startup_only
+            .insert(canonical);
+    }
+
+    /// The options marked with [`Self::mark_startup_only`], in name order.
+    pub fn startup_only(&self) -> Vec<String> {
+        self.inner
+            .lock()
+            .expect("ConfigRegistry poisoned")
+            .startup_only
+            .iter()
+            .cloned()
+            .collect()
     }
 
     /// Note that a config file just set `name`, recording the value the option

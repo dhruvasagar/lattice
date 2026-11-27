@@ -7,7 +7,7 @@ Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred (not 
 Every non-trivial slice ships the four artefacts (doc + bench where perf-relevant
 + tests including failure modes + graceful error handling).
 
-**Status: 🚧 CR.0–CR.2 ✅; CR.3–CR.5 📝.**
+**Status: 🚧 CR.0–CR.3 ✅; CR.4–CR.5 📝.**
 
 `:reload-config` re-read only `[plugins]` and `init.rs`. Edits anywhere else in
 `lattice.toml` — options, the theme, `[lsp]`, `completion.per-language`,
@@ -20,7 +20,7 @@ to its default.
 | CR.0 | Design (`config-and-init.md` §6a), `plugin-toml.md` corrected, this plan, ledger entry. No code. | docs | ✅ |
 | CR.1 | The registry records the value each config file applied; `load_default_paths` reverts an option the files no longer mention when it still holds the file's value; `LoadOutcome::reverted`; the `ConfigFilesReloaded` event type. Bench: a reload case beside the existing load bench. | `lattice-config` | ✅ 6 tests; `config::reload_revert` 10 / 34 / 219 µs at 1 / 16 / 128 options |
 | CR.2 | `:reload-config` emits `Effect::ReloadConfig`; the host reads the files off the editor thread, applies its caches on landing (theme, option cache, `[lsp]` tree, `completion.per-language` rebuilt from defaults), logs reverts and warnings, publishes `ConfigFilesReloaded`, then hands over to the loader for `[plugins]` + `init.rs`. Both renderers' effect classifiers. Test: the change is visible with no further keypress. | `lattice-grammar`, `lattice-plugin-loader`, `lattice-host`, `lattice-ui-tui`, `lattice-ui-gpui` | ✅ 6 tests (`reload_config_rereads_the_files`); the loader surface test updated |
-| CR.3 | The LLM layer re-reads `[llm]` on `ConfigFilesReloaded`; running requests keep the config they started with; MCP servers keep running as started and the reload says so. | `lattice-ai` | 📝 |
+| CR.3 | The LLM layer re-reads `[llm]` on `ConfigFilesReloaded`; running requests keep the config they started with; MCP servers keep running as started and the reload says so. | `lattice-ai` | ✅ 2 tests |
 | CR.4 | LSP: running servers are told their settings changed (`workspace/didChangeConfiguration`) when the `[lsp]` tree differs. | `lattice-lsp` / `lattice-host` | 📝 |
 | CR.5 | Startup-only settings that a reload cannot change are named in `*messages*`; user docs, `:help reload-config`, CHANGELOG, `BENCHMARKS.md`. | docs, owners of boot-only settings | 📝 |
 

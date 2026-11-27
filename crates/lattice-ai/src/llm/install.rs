@@ -55,6 +55,7 @@ pub fn install(
     }
     spawn_turn_listener(chats.clone(), boot.event_bus());
     spawn_options_listener(chats.clone(), boot.event_bus());
+    super::chat::spawn_config_reload_listener(chats.clone(), boot.event_bus());
     // The project's settings and safety-list additions, read now on the
     // runtime, so an ask's capture (checked on the editor thread against the
     // cached copy) sees the project's excludes before any chat opens.

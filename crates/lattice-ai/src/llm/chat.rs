@@ -519,6 +519,30 @@ impl LlmChats {
         *self.config.write().unwrap_or_else(|e| e.into_inner()) = config;
     }
 
+    /// Take `[llm]` as a `:reload-config` read it.
+    ///
+    /// New requests resolve against it; one already running keeps the provider
+    /// and model it started with. The `[llm.mcp]` servers were built from the
+    /// table boot read and keep running as they started, so a change there is
+    /// named rather than silently not applied.
+    pub fn apply_reloaded_config(&self, config: LlmConfig) {
+        for warning in &config.warnings {
+            tracing::warn!(target: "lattice::llm", "{warning}");
+        }
+        let mcp_changed = {
+            let old = self.config.read().unwrap_or_else(|e| e.into_inner());
+            old.mcp != config.mcp
+        };
+        self.set_config(config);
+        if mcp_changed {
+            tracing::info!(
+                target: "lattice::llm",
+                "llm: [llm.mcp] changed; MCP servers keep the settings they started with \
+                 until lattice restarts"
+            );
+        }
+    }
+
     /// Give chats the global registry, so `:set llm.model=x` applies live.
     pub fn set_registry(&self, registry: Arc<ConfigRegistry>) {
         *self.registry.write().unwrap_or_else(|e| e.into_inner()) = Some(registry);
@@ -2636,6 +2660,38 @@ pub fn spawn_turn_listener(chats: LlmChatsHandle, bus: &Arc<lattice_runtime::Eve
 
 /// Subscribe `chats` to the host's per-buffer option snapshots, so `:setlocal
 /// llm.*` reaches requests that run off the editor thread.
+/// Re-read `[llm]` from the user's `lattice.toml`, and the project's
+/// `.lattice/llm.toml`, each time `:reload-config` re-reads the config files.
+pub fn spawn_config_reload_listener(chats: LlmChatsHandle, bus: &Arc<lattice_runtime::EventBus>) {
+    spawn_config_reload_listener_with(chats, bus, Arc::new(LlmConfig::load_user));
+}
+
+/// [`spawn_config_reload_listener`] reading `[llm]` with `load`, which runs
+/// off the runtime's worker threads since it reads a file.
+pub fn spawn_config_reload_listener_with(
+    chats: LlmChatsHandle,
+    bus: &Arc<lattice_runtime::EventBus>,
+    load: Arc<dyn Fn() -> LlmConfig + Send + Sync>,
+) {
+    let (tx, mut rx) =
+        tokio::sync::mpsc::unbounded_channel::<lattice_config::ConfigFilesReloaded>();
+    bus.subscribe_typed::<lattice_config::ConfigFilesReloaded>(tx);
+    let runtime = chats.runtime.clone();
+    runtime.spawn(async move {
+        while rx.recv().await.is_some() {
+            let load = load.clone();
+            match tokio::task::spawn_blocking(move || load()).await {
+                Ok(config) => chats.apply_reloaded_config(config),
+                Err(err) => tracing::warn!(
+                    target: "lattice::llm",
+                    "llm: re-reading [llm] after :reload-config failed: {err}"
+                ),
+            }
+            chats.refresh_project();
+        }
+    });
+}
+
 pub fn spawn_options_listener(chats: LlmChatsHandle, bus: &Arc<lattice_runtime::EventBus>) {
     let (tx, mut rx) =
         tokio::sync::mpsc::unbounded_channel::<lattice_config::BufferOptionsResolved>();
@@ -2687,6 +2743,79 @@ mod tests {
     /// Past the cap the oldest IDLE session goes; one with a request in
     /// flight is kept, so quitting still warns about it and its reply can be
     /// reopened.
+    fn chats_with(config: LlmConfig) -> (Arc<LlmChats>, Arc<lattice_runtime::EventBus>) {
+        let handle = Handle::current();
+        let bus = Arc::new(lattice_runtime::EventBus::new());
+        let requests: RequestRegistryHandle = Arc::new(RequestRegistry::new(
+            handle.clone(),
+            Some(bus.clone()),
+            None,
+        ));
+        (
+            Arc::new(LlmChats::new(handle, requests, bus.clone(), config)),
+            bus,
+        )
+    }
+
+    fn llm_config(toml: &str) -> LlmConfig {
+        LlmConfig::from_table(&toml.parse::<toml::Table>().unwrap())
+    }
+
+    /// Wait, bounded, for the listener's task to have applied the reading.
+    async fn until(mut done: impl FnMut() -> bool) -> bool {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while std::time::Instant::now() < deadline {
+            if done() {
+                return true;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        done()
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_config_reload_replaces_the_providers() {
+        let (chats, bus) = chats_with(llm_config(
+            "[llm.providers.anthropic]\napi_key_env = \"OLD_KEY\"\nmodel = \"opus\"\n",
+        ));
+        assert_eq!(chats.key_variables(), vec!["OLD_KEY".to_string()]);
+        let edited = "[llm.providers.anthropic]\napi_key_env = \"NEW_KEY\"\n\
+                      model = \"claude-opus-5-5\"\n";
+        super::spawn_config_reload_listener_with(
+            chats.clone(),
+            &bus,
+            Arc::new(move || llm_config(edited)),
+        );
+        bus.publish_typed(lattice_config::ConfigFilesReloaded::default());
+        assert!(
+            until(|| chats.key_variables() == vec!["NEW_KEY".to_string()]).await,
+            "the edited provider is the one new requests use: {:?}",
+            chats.key_variables()
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_bad_provider_on_reload_leaves_the_others() {
+        let (chats, bus) = chats_with(llm_config(
+            "[llm.providers.a]\napi_key_env = \"A_KEY\"\nmodel = \"m\"\n",
+        ));
+        // `b` names a kind lattice does not speak: skipped with a warning, and
+        // `a` still loads.
+        let edited = "[llm.providers.a]\napi_key_env = \"A2_KEY\"\nmodel = \"m\"\n\
+                      [llm.providers.b]\nkind = \"telepathy\"\napi_key_env = \"B_KEY\"\n";
+        assert!(
+            !llm_config(edited).warnings.is_empty(),
+            "the fixture is bad"
+        );
+        super::spawn_config_reload_listener_with(
+            chats.clone(),
+            &bus,
+            Arc::new(move || llm_config(edited)),
+        );
+        bus.publish_typed(lattice_config::ConfigFilesReloaded::default());
+        assert!(until(|| chats.key_variables() == vec!["A2_KEY".to_string()]).await);
+    }
+
     #[tokio::test]
     async fn a_busy_hidden_session_is_not_evicted() {
         let handle = Handle::current();

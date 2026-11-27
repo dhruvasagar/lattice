@@ -828,6 +828,10 @@ root it would have used anyway, so a source that does not implement this
 behaves exactly as it did before, and a user who has configured nothing
 keeps the project-root scan.
 
+**An empty entry names that project root.** A source returns `[""]`
+plus its own paths to keep the default and add to it: org does when its
+user set no `agenda-files` and another plugin contributed a folder.
+
 **Per scan, unlike `extensions` and `view-mode`.** Those are facts about
 the source and are resolved once at load. This one comes from user
 configuration and has to follow a `:set` without a reload — caching it

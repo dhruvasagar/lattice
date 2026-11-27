@@ -122,7 +122,9 @@ declared with `choose = "<dir>"`, and the same primitive serves capture
 org-fcto **contributes** its folder to `org.agenda-files`
 ([`plugin-extension.md`](plugin-extension.md) §3). Your own value is not
 replaced. If you never set `agenda-files`, the project root is still scanned
-and the clients folder is scanned beside it. Onboarding a client makes its
+and the clients folder is scanned beside it. Org says so by returning an empty entry
+from its `roots()` beside the folder: the project root is the host's to
+compute, so an empty entry names it rather than org guessing at it. Onboarding a client makes its
 file part of the next scan, because the folder, not the file, is what was
 contributed.
 

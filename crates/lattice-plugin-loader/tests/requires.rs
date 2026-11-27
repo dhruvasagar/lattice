@@ -266,3 +266,53 @@ async fn unloading_a_parked_plugin_stops_it_loading_later() {
         .unwrap();
     assert!(!loader.is_loaded("org-clients"));
 }
+
+/// A requirement that is there but fails to load holds its dependent back
+/// just as a missing one does: the dependent is not loaded, and `:plugins`
+/// lists both, the requirement with its own error and the dependent waiting
+/// on it. Fixing the requirement and loading it again brings the dependent
+/// in with it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_requirement_that_fails_to_load_keeps_its_dependent_out() {
+    let base = tempfile::tempdir().unwrap();
+    let loader = PluginLoader::new(host(base.path()));
+    let org = on_disk(base.path(), "org", &[]);
+    std::fs::write(org.join("org.wasm"), b"not a component").unwrap();
+    let clients = on_disk(base.path(), "org-clients", &["org"]);
+
+    assert!(
+        loader
+            .load_path(&org, TrustTier::UserInstalled)
+            .await
+            .is_err(),
+        "the broken requirement does not load"
+    );
+    unmet(loader.load_path(&clients, TrustTier::UserInstalled).await);
+    assert!(!loader.is_loaded("org") && !loader.is_loaded("org-clients"));
+    let failed = loader.failed_loads();
+    let reason = |name: &str| {
+        failed
+            .iter()
+            .find(|f| f.name == name)
+            .map(|f| f.error.clone())
+            .unwrap_or_else(|| panic!("`{name}` is listed as failed: {failed:?}"))
+    };
+    assert_eq!(
+        reason("org-clients"),
+        "waiting for `org`, which is not loaded"
+    );
+    assert!(
+        !reason("org").is_empty(),
+        "the requirement's own error is shown"
+    );
+
+    std::fs::write(org.join("org.wasm"), noop_bytes()).unwrap();
+    loader
+        .load_path(&org, TrustTier::UserInstalled)
+        .await
+        .unwrap();
+    assert!(
+        loader.is_loaded("org-clients"),
+        "the dependent loads once its requirement does"
+    );
+}

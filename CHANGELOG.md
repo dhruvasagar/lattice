@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Fixed
+- **An inline image takes one line in the terminal, not eight.** The terminal shows an image as its caption (the alt text, or the file name), but each one reserved eight rows with the caption in the middle, so an org note with images was mostly blank space. Now the caption takes one row. The GUI, which draws the picture, is unchanged.
+
 ### Documentation
 - **org-clients is listed.** The plugin that keeps one org file per client has a page under [plugins](https://dhruvasagar.github.io/lattice/plugins/), and the README, `:help org` and the FAQ point at it. `:help plugins` explains what `:plugins` shows for a plugin waiting on another it requires. The FAQ no longer says org has to be built from source.
 

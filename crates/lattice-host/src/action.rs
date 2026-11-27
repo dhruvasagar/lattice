@@ -845,7 +845,7 @@ pub enum Action {
     /// channel.
     ///
     /// A peer that cannot draw images never sends it, and the host then
-    /// reserves the provisional row count and reads no image file at all.
+    /// reserves one row for each block's alt text and reads no image file.
     /// That is the TUI: it shows alt text, which needs no header read.
     SetCellMetrics {
         row_px: f32,

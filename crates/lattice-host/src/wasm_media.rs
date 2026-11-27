@@ -132,24 +132,20 @@ impl WasmMediaState {
     }
 }
 
-/// How tall a block is, in display rows, before its file has been measured.
+/// Rows reserved for a block that only its alt text stands in for.
 ///
-/// A provisional reservation, replaced once the header read lands. It is not
-/// zero and not one: zero would make the block invisible while still holding a
-/// matrix slot, and one would make every image visibly jump from a single line
-/// to its real height as the reads complete — the reflow the whole design is
-/// arranged to avoid. Eight rows is roughly a small figure, so the common case
-/// settles with little or no movement.
-pub const PROVISIONAL_ROWS: u16 = 8;
-
-/// Rows reserved for a block whose file could not be measured.
+/// Two cases end here. A file that could not be measured — missing,
+/// unreadable, or not an image this build decodes — is not a pending answer,
+/// it IS the answer, and no later frame will improve on it. And a drawing
+/// peer that publishes no cell metrics, which is the TUI, never draws a
+/// picture at all: the alt text is its whole rendering. Either way the
+/// caption needs one row, and anything more is blank space held for a
+/// picture that is not coming.
 ///
-/// One, not [`PROVISIONAL_ROWS`]: a header read that failed is not a pending
-/// answer, it IS the answer — the file is missing, unreadable or not an image
-/// this build decodes, and no later frame will improve on it. The alt text
-/// stands in, and it needs one row. Eight blank rows around it would reserve
-/// most of a screen for a picture that is never coming.
-pub const UNREADABLE_ROWS: u16 = 1;
+/// A peer that does draw pictures publishes its metrics on its first frame,
+/// before any plugin can have produced a block, so it measures from the
+/// start and never sits at this reservation.
+pub const ALT_TEXT_ROWS: u16 = 1;
 
 impl Editor {
     /// IM.7 per-tick media refresh pump.
@@ -352,8 +348,8 @@ fn same_blocks(
 ///
 /// `geometry` is `(line_height_px, pane_width_px)` from the drawing peer.
 /// `None` — no peer published cell metrics, which is the TUI — means the
-/// block keeps its provisional reservation and **no file is read at all**:
-/// a renderer that draws alt text has nothing to learn from an image header.
+/// block reserves [`ALT_TEXT_ROWS`] and **no file is read at all**: a
+/// renderer that draws alt text has nothing to learn from an image header.
 fn size_blocks(
     requests: Vec<MediaBlockRequest>,
     geometry: Option<MediaGeometry>,
@@ -379,7 +375,7 @@ fn size_blocks(
             let mut block = lattice_cells::MediaBlock::from_source(req.source.clone(), req.alt);
             block.fit = req.fit;
             let rows = match geometry {
-                None => PROVISIONAL_ROWS,
+                None => ALT_TEXT_ROWS,
                 Some((line_height_px, pane_width_px, pane_height_px)) => {
                     match known.get(&req.source).copied().map(Ok).unwrap_or_else(|| {
                         // Stamped BEFORE the read, so a file rewritten
@@ -411,7 +407,7 @@ fn size_blocks(
                                 error = %err,
                                 "inline media could not be measured; alt text stands in"
                             );
-                            UNREADABLE_ROWS
+                            ALT_TEXT_ROWS
                         }
                     }
                 }

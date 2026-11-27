@@ -23,9 +23,7 @@ use std::time::Duration;
 use lattice_core::Document as CoreDocument;
 use lattice_host::editor::Editor;
 use lattice_host::per_buffer_cache::PerBufferCacheExt;
-use lattice_host::wasm_media::{
-    PROVISIONAL_ROWS, UNREADABLE_ROWS, WasmMediaState, media_virtual_row_provider_id,
-};
+use lattice_host::wasm_media::{ALT_TEXT_ROWS, WasmMediaState, media_virtual_row_provider_id};
 use lattice_mode::{
     AsyncMediaSource, MediaBlockRequest, MediaFuture, MediaSourceRegistry,
     MediaSourceRegistryHandle,
@@ -213,14 +211,18 @@ async fn a_produced_block_becomes_virtual_rows_without_a_keystroke() {
     assert_eq!(providers[0].id(), media_virtual_row_provider_id(buffer));
 
     let rows = providers[0].collect();
-    assert_eq!(rows.len(), usize::from(PROVISIONAL_ROWS));
+    assert_eq!(
+        rows.len(),
+        usize::from(ALT_TEXT_ROWS),
+        "with no cell metrics the block is its alt-text row"
+    );
     assert!(
         rows.iter()
             .all(|r| r.anchor_line == 2 && r.kind == lattice_cells::VirtualRowKind::MediaBlock)
     );
 }
 
-/// IM.7a — a block is MEASURED, not left provisional.
+/// A block is MEASURED when the peer draws pictures.
 ///
 /// Until this landed, `intrinsic` and `height_lh` stayed `None` forever:
 /// `lattice_media::probe` and `block_geometry` had no production caller at
@@ -261,7 +263,7 @@ async fn a_measured_block_carries_its_intrinsic_size_and_drawn_height() {
     assert_eq!(
         rows.len(),
         5,
-        "the reservation follows the measurement, not PROVISIONAL_ROWS"
+        "the reservation follows the measurement, not ALT_TEXT_ROWS"
     );
 }
 
@@ -497,7 +499,7 @@ async fn an_unreadable_file_reserves_one_row_for_its_alt_text() {
     assert!(landed(&editor).await);
 
     let rows = editor.virtual_row_providers.snapshot(buffer)[0].collect();
-    assert_eq!(rows.len(), usize::from(UNREADABLE_ROWS));
+    assert_eq!(rows.len(), usize::from(ALT_TEXT_ROWS));
     let block = rows[0].media.as_ref().unwrap();
     assert_eq!(
         block.height_lh, None,
@@ -506,17 +508,20 @@ async fn an_unreadable_file_reserves_one_row_for_its_alt_text() {
     assert!(!block.alt.is_empty());
 }
 
-/// A peer that publishes no cell metrics — the TUI — keeps the provisional
-/// reservation AND reads no image header at all. The path here does not
-/// exist: if anything probed it, the block would have come back as
-/// `UNREADABLE_ROWS`.
+/// A peer that publishes no cell metrics — the TUI — reserves one row for the
+/// alt text AND reads no image header at all. The file is a real PNG, so a
+/// read would have come back with its size: `intrinsic` staying `None` is
+/// what proves nothing probed it.
 #[tokio::test]
 async fn without_cell_metrics_nothing_is_measured_and_no_file_is_read() {
+    let dir = tempfile::tempdir().unwrap();
+    let png = write_png(dir.path(), "shot.png", 200, 100);
+
     let mut editor = Editor::boot(CoreDocument::from_text("a\nb\n"));
     let buffer = editor.document_buffer_id;
     editor.wasm_media = WasmMediaState::with_registry(registry_with(StubProducer {
         id: 1,
-        blocks: vec![block_for(0, "/nowhere/missing.png".into())],
+        blocks: vec![block_for(0, png)],
     }));
     settle(&editor).await;
 
@@ -526,10 +531,20 @@ async fn without_cell_metrics_nothing_is_measured_and_no_file_is_read() {
     let rows = editor.virtual_row_providers.snapshot(buffer)[0].collect();
     assert_eq!(
         rows.len(),
-        usize::from(PROVISIONAL_ROWS),
-        "no metrics means no measurement, so the provisional reservation stands"
+        usize::from(ALT_TEXT_ROWS),
+        "a peer that draws no pictures gets the caption row and no blank space \
+         around it"
     );
-    assert_eq!(rows[0].media.as_ref().unwrap().intrinsic, None);
+    let block = rows[0].media.as_ref().unwrap();
+    assert_eq!(block.intrinsic, None, "no header was read");
+    assert_eq!(block.height_lh, None);
+    assert!(
+        rows[0]
+            .cells
+            .iter()
+            .any(|c| c.codepoint != 0 && c.codepoint != u32::from(b' ')),
+        "the one row carries the alt text"
+    );
 }
 
 /// A second refresh must not register a second provider. The registry refuses

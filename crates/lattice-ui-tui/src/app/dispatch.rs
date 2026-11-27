@@ -626,7 +626,7 @@ impl App {
             | Action::SetTerminalWidth(_)
             // IM.7a: the TUI never DISPATCHES this one — it draws alt text,
             // not pixels, so it has no cell geometry worth publishing and
-            // the host reserves the provisional rows without reading a
+            // the host reserves one alt-text row per block without reading a
             // single image header. Listed here so the exhaustiveness check
             // records the decision rather than the absence.
             | Action::SetCellMetrics { .. }

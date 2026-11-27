@@ -1647,8 +1647,8 @@ pub struct Editor {
     /// [`crate::action::Action::SetCellMetrics`].
     ///
     /// `None` until a peer that draws images reports it, and forever on one
-    /// that does not — which is how a media block stays at its provisional
-    /// reservation in the TUI without the host reading any image header.
+    /// that does not — which is how a media block stays one alt-text row in
+    /// the TUI without the host reading any image header.
     pub cell_metrics: Option<CellMetrics>,
     /// Which buffer the input pipeline currently routes to.
     /// When a help overlay is open this is `Help`; otherwise

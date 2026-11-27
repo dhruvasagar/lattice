@@ -327,9 +327,15 @@ Two scalars rather than a per-pane pixel rectangle, sent on change rather
 than per frame.
 
 It is also the gate on the whole sizing pass. A peer that publishes no
-metrics gets the provisional reservation and **no image file is read at
-all** — which is the TUI, whose entire rendering of a block is the alt
-text and which has nothing to learn from a header. The probe itself is a
+metrics gets **one row per block, for its alt text, and no image file is
+read at all** — which is the TUI, whose entire rendering of a block is the
+alt text and which has nothing to learn from a header. It used to get eight
+rows, a reservation meant to be replaced once the header read landed. No
+read ever lands on a peer that never publishes metrics, so the eight stayed
+for the life of the buffer: every figure in an org file became seven blank
+rows around a caption. A peer that draws pictures publishes its metrics on
+its first frame, before a plugin can have produced a block, so it is never
+in the unmeasured state the eight rows were for. The probe itself is a
 file read on `spawn_blocking`, never on the actor thread and never on the
 LSP runtime's async threads.
 

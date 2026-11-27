@@ -4324,7 +4324,7 @@ impl Render for EditorView {
         // one refresh against the previous frame's pane width.
         //
         // The TUI publishes nothing here and is meant not to — it draws alt
-        // text, so the host keeps the provisional reservation and reads no
+        // text, so the host reserves one alt-text row and reads no
         // image header at all.
         // The window's width in text columns, for the host's pane geometry.
         // Sent when it changes — a resize, or a font-size change — not per

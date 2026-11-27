@@ -64,6 +64,14 @@ An `agenda-files` directory entry means the `.org` files directly in it.
 So `clients/archive/` drops out of the agenda and out of every chooser with
 no exclusion rule. Archiving is a file move, and reversing it is a move back.
 
+**The folder sits inside org's grant by default.** Org scans the contributed
+folder and lists it for the chooser, so it reads the folder under its own fs
+grant, which follows `org.directory`. The default,
+`<org.directory>/clients`, is inside that grant. A folder elsewhere needs the
+user to widen org's grant: one plugin never widens another's, which is why a
+grant-followed option refuses contributions
+([`plugin-extension.md`](plugin-extension.md) §3).
+
 Stages beyond "active" and "archived" (prospect, paused) were cut. A stage is
 a concept to hold, and a tag in the file (`#+FILETAGS: :prospect:`) expresses
 it the day someone needs it, through the filters that already exist.

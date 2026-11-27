@@ -7526,7 +7526,7 @@ package is the component alone and PRL.6 is superseded.
 Design: [`../architecture/plugin-manifest.md`](../architecture/plugin-manifest.md).
 Slice plan: [`slice-plans/plugin-manifest.md`](slice-plans/plugin-manifest.md).
 
-## org-fcto and plugins extending plugins (FT, 2026-11-27 — 🚧 FT.0–FT.2 ✅)
+## org-fcto and plugins extending plugins (FT, 2026-11-27 — 🚧 FT.0–FT.2, FT.4–FT.7 ✅; FT.8 release + FT.3 publish open)
 
 A client-engagement plugin on org (one `.org` file per client, a visible
 client guess instead of global state) and the host seam it establishes: a

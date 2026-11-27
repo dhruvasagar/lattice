@@ -10,7 +10,7 @@ Status icons: ✅ done · 🚧 in progress · 📝 planned · ⛔ deferred (not 
 Every non-trivial slice ships the four artefacts (doc + bench where perf-relevant
 + tests including failure modes + graceful error handling).
 
-**Status: 🚧 FT.0–FT.2 ✅; FT.3 (the API publish) next, which Dhruva runs.**
+**Status: 🚧 FT.0–FT.2 ✅ and the host side of FT.4 on lattice `org-fcto`; FT.4–FT.8 ✅ on org `org-fcto` (org's release waits on FT.3); FT.3 (the API publish) is Dhruva's; FT.9–FT.11 next.**
 
 Three repos, in dependency order: lattice (host), lattice-org-plugin (org),
 lattice-org-fcto-plugin (new). **One plugin-API publish** for the whole
@@ -30,11 +30,11 @@ it before publishing.
 
 | Slice | What | Status |
 |---|---|---|
-| FT.4 | Re-pin to the FT.3 API. `agenda-files`, `capture-templates`, `agenda-custom-commands` accept contributions; each reader merges: agenda files = user entries (or the project root when unset) + contributed entries; templates and custom commands = user's then contributed, first key wins; a malformed contribution is skipped and named with its plugin. | 📝 |
-| FT.5 | Capture group rows: a template with key + description and no target is a group; members (keys extending it) leave the top menu; the group row drills down by reopening the capture transient with the group as its argument. Tests cover nested prefixes, a group with no members, a member whose group is missing (stays top-level). | 📝 |
-| FT.6 | The chooser: `choose = "<dir>"` on a group; members without `file` take the chosen file. Guess from the buffer's path, then the running clock's file; the sub-menu title names the guess and its source; `c` opens a picker of the folder's `.org` files (direct children) and reopens the sub-menu with the answer; no guess ⇒ firing a member opens the picker first. | 📝 |
-| FT.7 | `choose` on an agenda custom command: the dispatcher row opens the chooser picker with the guess first; `org-agenda-command` accepts filter terms after the key and passes them as scan args (`["e", "file:acme.org"]`). | 📝 |
-| FT.8 | `exported_commands`: the agenda command and the capture-group opener; doc updates (`doc/org.md` capture groups, `choose`, contributions); org release on the new API. | 📝 |
+| FT.4 | Re-pin to the FT.3 API. `agenda-files`, `capture-templates`, `agenda-custom-commands` accept contributions; each reader merges: agenda files = user entries (or the project root when unset) + contributed entries; templates and custom commands = user's then contributed, first key wins; a malformed contribution is skipped and named with its plugin. | ✅ org `b2d00bf`, host `16acaa75`. The project-root default is an empty `roots()` entry, which the host now reads as the project root (the guest cannot compute it). With no user templates the default `t Task` row stays beside contributed ones; a failed user set still refuses the menu. Built against the local `lattice-wit` through a temporary `[patch.crates-io]`, dropped with the re-pin after FT.3 |
+| FT.5 | Capture group rows: a template with key + description and no target is a group; members (keys extending it) leave the top menu; the group row drills down by reopening the capture transient with the group as its argument. Tests cover nested prefixes, a group with no members, a member whose group is missing (stays top-level). | ✅ org `53b5995`. A group with no members is skipped and named; roam refuses group rows |
+| FT.6 | The chooser: `choose = "<dir>"` on a group; members without `file` take the chosen file. Guess from the buffer's path, then the running clock's file; the sub-menu title names the guess and its source; `c` opens a picker of the folder's `.org` files (direct children) and reopens the sub-menu with the answer; no guess ⇒ firing a member opens the picker first. | ✅ org `b46832c`. The clock's file goes through the plugin store (`clock/running-file`) because the events and grammar seams are separate stores; the buffer guess is computed in the actions, which have the Document, and passed through transient args. The change row takes the first free of `c` / `C` / `,` |
+| FT.7 | `choose` on an agenda custom command: the dispatcher row opens the chooser picker with the guess first; `org-agenda-command` accepts filter terms after the key and passes them as scan args (`["e", "file:acme.org"]`). | ✅ org `96d4c06` |
+| FT.8 | `exported_commands`: the agenda command and the capture-group opener; doc updates (`doc/org.md` capture groups, `choose`, contributions); org release on the new API. | 🚧 exports ✅ org `c21c0e5` (`org-agenda-command`, `org-capture-menu`; `org-choose-file` stays private because it routes to a command named in its args); docs ✅; the org release waits on FT.3 |
 
 ## org-fcto — lattice-org-fcto-plugin (new repo)
 
@@ -57,6 +57,8 @@ FT.1 and FT.2 are independent and can land in either order; both precede the
 FT.3 publish. FT.4 needs FT.3. FT.5 → FT.6 (the chooser hangs off a group);
 FT.7 needs FT.6's picker. FT.8 closes org. FT.9 needs FT.1 and an org release
 with FT.4–FT.8; FT.10 and FT.11 follow it.
+
+The clients folder must sit inside org's fs grant; see the design's §2.
 
 FT.5 and FT.6 need no host change and can be built against the current API
 while FT.1–FT.3 are in review; only FT.4 waits on the publish.

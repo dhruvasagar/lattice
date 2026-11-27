@@ -74,7 +74,8 @@ is recorded only when the user pinned it.
 - `lattice_config::load_default_paths` reads the user's `lattice.toml`, then
   the project's `.lattice/config.toml`. Its production caller is
   `Editor::load_persistent_config`, once at boot. **Nothing re-reads it after
-  boot**: `:reload-config` rebuilds and reloads `init.rs` only.
+  boot**: `:reload-config` rebuilds and reloads `init.rs` only. (Since
+  superseded: the whole file reloads, [`config-and-init.md`](config-and-init.md) §6a.)
 - Keys under an unloaded plugin's namespace (`[org]`) are held and applied
   when the plugin declares the option (`awaits_plugin`, `loader.rs`). A
   plugin's *options* already work in TOML.
@@ -272,10 +273,8 @@ plugin and the TOML entries the parser rejected.
 unchanged one left alone. With no `init.rs` on disk, the init rebuild step is
 a benign skip, not a recorded `init` failure.
 
-It does **not** re-apply the rest of `lattice.toml`; option edits there still
-take a restart, as they do today. Live reload of the whole file is a separate,
-pre-existing gap (it crosses into `Editor::load_persistent_config` and both
-renderers' signal handling), not this feature.
+The rest of `lattice.toml` is re-applied by the same command, before this
+reconcile: see [`config-and-init.md`](config-and-init.md) §6a.
 
 ### Pinning
 
@@ -305,8 +304,8 @@ plan PT.7).
    cover it, as for `init.rs`.
 4. **Conflict** — `init.rs` wins, whole spec, `warn!` on a difference.
 5. **Lockfile** — deferred; v1 is `version` + optional `sha256`.
-6. **`:reload-config`** — reconciles `[plugins]` only; whole-file live reload
-   is out of scope.
+6. **`:reload-config`** — reconciles `[plugins]`; the rest of the file is
+   re-applied by the whole-config reload ([`config-and-init.md`](config-and-init.md) §6a).
 
 ## 7. Rejected alternatives
 

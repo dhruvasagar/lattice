@@ -7098,7 +7098,7 @@ impl Editor {
         }
         self.set_message(
             EchoLevel::Info,
-            "conflict: ours | working | theirs — d2o ours, d3o theirs, dB both, ]c next",
+            "conflict: ours | working | theirs — d2o ours, d3o theirs, dB both, ]n next conflict",
         );
     }
 

@@ -121,6 +121,14 @@ fn register_diff_actions(registry: &mut CommandRegistry) {
             "diff-conflict `dB`: keep both — splice ours then theirs.",
         ),
         (
+            "action:conflict-next",
+            "diff-conflict `]n`: jump to the next conflict, passing clean merges (wraps).",
+        ),
+        (
+            "action:conflict-prev",
+            "diff-conflict `[n`: jump to the previous conflict, passing clean merges (wraps).",
+        ),
+        (
             "action:hunk-next",
             "diff `]c`: jump the cursor to the next hunk start (wraps).",
         ),

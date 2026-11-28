@@ -38,6 +38,8 @@ use crate::editor::Editor;
 
 mod completion;
 pub use completion::*;
+mod diff;
+pub use diff::*;
 mod snippet;
 pub use snippet::*;
 mod llm;
@@ -410,6 +412,7 @@ macro_rules! peer_conformance_tests {
             a_queued_renderer_effect_is_applied_on_an_idle_wake,
             quitting_is_published,
             a_declined_chord_falls_through_to_the_layer_below,
+            conflict_keys_walk_conflicts_only,
             ctrl_space_completes_from_buffer_words,
             ctrl_space_completes_from_tree_sitter_symbols,
             ctrl_space_completes_paths_inside_a_string,

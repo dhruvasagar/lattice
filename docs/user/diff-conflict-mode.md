@@ -70,14 +70,21 @@ first conflict**, the first `<<<<<<<` line, with the two copies scrolled
 alongside. A conflict block is tinted with its own colour, apart from the
 ordinary change colours.
 
-`]c` and `[c` move to the next / previous hunk and wrap at the end. In a
-merge, git has already merged some regions cleanly; those differ from one
-side and are hunks too, tinted as ordinary changes. So `]c` stops at them
-as well as at the conflicts.
+| Chord | Moves to |
+|---|---|
+| `]n` / `[n` | The next / previous **conflict**, wrapping at the end |
+| `]c` / `[c` | The next / previous **hunk**, conflicts and clean merges alike |
 
-They come from [`diff-mode`](help:diff-mode) rather than this mode,
-because moving between regions is the same motion whether the region
-is a conflict or an ordinary change.
+In a merge, git has already merged some regions cleanly; those differ
+from one side and are hunks too, tinted as ordinary changes. `]n` passes
+over them and stops only where a decision is waiting, so the loop is: land
+on a conflict, resolve it with `d3o` / `dB`, `]n` to the next. `]c` stops
+at every region, which is the way to review what git merged for you.
+
+`]n` and `[n` are vim-unimpaired's keys for conflict markers and belong to
+this mode, so they only exist while a conflict is open. `]c` and `[c`
+come from [`diff-mode`](help:diff-mode), because moving between hunks is
+the same motion in any diff.
 
 ## Not implemented yet
 

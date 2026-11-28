@@ -2332,6 +2332,71 @@ impl DiffSubsystem {
         Some(hunk_selection(row))
     }
 
+    /// `]n`: move to the start of the next **conflict** on the cursor pane's
+    /// side, wrapping to the first. Unlike [`Self::diff_next_hunk_effect`]
+    /// it passes over the regions git merged cleanly, which are hunks too
+    /// but need no decision. An info `Echo` when there is no session or no
+    /// conflict left.
+    pub fn diff_next_conflict_effect(
+        &self,
+        active_buffer: BufferId,
+        cursor_row: u32,
+    ) -> Option<lattice_grammar::Effect> {
+        let rows = match self.conflict_starts(active_buffer) {
+            Ok(rows) => rows,
+            Err(echo) => return Some(echo),
+        };
+        let row = rows
+            .iter()
+            .copied()
+            .find(|&l| l > cursor_row)
+            .unwrap_or(rows[0]);
+        Some(hunk_selection(row))
+    }
+
+    /// `[n`: mirror of [`Self::diff_next_conflict_effect`], wrapping to the
+    /// last conflict.
+    pub fn diff_prev_conflict_effect(
+        &self,
+        active_buffer: BufferId,
+        cursor_row: u32,
+    ) -> Option<lattice_grammar::Effect> {
+        let rows = match self.conflict_starts(active_buffer) {
+            Ok(rows) => rows,
+            Err(echo) => return Some(echo),
+        };
+        let row = rows
+            .iter()
+            .rev()
+            .copied()
+            .find(|&l| l < cursor_row)
+            .unwrap_or_else(|| *rows.last().expect("rows non-empty"));
+        Some(hunk_selection(row))
+    }
+
+    /// The start rows of the conflict hunks on `active_buffer`'s side,
+    /// ascending and never empty, or the echo saying why there are none.
+    fn conflict_starts(
+        &self,
+        active_buffer: BufferId,
+    ) -> Result<Vec<u32>, lattice_grammar::Effect> {
+        let Some(session) = self.lookup_session_for(active_buffer) else {
+            return Err(hunk_nav_echo("no diff session"));
+        };
+        let hunks = session.current_hunks();
+        let slot = self.nav_slot(&session, active_buffer);
+        let rows: Vec<u32> = hunks
+            .hunks
+            .iter()
+            .filter(|h| matches!(h.kind, HunkKind::Conflict))
+            .filter_map(|h| h.ranges.get(slot).map(|r| r.start))
+            .collect();
+        if rows.is_empty() {
+            return Err(hunk_nav_echo("no conflicts"));
+        }
+        Ok(rows)
+    }
+
     /// D.2.c: snapshot of the inverse routing index for
     /// `watched_buffer`. Returns the session keys whose
     /// descriptors include `watched_buffer` in their `watch`
@@ -5502,6 +5567,79 @@ mod tests {
         assert_eq!(to_row(sub.diff_prev_hunk_effect(WORKING, 4)), 2);
         // In ours' pane the block is its row 3.
         assert_eq!(to_row(sub.diff_next_hunk_effect(OURS, 2)), 3);
+    }
+
+    /// `]n` / `[n` stop only at conflicts: from the top of the working file
+    /// `]n` passes the cleanly merged change at row 2 and lands on the block
+    /// at row 4; with one conflict both directions wrap back onto it.
+    #[test]
+    fn conflict_navigation_passes_over_clean_merges() {
+        let sub = resolve_fixture();
+        let to_row = |e: Option<lattice_grammar::Effect>| match e {
+            Some(lattice_grammar::Effect::CursorMove(p)) => p.line,
+            other => panic!("expected CursorMove, got {other:?}"),
+        };
+        assert_eq!(to_row(sub.diff_next_conflict_effect(WORKING, 0)), 4);
+        assert_eq!(
+            to_row(sub.diff_next_conflict_effect(WORKING, 4)),
+            4,
+            "wraps"
+        );
+        assert_eq!(
+            to_row(sub.diff_prev_conflict_effect(WORKING, 3)),
+            4,
+            "wraps"
+        );
+        assert_eq!(to_row(sub.diff_prev_conflict_effect(WORKING, 9)), 4);
+        // In ours' pane the block is its row 3.
+        assert_eq!(to_row(sub.diff_next_conflict_effect(OURS, 0)), 3);
+    }
+
+    /// Two conflicts: `]n` and `[n` step between them in order.
+    #[test]
+    fn conflict_navigation_steps_between_conflicts() {
+        let working = "a\n<<<<<<< HEAD\no1\n=======\nt1\n>>>>>>> x\nb\nc\n\
+                       <<<<<<< HEAD\no2\n=======\nt2\n>>>>>>> x\nd\n";
+        let ours = "a\no1\nb\nc\no2\nd\n";
+        let theirs = "a\nt1\nb\nc\nt2\nd\n";
+        let provider = Arc::new(MockProvider::default());
+        provider.set(WORKING, Rope::from(working));
+        provider.set(OURS, Rope::from(ours));
+        provider.set(THEIRS, Rope::from(theirs));
+        let dyn_provider: Arc<dyn BufferTextProvider> = provider;
+        let sub = DiffSubsystem::new();
+        let desc = three_way_descriptor(&dyn_provider, WORKING, OURS, THEIRS);
+        let session = sub.register_with_sources(WORKING, DiffAlgorithm::Histogram, desc);
+        session.set_conflict_layout(ConflictLayout::Resolve);
+        session
+            .recompute_blocking(&[Rope::from(working), Rope::from(ours), Rope::from(theirs)])
+            .expect("publishes");
+        let to_row = |e: Option<lattice_grammar::Effect>| match e {
+            Some(lattice_grammar::Effect::CursorMove(p)) => p.line,
+            other => panic!("expected CursorMove, got {other:?}"),
+        };
+        assert_eq!(to_row(sub.diff_next_conflict_effect(WORKING, 1)), 8);
+        assert_eq!(
+            to_row(sub.diff_next_conflict_effect(WORKING, 8)),
+            1,
+            "wraps"
+        );
+        assert_eq!(to_row(sub.diff_prev_conflict_effect(WORKING, 8)), 1);
+        assert_eq!(
+            to_row(sub.diff_prev_conflict_effect(WORKING, 1)),
+            8,
+            "wraps"
+        );
+    }
+
+    /// A session with no conflict says so rather than moving.
+    #[test]
+    fn conflict_navigation_without_conflicts_echoes() {
+        let sub = DiffSubsystem::new();
+        assert_eq!(
+            echo_text(sub.diff_next_conflict_effect(WORKING, 0)),
+            "no diff session"
+        );
     }
 
     /// CR.3 `d3o`: keep-theirs pulls REMOTE into the active (local)

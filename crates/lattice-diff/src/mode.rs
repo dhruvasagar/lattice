@@ -502,6 +502,14 @@ impl Mode for DiffConflictMode {
                 action_name: "action:diff-keep-both",
                 handler: conflict_handler!(diff_keep_both_effect),
             },
+            ActionHandlerContribution {
+                action_name: "action:conflict-next",
+                handler: conflict_handler!(diff_next_conflict_effect),
+            },
+            ActionHandlerContribution {
+                action_name: "action:conflict-prev",
+                handler: conflict_handler!(diff_prev_conflict_effect),
+            },
         ]
     }
     fn on_activate(&self, _ctx: ModeContext) -> LifecycleFuture<'_, ()> {
@@ -628,6 +636,16 @@ fn diff_conflict_mode_keymap_entries() -> &'static [KeymapEntry] {
                 mode: Normal, chord: "dB",
                 doc: "conflict keep-both: splice ours then theirs into local",
                 cmd: "action:diff-keep-both"
+            },
+            keymap_entry! {
+                mode: Normal, chord: "]n",
+                doc: "conflict: jump to the next conflict, passing clean merges (wraps)",
+                cmd: "action:conflict-next"
+            },
+            keymap_entry! {
+                mode: Normal, chord: "[n",
+                doc: "conflict: jump to the previous conflict, passing clean merges (wraps)",
+                cmd: "action:conflict-prev"
             },
         ]
     })
@@ -1057,14 +1075,16 @@ mod tests {
                 ("d2p", Some("action:diff-put-ours")),
                 ("d3p", Some("action:diff-put-theirs")),
                 ("dB", Some("action:diff-keep-both")),
+                ("]n", Some("action:conflict-next")),
+                ("[n", Some("action:conflict-prev")),
             ],
         );
     }
 
-    /// CR.3: `DiffConflictMode` contributes the 5 conflict handler bodies,
-    /// keyed to the matching action names.
+    /// `DiffConflictMode` contributes the resolution and navigation handler
+    /// bodies, keyed to the action names its keymap binds.
     #[test]
-    fn conflict_action_handlers_contribute_five() {
+    fn conflict_action_handlers_match_the_keymap() {
         let names: Vec<&str> = DiffConflictMode
             .action_handlers()
             .iter()
@@ -1078,6 +1098,8 @@ mod tests {
                 "action:diff-put-ours",
                 "action:diff-put-theirs",
                 "action:diff-keep-both",
+                "action:conflict-next",
+                "action:conflict-prev",
             ],
         );
     }

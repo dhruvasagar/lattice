@@ -194,8 +194,8 @@ fn diff_conflict_chords_bound_on_conflict_mode_layer() {
     let editor = boot();
     let active = [DiffConflictMode::mode_id()];
     // `d2o`/`d3o`/`d2p`/`d3p` are 3-key; `dB` is 2-key (shift folds into
-    // the case, so the chord is `d` then `B`).
-    let cases: [(&[KeyChord], &str); 5] = [
+    // the case, so the chord is `d` then `B`); `]n`/`[n` walk conflicts.
+    let cases: [(&[KeyChord], &str); 7] = [
         (
             &[
                 KeyChord::char('d'),
@@ -231,6 +231,14 @@ fn diff_conflict_chords_bound_on_conflict_mode_layer() {
         (
             &[KeyChord::char('d'), KeyChord::char('B')],
             "action:diff-keep-both",
+        ),
+        (
+            &[KeyChord::char(']'), KeyChord::char('n')],
+            "action:conflict-next",
+        ),
+        (
+            &[KeyChord::char('['), KeyChord::char('n')],
+            "action:conflict-prev",
         ),
     ];
     for (chords, name) in cases {

@@ -3136,13 +3136,17 @@ fn draw_panes(frame: &mut Frame, area: Rect, app: &App, snap: &DocumentSnapshot)
             && !app.ad().search_line_active;
         // Every pane reserves its bottom row for the per-pane status
         // line (Option A: global modeline removed).
+        // The content stops short of a divider drawn over the pane's last
+        // column, so it wraps at the width the runtime publishes to the
+        // host (`pane_text_cols`) and nothing it draws there is covered.
+        let text_w = pane_text_cols(&rects, &prect);
         let (content_rect, status_rect) = if rect.height >= 2 {
             let content_h = rect.height - 1;
             (
                 Rect {
                     x: rect.x,
                     y: rect.y,
-                    width: rect.width,
+                    width: text_w,
                     height: content_h,
                 },
                 Some(Rect {
@@ -3153,7 +3157,13 @@ fn draw_panes(frame: &mut Frame, area: Rect, app: &App, snap: &DocumentSnapshot)
                 }),
             )
         } else {
-            (rect, None)
+            (
+                Rect {
+                    width: text_w,
+                    ..rect
+                },
+                None,
+            )
         };
         // Slice 3c.final.B (group 1): reuse the `panes_state` Arc
         // bound at the top of `draw_panes` so the slice borrow is
@@ -3668,6 +3678,30 @@ fn draw_pane_separators(frame: &mut Frame, rects: &[(usize, crate::pane::PaneRec
             let para = Paragraph::new(Line::from(Span::styled(glyph.to_string(), style)));
             frame.render_widget(para, r);
         }
+    }
+}
+
+/// The columns of `pane` that show its own content: its width, less the
+/// last column wherever a vertical divider is painted over it.
+///
+/// [`draw_pane_separators`] draws the divider on the left pane's last
+/// column rather than between the two panes. That column must not count
+/// as text width: a pane that soft-wraps into it, or scrolls a long line
+/// up to it, has the character there covered by the divider.
+pub(crate) fn pane_text_cols(
+    rects: &[(usize, crate::pane::PaneRect)],
+    pane: &crate::pane::PaneRect,
+) -> u16 {
+    let last_col = (pane.x + pane.width).saturating_sub(1);
+    let covered = separator_segments(rects)
+        .into_iter()
+        .any(|(col, y_start, y_end)| {
+            col == last_col && y_start < pane.y + pane.height && pane.y < y_end
+        });
+    if covered {
+        pane.width.saturating_sub(1)
+    } else {
+        pane.width
     }
 }
 
@@ -14425,6 +14459,86 @@ mod pane_separator_paint_tests {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::style::{Color, Modifier};
+
+    /// A soft-wrapped line keeps every character in the pane left of the
+    /// divider: the column the divider covers is not part of the width the
+    /// line wraps at.
+    #[test]
+    fn a_wrapped_line_loses_no_character_under_the_divider() {
+        let words: Vec<String> = (0..60).map(|i| format!("w{i:02}")).collect();
+        let text = format!("{}\n", words.join(" "));
+        let mut a = App::new(Document::from_text(&text));
+        a.editor
+            .config
+            .parse_and_set_command("wrap")
+            .expect("`wrap` is settable");
+        a.mutate_editor(|e| e.rebuild_option_cache());
+        let (w, h) = (80u16, 24u16);
+        a.set_viewport_height(22);
+        a.editor.terminal_width = Some(w);
+        a.apply(Action::SplitPaneVertical);
+        // The runtime's per-frame geometry push, as it publishes it.
+        let area = crate::pane::PaneRect {
+            x: 0,
+            y: 0,
+            width: w,
+            height: h - 1,
+        };
+        let rects = a.panes().tree.compute_rects(area);
+        for (idx, rect) in &rects {
+            let cols = u32::from(pane_text_cols(&rects, rect));
+            a.set_pane_viewport(*idx, u32::from(rect.height - 1), cols);
+        }
+        a.mutate_editor_with(|e| e.publish_render_state());
+
+        let snap = a.ad().snapshot.clone();
+        let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
+        terminal
+            .draw(|f| {
+                let _ = draw_frame(f, &a, &snap);
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        let left = rects.iter().map(|(_, r)| *r).min_by_key(|r| r.x).unwrap();
+        let shown: String = (0..h)
+            .map(|y| {
+                (left.x..left.x + left.width)
+                    .map(|x| buf[(x, y)].symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        for word in &words {
+            assert!(
+                shown.contains(word.as_str()),
+                "`{word}` is cut by a wrap point in the left pane:\n{shown}"
+            );
+        }
+    }
+
+    #[test]
+    fn only_the_pane_under_the_divider_gives_up_a_column() {
+        let left = crate::pane::PaneRect {
+            x: 0,
+            y: 0,
+            width: 40,
+            height: 10,
+        };
+        let right = crate::pane::PaneRect {
+            x: 40,
+            y: 0,
+            width: 40,
+            height: 10,
+        };
+        let rects = [(0, left), (1, right)];
+        assert_eq!(pane_text_cols(&rects, &left), 39);
+        assert_eq!(pane_text_cols(&rects, &right), 40);
+        assert_eq!(
+            pane_text_cols(&[(0, left)], &left),
+            40,
+            "no split, no divider"
+        );
+    }
 
     #[test]
     fn the_divider_takes_nothing_from_the_dimmed_pane_beside_it() {

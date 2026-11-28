@@ -749,7 +749,7 @@ fn main_loop(terminal: &mut Terminal<TermBackend>, mut app: App) -> Result<()> {
                 prect.height
             };
             let rows = u32::from(content_h).max(1);
-            let cols = u32::from(prect.width).max(1);
+            let cols = u32::from(crate::render::pane_text_cols(&rects, prect)).max(1);
             let needs = current_leaves
                 .get(*idx)
                 .map(|l| l.viewport_height != rows || l.viewport_width != cols)

@@ -56,7 +56,7 @@ Every option carries a Rust type at compile time (`bool`, `i64`,
   message (`tabstop must be 1..=32`).
 - **Tab completion.** Enum-typed options enumerate their valid
   values; `:set foldmethod=<Tab>` cycles through `manual`,
-  `indent`, `markdown`, `syntax`.
+  `indent`, `markdown`, `syntax`, `lsp`, `diff`.
 
 The internal hot path reads options by **type**, not by name —
 the renderer's `option_cache.tabstop` lookup is a struct field

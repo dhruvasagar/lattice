@@ -5366,6 +5366,7 @@ impl Editor {
         // blocking a later re-fold. Recomputing here (right after the source
         // registers) closes that gap so BOTH panes fold in lockstep.
         let mut base_toggled: Vec<BufferId> = Vec::new();
+        let mut toggled: Vec<BufferId> = Vec::new();
         for change in changes {
             let buffer_id = change.buffer;
             let proto_id = lattice_protocol::ids::BufferId::new(buffer_id.0 as u64);
@@ -5412,9 +5413,20 @@ impl Editor {
                 );
             }
             self.active_modes.insert(buffer_id, active);
+            if !toggled.contains(&buffer_id) {
+                toggled.push(buffer_id);
+            }
             if matches!(change.kind, crate::diff::mode::DiffModeKind::Base) {
                 base_toggled.push(buffer_id);
             }
+        }
+        // A toggle changes which `Mode::options()` layers apply, and
+        // `diff-mode` contributes one (`foldmethod=diff`). Resolve again
+        // before the folds below are rebuilt, so they are built under the
+        // method the buffer now has, and so `:diffoff` hands back the
+        // buffer's own method rather than leaving `diff` resolved.
+        for buffer_id in toggled {
+            self.recompute_options_for_buffer(buffer_id);
         }
         // D-fix.5 fix: now that the fold sources are registered (Activate) or
         // removed (Deactivate), recompute each toggled buffer's folds so the
@@ -57096,6 +57108,9 @@ mod tests {
     /// opens.
     fn editor_with_diff_mode_registered() -> crate::editor::Editor {
         let editor = crate::editor::Editor::default();
+        // `diff-mode` contributes options, so a toggle re-resolves the
+        // buffer's options; that reads every core option, as boot has.
+        editor.config.init_from_linkme();
         let mut registry = lattice_mode::ModeRegistry::new();
         crate::diff::mode::register_diff_modes(&mut registry);
         editor.mode_registry.store(std::sync::Arc::new(registry));

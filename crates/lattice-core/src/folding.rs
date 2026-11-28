@@ -53,6 +53,14 @@ crate::labeled_enum! {
         /// Slice: 4.4.f.
         Lsp = "lsp"
             => "Folds from LSP `textDocument/foldingRange`",
+        /// Only the folds a diff session contributes: its unchanged
+        /// stretches (closed) and its hunks (open). There is no
+        /// primary provider for it, so the buffer's own structure
+        /// (syntax, headings, indent) adds nothing. `diff-mode`
+        /// sets it while a buffer is diffed, as vim's `:diffthis`
+        /// does; outside a diff it yields no folds.
+        Diff = "diff"
+            => "Folds from the diff: unchanged stretches collapse, changes stay open",
     }
 }
 
@@ -170,6 +178,7 @@ mod tests {
             FoldMethod::Markdown,
             FoldMethod::Syntax,
             FoldMethod::Lsp,
+            FoldMethod::Diff,
         ] {
             assert_eq!(FoldMethod::parse_label(fm.label()), Ok(fm));
         }

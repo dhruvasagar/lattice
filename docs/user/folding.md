@@ -46,7 +46,7 @@ detection.
 | `zD`                | Delete the innermost fold at the cursor and every fold nested inside it    |
 | `zj` / `zk`         | Move to the next / previous **visible** fold start / end. Motions: `dzj`, `yzk`, and `zj` in Visual work |
 | `zp` / `:fold-goto-parent` | Jump to the **parent** heading (one level up the fold hierarchy)    |
-| `:set foldmethod=X` | Pick the fold provider: `manual` / `indent` / `markdown` / `syntax`        |
+| `:set foldmethod=X` | Pick the fold provider: `manual` / `indent` / `markdown` / `syntax` / `lsp` / `diff` |
 | `:set nofoldenable` | Hide all fold affordances (folds still exist, all lines render)            |
 
 In **Visual**, `zo` / `zc` / `zd` / `zO` / `zC` / `zD` act on every selected
@@ -72,7 +72,7 @@ in a doc-mode buffer).
 ### Where folds come from
 
 Folds are produced by a **fold provider** that walks the buffer.
-There are four built-in providers:
+There are four built-in providers, plus `diff`:
 
 1. **`manual`** — only the folds the user creates with `zf`. Stable
    line ranges; not affected by buffer content.
@@ -86,6 +86,10 @@ There are four built-in providers:
 4. **`syntax`** — tree-sitter scope queries (functions, classes,
    blocks, etc.). Per-language; ships with each grammar's
    `folds.scm`. The most precise method when available.
+5. **`diff`** — no provider of its own: only the folds a
+   [diff](help:diff-mode) session contributes. A diff sets it while
+   the buffer is diffed, so the buffer's own folds step aside;
+   outside a diff it yields no folds.
 
 The active provider is governed by `foldmethod` (the option
 explained below). The default is `syntax` with a cascading
@@ -95,7 +99,9 @@ fallback: tree-sitter → markdown (for `.md`) → indent.
 
 On top of whatever `foldmethod` is active, some features contribute
 their own **overlay** folds — they're added to the fold set rather than
-replacing the primary provider, and they come and go with the feature:
+replacing the primary provider, and they come and go with the feature.
+A diff is the exception: it also sets `foldmethod=diff` while it lasts,
+so its folds are the buffer's only ones.
 
 - A [diff](help:diff-mode) session adds **hunk folds** (collapse a change, open
   by default) and **unchanged-region folds** (collapse the code between

@@ -113,11 +113,11 @@ fn chats<P: PeerUnderTest>(peer: &P) -> LlmChatsHandle {
 
 /// A running peer's ambient runtime: the chat mode activates, and requests
 /// run, on tasks spawned there. Entered for as long as this is held.
-struct Runtime {
+pub(super) struct Runtime {
     _guard: tokio::runtime::EnterGuard<'static>,
 }
 
-fn runtime() -> Runtime {
+pub(super) fn runtime() -> Runtime {
     // Leaked: one small runtime per scenario, alive for the test process,
     // so the guard can borrow it for `'static`.
     let rt: &'static tokio::runtime::Runtime = Box::leak(Box::new(

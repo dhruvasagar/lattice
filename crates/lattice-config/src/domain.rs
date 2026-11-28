@@ -81,10 +81,10 @@ impl OptionType for FoldMethod {
     }
 
     fn enumerate() -> Option<Vec<&'static str>> {
-        // Order matches the legacy `gen:options` value list so
-        // `:set foldmethod=<Tab>` shows the same candidates;
-        // `lsp` (4.4.f) appended at the end.
-        Some(vec!["manual", "indent", "markdown", "syntax", "lsp"])
+        // Read off the enum, in declaration order, so a new fold method
+        // reaches `:set foldmethod=<Tab>` and the exhaustive schema without
+        // a second list to keep in step.
+        Some(FoldMethod::all().iter().map(|v| v.label()).collect())
     }
 
     /// TC.1: closed — `parse` accepts these forms and nothing else, so
@@ -334,7 +334,7 @@ mod tests {
         let values = FoldMethod::enumerate().expect("enumeration available");
         assert_eq!(
             values,
-            vec!["manual", "indent", "markdown", "syntax", "lsp"]
+            vec!["manual", "indent", "markdown", "syntax", "lsp", "diff"]
         );
     }
 
@@ -345,7 +345,7 @@ mod tests {
         // dropped because the option set itself grew).
         let err = FoldMethod::parse("xyz").unwrap_err();
         assert!(
-            err.contains("expected `manual`, `indent`, `markdown`, `syntax`, or `lsp`")
+            err.contains("expected `manual`, `indent`, `markdown`, `syntax`, `lsp`, or `diff`")
                 && err.contains("xyz"),
             "got `{err}`"
         );

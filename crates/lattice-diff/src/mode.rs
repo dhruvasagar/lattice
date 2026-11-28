@@ -169,6 +169,40 @@ impl Mode for DiffMode {
     fn kind(&self) -> ModeKind {
         ModeKind::Minor
     }
+    /// While a buffer is diffed, its folds are the diff's and nothing
+    /// else's, as vim's `:diffthis` sets `foldmethod=diff`.
+    ///
+    /// The diff's folds are overlays, and the buffer's own primary
+    /// (an org file's headings, a source file's syntax) would otherwise
+    /// run beside them. Two problems with that. The primary can hide
+    /// the change being diffed: org opens with every heading closed, so
+    /// a conflict sat inside a collapsed heading. And the two sets
+    /// overlap without nesting. `foldmethod=diff` has no primary, so
+    /// only this mode's folds run.
+    ///
+    /// `foldlevel=99` so a level a major set for its own folds (org's
+    /// `0`) does not close the hunks. The diff's sources decide what
+    /// starts closed: the unchanged stretches do, the changes do not.
+    ///
+    /// `High`, because other minors contribute a `foldmethod` too
+    /// (`lsp-folding-mode`, when a server attaches) and minors resolve
+    /// by activation order. A server attaching after the diff opened
+    /// would otherwise put its folds back. `High` beats every mode
+    /// contribution in any layer and still loses to the user's
+    /// `:setlocal`, which is vim's arrangement: the diff sets the
+    /// method, the user can still change it in that window.
+    ///
+    /// Layers, not writes: `:diffoff` deactivates the mode, the layer
+    /// goes with it, and the buffer's own `foldmethod` and `foldlevel`
+    /// come back.
+    fn options(&self) -> lattice_config::OptionOverrideSet {
+        lattice_config::overrides! {
+            #[priority(High)]
+            lattice_config::FoldMethodOption = lattice_core::FoldMethod::Diff,
+            #[priority(High)]
+            lattice_config::core_options::FoldLevel = 99,
+        }
+    }
     /// MO.x (2026-06-24): contribute the `do`/`dp` chords through the
     /// standard `Mode::keymap()` seam (the multibuffer `]e`/`[e` pattern).
     /// The host's K.2.4 translation pass resolves each entry's `cmd` name
@@ -468,6 +502,14 @@ impl Mode for DiffConflictMode {
                 action_name: "action:diff-keep-both",
                 handler: conflict_handler!(diff_keep_both_effect),
             },
+            ActionHandlerContribution {
+                action_name: "action:conflict-next",
+                handler: conflict_handler!(diff_next_conflict_effect),
+            },
+            ActionHandlerContribution {
+                action_name: "action:conflict-prev",
+                handler: conflict_handler!(diff_prev_conflict_effect),
+            },
         ]
     }
     fn on_activate(&self, _ctx: ModeContext) -> LifecycleFuture<'_, ()> {
@@ -594,6 +636,16 @@ fn diff_conflict_mode_keymap_entries() -> &'static [KeymapEntry] {
                 mode: Normal, chord: "dB",
                 doc: "conflict keep-both: splice ours then theirs into local",
                 cmd: "action:diff-keep-both"
+            },
+            keymap_entry! {
+                mode: Normal, chord: "]n",
+                doc: "conflict: jump to the next conflict, passing clean merges (wraps)",
+                cmd: "action:conflict-next"
+            },
+            keymap_entry! {
+                mode: Normal, chord: "[n",
+                doc: "conflict: jump to the previous conflict, passing clean merges (wraps)",
+                cmd: "action:conflict-prev"
             },
         ]
     })
@@ -1023,14 +1075,16 @@ mod tests {
                 ("d2p", Some("action:diff-put-ours")),
                 ("d3p", Some("action:diff-put-theirs")),
                 ("dB", Some("action:diff-keep-both")),
+                ("]n", Some("action:conflict-next")),
+                ("[n", Some("action:conflict-prev")),
             ],
         );
     }
 
-    /// CR.3: `DiffConflictMode` contributes the 5 conflict handler bodies,
-    /// keyed to the matching action names.
+    /// `DiffConflictMode` contributes the resolution and navigation handler
+    /// bodies, keyed to the action names its keymap binds.
     #[test]
-    fn conflict_action_handlers_contribute_five() {
+    fn conflict_action_handlers_match_the_keymap() {
         let names: Vec<&str> = DiffConflictMode
             .action_handlers()
             .iter()
@@ -1044,6 +1098,8 @@ mod tests {
                 "action:diff-put-ours",
                 "action:diff-put-theirs",
                 "action:diff-keep-both",
+                "action:conflict-next",
+                "action:conflict-prev",
             ],
         );
     }

@@ -89,6 +89,14 @@ vertically aligned as you scroll. When a diff opens, the cursor also
 **jumps to the first change** so you start at something that matters
 instead of the top of the file.
 
+While a buffer is diffed these are **its only folds**: `diff-mode` sets
+`foldmethod=diff`, as vim's `:diffthis` does, so the buffer's own folds
+(an org file's headings, a source file's syntax) step aside and cannot
+hide a change. It also sets `foldlevel=99`, so a level that closes a
+file's own folds (org opens with `0`) does not close the changes.
+`:diffoff` hands back the buffer's own `foldmethod` and `foldlevel`. A
+`:setlocal foldmethod=…` in a diffed buffer still wins.
+
 These are just folds — the normal [fold](help:folding) vocabulary drives
 them:
 

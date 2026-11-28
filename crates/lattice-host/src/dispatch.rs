@@ -5366,6 +5366,7 @@ impl Editor {
         // blocking a later re-fold. Recomputing here (right after the source
         // registers) closes that gap so BOTH panes fold in lockstep.
         let mut base_toggled: Vec<BufferId> = Vec::new();
+        let mut toggled: Vec<BufferId> = Vec::new();
         for change in changes {
             let buffer_id = change.buffer;
             let proto_id = lattice_protocol::ids::BufferId::new(buffer_id.0 as u64);
@@ -5412,9 +5413,20 @@ impl Editor {
                 );
             }
             self.active_modes.insert(buffer_id, active);
+            if !toggled.contains(&buffer_id) {
+                toggled.push(buffer_id);
+            }
             if matches!(change.kind, crate::diff::mode::DiffModeKind::Base) {
                 base_toggled.push(buffer_id);
             }
+        }
+        // A toggle changes which `Mode::options()` layers apply, and
+        // `diff-mode` contributes one (`foldmethod=diff`). Resolve again
+        // before the folds below are rebuilt, so they are built under the
+        // method the buffer now has, and so `:diffoff` hands back the
+        // buffer's own method rather than leaving `diff` resolved.
+        for buffer_id in toggled {
+            self.recompute_options_for_buffer(buffer_id);
         }
         // D-fix.5 fix: now that the fold sources are registered (Activate) or
         // removed (Deactivate), recompute each toggled buffer's folds so the
@@ -7066,10 +7078,27 @@ impl Editor {
             self.set_message(EchoLevel::Error, format!("conflict: {msg}"));
             return;
         }
+        // Equal thirds. The two `split_active`s halve the ours pane and then
+        // halve the working pane, which left ours at 50% and the other two at
+        // 25% each.
+        self.pane_tree.equalize_ratios();
         self.activate_pane(working_pane);
+        // Open on the first conflict, as vim opens a diff on its first
+        // change. The first change of a merge is often a region git merged
+        // cleanly, which needs no decision; the conflict is what the user
+        // opened this for. Git's markers say where it is, so this needs
+        // no diff to have run. The side panes follow through the group's
+        // scroll binding.
+        let snap = self.document.snapshot();
+        let lines = (0..snap.buffer.content_line_count()).filter_map(|i| snap.buffer.line(i));
+        if let Some(line) = lattice_diff::conflict::first_marker_line(lines) {
+            self.cursor = lattice_protocol::position::Position::new(line, 0);
+            self.clamp_cursor_to_active_buffer();
+            self.do_scroll_cursor_to(lattice_grammar::ScrollPos::Center);
+        }
         self.set_message(
             EchoLevel::Info,
-            "conflict: ours | working | theirs — d2o ours, d3o theirs, dB both, ]c next",
+            "conflict: ours | working | theirs — d2o ours, d3o theirs, dB both, ]n next conflict",
         );
     }
 
@@ -25990,11 +26019,28 @@ impl Editor {
     /// the cursor's logical position never lands in a hidden region.
     /// `foldenable = false` suppresses entirely.
     ///
-    /// Guarded against an infinite loop when a closed fold's body ends
-    /// at the last addressable line (fold.end_line == last): the
-    /// `(end + 1).min(last)` clamp in the `going_down` branch would
-    /// produce `last`, re-match the same fold, and loop forever.
-    /// Checking `fold.end_line >= last` breaks out instead.
+    /// Two walks, each moving one way only, so the snap always ends:
+    ///
+    /// - **Down** (a downward motion): step past the fold hiding the
+    ///   line, to the row below it, until the line is visible. Each
+    ///   step lands strictly lower. It stops early when the fold
+    ///   reaches the last addressable line, since there is no row
+    ///   below it to land on.
+    /// - **Up** (an upward motion, or a downward one that found
+    ///   nothing visible below): step to the head of the fold hiding
+    ///   the line until the line is visible. Each step lands strictly
+    ///   higher, and the result is the head of the outermost closed
+    ///   fold, the one visible row standing for the collapsed range.
+    ///   That is where vim leaves the cursor when `j` has nowhere
+    ///   below to go.
+    ///
+    /// Monotone walks matter because folds from different providers
+    /// may overlap without nesting. A diff session folds a file's
+    /// unchanged stretches and org folds each heading to the end of
+    /// its subtree, so a heading starting inside an unchanged stretch
+    /// overlaps its fold. A walk that alternated directions (past
+    /// one fold, back to the other's head) cycled between the two
+    /// forever.
     pub fn snap_cursor_past_closed_folds(&mut self, prev_line: u32) {
         if !self.foldenable() {
             return;
@@ -26006,53 +26052,33 @@ impl Editor {
         let going_down = new_line > prev_line;
         let snap = self.document.snapshot();
         let last = last_addressable_line(&snap.buffer);
-        let mut snapped = new_line;
-        let mut exited_a_fold = false;
-        loop {
-            let in_closed = self
-                .folds
+        let hiding = |line: u32| {
+            self.folds
                 .iter()
-                .find(|f| f.closed && snapped > f.start_line && snapped <= f.end_line)
-                .copied();
-            if let Some(fold) = in_closed {
-                // When the fold's body extends to the last addressable
-                // line there is no `end_line + 1` to land on. Fall back
-                // to the fold's HEAD in both directions: it is the one
-                // visible row standing for the collapsed range, and it
-                // is where vim leaves the cursor when `j` has nowhere
-                // below to go.
-                //
-                // This used to snap to `last` instead, which is *inside*
-                // the collapsed body — a line no renderer draws. The TUI
-                // masked it (its caret walk projects a hidden cursor onto
-                // the fold head) but GPUI drew no cursor at all, and
-                // either way it was a trap: `k` moved to `last - 1`,
-                // still inside the fold, and this branch snapped it right
-                // back to `last`. The cursor was pinned on a hidden line
-                // until an absolute motion (`gg`) escaped.
-                //
-                // `continue` rather than `break` so a nested closed fold
-                // around the head resolves too; `start_line < snapped`
-                // holds on this path, so the walk strictly decreases and
-                // terminates.
-                if fold.end_line >= last {
-                    snapped = fold.start_line;
+                .find(|f| f.closed && line > f.start_line && line <= f.end_line)
+                .copied()
+        };
+        let mut snapped = new_line;
+        if going_down {
+            let mut exited_a_fold = false;
+            loop {
+                if let Some(fold) = hiding(snapped) {
+                    if fold.end_line >= last {
+                        break;
+                    }
+                    snapped = fold.end_line + 1;
+                    exited_a_fold = true;
                     continue;
                 }
-                snapped = if going_down {
-                    fold.end_line + 1
-                } else {
-                    fold.start_line
-                };
-                exited_a_fold = true;
-                continue;
+                if exited_a_fold && snapped < last && is_blank_line(&snap.buffer, snapped) {
+                    snapped += 1;
+                    continue;
+                }
+                break;
             }
-            if exited_a_fold && going_down && snapped < last && is_blank_line(&snap.buffer, snapped)
-            {
-                snapped += 1;
-                continue;
-            }
-            break;
+        }
+        while let Some(fold) = hiding(snapped) {
+            snapped = fold.start_line;
         }
         if snapped == new_line {
             return;
@@ -57095,6 +57121,9 @@ mod tests {
     /// opens.
     fn editor_with_diff_mode_registered() -> crate::editor::Editor {
         let editor = crate::editor::Editor::default();
+        // `diff-mode` contributes options, so a toggle re-resolves the
+        // buffer's options; that reads every core option, as boot has.
+        editor.config.init_from_linkme();
         let mut registry = lattice_mode::ModeRegistry::new();
         crate::diff::mode::register_diff_modes(&mut registry);
         editor.mode_registry.store(std::sync::Arc::new(registry));

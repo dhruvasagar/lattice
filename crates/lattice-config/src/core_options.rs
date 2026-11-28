@@ -1591,7 +1591,9 @@ mod tests {
         r.init_from_linkme();
         let err = r.parse_and_set_command("foldmethod=xyz").unwrap_err();
         let msg = format!("{err}");
-        assert!(msg.contains("expected `manual`, `indent`, `markdown`, `syntax`, or `lsp`"));
+        assert!(
+            msg.contains("expected `manual`, `indent`, `markdown`, `syntax`, `lsp`, or `diff`")
+        );
     }
 
     // AI-1b: `ai.log` / `ai.log_level` config options. Registration

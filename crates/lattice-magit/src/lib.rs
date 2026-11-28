@@ -1037,6 +1037,12 @@ fn register_ex_commands(
             surface_form: SurfaceForm::Keyword,
         },
     );
+    // Opened to plugins: the project plugin's switch menu offers `m Magit` as
+    // a row naming this command with the chosen root, and a native command a
+    // plugin may not name is dropped from its menu. It opens a status view of
+    // the repository at a path, which is what `C-x g` does for the user; every
+    // change from there is a key the user presses in that buffer.
+    registry.allow_plugin_invocation("magit-status");
 
     // MR.3: a view whose whole identity is "this view, this repository".
     // The view word goes in; the repository is resolved from the buffer
@@ -5783,6 +5789,25 @@ mod tests {
     /// drift between them is silent: the buffer would open with no
     /// mode, so every chord on it would be inert while the buffer
     /// itself looked fine.
+    /// The project plugin's switch menu names `magit-status` in its `m` row.
+    /// A native command closed to plugins is dropped from a plugin's menu, so
+    /// closed, the row silently vanished.
+    #[test]
+    fn magit_status_is_open_to_plugins() {
+        let mut registry = CommandRegistry::new();
+        register_ex_commands(
+            &mut registry,
+            Default::default(),
+            crate::repo_scope::test_support::empty_store(),
+            Default::default(),
+            None,
+        );
+        let spec = registry
+            .lookup_by_name("magit-status")
+            .expect("`:magit-status` is registered");
+        assert!(spec.plugin_may_invoke());
+    }
+
     #[test]
     fn the_remote_buffer_is_reachable_by_ex_command_and_by_action() {
         let mut registry = CommandRegistry::new();

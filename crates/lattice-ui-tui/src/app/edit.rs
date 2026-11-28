@@ -1984,10 +1984,15 @@ mod reported_vim_grammar_2026_09_11 {
             e.open_synthetic_buffer("*plugin-trace*", "plugin-trace-mode");
             let b = e.buffers.by_name("*plugin-trace*").expect("exists");
             if let Some(h) = e.buffers.document_handle(b) {
-                let _ = h.apply_edit_batch(vec![lattice_protocol::edit::Edit::insert(
-                    lattice_protocol::position::Position::new(0, 0),
-                    "hello world\n",
-                )]);
+                // Waited on: the document actor applies it on its own
+                // thread, and a dropped `Pending` leaves the buffer empty
+                // whenever that thread is slower than the tick below.
+                let _ = lattice_runtime::block_on(h.apply_edit_batch(vec![
+                    lattice_protocol::edit::Edit::insert(
+                        lattice_protocol::position::Position::new(0, 0),
+                        "hello world\n",
+                    ),
+                ]));
             }
         });
         a.mutate_editor(|e: &mut lattice_host::editor::Editor| {
@@ -2027,16 +2032,25 @@ mod reported_vim_grammar_2026_09_11 {
             e.open_synthetic_buffer("*plugin-trace*", "plugin-trace-mode");
             let b = e.buffers.by_name("*plugin-trace*").expect("exists");
             if let Some(h) = e.buffers.document_handle(b) {
-                let _ = h.apply_edit_batch(vec![lattice_protocol::edit::Edit::insert(
-                    lattice_protocol::position::Position::new(0, 0),
-                    "hello world\n",
-                )]);
+                // Waited on: the document actor applies it on its own
+                // thread, and a dropped `Pending` leaves the buffer empty
+                // whenever that thread is slower than the tick below.
+                let _ = lattice_runtime::block_on(h.apply_edit_batch(vec![
+                    lattice_protocol::edit::Edit::insert(
+                        lattice_protocol::position::Position::new(0, 0),
+                        "hello world\n",
+                    ),
+                ]));
             }
         });
         a.mutate_editor(|e: &mut lattice_host::editor::Editor| {
             let _ = e.run_tick_pending();
         });
         let before = a.editor.document.text();
+        assert!(
+            before.starts_with("hello"),
+            "precondition: the buffer has content, got {before:?}"
+        );
         press_chars(&mut a, "gg0x");
         assert_eq!(a.editor.document.text(), before, "`x` still refused");
         press_chars(&mut a, "dd");

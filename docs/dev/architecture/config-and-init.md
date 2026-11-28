@@ -265,6 +265,49 @@ The full annotated shape (imports, `plugin.toml`, the combined world) is in the
 user guide, [`../../user/init.md`](../../user/init.md); `lattice --scaffold-init`
 writes a compilable starter.
 
+## 6a. Reloading — `:reload-config` re-reads everything
+
+`:reload-config` re-applies the whole configuration, in boot's order:
+
+1. `lattice.toml`, then the project's `.lattice/config.toml`, into the config
+   registry (read off the editor thread);
+2. the host re-derives what it caches from them — the theme, the option cache,
+   the `[lsp]` tree, `completion.per-language` — and publishes
+   `ConfigFilesReloaded` so every other owner of a table re-reads its own
+   (`[llm]` today);
+3. the `[plugins]` table is reconciled and `init.rs` rebuilt and reloaded.
+
+`init.rs` runs last, as at boot, so it still wins a conflict with the file.
+
+**A deleted line reverts.** The registry remembers, per option, the value a
+config file applied. On a reload, an option the files used to set and no longer
+mention goes back to its registered default — but only if it still holds the
+file's value. A value changed since by `:set` (or by `init.rs`, which re-applies
+its own next) is the user's newer word and is left alone. An assignment that
+now fails to parse is not "no longer mentioned": the option keeps its value, as
+a failed `:set` does, and the warning says why. Plugin options already behave
+this way through the held layer (`clear_held`); this extends the same rule to
+built-in ones, so the editor matches the file the user is looking at.
+
+**What a reload does not redo.** Anything that took its value at startup and
+never reads it again — the GUI window's decorations, MCP servers already
+running — keeps what it started with; the reload says so in `*messages*`
+rather than leaving the user to wonder. The owner of such an option marks it
+(`ConfigRegistry::mark_startup_only`), since only the owner knows it reads the
+value once; a reading that changes a marked option lists it in
+`LoadOutcome::startup_only_changed`.
+
+Rejected: **re-apply only** (vim `:source`, emacs `load-file`) — a deleted line
+keeps applying until restart and the editor drifts from the file, while plugin
+options already revert. **Reset everything, then re-apply** — also wipes values
+the user `:set` in the session for options the file never mentions.
+
+Ownership: the config registry owns the record of what a file applied
+(`lattice-config`); the host owns the order and its own caches; each other
+table's owner re-reads it on `ConfigFilesReloaded`. No subsystem learns about
+another's table. Slice plan:
+[`../operations/slice-plans/archive/config-reload.md`](../operations/slice-plans/archive/config-reload.md).
+
 ## 7. Paramount-goal alignment
 
 - **#2 Extensibility** — init.rs (and any plugin) reacts to any plugin's lifecycle

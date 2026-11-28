@@ -1057,6 +1057,14 @@ fn effect_to_wit(e: &NativeEffect) -> Result<WitEffect, String> {
         // line" gets a typed error naming the gap rather than a silently
         // dropped position, which is the failure mode the mirror-less
         // variants are deliberately loud about.
+        // Native-only: only the loader's own `:reload-config` emits it. A
+        // plugin reloading the user's configuration would be overriding the
+        // user's choice of when their config changes.
+        NativeEffect::ReloadConfig => {
+            return Err("Effect::ReloadConfig has no WIT mirror \
+                        (only `:reload-config` emits it)"
+                .to_string());
+        }
         NativeEffect::OpenSyntheticBufferAt { .. } => {
             return Err("Effect::OpenSyntheticBufferAt has no WIT mirror yet \
                         (native emitters only; add a payload to wit/types.wit \

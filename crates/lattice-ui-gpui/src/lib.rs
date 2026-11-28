@@ -786,6 +786,12 @@ impl GpuiApp {
         for signal in signals {
             self.handle_renderer_signal(signal);
         }
+        // Read before the window opened, and never again: `:reload-config`
+        // names a change to them rather than appearing to apply it.
+        self.mutate_editor(|e| {
+            e.config.mark_startup_only("ui.window.decorations");
+            e.config.mark_startup_only("ui.window.start-maximized");
+        });
     }
 
     /// Ask the editor to quit the way `:qa` does, and report whether it will.
@@ -1689,6 +1695,7 @@ impl GpuiApp {
             // a synthetic buffer and then acts on it runs in order.
             Effect::OpenSyntheticBuffer { .. }
             | Effect::OpenSyntheticBufferAt { .. }
+            | Effect::ReloadConfig
             | Effect::DisplayBuffer { .. } => {}
             Effect::OpenLspTraceLog { server_id } => {
                 self.mutate_editor(move |e| e.do_open_lsp_trace_log(server_id.as_deref()));

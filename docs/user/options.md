@@ -155,6 +155,18 @@ Dotted names need quoting in TOML (`"lsp.log.display"`).
 Unknown keys produce a startup warning rather than an error —
 the editor still launches.
 
+#### Reloading
+
+`:reload-config` reads both files again and applies them, then
+reloads `[plugins]` and `init.rs`, the same order as startup, so
+`init.rs` still wins where both set something. An option whose
+line you deleted goes back to its default, unless you changed it
+with `:set` since; a line that no longer parses keeps the old
+value and says why. `*messages*` lists what went back to its
+default, and names any setting that is read only at startup
+(the GUI window's decorations, the terminal's key reporting),
+which takes effect the next time lattice starts.
+
 #### Plugin options
 
 **A plugin's options go here too**, though plugins load after this

@@ -47,7 +47,7 @@ feature uses — it is not a second-class bolt-on.
 | `:plugin-clean` | List staged plugin directories nothing loads any more; `:plugin-clean!` removes them. |
 | `:plugins` | Open the **manager view** — a buffer listing every loaded plugin with health, tier, source, build state and capabilities, plus the full error for anything that failed to build or load. |
 | `:plugin-trace` | Open `*plugin-trace*` — the live boundary-trace firehose across all plugins. |
-| `:reload-config` | Install what `lattice.toml`'s `[plugins]` table now declares, then rebuild your `init.rs` and reload it. A build that fails keeps the previous config running and shows the compiler error in `:plugins`. |
+| `:reload-config` | Re-read `lattice.toml` (and the project's `.lattice/config.toml`), install what its `[plugins]` table now declares, then rebuild your `init.rs` and reload it. A build that fails keeps the previous `init.rs` running and shows the compiler error in `:plugins`. |
 | `:set plugin.trace-level=debug` | Raise the global trace verbosity (see [observability](#observability-what-a-plugin-is-doing)). |
 | `:list-plugin-apis` / `:describe-plugin-api [<seam>]` | Browse the plugin **API catalog** (the WIT seams). |
 | `:list-plugins` / `:describe-plugin <name>` | List / describe the currently-loaded plugins. |
@@ -158,8 +158,8 @@ network. `:reload-config` installs a plugin you have added since.
   two machines can install different releases. Pin both to get the same bytes
   everywhere.
 
-`:reload-config` re-reads only the `[plugins]` table of `lattice.toml`; the
-file's other settings still take effect on restart.
+`:reload-config` re-reads the whole of `lattice.toml`, `[plugins]` included
+([options](help:options) has how a reload applies the rest).
 
 ### Installing plugins from `init.rs`
 

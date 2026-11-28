@@ -124,6 +124,13 @@ struct Inner {
     /// D1: options a project's `.lattice/config.toml` may not set — see
     /// [`ConfigRegistry::refuse_from_project`].
     project_refused: std::collections::HashSet<String>,
+    /// The value a config file last applied to each option, by canonical
+    /// name, formatted as the option held it right after — see
+    /// [`ConfigRegistry::record_file_applied`].
+    file_applied: HashMap<String, String>,
+    /// Options read once at startup — see
+    /// [`ConfigRegistry::mark_startup_only`].
+    startup_only: std::collections::BTreeSet<String>,
     /// Values plugins contributed to other plugins' options, by canonical
     /// option name, in the order each contributor first contributed — see
     /// [`ConfigRegistry::contribute`].
@@ -600,6 +607,98 @@ impl ConfigRegistry {
             by_source.remove(&source);
         }
         inner.held.retain(|_, by_source| !by_source.is_empty());
+    }
+
+    /// Note that `name` is read once, at startup, by its owner, so a later
+    /// change to it waits for the next start.
+    ///
+    /// The owner marks it, because only the owner knows: the GUI reads the
+    /// window's decorations before the window opens, the terminal peer asks
+    /// the terminal for key reporting once. A reload that changes a marked
+    /// option says so instead of appearing to have applied it.
+    pub fn mark_startup_only(&self, name: &str) {
+        let canonical = self
+            .lookup(name)
+            .map_or_else(|| name.to_string(), |o| o.name().to_string());
+        self.inner
+            .lock()
+            .expect("ConfigRegistry poisoned")
+            .startup_only
+            .insert(canonical);
+    }
+
+    /// The options marked with [`Self::mark_startup_only`], in name order.
+    pub fn startup_only(&self) -> Vec<String> {
+        self.inner
+            .lock()
+            .expect("ConfigRegistry poisoned")
+            .startup_only
+            .iter()
+            .cloned()
+            .collect()
+    }
+
+    /// Note that a config file just set `name`, recording the value the option
+    /// now holds.
+    ///
+    /// A reload compares against this: an option the files no longer mention
+    /// reverts to its default only while it still holds the value a file gave
+    /// it, so a `:set` made since is not undone. Keyed by canonical name, so a
+    /// file that switched to an alias's spelling is still the same option. A
+    /// name no registered option answers to records nothing.
+    pub fn record_file_applied(&self, name: &str) {
+        let Some(opt) = self.lookup(name) else {
+            return;
+        };
+        let value = opt.get_formatted();
+        self.inner
+            .lock()
+            .expect("ConfigRegistry poisoned")
+            .file_applied
+            .insert(opt.name().to_string(), value);
+    }
+
+    /// The value a config file last applied to `name`, if one did.
+    pub fn file_applied(&self, name: &str) -> std::option::Option<String> {
+        let canonical = self.lookup(name).map(|o| o.name().to_string());
+        let inner = self.inner.lock().expect("ConfigRegistry poisoned");
+        inner
+            .file_applied
+            .get(canonical.as_deref().unwrap_or(name))
+            .cloned()
+    }
+
+    /// Take the whole record, leaving it empty — the start of a fresh reading
+    /// of the files, which records anew what it applies.
+    pub(crate) fn take_file_applied(&self) -> HashMap<String, String> {
+        std::mem::take(
+            &mut self
+                .inner
+                .lock()
+                .expect("ConfigRegistry poisoned")
+                .file_applied,
+        )
+    }
+
+    /// Put back a record this reading did not replace: the file still names the
+    /// option, but the new value failed, so the old one stands and is still the
+    /// file's.
+    pub(crate) fn restore_file_applied(&self, name: String, value: String) {
+        self.inner
+            .lock()
+            .expect("ConfigRegistry poisoned")
+            .file_applied
+            .entry(name)
+            .or_insert(value);
+    }
+
+    /// Is `name` recorded as set by a config file in the current reading?
+    pub(crate) fn has_file_applied(&self, name: &str) -> bool {
+        self.inner
+            .lock()
+            .expect("ConfigRegistry poisoned")
+            .file_applied
+            .contains_key(name)
     }
 
     /// PMF.16: held names no registered option answers to, with the source that

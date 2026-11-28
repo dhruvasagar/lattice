@@ -1326,6 +1326,7 @@ impl App {
             // a synthetic buffer and then acts on it runs in order.
             Effect::OpenSyntheticBuffer { .. }
             | Effect::OpenSyntheticBufferAt { .. }
+            | Effect::ReloadConfig
             | Effect::DisplayBuffer { .. } => {}
             // PI.2b: dump the plugin-API catalog into a savable buffer.
             Effect::ExportPluginApi { format } => {
@@ -1603,6 +1604,7 @@ fn effect_mutates_or_yanks(effect: &Effect) -> bool {
         | Effect::OpenAiLog { .. }
         | Effect::OpenSyntheticBuffer { .. }
         | Effect::OpenSyntheticBufferAt { .. }
+        | Effect::ReloadConfig
         | Effect::OpenMessages
         | Effect::ToggleLspTrace { .. }
         | Effect::OpenLspTraceLog { .. }
@@ -1775,6 +1777,7 @@ fn effect_mutates(effect: &Effect) -> bool {
         | Effect::OpenAiLog { .. }
         | Effect::OpenSyntheticBuffer { .. }
         | Effect::OpenSyntheticBufferAt { .. }
+        | Effect::ReloadConfig
         | Effect::OpenMessages
         | Effect::ToggleLspTrace { .. }
         | Effect::OpenLspTraceLog { .. }

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Changed
+- **`:reload-config` reloads the whole configuration.** It used to rebuild `init.rs` and pick up new `[plugins]` only, so any other edit to `lattice.toml` needed a restart. Now it re-reads `lattice.toml` and the project's `.lattice/config.toml` first, then `[plugins]`, then `init.rs`, the same order as startup. An option whose line you deleted goes back to its default, unless you changed it since with `:set`; `*messages*` lists each one. LLM providers and profiles (`[llm]`) are re-read too; MCP servers already running keep their settings until restart, and the reload says so if they changed. A language server whose `[lsp.<server>]` settings changed is told so, without a restart, and snippet packs are read again. A setting that is only read at startup (the GUI window's decorations, the terminal's key reporting) is named in `*messages*` as taking effect at the next start.
+
 ### Fixed
 - **An inline image takes one line in the terminal, not eight.** The terminal shows an image as its caption (the alt text, or the file name), but each one reserved eight rows with the caption in the middle, so an org note with images was mostly blank space. Now the caption takes one row. The GUI, which draws the picture, is unchanged.
 - **A prompt that follows a plugin's picker shows at once.** Choosing an entry in a plugin's picker that then asks a question, such as org-clients' capture asking for the client and then `Decision:`, often showed the question only after another key press. It now appears as soon as the picker closes, in the terminal and the GUI.

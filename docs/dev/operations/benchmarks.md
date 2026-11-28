@@ -3578,6 +3578,19 @@ cost alone.
 | `config::plugins_table/16`    | **3.2µs**  | Mixed shorthand and full tables. |
 | `config::plugins_table/128`   | **23µs**   | Far past any real config; linear in entries. |
 
+### Config reload (`config::reload_revert`)
+
+`:reload-config`'s registry half: one reading of a file that sets `n`
+options, then one of a file that no longer does, so each reverts to its
+default (`lattice_config::load_paths`). Once per command, off the editor
+thread. Each iteration is both readings, file I/O included.
+
+| Bench                         | Time       | Notes |
+|-------------------------------|------------|-------|
+| `config::reload_revert/1`     | **10µs**   | Mostly the two file reads. |
+| `config::reload_revert/16`    | **34µs**   | A typical `lattice.toml`. |
+| `config::reload_revert/128`   | **219µs**  | Far past any real config; linear in options. |
+
 ### Option contributions (`config::option_contributions`)
 
 An option's owner reading what other plugins contributed to it

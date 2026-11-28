@@ -110,7 +110,8 @@ Your on-disk plugins live alongside it at `~/.config/lattice/plugins/`.
   caches the result. An unchanged config costs nothing at start: no toolchain
   is invoked at all. The first build is the slow one (about a minute, mostly
   downloading and compiling `wit-bindgen`); later ones take a few seconds.
-- **Reload without restarting** with `:reload-config` — it recompiles
+- **Reload without restarting** with `:reload-config` — it re-reads
+  `lattice.toml` first ([options](help:options)), then recompiles
   `src/lib.rs`, unloads the old config (reversing every keymap, command,
   option, and subscription it added) and instantiates the new one in a fresh,
   clean sandbox. Edit, `:reload-config`, done. If the build fails, the previous

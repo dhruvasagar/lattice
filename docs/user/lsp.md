@@ -317,7 +317,8 @@ checkOnSave.command = "clippy"
 cargo.features = "all"
 ```
 
-The file is read at startup.
+The file is read at startup and on `:reload-config`; a running server whose
+table changed is sent `workspace/didChangeConfiguration`.
 
 ### Turning LSP off for a buffer
 

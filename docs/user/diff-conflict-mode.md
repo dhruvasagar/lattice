@@ -65,10 +65,15 @@ a merge or rebase that left conflict markers in a file you then diff.
 
 ## Walking the conflicts
 
-`]c` and `[c` move to the next / previous hunk and wrap at the end. In
-a conflict session those hunks **are** the conflict regions, so the
-pair walks you conflict-to-conflict — land on one, resolve it with
-`d3o` / `dB`, `]c` to the next.
+A conflict opened from magit (`dd` on an unmerged file) starts **on its
+first conflict**, the first `<<<<<<<` line, with the two copies scrolled
+alongside. A conflict block is tinted with its own colour, apart from the
+ordinary change colours.
+
+`]c` and `[c` move to the next / previous hunk and wrap at the end. In a
+merge, git has already merged some regions cleanly; those differ from one
+side and are hunks too, tinted as ordinary changes. So `]c` stops at them
+as well as at the conflicts.
 
 They come from [`diff-mode`](help:diff-mode) rather than this mode,
 because moving between regions is the same motion whether the region

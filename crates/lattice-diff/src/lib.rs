@@ -34,6 +34,8 @@
 #![deny(unsafe_code)]
 
 pub mod compute;
+// Where a conflicted file's conflicts are, read off git's markers.
+pub mod conflict;
 pub mod patch;
 // DR.1 (2026-08-12): intra-line refinement — which PART of a changed
 // line changed. Pure; `lattice-magit` and `diff-mode` both consume it.

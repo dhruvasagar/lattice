@@ -7083,6 +7083,19 @@ impl Editor {
         // 25% each.
         self.pane_tree.equalize_ratios();
         self.activate_pane(working_pane);
+        // Open on the first conflict, as vim opens a diff on its first
+        // change. The first change of a merge is often a region git merged
+        // cleanly, which needs no decision; the conflict is what the user
+        // opened this for. Git's markers say where it is, so this needs
+        // no diff to have run. The side panes follow through the group's
+        // scroll binding.
+        let snap = self.document.snapshot();
+        let lines = (0..snap.buffer.content_line_count()).filter_map(|i| snap.buffer.line(i));
+        if let Some(line) = lattice_diff::conflict::first_marker_line(lines) {
+            self.cursor = lattice_protocol::position::Position::new(line, 0);
+            self.clamp_cursor_to_active_buffer();
+            self.do_scroll_cursor_to(lattice_grammar::ScrollPos::Center);
+        }
         self.set_message(
             EchoLevel::Info,
             "conflict: ours | working | theirs — d2o ours, d3o theirs, dB both, ]c next",

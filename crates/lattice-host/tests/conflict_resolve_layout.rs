@@ -141,3 +141,27 @@ async fn the_working_file_folds_by_the_diff_alone_while_diffed() {
         editor.foldmethod()
     );
 }
+
+/// The working file opens on its first conflict, not on its first change:
+/// in a merge the first change is often one git merged cleanly.
+#[tokio::test(flavor = "current_thread")]
+async fn the_working_file_opens_on_its_first_conflict() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let working = dir.path().join("notes.org");
+    std::fs::write(
+        &working,
+        "a\nmerged cleanly\nb\nc\nd\n<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> other\ne\n",
+    )
+    .unwrap();
+
+    let mut editor = Editor::boot(CoreDocument::from_text("x\n"));
+    side(&mut editor, "*ours*", "a\nb\nc\nd\nours\ne\n");
+    side(
+        &mut editor,
+        "*theirs*",
+        "a\nmerged cleanly\nb\nc\nd\ntheirs\ne\n",
+    );
+
+    editor.do_diff_resolve("*ours*", working, "*theirs*");
+    assert_eq!(editor.cursor.line, 5, "on the `<<<<<<<` line");
+}

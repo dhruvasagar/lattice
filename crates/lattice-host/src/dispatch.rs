@@ -7066,6 +7066,10 @@ impl Editor {
             self.set_message(EchoLevel::Error, format!("conflict: {msg}"));
             return;
         }
+        // Equal thirds. The two `split_active`s halve the ours pane and then
+        // halve the working pane, which left ours at 50% and the other two at
+        // 25% each.
+        self.pane_tree.equalize_ratios();
         self.activate_pane(working_pane);
         self.set_message(
             EchoLevel::Info,

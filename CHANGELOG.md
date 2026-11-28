@@ -9,6 +9,7 @@
 - **An inline image takes one line in the terminal, not eight.** The terminal shows an image as its caption (the alt text, or the file name), but each one reserved eight rows with the caption in the middle, so an org note with images was mostly blank space. Now the caption takes one row. The GUI, which draws the picture, is unchanged.
 - **A prompt that follows a plugin's picker shows at once.** Choosing an entry in a plugin's picker that then asks a question, such as org-clients' capture asking for the client and then `Decision:`, often showed the question only after another key press. It now appears as soon as the picker closes, in the terminal and the GUI.
 - **Resolving a conflict no longer freezes the editor.** Opening a conflicted file from magit (`dd` on an unmerged file) and moving with `j` could hang the editor for good, most often in org files. A fold over unchanged lines and a fold over an org heading could overlap, and moving the cursor out of them bounced between the two forever.
+- **A conflict opens in three equal panes.** Ours, the working file and theirs each get a third of the width; before, ours took half and the other two a quarter each.
 
 ### Documentation
 - **org-clients is listed.** The plugin that keeps one org file per client has a page under [plugins](https://dhruvasagar.github.io/lattice/plugins/), and the README, `:help org` and the FAQ point at it. `:help plugins` explains what `:plugins` shows for a plugin waiting on another it requires. The FAQ no longer says org has to be built from source.

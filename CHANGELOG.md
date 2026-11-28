@@ -9,6 +9,7 @@
 - **`]n` / `[n` jump between conflicts.** In a conflict session they move to the next / previous conflict and pass over the regions git merged cleanly, which `]c` / `[c` stop at. They wrap at the ends, like `]c`.
 
 ### Fixed
+- **The WSL clipboard tests no longer fail now and then with "Text file busy".** The test wrote its stand-in `win32yank.exe` itself, so a test forking on another thread could briefly hold the file open for writing and make it impossible to run. A `cp` child now puts it in place.
 - **An inline image takes one line in the terminal, not eight.** The terminal shows an image as its caption (the alt text, or the file name), but each one reserved eight rows with the caption in the middle, so an org note with images was mostly blank space. Now the caption takes one row. The GUI, which draws the picture, is unchanged.
 - **A prompt that follows a plugin's picker shows at once.** Choosing an entry in a plugin's picker that then asks a question, such as org-clients' capture asking for the client and then `Decision:`, often showed the question only after another key press. It now appears as soon as the picker closes, in the terminal and the GUI.
 - **Resolving a conflict no longer freezes the editor.** Opening a conflicted file from magit (`dd` on an unmerged file) and moving with `j` could hang the editor for good, most often in org files. A fold over unchanged lines and a fold over an org heading could overlap, and moving the cursor out of them bounced between the two forever.

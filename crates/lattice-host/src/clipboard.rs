@@ -502,15 +502,27 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         let clip = dir.join("clipboard");
+        let source = dir.join("win32yank.sh");
         let helper = dir.join("win32yank.exe");
         std::fs::write(
-            &helper,
+            &source,
             format!(
                 "#!/bin/sh\nCLIP='{}'\ncase \"$1 $2\" in\n\"-i --crlf\"|\"-o --lf\") ;;\n*) exit 3 ;;\nesac\n{body}\n",
                 clip.display()
             ),
         )
         .unwrap();
+        // The executable is written by a `cp` child, never by this process.
+        // A test on another thread that forks while this process holds the
+        // file open for writing hands the child that descriptor, and until
+        // the child execs, running the file fails with ETXTBSY ("Text file
+        // busy"). Only the non-executable source is ever open here.
+        let copied = std::process::Command::new("cp")
+            .arg(&source)
+            .arg(&helper)
+            .status()
+            .unwrap();
+        assert!(copied.success(), "cp the stand-in into place");
         std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o755)).unwrap();
         (helper, dir)
     }

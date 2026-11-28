@@ -12,6 +12,7 @@
 - **A conflict opens in three equal panes.** Ours, the working file and theirs each get a third of the width; before, ours took half and the other two a quarter each.
 - **A diffed buffer folds by the diff alone.** While a buffer is diffed it uses `foldmethod=diff`, as vim's `:diffthis` does: only the unchanged stretches fold, so an org file's headings no longer fold the conflict out of sight in the middle pane. `:diffoff` gives the buffer its own fold method back; `:setlocal foldmethod=…` still wins.
 - **A conflict opens on the conflict.** Resolving a conflicted file from magit puts the cursor on its first `<<<<<<<` line, with ours and theirs scrolled alongside. Before, it opened at the top of the file, and in a merge the first change is often a region git had already merged cleanly.
+- **The project menu offers Magit again.** After choosing a project with `C-x p p`, the menu had lost its `m Magit` row since 0.10.3 narrowed which editor commands a plugin may run. It is back, and opens the chosen project's status buffer.
 
 ### Documentation
 - **org-clients is listed.** The plugin that keeps one org file per client has a page under [plugins](https://dhruvasagar.github.io/lattice/plugins/), and the README, `:help org` and the FAQ point at it. `:help plugins` explains what `:plugins` shows for a plugin waiting on another it requires. The FAQ no longer says org has to be built from source.

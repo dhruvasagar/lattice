@@ -6597,6 +6597,13 @@ fn render_virtual_row(
         let Some(ch) = char::from_u32(cell.codepoint) else {
             continue;
         };
+        // `Cell::BLANK` (codepoint 0) is how a provider says "nothing
+        // here"; a filler row is made of them. It paints as a space. A NUL
+        // or other control character reaching the terminal prints nothing
+        // and does not move the cursor, so the rest of the row's update
+        // lands a column to the left and leaves the previous frame's last
+        // character on screen.
+        let ch = if ch.is_control() { ' ' } else { ch };
         let cell_fg = Some(cell.fg);
         if run_fg.is_none() {
             run_fg = cell_fg;
@@ -14463,6 +14470,32 @@ mod pane_separator_paint_tests {
     /// A soft-wrapped line keeps every character in the pane left of the
     /// divider: the column the divider covers is not part of the width the
     /// line wraps at.
+    /// A filler row's blank cells paint as spaces. A NUL sent to the
+    /// terminal does not move its cursor, so the rest of the row's update
+    /// landed a column short and left characters of the previous screen
+    /// behind.
+    #[test]
+    fn a_blank_virtual_row_paints_spaces_not_nul() {
+        let a = App::new(Document::from_text("a\n"));
+        let view = FrameView::from_app(&a);
+        let vrow = lattice_cells::VirtualRow {
+            media: None,
+            anchor_line: 0,
+            position: lattice_cells::AnchorPosition::Below,
+            cells: std::sync::Arc::from([lattice_cells::Cell::BLANK]),
+            height: 1,
+            kind: lattice_cells::VirtualRowKind::Filler,
+            bg: None,
+            scales: None,
+            gutter_line: None,
+            gutter_fg: None,
+        };
+        let line = render_virtual_row(&view, &vrow, 4, 20);
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(!text.chars().any(char::is_control), "{text:?}");
+        assert_eq!(text.chars().count(), 2 + 4 + 20, "fills the whole row");
+    }
+
     #[test]
     fn a_wrapped_line_loses_no_character_under_the_divider() {
         let words: Vec<String> = (0..60).map(|i| format!("w{i:02}")).collect();

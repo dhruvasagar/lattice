@@ -13,6 +13,7 @@
 - **A diffed buffer folds by the diff alone.** While a buffer is diffed it uses `foldmethod=diff`, as vim's `:diffthis` does: only the unchanged stretches fold, so an org file's headings no longer fold the conflict out of sight in the middle pane. `:diffoff` gives the buffer its own fold method back; `:setlocal foldmethod=…` still wins.
 - **A conflict opens on the conflict.** Resolving a conflicted file from magit puts the cursor on its first `<<<<<<<` line, with ours and theirs scrolled alongside. Before, it opened at the top of the file, and in a merge the first change is often a region git had already merged cleanly.
 - **No character hides under a split's divider.** In side-by-side panes the `│` divider is drawn over the left pane's last column, and that column still counted as text width, so a wrapped line lost one character at every wrap point. The pane's text now stops short of the divider.
+- **Diff alignment rows no longer leave old text behind.** The blank rows that keep side-by-side diff panes aligned were sent to the terminal as NUL characters, which shifted the rest of the row's update and left a character of the previous screen in each row. They paint as spaces.
 - **The project menu offers Magit again.** After choosing a project with `C-x p p`, the menu had lost its `m Magit` row since 0.10.3 narrowed which editor commands a plugin may run. It is back, and opens the chosen project's status buffer.
 
 ### Documentation
